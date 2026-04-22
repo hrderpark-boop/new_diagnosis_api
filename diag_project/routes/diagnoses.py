@@ -43,7 +43,16 @@ class ResetRequest(BaseModel):
 # ------------------------------------------------------------------
 # Constants & Data
 # ------------------------------------------------------------------
-TOPIC_ORDER = ["조직관리", "성과관리", "사람관리", "일관리", "자기관리"]
+_topic_order_cache = None
+
+
+def _get_topic_order() -> list:
+    global _topic_order_cache
+    if _topic_order_cache is None:
+        from diag_project.services.framework_service import get_topics
+        _topic_order_cache = [t.name for t in get_topics().topics]
+    return _topic_order_cache
+
 
 # coaches.py가 반환하는 UUID와 COACHES_PERSONA 딕셔너리 키("1"~"6")를 연결.
 # coaches.py UUID 규칙: 끝 두 자리 = int(key) + 10
@@ -208,12 +217,13 @@ async def submit_message(
     formatted_history = [{"role": msg.role, "parts": msg.content} for msg in history_messages]
     
     # 완료된 토픽 계산
+    topic_order = _get_topic_order()
     completed_competencies_list = []
-    if current_topic in TOPIC_ORDER:
-        curr_idx = TOPIC_ORDER.index(current_topic)
-        completed_competencies_list = TOPIC_ORDER[:curr_idx]
+    if current_topic in topic_order:
+        curr_idx = topic_order.index(current_topic)
+        completed_competencies_list = topic_order[:curr_idx]
     elif current_topic == "Completed":
-        completed_competencies_list = TOPIC_ORDER[:]
+        completed_competencies_list = topic_order[:]
 
     # LLM 호출
     ai_response_json = await llm.generate_next_interaction(
@@ -247,20 +257,24 @@ async def submit_message(
     is_topic_completed = ai_response_json.get("is_topic_completed", False)
 
     if is_session_starting and current_topic == "General":
-        first_topic = TOPIC_ORDER[0] 
+        first_topic = topic_order[0]
         session.current_topic = first_topic
         db.add(session)
         await db.commit() 
 
     if is_topic_completed:
         try:
-            current_idx = TOPIC_ORDER.index(current_topic)
-            if current_idx + 1 < len(TOPIC_ORDER):
-                next_topic = TOPIC_ORDER[current_idx + 1]
-            else:
+            current_idx = topic_order.index(current_topic)
+            if current_idx + 1 >= len(topic_order):
                 next_topic = "Completed"
+            else:
+                next_topic = topic_order[current_idx + 1]
         except ValueError:
-            next_topic = "General"
+            logger.warning(
+                f"Unknown current_topic={current_topic!r}, "
+                f"expected one of {topic_order}. Resetting to first topic."
+            )
+            next_topic = topic_order[0]
 
         session.current_topic = next_topic 
         db.add(session)
@@ -278,10 +292,10 @@ async def submit_message(
     updated_topic = session.current_topic
     
     if session.status == "completed" or updated_topic == "Completed":
-        completed_topics_for_frontend = TOPIC_ORDER[:]
-    elif updated_topic in TOPIC_ORDER:
-        curr_idx = TOPIC_ORDER.index(updated_topic)
-        completed_topics_for_frontend = TOPIC_ORDER[:curr_idx]
+        completed_topics_for_frontend = topic_order[:]
+    elif updated_topic in topic_order:
+        curr_idx = topic_order.index(updated_topic)
+        completed_topics_for_frontend = topic_order[:curr_idx]
     
     # AI 응답 저장
     ai_msg = ChatMessage(session_id=session.id, role="model", content=ai_content)
@@ -342,14 +356,15 @@ async def get_session_state(
     messages = history_result.scalars().all()
     formatted_messages = [{"role": msg.role, "content": msg.content} for msg in messages]
 
+    topic_order = _get_topic_order()
     completed_topics = []
     if session.status == "completed":
-        completed_topics = TOPIC_ORDER[:]
-    elif session.current_topic in TOPIC_ORDER:
-        curr_idx = TOPIC_ORDER.index(session.current_topic)
-        completed_topics = TOPIC_ORDER[:curr_idx]
+        completed_topics = topic_order[:]
+    elif session.current_topic in topic_order:
+        curr_idx = topic_order.index(session.current_topic)
+        completed_topics = topic_order[:curr_idx]
     elif session.current_topic == "Completed":
-        completed_topics = TOPIC_ORDER[:]
+        completed_topics = topic_order[:]
 
     return {
         "session_id": session.id,
