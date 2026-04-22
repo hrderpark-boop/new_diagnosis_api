@@ -45,3 +45,6 @@ htmlcov/
 # Node (admin tooling in root)
 node_modules/
 package-lock.json
+
+# VS Code workspace (개인 설정)
+*.code-workspace
