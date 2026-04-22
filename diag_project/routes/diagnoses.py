@@ -1,0 +1,359 @@
+import logging
+import uuid
+import re 
+import json 
+from datetime import datetime
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy import func, delete, desc 
+from pydantic import BaseModel
+
+from diag_project.database import get_db
+from diag_project.models.diagnosis_session import DiagnosisSession, ChatMessage
+from diag_project.models.coach_persona import CoachPersona
+from diag_project.models.participant import Participant
+from diag_project.llm_service import GeminiService
+from diag_project.data.coaches_persona import COACHES_PERSONA
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    tags=["Diagnosis Flow"],
+)
+
+# ------------------------------------------------------------------
+# Pydantic Models
+# ------------------------------------------------------------------
+class DiagnosisStartRequest(BaseModel):
+    coach_id: uuid.UUID
+    participant_id: uuid.UUID
+    template_id: uuid.UUID
+    coach_persona_id: Optional[uuid.UUID] = None
+
+class ChatMessageRequest(BaseModel):
+    session_id: uuid.UUID
+    diagnosis_id: Optional[uuid.UUID] = None 
+    content: str
+
+class ResetRequest(BaseModel):
+    participant_id: Optional[uuid.UUID] = None 
+
+# ------------------------------------------------------------------
+# Constants & Data
+# ------------------------------------------------------------------
+TOPIC_ORDER = ["조직관리", "성과관리", "사람관리", "일관리", "자기관리"]
+
+# coaches.py가 반환하는 UUID와 COACHES_PERSONA 딕셔너리 키("1"~"6")를 연결.
+# coaches.py UUID 규칙: 끝 두 자리 = int(key) + 10
+COACH_UUID_TO_KEY = {
+    f"10000000-0000-0000-0000-0000000000{int(k) + 10:02d}": k
+    for k in COACHES_PERSONA
+}
+
+
+def _resolve_persona(coach_id: uuid.UUID, user_name: str, visit_count: int):
+    """
+    coach_id UUID → (CoachPersona DTO, opening 문자열) 반환.
+    알 수 없는 coach_id면 HTTPException 400을 발생시킨다.
+    """
+    key = COACH_UUID_TO_KEY.get(str(coach_id))
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown coach_id: {coach_id}. Valid IDs end with 11~16."
+        )
+    data = COACHES_PERSONA[key]
+    formatted_prompt = data["system_prompt"].format(
+        user_name=user_name, visit_count=visit_count
+    )
+    opening_template = data["opening_returning"] if visit_count > 1 else data["opening_new"]
+    opening = opening_template.format(user_name=user_name)
+    persona = CoachPersona(
+        name=data["name"],
+        system_prompt=formatted_prompt,
+        coach_id=coach_id,
+    )
+    return persona, opening
+
+# ------------------------------------------------------------------
+# [1] 진단 세션 시작 (POST /start) - ✅ 이어하기 기능 부활!
+# ------------------------------------------------------------------
+@router.post("/start", status_code=status.HTTP_201_CREATED)
+async def start_diagnosis(
+    request: DiagnosisStartRequest, 
+    db: AsyncSession = Depends(get_db),
+    llm: GeminiService = Depends(GeminiService) 
+):
+    user = await db.get(Participant, request.participant_id)
+    user_name = user.name if user else "리더"
+
+    # 1. 가장 최근의 '진행 중'인 세션 찾기 (이어하기)
+    # created_at 내림차순(desc)으로 정렬하여 가장 마지막 세션을 가져옵니다.
+    existing_query = select(DiagnosisSession).where(
+        DiagnosisSession.user_id == request.participant_id,
+        DiagnosisSession.status == "in_progress"
+    ).order_by(desc(DiagnosisSession.created_at))
+    
+    result = await db.execute(existing_query)
+    existing_session = result.scalars().first()
+
+    # [Case A] 진행 중인 세션이 있다! -> 이어하기(Resume)
+    if existing_session:
+        logger.info(f"🔄 Resuming existing session: {existing_session.id}")
+        
+        # 마지막 AI 메시지 가져오기 (문맥 유지용)
+        last_msg_query = select(ChatMessage).where(
+            ChatMessage.session_id == existing_session.id,
+            ChatMessage.role == "model"
+        ).order_by(desc(ChatMessage.created_at))
+        last_msg_res = await db.execute(last_msg_query)
+        last_message = last_msg_res.scalars().first()
+        
+        # 메시지가 없으면 기본 멘트
+        response_msg = last_message.content if last_message else "대화를 이어서 진행합니다."
+
+        return {
+            "diagnosis_id": existing_session.id,
+            "session_id": existing_session.id,
+            "coach_response_message": response_msg,
+            "next_action": "resume" # 프론트엔드에 '이어하기'임을 알림
+        }
+
+    # [Case B] 진행 중인 게 없다 -> 새 세션 생성 (New Game)
+    logger.info(f"🆕 Creating NEW session for user: {request.participant_id}")
+    
+    # 방문 횟수 계산
+    count_query = select(func.count(DiagnosisSession.id)).where(DiagnosisSession.user_id == request.participant_id)
+    result = await db.execute(count_query)
+    past_session_count = result.scalar() or 0
+    visit_count = past_session_count + 1 
+
+    # 코치 페르소나 조회 (알 수 없는 coach_id면 400 반환)
+    persona, opening = _resolve_persona(request.coach_id, user_name, visit_count)
+
+    # DB 저장
+    new_session = DiagnosisSession(
+        id=uuid.uuid4(),
+        user_id=request.participant_id,
+        coach_id=request.coach_id,
+        diagnosis_template_id=request.template_id,
+        status="in_progress",
+        current_topic="General",
+        created_at=datetime.now(),
+        updated_at=datetime.now()
+    )
+    db.add(new_session)
+    await db.commit()
+    await db.refresh(new_session)
+
+    # 첫 인사 생성
+    ai_response = await llm.generate_initial_response(
+        persona,
+        user_name,
+        specific_opening=opening,
+    )
+    
+    # 첫 메시지 저장
+    first_message = ChatMessage(
+        session_id=new_session.id,
+        role="model",
+        content=ai_response["coach_response_message"]
+    )
+    db.add(first_message)
+    await db.commit()
+    
+    return {
+        "diagnosis_id": new_session.id,
+        "session_id": new_session.id,
+        "coach_response_message": ai_response["coach_response_message"],
+        "next_action": ai_response.get("next_action")
+    }
+
+# ------------------------------------------------------------------
+# [2] 메시지 전송 및 응답 (POST /submit_message)
+# ------------------------------------------------------------------
+@router.post("/submit_message", status_code=status.HTTP_201_CREATED)
+async def submit_message(
+    request: ChatMessageRequest, 
+    db: AsyncSession = Depends(get_db),
+    llm: GeminiService = Depends(GeminiService) 
+):
+    session = await db.get(DiagnosisSession, request.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    user = await db.get(Participant, session.user_id)
+    user_name = user.name if user else "리더"
+
+    count_query = select(func.count(DiagnosisSession.id)).where(DiagnosisSession.user_id == session.user_id)
+    result = await db.execute(count_query)
+    visit_count = result.scalar() or 1
+
+    current_topic = session.current_topic if session.current_topic else "General"
+    
+    # 코치 페르소나 조회 (opening은 초기 인사용이므로 대화 중엔 불필요)
+    persona, _ = _resolve_persona(session.coach_id, user_name, visit_count)
+
+    # 유저 메시지 저장
+    user_msg = ChatMessage(session_id=session.id, role="user", content=request.content)
+    db.add(user_msg)
+    await db.commit() 
+
+    # 대화 히스토리 로드
+    history_query = select(ChatMessage).where(ChatMessage.session_id == session.id).order_by(ChatMessage.created_at.asc())
+    history_result = await db.execute(history_query)
+    history_messages = history_result.scalars().all()
+    formatted_history = [{"role": msg.role, "parts": msg.content} for msg in history_messages]
+    
+    # 완료된 토픽 계산
+    completed_competencies_list = []
+    if current_topic in TOPIC_ORDER:
+        curr_idx = TOPIC_ORDER.index(current_topic)
+        completed_competencies_list = TOPIC_ORDER[:curr_idx]
+    elif current_topic == "Completed":
+        completed_competencies_list = TOPIC_ORDER[:]
+
+    # LLM 호출
+    ai_response_json = await llm.generate_next_interaction(
+        persona=persona,
+        history=formatted_history,
+        user_answer=request.content,
+        user_name=user_name,
+        visit_count=visit_count,
+        current_topic=current_topic, 
+        completed_competencies=completed_competencies_list,
+        unfinished_topic=None,
+        last_session_summary=""
+    )
+
+    ai_content = ai_response_json.get("coach_response_message", "오류가 발생했습니다.")
+    
+    # 리워드 데이터 추출
+    reward_data = None
+    reward_match = re.search(r'\[REWARD_JSON:(.*?)\]', ai_content)
+    
+    if reward_match:
+        try:
+            json_str = reward_match.group(1)
+            reward_data = json.loads(json_str)
+            ai_content = ai_content.replace(reward_match.group(0), "").strip()
+        except Exception as e:
+            logger.error(f"Reward JSON parsing failed: {e}")
+
+    # 상태 업데이트
+    is_session_starting = ai_response_json.get("is_session_starting", False)
+    is_topic_completed = ai_response_json.get("is_topic_completed", False)
+
+    if is_session_starting and current_topic == "General":
+        first_topic = TOPIC_ORDER[0] 
+        session.current_topic = first_topic
+        db.add(session)
+        await db.commit() 
+
+    if is_topic_completed:
+        try:
+            current_idx = TOPIC_ORDER.index(current_topic)
+            if current_idx + 1 < len(TOPIC_ORDER):
+                next_topic = TOPIC_ORDER[current_idx + 1]
+            else:
+                next_topic = "Completed"
+        except ValueError:
+            next_topic = "General"
+
+        session.current_topic = next_topic 
+        db.add(session)
+        await db.commit() 
+
+    if "진단 종료" in request.content:
+        ai_response_json["is_session_completed"] = True
+        ai_content = "네, 알겠습니다. 분석 리포트를 생성해 드리겠습니다."
+        session.status = "completed"
+        db.add(session)
+        await db.commit()
+
+    # UI용 완료 목록 재계산
+    completed_topics_for_frontend = []
+    updated_topic = session.current_topic
+    
+    if session.status == "completed" or updated_topic == "Completed":
+        completed_topics_for_frontend = TOPIC_ORDER[:]
+    elif updated_topic in TOPIC_ORDER:
+        curr_idx = TOPIC_ORDER.index(updated_topic)
+        completed_topics_for_frontend = TOPIC_ORDER[:curr_idx]
+    
+    # AI 응답 저장
+    ai_msg = ChatMessage(session_id=session.id, role="model", content=ai_content)
+    db.add(ai_msg)
+    await db.commit()
+
+    return {
+        "coach_response_message": ai_content,
+        "is_topic_completed": is_topic_completed,
+        "is_session_starting": is_session_starting,
+        "is_session_completed": ai_response_json.get("is_session_completed", False),
+        "reward": reward_data,
+        "completed_topics": completed_topics_for_frontend 
+    }
+
+
+# ------------------------------------------------------------------
+# [3] 데이터 초기화 (Reset)
+# ------------------------------------------------------------------
+@router.post("/reset", status_code=status.HTTP_200_OK)
+async def reset_diagnosis_data(
+    request: ResetRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    if not request.participant_id:
+        raise HTTPException(status_code=400, detail="participant_id is required for safety.")
+
+    sessions_query = select(DiagnosisSession.id).where(DiagnosisSession.user_id == request.participant_id)
+    result = await db.execute(sessions_query)
+    session_ids = result.scalars().all()
+
+    if not session_ids:
+        return {"message": "No data found for this user."}
+
+    delete_msgs = delete(ChatMessage).where(ChatMessage.session_id.in_(session_ids))
+    await db.execute(delete_msgs)
+
+    delete_sessions = delete(DiagnosisSession).where(DiagnosisSession.user_id == request.participant_id)
+    await db.execute(delete_sessions)
+    
+    await db.commit()
+    return {"message": "Reset complete."}
+
+# ------------------------------------------------------------------
+# [4] 세션 상태 조회 (GET /state)
+# ------------------------------------------------------------------
+@router.get("/{session_id}/state")
+async def get_session_state(
+    session_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    session = await db.get(DiagnosisSession, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    history_query = select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc())
+    history_result = await db.execute(history_query)
+    messages = history_result.scalars().all()
+    formatted_messages = [{"role": msg.role, "content": msg.content} for msg in messages]
+
+    completed_topics = []
+    if session.status == "completed":
+        completed_topics = TOPIC_ORDER[:]
+    elif session.current_topic in TOPIC_ORDER:
+        curr_idx = TOPIC_ORDER.index(session.current_topic)
+        completed_topics = TOPIC_ORDER[:curr_idx]
+    elif session.current_topic == "Completed":
+        completed_topics = TOPIC_ORDER[:]
+
+    return {
+        "session_id": session.id,
+        "current_topic": session.current_topic,
+        "completed_topics": completed_topics,
+        "messages": formatted_messages
+    }
