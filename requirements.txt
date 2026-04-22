@@ -1,0 +1,25 @@
+# Web framework
+fastapi>=0.121.0
+uvicorn>=0.38.0
+
+# Database (ORM + async SQLite driver)
+sqlmodel>=0.0.27
+SQLAlchemy>=2.0.0
+aiosqlite>=0.21.0
+
+# LLM
+google-generativeai>=0.8.0
+google-genai>=1.55.0
+
+# Settings & config
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# Auth
+python-jose[cryptography]>=3.0.0
+passlib[bcrypt]>=1.7.0
+bcrypt>=4.0.0
+
+# Admin reporting
+pandas>=2.0.0
