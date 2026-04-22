@@ -8,7 +8,8 @@ from fastapi.staticfiles import StaticFiles # ✅ 이미지 서빙을 위해 필
 
 from diag_project.database import init_db
 # ✅ [수정] coaches 모듈을 반드시 포함해야 합니다.
-from diag_project.routes import diagnoses, reports, participants, coaches 
+from diag_project.routes import diagnoses, reports, participants, coaches
+from diag_project.routes import framework
 from diag_project.config import settings
 
 # 로깅 설정
@@ -58,10 +59,11 @@ async def on_shutdown():
 # --------------------------------------------------------------------------
 # ✅ 라우터 등록 (이 부분이 있어야 404 에러가 사라집니다)
 # --------------------------------------------------------------------------
-app.include_router(participants.router, prefix="/api/v1/participants") 
-app.include_router(coaches.router, prefix="/api/v1/coaches")           # 👈 코치 목록 담당 (필수!)
-app.include_router(diagnoses.router, prefix="/api/v1/diagnoses")       
-app.include_router(reports.router, prefix="/api/v1/reports")           
+app.include_router(participants.router, prefix="/api/v1/participants")
+app.include_router(coaches.router, prefix="/api/v1/coaches")
+app.include_router(diagnoses.router, prefix="/api/v1/diagnoses")
+app.include_router(reports.router, prefix="/api/v1/reports")
+app.include_router(framework.router, prefix="/api/v1/framework")
 
 # 헬스 체크
 @app.get("/")
