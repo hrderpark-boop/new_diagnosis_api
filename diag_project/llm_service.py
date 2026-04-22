@@ -146,10 +146,10 @@ class GeminiService:
         self.available_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 
         if not self.available_keys:
-            logger.warning("⚠️ GEMINI_API_KEYS 환경 변수가 설정되지 않아 임시 키를 사용합니다.")
-            self.available_keys = [
-                "REDACTED",
-            ]
+            raise RuntimeError(
+                "GEMINI_API_KEYS 환경 변수가 설정되지 않았습니다. "
+                ".env 파일에 'GEMINI_API_KEYS=your-api-key' 를 추가하세요."
+            )
 
     async def _generate_with_retry(
         self,
