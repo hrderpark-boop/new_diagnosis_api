@@ -23,17 +23,31 @@ BEST_MODEL = "models/gemini-2.5-flash"
 
 MAX_HISTORY_TURNS = 20
 
-ALL_COMPETENCIES = ["조직관리", "성과관리", "사람관리", "일관리", "자기관리"]
-KOREAN_TO_KEY = {
-    "조직관리": "organization_management",
-    "성과관리": "performance_management",
-    "사람관리": "people_management",
-    "일관리": "work_management",
-    "자기관리": "self_management",
-}
-KEY_TO_KOREAN = {v: k for k, v in KOREAN_TO_KEY.items()}
+_framework_cache = None
 
-COMPETENCY_KEYS = list(KOREAN_TO_KEY.values())
+
+def _get_framework():
+    global _framework_cache
+    if _framework_cache is None:
+        from diag_project.services.framework_service import get_active_framework
+        _framework_cache = get_active_framework()
+    return _framework_cache
+
+
+def _get_all_competency_names() -> list:
+    return [c.name for c in _get_framework().competencies]
+
+
+def _get_korean_to_key_map() -> dict:
+    return {c.name: c.key for c in _get_framework().competencies}
+
+
+def _get_key_to_korean_map() -> dict:
+    return {c.key: c.name for c in _get_framework().competencies}
+
+
+def _get_competency_keys() -> list:
+    return [c.key for c in _get_framework().competencies]
 
 COACHING_GUIDELINE_TEMPLATE = """
 [대화 기본 원칙]
@@ -268,7 +282,7 @@ class GeminiService:
         user_call = _build_user_call(user_name)
         chat_context = _format_chat_context(history)
 
-        remaining = [c for c in ALL_COMPETENCIES if c not in completed_competencies]
+        remaining = [c for c in _get_all_competency_names() if c not in completed_competencies]
         remaining_str = ", ".join(remaining) if remaining else "모든"
 
         coaching_guideline = COACHING_GUIDELINE_TEMPLATE.format(user_call=user_call)
@@ -325,7 +339,7 @@ class GeminiService:
 """
 
         else:
-            framework_key = KOREAN_TO_KEY.get(current_topic)
+            framework_key = _get_korean_to_key_map().get(current_topic)
 
             if framework_key and framework_key in COMPETENCY_FRAMEWORK:
                 data = COMPETENCY_FRAMEWORK[framework_key]
@@ -447,7 +461,7 @@ class GeminiService:
             return _safe_parse_json(raw)
         except Exception as e:
             logger.error(f"발화 분류 실패: {e}")
-            return {key: "분류 실패" for key in COMPETENCY_KEYS}
+            return {key: "분류 실패" for key in _get_competency_keys()}
 
     async def _analyze_single_competency(
         self,
@@ -462,7 +476,7 @@ class GeminiService:
         - Gap Analysis 포함
         - comment: 조직적 파급력 + 전문 용어 + 실행 가능한 다음 레벨 전략
         """
-        korean_name = KEY_TO_KOREAN.get(competency_key, competency_key)
+        korean_name = _get_key_to_korean_map().get(competency_key, competency_key)
 
         # COMPETENCY_FRAMEWORK에서 해당 역량의 실제 하위 지표 이름들을 가져옵니다.
         sub_indicators = []
@@ -625,7 +639,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
     ) -> Dict[str, Any]:
         """STEP 3: 5개 역량 결과를 종합하여 아키타입·사각지대·IDP 생성"""
         scores_summary = "\n".join([
-            f"- {KEY_TO_KOREAN.get(k, k)}: {v.get('score', 0)}점 | 강점: {v.get('strength_point', '-')} | 개선: {v.get('growth_point', '-')} | Gap: {v.get('gap_analysis', '-')}"
+            f"- {_get_key_to_korean_map().get(k, k)}: {v.get('score', 0)}점 | 강점: {v.get('strength_point', '-')} | 개선: {v.get('growth_point', '-')} | Gap: {v.get('gap_analysis', '-')}"
             for k, v in competency_results.items()
         ])
 
@@ -696,18 +710,19 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 
         # STEP 2: 역량별 병렬 심층 분석
         logger.info("🔍 STEP 2: 역량별 심층 분석 중 (병렬)...")
+        competency_keys = _get_competency_keys()
         tasks = [
             self._analyze_single_competency(
                 competency_key=key,
                 relevant_utterances=utterances_by_competency.get(key, "관련 발언 없음"),
                 full_transcript=chat_transcript,
             )
-            for key in COMPETENCY_KEYS
+            for key in competency_keys
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         competency_results = {}
-        for key, result in zip(COMPETENCY_KEYS, results):
+        for key, result in zip(competency_keys, results):
             if isinstance(result, Exception):
                 logger.error(f"{key} 분석 예외: {result}")
                 sub_names = []
