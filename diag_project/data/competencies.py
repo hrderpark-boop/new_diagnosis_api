@@ -2,6 +2,7 @@ COMPETENCY_FRAMEWORK = {
     "organization_management": {
         "name": "조직관리",
         "description": "조직의 비전, 전략, 변화, 혁신을 효과적으로 관리하고 구성원들의 참여를 이끌어내는 능력.",
+        "classification_keywords": ["팀 비전", "조직 문화", "변화 관리", "의사결정 구조"],
         "indicators": {
             "vision_sharing": {
                 "name": "비전 제시 및 공유",
@@ -68,6 +69,7 @@ COMPETENCY_FRAMEWORK = {
     "performance_management": {
         "name": "성과관리",
         "description": "조직 및 개인의 목표 설정, 성과 측정, 평가, 피드백을 통해 지속적인 성과 향상을 이끌어내는 능력.",
+        "classification_keywords": ["목표 설정", "KPI", "피드백", "성과 측정 및 개선"],
         "indicators": {
             "goal_setting_sharing": {
                 "name": "목표설정 및 공유",
@@ -164,6 +166,7 @@ COMPETENCY_FRAMEWORK = {
     "people_management": {
         "name": "사람관리",
         "description": "구성원과의 관계 형성, 갈등 해결, 역량 개발 및 동기 부여를 통해 팀의 성과를 극대화하는 능력.",
+        "classification_keywords": ["코칭", "팀원 육성", "동기부여", "갈등 해결", "인재 개발"],
         "indicators": {
             "conflict_management": {
                 "name": "갈등관리",
@@ -302,9 +305,10 @@ COMPETENCY_FRAMEWORK = {
             }
         }
     },
-    "work_management": { 
+    "work_management": {
         "name": "일관리",
         "description": "업무 목표 달성을 위한 계획 수립, 자원 배분, 개선 활동을 통해 효율성과 생산성을 높이는 능력.",
+        "classification_keywords": ["업무 우선순위", "위임", "프로세스 효율화", "리소스 배분"],
         "indicators": {
             "work_planning_organization": { 
                 "name": "업무계획 및 조직력",
@@ -386,6 +390,7 @@ COMPETENCY_FRAMEWORK = {
     "self_management": {
         "name": "자기관리",
         "description": "자신의 감정, 가치관을 인식하고 스트레스와 변화에 효과적으로 대응하며 성장을 추구하는 능력.",
+        "classification_keywords": ["감정 조절", "자기 인식", "스트레스 관리", "지속적 학습"],
         "indicators": {
             "self_awareness": {
                 "name": "자기인식",
