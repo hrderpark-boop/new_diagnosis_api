@@ -464,25 +464,17 @@ class GeminiService:
         """
         STEP 1: 전체 대화에서 역량별 관련 발화를 분류·추출
         """
+        json_template = _build_classification_json_template()
+        criteria_text = _build_classification_criteria()
         prompt = f"""
 [Role] Senior HR Assessment Expert
 [Task] 아래 대화 로그에서 각 리더십 역량과 관련된 발화(사용자 발언)를 역량별로 분류하여 추출하세요.
 
 [출력 형식 - STRICT JSON ONLY, NO markdown]
-{{
-  "organization_management": "조직관리 관련 사용자 발언 전문 (없으면 '관련 발언 없음')",
-  "performance_management": "성과관리 관련 사용자 발언 전문",
-  "people_management": "사람관리 관련 사용자 발언 전문",
-  "work_management": "일관리 관련 사용자 발언 전문",
-  "self_management": "자기관리 관련 사용자 발언 전문"
-}}
+{json_template}
 
 [역량 분류 기준]
-- 조직관리: 팀 비전, 조직 문화, 변화 관리, 의사결정 구조
-- 성과관리: 목표 설정, KPI, 피드백, 성과 측정 및 개선
-- 사람관리: 코칭, 팀원 육성, 동기부여, 갈등 해결, 인재 개발
-- 일관리: 업무 우선순위, 위임, 프로세스 효율화, 리소스 배분
-- 자기관리: 감정 조절, 자기 인식, 스트레스 관리, 지속적 학습
+{criteria_text}
 
 [대화 로그]
 {chat_transcript}
