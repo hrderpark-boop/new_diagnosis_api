@@ -330,12 +330,16 @@ class GeminiService:
 {next_suggestion}
 """
 
+        _topic_order = _get_topic_order_korean_names()
+        _areas_text = _format_competency_summary(_topic_order)
+        _first_topic = _topic_order[0]
+        _total_count = len(_topic_order)
         first_visit_orientation = f"""
-본 과정은 {user_call}의 **'리더십 강점'**을 발견하기 위해 5가지 영역(조직, 성과, 사람, 일, 자기관리)을 깊이 있게 다루는 여정입니다.
+본 과정은 {user_call}의 **'리더십 강점'**을 발견하기 위해 {_total_count}가지 영역({_areas_text})을 깊이 있게 다루는 여정입니다.
 단순한 유형 분류가 아니라, 실제 현업에서의 경험을 바탕으로 역량을 꼼꼼하게 점검해 드릴 거예요.
 총 150분 정도 소요되지만, {user_call}의 답변 내용에 따라 시간은 조금 더 길어질 수 있습니다. 편하실 때 나누어 진행하셔도 됩니다.
 
-준비되셨다면, 첫 번째 순서인 '조직관리'부터 시작해볼까요?
+준비되셨다면, 첫 번째 순서인 '{_first_topic}'부터 시작해볼까요?
 """
 
         task_instruction = ""
