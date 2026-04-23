@@ -5,7 +5,8 @@ import re
 import random
 import asyncio
 from datetime import datetime
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types
 from typing import List, Dict, Any, Optional
 from diag_project.models.coach_persona import CoachPersona
 from diag_project.config import settings
@@ -207,22 +208,34 @@ class GeminiService:
         last_error = None
         for api_key in trial_keys:
             try:
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel(BEST_MODEL)
+                client = genai.Client(api_key=api_key)
 
-                response = await model.generate_content_async(
-                    prompt,
-                    generation_config=genai.types.GenerationConfig(
+                response = await client.aio.models.generate_content(
+                    model=BEST_MODEL,
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
                         stop_sequences=[],
                         max_output_tokens=max_tokens,
                         temperature=0.7,
+                        safety_settings=[
+                            genai_types.SafetySetting(
+                                category=genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                            ),
+                            genai_types.SafetySetting(
+                                category=genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                            ),
+                            genai_types.SafetySetting(
+                                category=genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                            ),
+                            genai_types.SafetySetting(
+                                category=genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+                            ),
+                        ],
                     ),
-                    safety_settings={
-                        genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
-                        genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH: genai.types.HarmBlockThreshold.BLOCK_NONE,
-                        genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: genai.types.HarmBlockThreshold.BLOCK_NONE,
-                        genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: genai.types.HarmBlockThreshold.BLOCK_NONE,
-                    }
                 )
 
                 text = response.text

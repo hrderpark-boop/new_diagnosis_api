@@ -8,7 +8,6 @@ SQLAlchemy>=2.0.0
 aiosqlite>=0.21.0
 
 # LLM
-google-generativeai>=0.8.0
 google-genai>=1.55.0
 
 # Settings & config
