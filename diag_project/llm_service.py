@@ -49,6 +49,33 @@ def _get_key_to_korean_map() -> dict:
 def _get_competency_keys() -> list:
     return [c.key for c in _get_framework().competencies]
 
+
+def _get_topic_order_korean_names() -> list[str]:
+    return [c.name for c in _get_framework().competencies]
+
+
+def _format_competency_summary(topic_order: list[str]) -> str:
+    if len(topic_order) >= 2 and all(n.endswith("관리") for n in topic_order):
+        short = [n.replace("관리", "") for n in topic_order[:-1]]
+        return ", ".join(short) + ", " + topic_order[-1]
+    return ", ".join(topic_order)
+
+
+def _build_classification_criteria() -> str:
+    framework = _get_framework()
+    lines = [f"- {c.name}: {', '.join(c.classification_keywords)}" for c in framework.competencies]
+    return "\n".join(lines)
+
+
+def _build_classification_json_template() -> str:
+    framework = _get_framework()
+    entries = []
+    for i, c in enumerate(framework.competencies):
+        suffix = " (없으면 '관련 발언 없음')" if i == 0 else ""
+        entries.append(f'  "{c.key}": "{c.name} 관련 사용자 발언 전문{suffix}"')
+    return "{\n" + ",\n".join(entries) + "\n}"
+
+
 COACHING_GUIDELINE_TEMPLATE = """
 [대화 기본 원칙]
 1. **호칭:** 무조건 "{user_call}" 사용.
