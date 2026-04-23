@@ -21,6 +21,7 @@ class CompetencyOut(BaseModel):
     name: str
     order: int
     description: str
+    classification_keywords: List[str]
     indicators: List[IndicatorOut]
 
 

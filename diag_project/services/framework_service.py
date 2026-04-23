@@ -22,6 +22,7 @@ def get_active_framework() -> FrameworkResponse:
             name=data["name"],
             order=order,
             description=data["description"],
+            classification_keywords=data["classification_keywords"],
             indicators=[
                 IndicatorOut(
                     key=ind_key,
