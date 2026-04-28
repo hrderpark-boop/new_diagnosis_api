@@ -1,13 +1,14 @@
 import logging
+import os
 import uuid
-import re 
-import json 
+import re
+import json
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import func, delete, desc 
+from sqlalchemy import func, delete, desc
 from pydantic import BaseModel
 
 from diag_project.database import get_db
@@ -16,6 +17,13 @@ from diag_project.models.coach_persona import CoachPersona
 from diag_project.models.participant import Participant
 from diag_project.llm_service import GeminiService
 from diag_project.data.coaches_persona import COACHES_PERSONA
+from diag_project.services.chapter_translator import topic_to_chapter, chapter_to_topic
+from diag_project.services.instruction_decider import build_turn_state
+from diag_project.services.conversation_compressor import compress_conversation_history
+from diag_project.services.event_service import complete_event
+from diag_project.prompts.phase3a.layer1_system import LAYER1_SYSTEM_PROMPT
+from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
+from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
 
 logger = logging.getLogger(__name__)
 
@@ -185,14 +193,26 @@ async def start_diagnosis(
 # ------------------------------------------------------------------
 @router.post("/submit_message", status_code=status.HTTP_201_CREATED)
 async def submit_message(
-    request: ChatMessageRequest, 
+    request: ChatMessageRequest,
     db: AsyncSession = Depends(get_db),
-    llm: GeminiService = Depends(GeminiService) 
+    llm: GeminiService = Depends(GeminiService),
 ):
+    use_phase3a = os.getenv("USE_PHASE3A", "false").lower() == "true"
+    if use_phase3a:
+        return await _submit_message_phase3a(request, db, llm)
+    return await _submit_message_legacy(request, db, llm)
+
+
+async def _submit_message_legacy(
+    request: ChatMessageRequest,
+    db: AsyncSession,
+    llm: GeminiService,
+):
+    """기존 흐름. USE_PHASE3A=false 시 사용. 본문 변경 금지."""
     session = await db.get(DiagnosisSession, request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     user = await db.get(Participant, session.user_id)
     user_name = user.name if user else "리더"
 
@@ -201,21 +221,21 @@ async def submit_message(
     visit_count = result.scalar() or 1
 
     current_topic = session.current_topic if session.current_topic else "General"
-    
+
     # 코치 페르소나 조회 (opening은 초기 인사용이므로 대화 중엔 불필요)
     persona, _ = _resolve_persona(session.coach_id, user_name, visit_count)
 
     # 유저 메시지 저장
     user_msg = ChatMessage(session_id=session.id, role="user", content=request.content)
     db.add(user_msg)
-    await db.commit() 
+    await db.commit()
 
     # 대화 히스토리 로드
     history_query = select(ChatMessage).where(ChatMessage.session_id == session.id).order_by(ChatMessage.created_at.asc())
     history_result = await db.execute(history_query)
     history_messages = history_result.scalars().all()
     formatted_history = [{"role": msg.role, "parts": msg.content} for msg in history_messages]
-    
+
     # 완료된 토픽 계산
     topic_order = _get_topic_order()
     completed_competencies_list = []
@@ -232,18 +252,18 @@ async def submit_message(
         user_answer=request.content,
         user_name=user_name,
         visit_count=visit_count,
-        current_topic=current_topic, 
+        current_topic=current_topic,
         completed_competencies=completed_competencies_list,
         unfinished_topic=None,
         last_session_summary=""
     )
 
     ai_content = ai_response_json.get("coach_response_message", "오류가 발생했습니다.")
-    
+
     # 리워드 데이터 추출
     reward_data = None
     reward_match = re.search(r'\[REWARD_JSON:(.*?)\]', ai_content)
-    
+
     if reward_match:
         try:
             json_str = reward_match.group(1)
@@ -260,7 +280,7 @@ async def submit_message(
         first_topic = topic_order[0]
         session.current_topic = first_topic
         db.add(session)
-        await db.commit() 
+        await db.commit()
 
     if is_topic_completed:
         try:
@@ -276,9 +296,9 @@ async def submit_message(
             )
             next_topic = topic_order[0]
 
-        session.current_topic = next_topic 
+        session.current_topic = next_topic
         db.add(session)
-        await db.commit() 
+        await db.commit()
 
     if "진단 종료" in request.content:
         ai_response_json["is_session_completed"] = True
@@ -290,13 +310,13 @@ async def submit_message(
     # UI용 완료 목록 재계산
     completed_topics_for_frontend = []
     updated_topic = session.current_topic
-    
+
     if session.status == "completed" or updated_topic == "Completed":
         completed_topics_for_frontend = topic_order[:]
     elif updated_topic in topic_order:
         curr_idx = topic_order.index(updated_topic)
         completed_topics_for_frontend = topic_order[:curr_idx]
-    
+
     # AI 응답 저장
     ai_msg = ChatMessage(session_id=session.id, role="model", content=ai_content)
     db.add(ai_msg)
@@ -308,8 +328,139 @@ async def submit_message(
         "is_session_starting": is_session_starting,
         "is_session_completed": ai_response_json.get("is_session_completed", False),
         "reward": reward_data,
-        "completed_topics": completed_topics_for_frontend 
+        "completed_topics": completed_topics_for_frontend,
     }
+
+
+async def _submit_message_phase3a(
+    request: ChatMessageRequest,
+    db: AsyncSession,
+    llm: GeminiService,
+):
+    """Phase 3-A 흐름. USE_PHASE3A=true 시 활성."""
+    # 1. 세션 조회
+    session = await db.get(DiagnosisSession, request.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # 2. 현재 챕터 결정 (current_topic 한국어 → 영문 key)
+    chapter = topic_to_chapter(session.current_topic)
+
+    # 3. 사용자 메시지 저장 (chapter 필드 채움 — 감사 위험 #1 해결)
+    user_msg = ChatMessage(
+        session_id=session.id,
+        role="user",
+        content=request.content,
+        chapter=chapter,
+    )
+    db.add(user_msg)
+    await db.commit()
+
+    # 4. Turn State 빌드
+    state = await build_turn_state(db, session.id, chapter)
+
+    # 5. 대화 이력 압축
+    compressed_history = await compress_conversation_history(db, session.id, chapter)
+
+    # 6. 3-Layer 프롬프트 조립
+    chapter_context = CHAPTER_CONTEXTS.get(chapter, CHAPTER_CONTEXTS["organization_management"])
+    turn_state_text = format_turn_state_for_llm(state)
+
+    # 7. LLM 호출
+    llm_output = await llm.generate_phase3a_interaction(
+        system_prompt=LAYER1_SYSTEM_PROMPT,
+        chapter_context=chapter_context,
+        turn_state_text=turn_state_text,
+        compressed_history=compressed_history,
+        user_message=request.content,
+    )
+
+    reply = llm_output["reply"]
+    llm_state = llm_output.get("state") or {}
+    event_metadata = llm_output.get("event_metadata")
+
+    # 8. 제어 태그 처리 (감사 위험 #4 해결)
+    is_chapter_completed = "[CHAPTER_COMPLETE]" in reply
+    is_session_paused = "[SESSION_PAUSE]" in reply
+    clean_reply = (
+        reply
+        .replace("[CHAPTER_COMPLETE]", "")
+        .replace("[SESSION_PAUSE]", "")
+        .strip()
+    )
+
+    # 9. AI 메시지 저장 (Phase 3-A 메타데이터 포함)
+    instruction_used = state.get("instruction_for_this_turn")
+    probe_type_used = llm_state.get("probe_type_used")
+    current_event_id = llm_state.get("current_event_id")
+
+    ai_msg = ChatMessage(
+        session_id=session.id,
+        role="model",
+        content=clean_reply,
+        chapter=chapter,
+        event_id=current_event_id or None,
+        probe_type_used=probe_type_used,
+        instruction_used=instruction_used,
+    )
+    db.add(ai_msg)
+
+    # 10. Event 완료 처리
+    if event_metadata and current_event_id:
+        try:
+            from uuid import UUID
+            await complete_event(db, UUID(current_event_id), event_metadata)
+        except (ValueError, AttributeError) as e:
+            logger.warning(f"complete_event 실패 (event_id={current_event_id}): {e}")
+
+    await db.commit()
+
+    # 11. 챕터 전진 처리
+    is_session_completed = False
+    if is_chapter_completed:
+        next_chapter = _get_next_chapter(chapter)
+        if next_chapter:
+            session.current_topic = chapter_to_topic(next_chapter)
+        else:
+            session.current_topic = "Completed"
+            session.status = "completed"
+            is_session_completed = True
+        db.add(session)
+        await db.commit()
+
+    # 12. 응답 (감사 위험 #3 해결: reply → coach_response_message 매핑)
+    return {
+        "coach_response_message": clean_reply,
+        "is_topic_completed": is_chapter_completed,
+        "is_session_starting": False,
+        "is_session_completed": is_session_completed,
+        "is_session_paused": is_session_paused,
+        "reward": None,
+        "completed_topics": [],
+        "_phase3a_metadata": {
+            "chapter": chapter,
+            "instruction_used": instruction_used,
+            "probe_type_used": probe_type_used,
+            "turn_count": state.get("turn_count"),
+            "events_collected": state.get("events_collected"),
+        },
+    }
+
+
+def _get_next_chapter(current_chapter: str) -> str | None:
+    """다음 챕터 결정. 마지막 챕터면 None 반환."""
+    chapter_order = [
+        "organization_management",
+        "performance_management",
+        "people_management",
+        "work_management",
+        "self_management",
+    ]
+    try:
+        idx = chapter_order.index(current_chapter)
+        return chapter_order[idx + 1] if idx + 1 < len(chapter_order) else None
+    except ValueError:
+        return None
 
 
 # ------------------------------------------------------------------

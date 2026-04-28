@@ -198,12 +198,41 @@ class GeminiService:
         prompt: str,
         stop_seq: List[str] = None,
         max_tokens: int = 8192,
+        system_instruction: str | None = None,
     ) -> str:
         if not self.available_keys:
             raise Exception("사용 가능한 API 키가 없습니다.")
 
         trial_keys = list(self.available_keys)
         random.shuffle(trial_keys)
+
+        _safety_settings = [
+            genai_types.SafetySetting(
+                category=genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+            ),
+            genai_types.SafetySetting(
+                category=genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+            ),
+            genai_types.SafetySetting(
+                category=genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+            ),
+            genai_types.SafetySetting(
+                category=genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
+            ),
+        ]
+
+        _config_kwargs: dict = {
+            "stop_sequences": [],
+            "max_output_tokens": max_tokens,
+            "temperature": 0.7,
+            "safety_settings": _safety_settings,
+        }
+        if system_instruction:
+            _config_kwargs["system_instruction"] = system_instruction
 
         last_error = None
         for api_key in trial_keys:
@@ -213,29 +242,7 @@ class GeminiService:
                 response = await client.aio.models.generate_content(
                     model=BEST_MODEL,
                     contents=prompt,
-                    config=genai_types.GenerateContentConfig(
-                        stop_sequences=[],
-                        max_output_tokens=max_tokens,
-                        temperature=0.7,
-                        safety_settings=[
-                            genai_types.SafetySetting(
-                                category=genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
-                            ),
-                            genai_types.SafetySetting(
-                                category=genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
-                            ),
-                            genai_types.SafetySetting(
-                                category=genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
-                            ),
-                            genai_types.SafetySetting(
-                                category=genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                                threshold=genai_types.HarmBlockThreshold.BLOCK_NONE,
-                            ),
-                        ],
-                    ),
+                    config=genai_types.GenerateContentConfig(**_config_kwargs),
                 )
 
                 text = response.text
@@ -470,7 +477,82 @@ class GeminiService:
             }
 
     # -------------------------------------------------------------------------
-    # 3. 진단 결과 분석 — Chain of Thought 방식 (역량별 분리 호출)
+    # 3. Phase 3-A: 3-Layer 프롬프트 호출
+    # -------------------------------------------------------------------------
+    async def generate_phase3a_interaction(
+        self,
+        *,
+        system_prompt: str,
+        chapter_context: str,
+        turn_state_text: str,
+        compressed_history: list[dict],
+        user_message: str,
+    ) -> dict:
+        """Phase 3-A: 3-Layer 프롬프트로 LLM 호출.
+
+        Args:
+            system_prompt: Layer 1 (영구 고정)
+            chapter_context: Layer 2 (챕터별)
+            turn_state_text: Layer 3 (매 턴 동적)
+            compressed_history: 압축된 대화 이력 [{role, content}]
+            user_message: 사용자의 최신 메시지
+
+        Returns:
+            {
+                "reply": str,
+                "state": dict,
+                "event_metadata": dict | None,
+            }
+        """
+        history_text = "\n".join(
+            f"{m['role']}: {m['content']}"
+            for m in compressed_history
+        )
+
+        user_content = (
+            f"{chapter_context}\n\n"
+            f"{turn_state_text}\n\n"
+            f"[Conversation History]\n{history_text}\n\n"
+            f"[Latest User Message]\n{user_message}"
+        )
+
+        try:
+            response_text = await self._generate_with_retry(
+                prompt=user_content,
+                system_instruction=system_prompt,
+                max_tokens=1500,
+            )
+
+            clean_text = response_text.strip()
+            if clean_text.startswith("```"):
+                lines = clean_text.split("\n")
+                clean_text = "\n".join(lines[1:-1]) if len(lines) > 2 else clean_text
+                if clean_text.startswith("json"):
+                    clean_text = clean_text[4:].strip()
+
+            parsed = json.loads(clean_text)
+            return {
+                "reply": parsed.get("reply", response_text),
+                "state": parsed.get("state", {}),
+                "event_metadata": parsed.get("event_metadata"),
+            }
+
+        except json.JSONDecodeError:
+            return {
+                "reply": response_text,
+                "state": {},
+                "event_metadata": None,
+            }
+        except Exception as e:
+            logger.error(f"Phase 3-A LLM 오류: {e}")
+            return {
+                "reply": "죄송합니다. 잠시 생각할 시간을 주시겠어요? 다시 한번 말씀해 주시면 감사하겠습니다.",
+                "state": {},
+                "event_metadata": None,
+            }
+
+    # -------------------------------------------------------------------------
+    # 4. 진단 결과 분석 — Chain of Thought 방식 (역량별 분리 호출)
     # -------------------------------------------------------------------------
 
     async def _extract_utterances_by_competency(self, chat_transcript: str) -> Dict[str, str]:
