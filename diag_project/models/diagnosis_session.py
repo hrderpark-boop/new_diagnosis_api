@@ -71,8 +71,8 @@ class ChatMessage(SQLModel, table=True):
         sa_column=Column(GUID(), ForeignKey("events.id"), nullable=True, index=True),
     )
     chapter: Optional[str] = Field(default=None)
-    competency_key: Optional[str] = Field(default=None)
-    msg_type: Optional[str] = Field(default=None)
+    probe_type_used: Optional[str] = Field(default=None)
+    instruction_used: Optional[str] = Field(default=None)
 
     # 관계 설정
     session: DiagnosisSession = Relationship(back_populates="messages")
