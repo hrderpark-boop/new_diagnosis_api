@@ -3,7 +3,10 @@
 from typing import List, Optional, TYPE_CHECKING
 from uuid import UUID, uuid4
 from datetime import datetime
-from sqlmodel import Field, SQLModel, Relationship
+from sqlmodel import Field, SQLModel, Relationship, Column
+from sqlalchemy import ForeignKey
+
+from diag_project.models.uuid_type import GUID
 
 # 순환 참조 방지 (Participant가 필요한 경우)
 if TYPE_CHECKING:
@@ -61,6 +64,15 @@ class ChatMessage(SQLModel, table=True):
     content: str
     
     created_at: datetime = Field(default_factory=datetime.now)
+
+    # Phase 3-A: Event 연결 및 분류 메타
+    event_id: Optional[UUID] = Field(
+        default=None,
+        sa_column=Column(GUID(), ForeignKey("events.id"), nullable=True, index=True),
+    )
+    chapter: Optional[str] = Field(default=None)
+    competency_key: Optional[str] = Field(default=None)
+    msg_type: Optional[str] = Field(default=None)
 
     # 관계 설정
     session: DiagnosisSession = Relationship(back_populates="messages")

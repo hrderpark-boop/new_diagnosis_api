@@ -15,7 +15,8 @@ from diag_project.models.question_category import QuestionCategory
 from diag_project.models.diagnosis_template import DiagnosisTemplate
 from diag_project.models.diagnosis_question import DiagnosisQuestion
 from diag_project.models.diagnosis_session import DiagnosisSession, ChatMessage
-from diag_project.models.diagnosis_report import DiagnosisReport 
+from diag_project.models.diagnosis_report import DiagnosisReport
+from diag_project.models.event import Event
 
 load_dotenv()
 
