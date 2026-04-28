@@ -1,0 +1,266 @@
+"""Instruction Decider (Phase 3-A 두뇌)
+
+매 턴마다 LLM 에게 줄 명시적 지시 (instruction) 를 결정한다.
+14가지 instruction 중 하나를 선택해 LLM 의 다음 행동을 결정.
+
+설계 출처: docs/phase3a/01_design.md (Section 7.4-7.5)
+"""
+
+from typing import Literal
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from diag_project.models.event import Event
+from diag_project.models.diagnosis_session import ChatMessage
+from diag_project.services.avoidance_detector import (
+    check_avoidance,
+    detect_pause_request,
+    detect_meta_question,
+    is_invalid_input,
+)
+
+
+# 14가지 instruction 타입
+InstructionType = Literal[
+    "CHAPTER_OPENING",
+    "CONTINUE_NORMAL",
+    "STAR_INCOMPLETE",
+    "STAR_COMPLETE_NEW_EVENT",
+    "CONTRARY_NEEDED",
+    "AVOIDANCE_DETECTED",
+    "DUPLICATE_SUSPECTED",
+    "CROSS_CHAPTER_OPPORTUNITY",
+    "CHAPTER_READY_TO_END",
+    "MAX_TURNS_REACHED",
+    "USER_REQUESTS_PAUSE",
+    "META_QUESTION_FROM_USER",
+    "FIRST_TURN_AVOIDANCE",
+    "INVALID_INPUT",
+]
+
+
+# 챕터별 최소 사건 수
+MIN_EVENTS: dict[str, int] = {
+    "organization_management": 2,
+    "performance_management": 2,
+    "people_management": 3,
+    "work_management": 2,
+    "self_management": 2,
+}
+
+# 챕터별 최대 턴 수 (user 메시지 기준)
+MAX_TURNS: dict[str, int] = {
+    "organization_management": 40,
+    "performance_management": 40,
+    "people_management": 50,
+    "work_management": 40,
+    "self_management": 35,
+    "supplementary": 15,
+}
+
+
+def decide_instruction(state: dict) -> InstructionType:
+    """현재 상태 기반으로 LLM 에게 줄 instruction 결정.
+
+    우선순위 순서로 체크. 위에서부터 매칭되면 즉시 반환.
+    """
+    # 1. 첫 턴 처리
+    if state["turn_count"] == 1:
+        return "CHAPTER_OPENING"
+
+    last_response = state.get("last_user_response")
+
+    # 2. 의미 없는 입력
+    if is_invalid_input(last_response):
+        return "INVALID_INPUT"
+
+    # 3. 사용자 종료 요청 (회피보다 우선)
+    if detect_pause_request(last_response):
+        return "USER_REQUESTS_PAUSE"
+
+    # 4. 메타 질문
+    if detect_meta_question(last_response):
+        return "META_QUESTION_FROM_USER"
+
+    # 5. 첫 턴 회피 (라포 회복)
+    if state["turn_count"] <= 2 and state["contains_avoidance_keywords"]:
+        return "FIRST_TURN_AVOIDANCE"
+
+    # 6. 일반 회피
+    if state["contains_avoidance_keywords"]:
+        return "AVOIDANCE_DETECTED"
+
+    # 7. 중복 의심
+    if state.get("duplicate_suspected"):
+        return "DUPLICATE_SUSPECTED"
+
+    # 8. 최대 턴 초과
+    chapter_max = MAX_TURNS.get(state["chapter"], 40)
+    if state["turn_count"] >= chapter_max:
+        return "MAX_TURNS_REACHED"
+
+    # 9. 종료 가능 체크 (반례 있고, 사건 충분)
+    min_events = MIN_EVENTS.get(state["chapter"], 2)
+    if (state["events_with_star_70"] >= min_events
+            and state["has_contrary_probe"]):
+        return "CHAPTER_READY_TO_END"
+
+    # 10. 반례 탐침 필요
+    if should_do_contrary(state):
+        return "CONTRARY_NEEDED"
+
+    # 11. 자기관리 크로스 챕터 (특수)
+    if (state["chapter"] == "self_management"
+            and state["turn_count"] >= 12
+            and state.get("cross_chapter_signals")):
+        return "CROSS_CHAPTER_OPPORTUNITY"
+
+    # 12. 사건 진행 상태에 따라
+    if state.get("current_event_id"):
+        coverage = state.get("current_event_star_coverage") or {}
+        if coverage and all(coverage.values()):
+            return "STAR_COMPLETE_NEW_EVENT"
+        else:
+            return "STAR_INCOMPLETE"
+
+    # 13. 기본 진행
+    return "CONTINUE_NORMAL"
+
+
+def should_do_contrary(state: dict) -> bool:
+    """반례 탐침을 지금 수행해야 하는지 판단."""
+    if state["has_contrary_probe"]:
+        return False  # 이미 했음
+
+    # 타이밍 1: 첫 사건 완료 직후
+    if (state["events_with_star_70"] >= 1
+            and state["events_collected"] == 1):
+        return True
+
+    # 타이밍 2: 사건 사이 (현재 활성 사건 없음)
+    if (state["events_with_star_70"] >= 1
+            and not state.get("current_event_id")):
+        return True
+
+    # 타이밍 3: 안전망 (챕터 후반부)
+    chapter_max = MAX_TURNS.get(state["chapter"], 40)
+    if state["turn_count"] >= chapter_max - 5:
+        return True
+
+    return False
+
+
+async def build_turn_state(
+    db: AsyncSession,
+    session_id: UUID,
+    chapter: str,
+) -> dict:
+    """매 턴마다 호출되어 Layer 3 state dict 생성.
+
+    DB에서 이 챕터의 모든 정보를 모아 LLM 호출 전 state 객체로 반환.
+    """
+    # 1. 사건 정보 수집
+    event_result = await db.execute(
+        select(Event)
+        .where(Event.session_id == session_id)
+        .where(Event.chapter == chapter)
+        .order_by(Event.sequence_num)
+    )
+    events = event_result.scalars().all()
+
+    # 2. 이 챕터의 user 메시지 수 (turn_count)
+    msg_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.chapter == chapter)
+        .where(ChatMessage.role == "user")
+    )
+    user_messages = msg_result.scalars().all()
+    turn_count = len(user_messages)
+
+    # 3. 마지막 user 메시지
+    last_response = user_messages[-1].content if user_messages else None
+
+    # 4. 활성 사건 (is_complete == False)
+    active_event = next((e for e in events if not e.is_complete), None)
+
+    # 5. STAR 커버리지
+    if active_event:
+        coverage = {
+            "S": bool(active_event.situation),
+            "T": bool(active_event.task),
+            "A": bool(active_event.action),
+            "R": bool(active_event.result),
+        }
+    else:
+        coverage = None
+
+    # 6. 이전 챕터 사건 (중복 검출용 메타데이터)
+    prev_result = await db.execute(
+        select(Event)
+        .where(Event.session_id == session_id)
+        .where(Event.chapter != chapter)
+        .where(Event.is_complete == True)  # noqa: E712
+    )
+    prev_events = prev_result.scalars().all()
+
+    existing_for_check = [
+        {
+            "event_id": str(e.id),
+            "chapter": e.chapter,
+            "summary": e.summary,
+            "key_person": e.key_person,
+            "time_context": e.time_context,
+            "core_action": e.core_action,
+            "tags": e.tags,
+        }
+        for e in prev_events
+    ]
+
+    # 7. 회피 감지
+    contains_avoidance = check_avoidance(last_response)
+
+    # 8. 반례 수행 여부 (probe_type_used == "CONTRARY" 인 assistant 메시지)
+    contrary_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.chapter == chapter)
+        .where(ChatMessage.role == "assistant")
+        .where(ChatMessage.probe_type_used == "CONTRARY")
+    )
+    has_contrary = contrary_result.scalars().first() is not None
+
+    # 9. state 조립
+    state = {
+        "chapter": chapter,
+        "turn_count": turn_count,
+        "events_collected": len(events),
+        "events_with_star_70": sum(
+            1 for e in events if e.star_coverage >= 0.7
+        ),
+        "current_event_id": str(active_event.id) if active_event else None,
+        "current_event_star_coverage": coverage,
+        "current_event_probe_count": (
+            active_event.probe_count if active_event else 0
+        ),
+        "has_contrary_probe": has_contrary,
+        "contrary_retry_count": 0,  # TODO: Phase 3-A 후속에서 정밀 추적
+        "avoidance_count_in_chapter": sum(
+            1 for m in user_messages if check_avoidance(m.content)
+        ),
+        "last_avoidance_type": None,
+        "avoidance_retry_count": 0,
+        "existing_events": existing_for_check,
+        "cross_chapter_signals": None,  # 자기관리 챕터에서 별도 채움 (Step 5+)
+        "last_user_response": last_response,
+        "response_length": len(last_response) if last_response else 0,
+        "contains_avoidance_keywords": contains_avoidance,
+        "duplicate_suspected": False,  # Step 5의 duplicate_detector 통합 후 채움
+    }
+
+    # 10. instruction 결정
+    state["instruction_for_this_turn"] = decide_instruction(state)
+
+    return state
