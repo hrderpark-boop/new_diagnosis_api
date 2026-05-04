@@ -133,7 +133,7 @@ async def start_diagnosis(
         last_message = last_msg_res.scalars().first()
         
         # 메시지가 없으면 기본 멘트
-        response_msg = last_message.content if last_message else "대화를 이어서 진행합니다."
+        response_msg = last_message.content if last_message else "리더님, 다시 만나서 반가워요. 이어서 진행해볼까요?"
 
         return {
             "diagnosis_id": existing_session.id,
