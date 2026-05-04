@@ -1,6 +1,7 @@
 import logging
 import os
 import uuid
+from uuid import UUID
 import re
 import json
 from datetime import datetime
@@ -20,7 +21,10 @@ from diag_project.data.coaches_persona import COACHES_PERSONA
 from diag_project.services.chapter_translator import topic_to_chapter, chapter_to_topic
 from diag_project.services.instruction_decider import build_turn_state
 from diag_project.services.conversation_compressor import compress_conversation_history
-from diag_project.services.event_service import complete_event
+from diag_project.services.event_service import (
+    create_event, update_event_star, complete_event,
+    increment_probe_count, get_active_event, get_chapter_events,
+)
 from diag_project.prompts.phase3a.layer1_system import LAYER1_SYSTEM_PROMPT
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
@@ -389,30 +393,29 @@ async def _submit_message_phase3a(
         .strip()
     )
 
-    # 9. AI 메시지 저장 (Phase 3-A 메타데이터 포함)
+    # 9. 사건 생명주기 처리 + AI 메시지 저장
     instruction_used = state.get("instruction_for_this_turn")
     probe_type_used = llm_state.get("probe_type_used")
-    current_event_id = llm_state.get("current_event_id")
+
+    real_event_id = await _handle_event_lifecycle(
+        db=db,
+        session_id=session.id,
+        chapter=chapter,
+        llm_state=llm_state,
+        event_metadata=event_metadata,
+        user_message_text=request.content,
+    )
 
     ai_msg = ChatMessage(
         session_id=session.id,
         role="model",
         content=clean_reply,
         chapter=chapter,
-        event_id=current_event_id or None,
+        event_id=real_event_id,
         probe_type_used=probe_type_used,
         instruction_used=instruction_used,
     )
     db.add(ai_msg)
-
-    # 10. Event 완료 처리
-    if event_metadata and current_event_id:
-        try:
-            from uuid import UUID
-            await complete_event(db, UUID(current_event_id), event_metadata)
-        except (ValueError, AttributeError) as e:
-            logger.warning(f"complete_event 실패 (event_id={current_event_id}): {e}")
-
     await db.commit()
 
     # 11. 챕터 전진 처리
@@ -461,6 +464,72 @@ def _get_next_chapter(current_chapter: str) -> str | None:
         return chapter_order[idx + 1] if idx + 1 < len(chapter_order) else None
     except ValueError:
         return None
+
+
+async def _handle_event_lifecycle(
+    db: AsyncSession,
+    session_id: UUID,
+    chapter: str,
+    llm_state: dict,
+    event_metadata: dict | None,
+    user_message_text: str,
+) -> UUID | None:
+    """LLM 신호를 기반으로 사건 생명주기 관리.
+
+    LLM 의 임시 ID ("evt_1") 는 신호로만 사용.
+    실제 DB UUID 는 이 함수가 생성/조회해서 반환.
+
+    Returns:
+        진짜 event UUID (있으면) 또는 None
+    """
+    llm_signals_active_event = bool(llm_state.get("current_event_id"))
+    turn_intent = llm_state.get("turn_intent", "")
+    star_coverage = llm_state.get("star_coverage") or {}
+
+    active_event = await get_active_event(db, session_id, chapter)
+
+    # 케이스 1: LLM 이 사건 신호 없음 → 추적 안 함
+    if not llm_signals_active_event:
+        return None
+
+    # 케이스 2: LLM 이 사건 신호 있음, DB 에 활성 사건 없음 → 새 사건 생성
+    if not active_event:
+        existing = await get_chapter_events(db, session_id, chapter)
+        sequence_num = len(existing) + 1
+        new_event = await create_event(
+            db=db,
+            session_id=session_id,
+            chapter=chapter,
+            sequence_num=sequence_num,
+        )
+        if user_message_text:
+            await update_event_star(
+                db=db,
+                event_id=new_event.id,
+                situation=user_message_text[:500],
+            )
+        await increment_probe_count(db, new_event.id)
+        return new_event.id
+
+    # 케이스 3: LLM 이 사건 신호 있음, DB 에 활성 사건 있음 → STAR 갱신 + 탐침 카운트
+    update_kwargs: dict = {}
+    if user_message_text:
+        if not active_event.action and star_coverage.get("A"):
+            update_kwargs["action"] = user_message_text[:500]
+        elif not active_event.result and star_coverage.get("R"):
+            update_kwargs["result"] = user_message_text[:500]
+        elif not active_event.task and star_coverage.get("T"):
+            update_kwargs["task"] = user_message_text[:500]
+
+    if update_kwargs:
+        await update_event_star(db=db, event_id=active_event.id, **update_kwargs)
+
+    await increment_probe_count(db, active_event.id)
+
+    if turn_intent == "EVENT_COMPLETE" and event_metadata:
+        await complete_event(db=db, event_id=active_event.id, metadata=event_metadata)
+
+    return active_event.id
 
 
 # ------------------------------------------------------------------
