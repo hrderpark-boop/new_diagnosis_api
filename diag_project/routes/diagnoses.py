@@ -382,9 +382,10 @@ async def _submit_message_phase3a(
     # 4. Turn State 빌드
     state = await build_turn_state(db, session.id, chapter)
 
-    # 4-a. 라포 단계면 user_msg.chapter 를 NULL 로 소급 변경
+    # 4-a. 진단 전 단계면 user_msg.chapter 를 NULL 로 소급 변경
     instruction_used = state.get("instruction_for_this_turn")
-    if instruction_used == "RAPPORT_BUILDING":
+    PRE_DIAGNOSIS_INSTRUCTIONS = {"RAPPORT_BUILDING", "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM"}
+    if instruction_used in PRE_DIAGNOSIS_INSTRUCTIONS:
         user_msg.chapter = None
         db.add(user_msg)
         await db.commit()
@@ -412,11 +413,13 @@ async def _submit_message_phase3a(
     # 8. 제어 태그 처리 (감사 위험 #4 해결)
     is_chapter_completed = "[CHAPTER_COMPLETE]" in reply
     is_session_paused = "[SESSION_PAUSE]" in reply
-    is_rapport_ending = "[START_CHAPTER]" in reply
+    is_ready_for_intro = "[READY_FOR_INTRO]" in reply
+    is_chapter_starting = "[START_CHAPTER]" in reply
     clean_reply = (
         reply
         .replace("[CHAPTER_COMPLETE]", "")
         .replace("[SESSION_PAUSE]", "")
+        .replace("[READY_FOR_INTRO]", "")
         .replace("[START_CHAPTER]", "")
         .strip()
     )
@@ -424,12 +427,15 @@ async def _submit_message_phase3a(
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     probe_type_used = llm_state.get("probe_type_used")
 
-    # 라포 단계에서 [START_CHAPTER] 신호 → probe_type_used 에 완료 마커 저장
-    if instruction_used == "RAPPORT_BUILDING" and is_rapport_ending:
-        probe_type_used = "RAPPORT_COMPLETE"
+    # 마커 → probe_type_used 에 저장 (우선순위: READY_FOR_INTRO > START_CHAPTER)
+    if instruction_used == "RAPPORT_BUILDING" and is_ready_for_intro:
+        probe_type_used = "READY_FOR_INTRO"
+    elif instruction_used == "DIAGNOSIS_CONFIRM" and is_chapter_starting:
+        probe_type_used = "START_CHAPTER"
 
-    # 라포 단계는 사건 생명주기 스킵
-    if instruction_used == "RAPPORT_BUILDING":
+    # 진단 전 단계는 사건 생명주기 스킵
+    is_pre_diagnosis = (instruction_used in PRE_DIAGNOSIS_INSTRUCTIONS)
+    if is_pre_diagnosis:
         real_event_id = None
     else:
         real_event_id = await _handle_event_lifecycle(
@@ -441,13 +447,12 @@ async def _submit_message_phase3a(
             user_message_text=request.content,
         )
 
-    is_rapport = (instruction_used == "RAPPORT_BUILDING")
     ai_msg = ChatMessage(
         session_id=session.id,
         role="model",
         content=clean_reply,
-        chapter=None if is_rapport else chapter,
-        event_id=None if is_rapport else real_event_id,
+        chapter=None if is_pre_diagnosis else chapter,
+        event_id=None if is_pre_diagnosis else real_event_id,
         probe_type_used=probe_type_used,
         instruction_used=instruction_used,
     )

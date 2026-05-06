@@ -22,10 +22,12 @@ from diag_project.services.avoidance_detector import (
 )
 
 
-# 15가지 instruction 타입
+# 17가지 instruction 타입
 InstructionType = Literal[
     "CHAPTER_OPENING",
     "RAPPORT_BUILDING",
+    "DIAGNOSIS_INTRO",
+    "DIAGNOSIS_CONFIRM",
     "CONTINUE_NORMAL",
     "STAR_INCOMPLETE",
     "STAR_COMPLETE_NEW_EVENT",
@@ -67,19 +69,27 @@ def decide_instruction(state: dict) -> InstructionType:
 
     우선순위 순서로 체크. 위에서부터 매칭되면 즉시 반환.
     """
-    # 0. 라포 단계 처리 (Phase 3-A 보정)
-    RAPPORT_MAX_TURNS = 6
+    # 0-3. 4단계 온보딩 (라포 → 인트로 → 확인 → 챕터)
     rapport_complete = state.get("rapport_complete", False)
-    # rapport_turn_count 없으면 turn_count 로 폴백 (단위 테스트 호환)
-    total_rapport_turns = (
-        state.get("rapport_turn_count", 0) + state.get("turn_count", 0)
-    )
+    intro_done = state.get("intro_done", False)
+    chapter_started = state.get("chapter_started", False)
+    turn_count_total = state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
+    ONBOARDING_MAX_TURNS = 8
 
-    if not rapport_complete and total_rapport_turns <= RAPPORT_MAX_TURNS:
+    # Stage 1: 라포 (rapport_complete 신호 없음)
+    if not rapport_complete and turn_count_total <= 6:
         return "RAPPORT_BUILDING"
 
-    # 1. 챕터 시작 (라포 끝났거나 안전장치 발동)
-    if rapport_complete or total_rapport_turns > RAPPORT_MAX_TURNS:
+    # Stage 2: 진단 인트로 (라포 끝, 인트로 미완)
+    if rapport_complete and not intro_done:
+        return "DIAGNOSIS_INTRO"
+
+    # Stage 3: 시작 확인 (인트로 완료, 챕터 미시작)
+    if intro_done and not chapter_started:
+        return "DIAGNOSIS_CONFIRM"
+
+    # Stage 4: 챕터 시작 (또는 온보딩 안전장치)
+    if chapter_started or turn_count_total > ONBOARDING_MAX_TURNS:
         chapter_msg_count = state.get("chapter_message_count", 0)
         if chapter_msg_count == 0:
             return "CHAPTER_OPENING"
@@ -246,14 +256,32 @@ async def build_turn_state(
     )
     has_contrary = contrary_result.scalars().first() is not None
 
-    # 8-a. 라포 완료 여부 (probe_type_used == "RAPPORT_COMPLETE" 인 model 메시지)
+    # 8-a. 마커 1: 라포 완료 → 인트로 진입 ([READY_FOR_INTRO] 또는 하위호환 RAPPORT_COMPLETE)
     rapport_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.role == "model")
-        .where(ChatMessage.probe_type_used == "RAPPORT_COMPLETE")
+        .where(ChatMessage.probe_type_used.in_(["READY_FOR_INTRO", "RAPPORT_COMPLETE"]))
     )
     rapport_complete = rapport_result.scalars().first() is not None
+
+    # 8-a2. 마커 2: 인트로 완료 (instruction_used == "DIAGNOSIS_INTRO" 인 model 메시지)
+    intro_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "model")
+        .where(ChatMessage.instruction_used == "DIAGNOSIS_INTRO")
+    )
+    intro_done = intro_result.scalars().first() is not None
+
+    # 8-a3. 마커 3: 챕터 시작 신호 (probe_type_used == "START_CHAPTER" 인 model 메시지)
+    chapter_started_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "model")
+        .where(ChatMessage.probe_type_used == "START_CHAPTER")
+    )
+    chapter_started = chapter_started_result.scalars().first() is not None
 
     # 8-b. 라포 턴 수 (chapter=NULL 인 user 메시지 — 라포 완료 후 소급 변경된 것들)
     rapport_turn_result = await db.execute(
@@ -300,6 +328,8 @@ async def build_turn_state(
         "contains_avoidance_keywords": contains_avoidance,
         "duplicate_suspected": False,  # Step 5의 duplicate_detector 통합 후 채움
         "rapport_complete": rapport_complete,
+        "intro_done": intro_done,
+        "chapter_started": chapter_started,
         "rapport_turn_count": rapport_turn_count,
         "chapter_message_count": chapter_message_count,
     }
