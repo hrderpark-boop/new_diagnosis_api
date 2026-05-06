@@ -26,6 +26,7 @@ from diag_project.services.event_service import (
     increment_probe_count, get_active_event, get_chapter_events,
 )
 from diag_project.prompts.phase3a.layer1_system import LAYER1_SYSTEM_PROMPT
+from diag_project.services.time_greeting import build_rapport_greeting
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
 
@@ -173,12 +174,7 @@ async def start_diagnosis(
 
     if use_phase3a:
         # Phase 3-A: 라포 단계로 시작 (챕터 스크립트는 라포 완료 후)
-        first_msg_content = (
-            "리더님, 안녕하세요. 오늘 시간 내주셔서 정말 고맙습니다.\n\n"
-            "시작하기 전에 잠깐 인사 나눠볼까요?\n"
-            "어떻게 부르면 좋을지, 그리고 오늘 어떻게 지내셨는지 "
-            "알려주실 수 있을까요?"
-        )
+        first_msg_content = build_rapport_greeting(persona.name)
         first_message = ChatMessage(
             session_id=new_session.id,
             role="model",
