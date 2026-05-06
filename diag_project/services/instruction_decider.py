@@ -1,7 +1,7 @@
 """Instruction Decider (Phase 3-A 두뇌)
 
 매 턴마다 LLM 에게 줄 명시적 지시 (instruction) 를 결정한다.
-14가지 instruction 중 하나를 선택해 LLM 의 다음 행동을 결정.
+15가지 instruction 중 하나를 선택해 LLM 의 다음 행동을 결정.
 
 설계 출처: docs/phase3a/01_design.md (Section 7.4-7.5)
 """
@@ -22,9 +22,10 @@ from diag_project.services.avoidance_detector import (
 )
 
 
-# 14가지 instruction 타입
+# 15가지 instruction 타입
 InstructionType = Literal[
     "CHAPTER_OPENING",
+    "RAPPORT_BUILDING",
     "CONTINUE_NORMAL",
     "STAR_INCOMPLETE",
     "STAR_COMPLETE_NEW_EVENT",
@@ -66,9 +67,22 @@ def decide_instruction(state: dict) -> InstructionType:
 
     우선순위 순서로 체크. 위에서부터 매칭되면 즉시 반환.
     """
-    # 1. 첫 턴 처리
-    if state["turn_count"] == 1:
-        return "CHAPTER_OPENING"
+    # 0. 라포 단계 처리 (Phase 3-A 보정)
+    RAPPORT_MAX_TURNS = 6
+    rapport_complete = state.get("rapport_complete", False)
+    # rapport_turn_count 없으면 turn_count 로 폴백 (단위 테스트 호환)
+    total_rapport_turns = (
+        state.get("rapport_turn_count", 0) + state.get("turn_count", 0)
+    )
+
+    if not rapport_complete and total_rapport_turns <= RAPPORT_MAX_TURNS:
+        return "RAPPORT_BUILDING"
+
+    # 1. 챕터 시작 (라포 끝났거나 안전장치 발동)
+    if rapport_complete or total_rapport_turns > RAPPORT_MAX_TURNS:
+        chapter_msg_count = state.get("chapter_message_count", 0)
+        if chapter_msg_count == 0:
+            return "CHAPTER_OPENING"
 
     last_response = state.get("last_user_response")
 
@@ -227,10 +241,37 @@ async def build_turn_state(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == "assistant")
+        .where(ChatMessage.role == "model")
         .where(ChatMessage.probe_type_used == "CONTRARY")
     )
     has_contrary = contrary_result.scalars().first() is not None
+
+    # 8-a. 라포 완료 여부 (probe_type_used == "RAPPORT_COMPLETE" 인 model 메시지)
+    rapport_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "model")
+        .where(ChatMessage.probe_type_used == "RAPPORT_COMPLETE")
+    )
+    rapport_complete = rapport_result.scalars().first() is not None
+
+    # 8-b. 라포 턴 수 (chapter=NULL 인 user 메시지 — 라포 완료 후 소급 변경된 것들)
+    rapport_turn_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "user")
+        .where(ChatMessage.chapter == None)  # noqa: E711
+    )
+    rapport_turn_count = len(rapport_turn_result.scalars().all())
+
+    # 8-c. 이 챕터의 AI 메시지 수 (CHAPTER_OPENING vs 첫 턴 판별용)
+    chapter_msg_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.chapter == chapter)
+        .where(ChatMessage.role == "model")
+    )
+    chapter_message_count = len(list(chapter_msg_result.scalars().all()))
 
     # 9. state 조립
     state = {
@@ -258,6 +299,9 @@ async def build_turn_state(
         "response_length": len(last_response) if last_response else 0,
         "contains_avoidance_keywords": contains_avoidance,
         "duplicate_suspected": False,  # Step 5의 duplicate_detector 통합 후 채움
+        "rapport_complete": rapport_complete,
+        "rapport_turn_count": rapport_turn_count,
+        "chapter_message_count": chapter_message_count,
     }
 
     # 10. instruction 결정

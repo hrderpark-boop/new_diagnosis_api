@@ -172,29 +172,28 @@ async def start_diagnosis(
     use_phase3a = os.getenv("USE_PHASE3A", "false").lower() == "true"
 
     if use_phase3a:
-        # Phase 3-A: Layer 2 챕터 시작 스크립트를 첫 메시지로 사용
-        chapter = "organization_management"
-        chapter_context = CHAPTER_CONTEXTS.get(chapter, "")
-        match = re.search(
-            r'##\s*챕터 시작 스크립트.*?\n\n(.*?)\n\n##\s*Backup',
-            chapter_context,
-            re.DOTALL,
+        # Phase 3-A: 라포 단계로 시작 (챕터 스크립트는 라포 완료 후)
+        first_msg_content = (
+            "리더님, 안녕하세요. 오늘 시간 내주셔서 정말 고맙습니다.\n\n"
+            "시작하기 전에 잠깐 인사 나눠볼까요?\n"
+            "어떻게 부르면 좋을지, 그리고 오늘 어떻게 지내셨는지 "
+            "알려주실 수 있을까요?"
         )
-        if match:
-            first_msg_content = match.group(1).strip()
-        else:
-            first_msg_content = (
-                "리더님, 첫 번째 세션 시작해볼게요. 앞으로 약 30분 정도 "
-                "'조직관리' 영역에 대해 이야기 나눌 거예요.\n\n"
-                "편하게 답하시면 되고, 생각이 필요한 질문은 천천히 떠올리셔도 돼요."
-            )
         first_message = ChatMessage(
             session_id=new_session.id,
             role="model",
             content=first_msg_content,
-            chapter=chapter,
-            instruction_used="CHAPTER_OPENING",
+            chapter=None,
+            instruction_used="RAPPORT_BUILDING",
         )
+        db.add(first_message)
+        await db.commit()
+        return {
+            "diagnosis_id": new_session.id,
+            "session_id": new_session.id,
+            "coach_response_message": first_msg_content,
+            "next_action": None,
+        }
     else:
         # Legacy: LLM 으로 첫 인사 생성 (기존 그대로)
         ai_response = await llm.generate_initial_response(
@@ -207,16 +206,14 @@ async def start_diagnosis(
             role="model",
             content=ai_response["coach_response_message"],
         )
-
-    db.add(first_message)
-    await db.commit()
-    
-    return {
-        "diagnosis_id": new_session.id,
-        "session_id": new_session.id,
-        "coach_response_message": ai_response["coach_response_message"],
-        "next_action": ai_response.get("next_action")
-    }
+        db.add(first_message)
+        await db.commit()
+        return {
+            "diagnosis_id": new_session.id,
+            "session_id": new_session.id,
+            "coach_response_message": ai_response["coach_response_message"],
+            "next_action": ai_response.get("next_action"),
+        }
 
 # ------------------------------------------------------------------
 # [2] 메시지 전송 및 응답 (POST /submit_message)
@@ -376,7 +373,7 @@ async def _submit_message_phase3a(
     # 2. 현재 챕터 결정 (current_topic 한국어 → 영문 key)
     chapter = topic_to_chapter(session.current_topic)
 
-    # 3. 사용자 메시지 저장 (chapter 필드 채움 — 감사 위험 #1 해결)
+    # 3. 사용자 메시지 저장 (chapter 임시 채움 — 라포 여부 확인 후 소급 수정)
     user_msg = ChatMessage(
         session_id=session.id,
         role="user",
@@ -388,6 +385,13 @@ async def _submit_message_phase3a(
 
     # 4. Turn State 빌드
     state = await build_turn_state(db, session.id, chapter)
+
+    # 4-a. 라포 단계면 user_msg.chapter 를 NULL 로 소급 변경
+    instruction_used = state.get("instruction_for_this_turn")
+    if instruction_used == "RAPPORT_BUILDING":
+        user_msg.chapter = None
+        db.add(user_msg)
+        await db.commit()
 
     # 5. 대화 이력 압축
     compressed_history = await compress_conversation_history(db, session.id, chapter)
@@ -412,32 +416,42 @@ async def _submit_message_phase3a(
     # 8. 제어 태그 처리 (감사 위험 #4 해결)
     is_chapter_completed = "[CHAPTER_COMPLETE]" in reply
     is_session_paused = "[SESSION_PAUSE]" in reply
+    is_rapport_ending = "[START_CHAPTER]" in reply
     clean_reply = (
         reply
         .replace("[CHAPTER_COMPLETE]", "")
         .replace("[SESSION_PAUSE]", "")
+        .replace("[START_CHAPTER]", "")
         .strip()
     )
 
     # 9. 사건 생명주기 처리 + AI 메시지 저장
-    instruction_used = state.get("instruction_for_this_turn")
     probe_type_used = llm_state.get("probe_type_used")
 
-    real_event_id = await _handle_event_lifecycle(
-        db=db,
-        session_id=session.id,
-        chapter=chapter,
-        llm_state=llm_state,
-        event_metadata=event_metadata,
-        user_message_text=request.content,
-    )
+    # 라포 단계에서 [START_CHAPTER] 신호 → probe_type_used 에 완료 마커 저장
+    if instruction_used == "RAPPORT_BUILDING" and is_rapport_ending:
+        probe_type_used = "RAPPORT_COMPLETE"
 
+    # 라포 단계는 사건 생명주기 스킵
+    if instruction_used == "RAPPORT_BUILDING":
+        real_event_id = None
+    else:
+        real_event_id = await _handle_event_lifecycle(
+            db=db,
+            session_id=session.id,
+            chapter=chapter,
+            llm_state=llm_state,
+            event_metadata=event_metadata,
+            user_message_text=request.content,
+        )
+
+    is_rapport = (instruction_used == "RAPPORT_BUILDING")
     ai_msg = ChatMessage(
         session_id=session.id,
         role="model",
         content=clean_reply,
-        chapter=chapter,
-        event_id=real_event_id,
+        chapter=None if is_rapport else chapter,
+        event_id=None if is_rapport else real_event_id,
         probe_type_used=probe_type_used,
         instruction_used=instruction_used,
     )
