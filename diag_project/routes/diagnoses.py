@@ -169,19 +169,45 @@ async def start_diagnosis(
     await db.commit()
     await db.refresh(new_session)
 
-    # 첫 인사 생성
-    ai_response = await llm.generate_initial_response(
-        persona,
-        user_name,
-        specific_opening=opening,
-    )
-    
-    # 첫 메시지 저장
-    first_message = ChatMessage(
-        session_id=new_session.id,
-        role="model",
-        content=ai_response["coach_response_message"]
-    )
+    use_phase3a = os.getenv("USE_PHASE3A", "false").lower() == "true"
+
+    if use_phase3a:
+        # Phase 3-A: Layer 2 챕터 시작 스크립트를 첫 메시지로 사용
+        chapter = "organization_management"
+        chapter_context = CHAPTER_CONTEXTS.get(chapter, "")
+        match = re.search(
+            r'##\s*챕터 시작 스크립트.*?\n\n(.*?)\n\n##\s*Backup',
+            chapter_context,
+            re.DOTALL,
+        )
+        if match:
+            first_msg_content = match.group(1).strip()
+        else:
+            first_msg_content = (
+                "리더님, 첫 번째 세션 시작해볼게요. 앞으로 약 30분 정도 "
+                "'조직관리' 영역에 대해 이야기 나눌 거예요.\n\n"
+                "편하게 답하시면 되고, 생각이 필요한 질문은 천천히 떠올리셔도 돼요."
+            )
+        first_message = ChatMessage(
+            session_id=new_session.id,
+            role="model",
+            content=first_msg_content,
+            chapter=chapter,
+            instruction_used="CHAPTER_OPENING",
+        )
+    else:
+        # Legacy: LLM 으로 첫 인사 생성 (기존 그대로)
+        ai_response = await llm.generate_initial_response(
+            persona,
+            user_name,
+            specific_opening=opening,
+        )
+        first_message = ChatMessage(
+            session_id=new_session.id,
+            role="model",
+            content=ai_response["coach_response_message"],
+        )
+
     db.add(first_message)
     await db.commit()
     
