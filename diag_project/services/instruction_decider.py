@@ -76,8 +76,12 @@ def decide_instruction(state: dict) -> InstructionType:
     turn_count_total = state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
     ONBOARDING_MAX_TURNS = 8
 
-    # Stage 1: 라포 (rapport_complete 신호 없음)
+    # Stage 1: 라포 (rapport_complete 신호 없음, 또는 최소 턴 미달)
+    rapport_turn_count = state.get("rapport_turn_count", 0)
+    RAPPORT_MIN_TURNS = 2  # 최소 2턴 (사용자 답변 짧아도 보장)
     if not rapport_complete and turn_count_total <= 6:
+        return "RAPPORT_BUILDING"
+    if rapport_complete and rapport_turn_count < RAPPORT_MIN_TURNS:
         return "RAPPORT_BUILDING"
 
     # Stage 2: 진단 인트로 (라포 끝, 인트로 미완)
