@@ -22,12 +22,14 @@ from diag_project.services.avoidance_detector import (
 )
 
 
-# 17가지 instruction 타입
+# 19가지 instruction 타입
 InstructionType = Literal[
     "CHAPTER_OPENING",
     "RAPPORT_BUILDING",
     "DIAGNOSIS_INTRO",
     "DIAGNOSIS_CONFIRM",
+    "COMPETENCY_INTRO",
+    "COMPETENCY_ALIGN",
     "CONTINUE_NORMAL",
     "STAR_INCOMPLETE",
     "STAR_COMPLETE_NEW_EVENT",
@@ -92,9 +94,21 @@ def decide_instruction(state: dict) -> InstructionType:
     if intro_done and not chapter_started:
         return "DIAGNOSIS_CONFIRM"
 
-    # Stage 4: 챕터 시작 (또는 온보딩 안전장치)
+    # Stage 4: 챕터 진입 (역량 정의 합의 → 첫 BEI)
     if chapter_started or turn_count_total > ONBOARDING_MAX_TURNS:
+        competency_intro_done = state.get("competency_intro_done", False)
+        competency_aligned = state.get("competency_aligned", False)
         chapter_msg_count = state.get("chapter_message_count", 0)
+
+        # 4-1: 역량 정의 소개 (LLM 이 리더의 역량 정의 묻기)
+        if not competency_intro_done:
+            return "COMPETENCY_INTRO"
+
+        # 4-2: 역량 합의 (시스템이 프레임워크 정의 + 세부 역량 제시)
+        if not competency_aligned:
+            return "COMPETENCY_ALIGN"
+
+        # 4-3: 챕터 오프닝 (첫 BEI 질문)
         if chapter_msg_count == 0:
             return "CHAPTER_OPENING"
 
@@ -297,13 +311,43 @@ async def build_turn_state(
     rapport_turn_count = len(rapport_turn_result.scalars().all())
 
     # 8-c. 이 챕터의 AI 메시지 수 (CHAPTER_OPENING vs 첫 턴 판별용)
+    # COMPETENCY_INTRO / COMPETENCY_ALIGN 은 제외 — 아직 BEI 시작 전이므로
     chapter_msg_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.chapter == chapter)
         .where(ChatMessage.role == "model")
+        .where(ChatMessage.instruction_used.not_in(["COMPETENCY_INTRO", "COMPETENCY_ALIGN"]))
     )
     chapter_message_count = len(list(chapter_msg_result.scalars().all()))
+
+    # 8-d. 역량 합의 마커
+    competency_intro_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.chapter == chapter)
+        .where(ChatMessage.role == "model")
+        .where(ChatMessage.instruction_used == "COMPETENCY_INTRO")
+    )
+    competency_intro_done = competency_intro_result.scalars().first() is not None
+
+    competency_align_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.chapter == chapter)
+        .where(ChatMessage.role == "model")
+        .where(ChatMessage.instruction_used == "COMPETENCY_ALIGN")
+    )
+    competency_aligned = competency_align_result.scalars().first() is not None
+
+    # 8-e. 첫 세부 역량 이름 (CHAPTER_OPENING 가이드용)
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK
+    chapter_competency = COMPETENCY_FRAMEWORK.get(chapter, {})
+    indicators = chapter_competency.get("indicators", {})
+    first_subcompetency_name = ""
+    if indicators:
+        first_key = next(iter(indicators))
+        first_subcompetency_name = indicators[first_key].get("name", "")
 
     # 9. state 조립
     state = {
@@ -336,6 +380,9 @@ async def build_turn_state(
         "chapter_started": chapter_started,
         "rapport_turn_count": rapport_turn_count,
         "chapter_message_count": chapter_message_count,
+        "competency_intro_done": competency_intro_done,
+        "competency_aligned": competency_aligned,
+        "first_subcompetency_name": first_subcompetency_name,
     }
 
     # 9-d. 시간 정보 (라포 단계 LLM 자연스러운 응답 위해)

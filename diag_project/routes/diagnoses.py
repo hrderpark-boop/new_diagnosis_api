@@ -27,7 +27,10 @@ from diag_project.services.event_service import (
 )
 from diag_project.prompts.phase3a.layer1_system import LAYER1_SYSTEM_PROMPT
 from diag_project.services.time_greeting import build_rapport_greeting
-from diag_project.services.intro_messages import build_diagnosis_intro_message
+from diag_project.services.intro_messages import (
+    build_diagnosis_intro_message,
+    build_competency_align_message,
+)
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
 
@@ -416,6 +419,37 @@ async def _submit_message_phase3a(
             "_phase3a_metadata": {
                 "chapter": chapter,
                 "instruction_used": "DIAGNOSIS_INTRO",
+                "probe_type_used": None,
+                "turn_count": state.get("turn_count"),
+                "events_collected": state.get("events_collected"),
+            },
+        }
+
+    # 4-c. COMPETENCY_ALIGN 는 LLM 없이 시스템 표준 텍스트 직접 출력
+    if instruction_used == "COMPETENCY_ALIGN":
+        align_reply = build_competency_align_message(chapter)
+        ai_msg = ChatMessage(
+            session_id=session.id,
+            role="model",
+            content=align_reply,
+            chapter=chapter,
+            event_id=None,
+            probe_type_used=None,
+            instruction_used="COMPETENCY_ALIGN",
+        )
+        db.add(ai_msg)
+        await db.commit()
+        return {
+            "coach_response_message": align_reply,
+            "is_topic_completed": False,
+            "is_session_starting": False,
+            "is_session_completed": False,
+            "is_session_paused": False,
+            "reward": None,
+            "completed_topics": [],
+            "_phase3a_metadata": {
+                "chapter": chapter,
+                "instruction_used": "COMPETENCY_ALIGN",
                 "probe_type_used": None,
                 "turn_count": state.get("turn_count"),
                 "events_collected": state.get("events_collected"),

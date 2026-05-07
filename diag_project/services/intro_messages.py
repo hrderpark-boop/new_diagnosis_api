@@ -4,6 +4,8 @@ LLM 이 가이드 텍스트를 학습 데이터 패턴으로 변형하는 문제
 표준 텍스트는 시스템이 직접 출력.
 """
 
+from diag_project.data.competencies import COMPETENCY_FRAMEWORK
+
 
 def build_diagnosis_intro_message(user_name: str = "리더님") -> str:
     """진단 안내 메시지 생성.
@@ -25,4 +27,33 @@ def build_diagnosis_intro_message(user_name: str = "리더님") -> str:
         f"저와 리더님의 실제 경험을 바탕으로 편안하게 대화 "
         f"나누시면 돼요. 정답은 없으니 편하게 말씀해주시면 돼요.\n\n"
         f"이대로 시작하시겠어요?"
+    )
+
+
+def build_competency_align_message(chapter: str) -> str:
+    """역량 정의 합의 메시지 생성 (시스템 표준 텍스트).
+
+    COMPETENCY_FRAMEWORK 에서 해당 챕터의 역량 정의와 세부 역량 목록을 읽어
+    리더님께 제시하고 합의 여부를 묻는다.
+
+    Args:
+        chapter: 챕터 키 (예: "organization_management")
+
+    Returns:
+        역량 정의 합의 메시지
+    """
+    competency = COMPETENCY_FRAMEWORK.get(chapter, {})
+    name = competency.get("name", "해당 역량")
+    description = competency.get("description", "")
+    indicators = competency.get("indicators", {})
+    indicator_names = [v["name"] for v in indicators.values()]
+    n = len(indicator_names)
+    bullets = "\n".join(f"- {ind}" for ind in indicator_names)
+
+    return (
+        f"네, 리더님 말씀 감사합니다.\n\n"
+        f"저희가 보는 {name}는 '{description}' 으로 정의하고 있습니다.\n\n"
+        f"이 역량은 {n}가지 세부 역량으로 구성됩니다:\n"
+        f"{bullets}\n\n"
+        f"이 {n}가지를 중심으로 이야기 나눠봐도 괜찮으시겠어요?"
     )

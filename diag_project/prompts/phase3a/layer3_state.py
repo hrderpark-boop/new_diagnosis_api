@@ -166,6 +166,63 @@ def _build_rapport_guide(state: dict | None) -> str:
     )
 
 
+def _build_competency_intro_guide(state: dict | None) -> str:
+    """COMPETENCY_INTRO 가이드: 리더님의 역량 정의를 묻는다."""
+    chapter = (state or {}).get("chapter", "")
+    chapter_name_map = {
+        "organization_management": "조직관리",
+        "performance_management": "성과관리",
+        "people_management": "사람관리",
+        "work_management": "일관리",
+        "self_management": "자기관리",
+    }
+    chapter_name = chapter_name_map.get(chapter, "이 역량")
+
+    return (
+        f"역량 정의 소개 단계입니다. 본격적인 진단에 앞서 리더님이 "
+        f"'{chapter_name}'를 어떻게 이해하고 계신지 먼저 여쭤봅니다.\n\n"
+        f"**목적**: 리더님의 언어로 역량을 정의하도록 유도 → "
+        f"다음 턴에 시스템이 프레임워크 정의와 비교해 합의 도출\n\n"
+        f"**응답 예시**:\n"
+        f"  '진단을 시작하기에 앞서, 리더님은 {chapter_name}을 "
+        f"어떻게 정의하시나요? 평소에 어떤 의미로 생각하고 계신지 "
+        f"편하게 말씀해주세요.'\n\n"
+        f"  또는 더 짧게:\n"
+        f"  '{chapter_name}, 리더님이라면 어떻게 정의하시겠어요?'\n\n"
+        f"**규칙**:\n"
+        f"- 한 번에 한 질문만. 역량 정의 하나만 물어볼 것.\n"
+        f"- BEI 사건 질문 절대 금지. '경험이 있으신가요?' 금지.\n"
+        f"- 역량의 세부 지표를 미리 설명하지 마세요 (다음 턴 시스템이 제시).\n"
+        f"- 짧고 자연스럽게. 딱딱한 설문식 금지.\n"
+        f"- 톤: 대화적, 따뜻한 호기심"
+    )
+
+
+def _build_chapter_opening_guide(state: dict | None) -> str:
+    """CHAPTER_OPENING 가이드: 역량 합의 후 첫 BEI 질문."""
+    first_sub = (state or {}).get("first_subcompetency_name", "")
+    sub_hint = f" (첫 번째 세부 역량: '{first_sub}')" if first_sub else ""
+
+    return (
+        f"역량 합의가 끝났습니다. 이제 첫 번째 BEI 질문으로 진단을 시작합니다{sub_hint}.\n\n"
+        f"**톤**: 챕터 오프닝은 격식체로 시작하세요. "
+        f"라포 단계보다 한 단계 더 진지한 톤.\n\n"
+        f"**구조**:\n"
+        f"1. 이제 이야기 나눌 것을 짧게 안내 (한 문장)\n"
+        f"2. 첫 BEI Incident Probe: 구체적 경험/사건 유도\n\n"
+        f"**예시** (조직관리, 첫 세부 역량: 비전 제시 및 공유):\n"
+        f"  '그럼 조직관리 영역부터 이야기 나눠볼게요. "
+        f"리더님이 구성원들에게 비전이나 방향을 제시했던 경험 중 "
+        f"가장 기억에 남는 상황이 있으시면 말씀해 주시겠어요?'\n\n"
+        f"**절대 금지**:\n"
+        f"- 역량 정의를 다시 설명하는 것 (방금 합의 완료)\n"
+        f"- '시작해볼까요?' '알겠습니다' 등 확인 멘트 없이 바로 질문\n"
+        f"- 한 번에 두 가지 이상 질문\n"
+        f"- 이미 합의된 역량 프레임워크 재소개\n\n"
+        f"Layer 2의 챕터 시작 스크립트 내용을 참고해 자연스럽게 첫 질문을 구성하세요."
+    )
+
+
 def _get_instruction_guide(
     instruction: str,
     state: dict | None = None,
@@ -176,10 +233,12 @@ def _get_instruction_guide(
         return _build_rapport_guide(state)
 
     guides = {
-        "CHAPTER_OPENING": (
-            "Layer 2의 챕터 시작 스크립트를 그대로 출력하세요. "
-            "절대 변형하지 말고 정확히."
+        "COMPETENCY_INTRO": _build_competency_intro_guide(state),
+        "COMPETENCY_ALIGN": (
+            "이 응답은 시스템이 직접 출력합니다. LLM 개입 없음. "
+            "이 가이드가 표시되면 코드 오류입니다."
         ),
+        "CHAPTER_OPENING": _build_chapter_opening_guide(state),
         "DIAGNOSIS_INTRO": (
             "진단 안내 단계입니다. 사용자가 진단을 본격 시작하기 전에 "
             "전체 그림을 알려주세요.\n\n"
