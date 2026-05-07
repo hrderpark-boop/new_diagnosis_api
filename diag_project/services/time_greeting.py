@@ -22,16 +22,21 @@ def get_time_greeting() -> dict[str, str]:
     seoul = ZoneInfo("Asia/Seoul")
     now = datetime.now(seoul)
     hour = now.hour
+    minute = now.minute
 
-    if hour == 0:
+    # hour_text 용: 분 30 이상이면 다음 시로 반올림
+    rounded_hour = (hour + 1) % 24 if minute >= 30 else hour
+
+    if rounded_hour == 0:
         hour_text = "자정 무렵"
-    elif hour < 12:
-        hour_text = f"오전 {hour}시"
-    elif hour == 12:
+    elif rounded_hour < 12:
+        hour_text = f"오전 {rounded_hour}시"
+    elif rounded_hour == 12:
         hour_text = "정오"
     else:
-        hour_text = f"오후 {hour - 12}시"
+        hour_text = f"오후 {rounded_hour - 12}시"
 
+    # 시간대 톤 분류는 원래 hour 사용 (사용자 활동 시간대 기준)
     if 5 <= hour < 8:
         tone = "이른 아침"
         ampm_phrase = "이른 아침"
