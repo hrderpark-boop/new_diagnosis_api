@@ -39,7 +39,7 @@ def format_turn_state_for_llm(state: dict) -> str:
 
     state_text = json.dumps(core_state, ensure_ascii=False, indent=2)
 
-    instruction_guide = _get_instruction_guide(instruction)
+    instruction_guide = _get_instruction_guide(instruction, state)
 
     return f"""[Turn State]
 {state_text}
@@ -50,39 +50,110 @@ def format_turn_state_for_llm(state: dict) -> str:
 {instruction_guide}"""
 
 
-def _get_instruction_guide(instruction: str) -> str:
+def _build_rapport_guide(state: dict | None) -> str:
+    """RAPPORT_BUILDING 가이드 동적 생성 (시간 정보 포함)."""
+    hour_text = "현재 시간"
+    time_tone = "현재 시간대"
+    ampm_phrase = "지금"
+
+    if state:
+        hour_text = state.get("current_hour_text", hour_text)
+        time_tone = state.get("current_time_tone", time_tone)
+        ampm_phrase = state.get("current_ampm_phrase", ampm_phrase)
+
+    time_examples = {
+        "이른 아침": (
+            "예시 응답:\n"
+            "  '박기진 리더님, 이른 아침부터 시간 내주셨네요. "
+            "출근 전이실까요? 오늘 어떻게 하루를 시작하실 계획이세요?'\n"
+            "  (또는 짧게: '박기진 리더님, 좋은 아침이에요. "
+            "그럼 안내드릴게요. [READY_FOR_INTRO]')"
+        ),
+        "상쾌한 아침": (
+            "예시 응답:\n"
+            "  '박기진 리더님, 좋은 아침이에요. 오늘 어떤 마음으로 "
+            "하루 시작하시나요? 컨디션은 어떠세요?'\n"
+            "  (또는 짧게: '박기진 리더님, 반가워요. 그럼 진단에 "
+            "대해 안내드릴게요. [READY_FOR_INTRO]')"
+        ),
+        "분주한 점심": (
+            "예시 응답:\n"
+            "  '박기진 리더님, 점심시간 즈음이네요. 식사는 하셨어요? "
+            "분주한 시간 잠깐 내주셔서 고맙습니다.'\n"
+            "  (짧게: '박기진 리더님, 반갑습니다. 그럼 안내드릴게요. [READY_FOR_INTRO]')"
+        ),
+        "활기찬 오후": (
+            "예시 응답:\n"
+            "  '박기진 리더님, 오후 시간 잘 보내고 계세요? "
+            "오늘 어떻게 지내고 계세요?'\n"
+            "  (짧게: '박기진 리더님, 반가워요. 그럼 진단 안내드릴게요. [READY_FOR_INTRO]')"
+        ),
+        "차분한 저녁": (
+            "예시 응답:\n"
+            "  '박기진 리더님, 저녁 시간 어떻게 보내고 계세요? "
+            "오늘 하루는 어떠셨어요?'\n"
+            "  (짧게: '박기진 리더님, 반갑습니다. 그럼 안내드릴게요. [READY_FOR_INTRO]')"
+        ),
+        "조용한 밤": (
+            "예시 응답:\n"
+            "  '박기진 리더님, 늦은 시간이네요. 오늘 하루는 "
+            "어떠셨어요? 무리되지 않으시는지요.'\n"
+            "  (짧게: '박기진 리더님, 반갑습니다. 그럼 안내드릴게요. [READY_FOR_INTRO]')"
+        ),
+        "늦은 시간": (
+            "예시 응답:\n"
+            "  '박기진 리더님, 정말 늦은 시간까지 시간 내주셨네요. "
+            "무리 없이 진행할 테니 편하게 답해주세요.'\n"
+            "  (짧게: '박기진 리더님, 반갑습니다. 그럼 안내드릴게요. [READY_FOR_INTRO]')"
+        ),
+    }
+
+    example = time_examples.get(time_tone, time_examples["활기찬 오후"])
+
+    return (
+        f"라포 형성 단계입니다. 사용자와 가벼운 인사 + 컨디션 + 근황을 "
+        f"주고받으세요.\n\n"
+        f"**현재 시간 정보 (반드시 인식)**:\n"
+        f"- 시간: {hour_text}\n"
+        f"- 시간대: {time_tone}\n"
+        f"- 표현: {ampm_phrase}\n\n"
+        f"**시간 표현 규칙**:\n"
+        f"- 시간 무관한 어색한 표현 금지\n"
+        f"  X '오늘 하루는 어떠셨어요?' (오전엔 하루 안 끝남)\n"
+        f"  X '좋은 밤이네요' (낮 시간엔 X)\n"
+        f"- 시간대에 맞는 자연스러운 표현 사용\n"
+        f"  O 오전: '오늘 어떤 마음으로 시작하시나요?'\n"
+        f"  O 점심: '식사는 하셨어요?'\n"
+        f"  O 저녁/밤: '오늘 하루는 어떠셨어요?'\n\n"
+        f"**절대 금지**:\n"
+        f"- 사건/경험에 대한 BEI 질문 (예: '조직관리 경험이...')\n"
+        f"- 진단 본격 시작 (예: '시작해볼까요')\n"
+        f"- 어떤 역량/주제든 깊이 들어가기\n"
+        f"- 메타적 질문 (예: '이 대화에 어떤 기대를...')\n\n"
+        f"첫 인사는 시스템이 동적으로 생성합니다. 당신은 두 번째 턴부터 시작입니다.\n\n"
+        f"{example}\n\n"
+        f"**라포 충분히 됐다고 느끼면**: 응답 끝에 [READY_FOR_INTRO] 태그를 "
+        f"포함하세요. 다음 턴에 시스템이 진단 안내로 넘어갑니다.\n\n"
+        f"라포 길이 가이드:\n"
+        f"- 사용자가 적극적이면 1-2턴이면 충분\n"
+        f"- 사용자가 긴장한 듯하면 2-3턴 더\n"
+        f"- 최대 6턴까지 (그 후 시스템이 자동 진행)"
+    )
+
+
+def _get_instruction_guide(
+    instruction: str,
+    state: dict | None = None,
+) -> str:
     """각 instruction 에 따른 LLM 행동 가이드."""
+
+    if instruction == "RAPPORT_BUILDING":
+        return _build_rapport_guide(state)
 
     guides = {
         "CHAPTER_OPENING": (
             "Layer 2의 챕터 시작 스크립트를 그대로 출력하세요. "
             "절대 변형하지 말고 정확히."
-        ),
-        "RAPPORT_BUILDING": (
-            "라포 형성 단계입니다. 사용자와 가벼운 인사 + 컨디션 + 근황을 "
-            "주고받으세요.\n\n"
-            "**절대 금지**:\n"
-            "- 사건/경험에 대한 BEI 질문 (예: '조직관리에 대한 경험이 있으세요?')\n"
-            "- 진단 본격 시작 (예: '시작해볼까요')\n"
-            "- 어떤 역량/주제든 깊이 들어가기\n\n"
-            "첫 인사는 시스템이 동적으로 생성합니다 (시간/코치 이름 포함). "
-            "당신은 두 번째 턴부터 시작입니다. 사용자가 호칭/근황을 알려주면 "
-            "그걸 자연스럽게 받아주세요.\n\n"
-            "톤 가이드:\n"
-            "- 사용자가 적극적이고 긍정적: 짧게 인정 + [READY_FOR_INTRO] 신호\n"
-            "  예: '박기진 리더님, 좋은 하루 보내고 계신다니 다행이에요. "
-            "그럼 진단에 대해 안내드릴게요. [READY_FOR_INTRO]'\n\n"
-            "- 사용자가 조금 긴장하거나 짧게 답함: 한두 마디 더 라포\n"
-            "  예: '박기진 리더님이시군요. 처음이라 조금 긴장되실 수 있어요. "
-            "편하게 진행할 테니 너무 부담 갖지 마세요. 오늘 어떻게 지내셨는지 "
-            "조금 더 들려주실 수 있으세요?'\n\n"
-            "**라포 충분히 됐다고 느끼면**: 응답 끝에 [READY_FOR_INTRO] 태그를 "
-            "포함하세요. 이 태그가 있으면 다음 턴에 시스템이 진단 안내로 "
-            "넘어갑니다. 본인이 직접 BEI 질문을 시작하지 마세요.\n\n"
-            "라포 길이 가이드:\n"
-            "- 사용자가 적극적이면 1-2턴이면 충분\n"
-            "- 사용자가 긴장한 듯하면 2-3턴 더\n"
-            "- 최대 6턴까지 (그 후 시스템이 자동 진행)"
         ),
         "DIAGNOSIS_INTRO": (
             "진단 안내 단계입니다. 사용자가 진단을 본격 시작하기 전에 "

@@ -334,6 +334,13 @@ async def build_turn_state(
         "chapter_message_count": chapter_message_count,
     }
 
+    # 9-d. 시간 정보 (라포 단계 LLM 자연스러운 응답 위해)
+    from diag_project.services.time_greeting import get_time_greeting
+    time_info = get_time_greeting()
+    state["current_hour_text"] = time_info["hour_text"]
+    state["current_time_tone"] = time_info["tone"]
+    state["current_ampm_phrase"] = time_info["ampm_phrase"]
+
     # 10. instruction 결정
     state["instruction_for_this_turn"] = decide_instruction(state)
 
