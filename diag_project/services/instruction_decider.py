@@ -73,16 +73,13 @@ def _force_rapport_category(rapport_turn_count: int) -> str:
     (현재 user 메시지는 아직 chapter=None 아님 → 직접 인덱스로 사용).
 
     0 → 일상 (시간대 활용, 첫 AI 라포 응답)
-    1 → 마음_기대
-    2 → 계기
-    3+ → 진단_대화
+    1 → 기대 (감사 + 의미 부여 + 답하기 쉬운 기대 질문)
+    2+ → 진단_대화 (마무리, 사용자 시작 의지 확인)
     """
     if rapport_turn_count == 0:
         return "일상"
     elif rapport_turn_count == 1:
-        return "마음_기대"
-    elif rapport_turn_count == 2:
-        return "계기"
+        return "기대"
     else:
         return "진단_대화"
 
