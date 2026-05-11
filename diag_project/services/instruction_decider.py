@@ -66,6 +66,27 @@ MAX_TURNS: dict[str, int] = {
 }
 
 
+def _force_rapport_category(rapport_turn_count: int) -> str:
+    """라포 user 메시지 수 기반으로 이번 AI 턴의 카테고리를 강제 결정.
+
+    rapport_turn_count = build_turn_state 실행 시점의 chapter=None user 메시지 수
+    (현재 user 메시지는 아직 chapter=None 아님 → 직접 인덱스로 사용).
+
+    0 → 일상 (시간대 활용, 첫 AI 라포 응답)
+    1 → 마음_기대
+    2 → 계기
+    3+ → 진단_대화
+    """
+    if rapport_turn_count == 0:
+        return "일상"
+    elif rapport_turn_count == 1:
+        return "마음_기대"
+    elif rapport_turn_count == 2:
+        return "계기"
+    else:
+        return "진단_대화"
+
+
 def decide_instruction(state: dict) -> InstructionType:
     """현재 상태 기반으로 LLM 에게 줄 instruction 결정.
 
@@ -391,6 +412,9 @@ async def build_turn_state(
     state["current_hour_text"] = time_info["hour_text"]
     state["current_time_tone"] = time_info["tone"]
     state["current_ampm_phrase"] = time_info["ampm_phrase"]
+
+    # 9-e. 라포 카테고리 강제 결정 (가이드 약속이 아닌 시스템 명령)
+    state["forced_rapport_category"] = _force_rapport_category(rapport_turn_count)
 
     # 10. instruction 결정
     state["instruction_for_this_turn"] = decide_instruction(state)
