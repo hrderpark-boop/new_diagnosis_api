@@ -107,7 +107,7 @@ def build_rapport_greeting(coach_name: str) -> str:
     time_info = get_time_greeting()
 
     return (
-        f"안녕하세요, 리더님! AI 리더십 코치 {coach_name}입니다.\n\n"
+        f"안녕하세요, 리더님! 오늘 진단을 진행할 코치 {coach_name}입니다.\n\n"
         f"{time_info['hour_text']} 무렵, {time_info['tone']} 시간을 "
         f"보내고 계신가요? {time_info['reflective_phrase']}\n\n"
         f"혹시 제가 리더님의 성함을 어떻게 부르면 좋을지 "
