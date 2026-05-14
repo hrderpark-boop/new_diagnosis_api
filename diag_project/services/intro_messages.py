@@ -4,7 +4,35 @@ LLM 이 가이드 텍스트를 학습 데이터 패턴으로 변형하는 문제
 표준 텍스트는 시스템이 직접 출력.
 """
 
+import random
+
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
+
+_ACKNOWLEDGMENT_PATTERNS = {
+    "short": [
+        "네, 그렇게 보실 수 있어요. 큰 틀에서 그게 맞죠.",
+        "네, 맞아요. 기본적으로 그 의미가 핵심이죠.",
+        "그렇죠. 가장 단순하게 표현하면 그게 맞아요.",
+    ],
+    "long": [
+        "네, 리더님 말씀 잘 들었습니다. 리더님이 보시는 관점도 충분히 이해됩니다.",
+        "네, 깊이 있게 보고 계시네요. 리더님 관점 잘 들었습니다.",
+        "리더님의 시각이 잘 느껴집니다. 말씀해주신 부분 잘 들었어요.",
+    ],
+    "default": [
+        "네, 리더님 말씀 감사합니다.",
+    ],
+}
+
+
+def _select_acknowledgment(user_answer: str | None) -> str:
+    """사용자 답변 길이에 따라 호응 패턴 선택."""
+    if not user_answer or len(user_answer.strip()) == 0:
+        return _ACKNOWLEDGMENT_PATTERNS["default"][0]
+    length = len(user_answer.strip())
+    if length <= 15:
+        return random.choice(_ACKNOWLEDGMENT_PATTERNS["short"])
+    return random.choice(_ACKNOWLEDGMENT_PATTERNS["long"])
 
 
 def build_diagnosis_intro_message(user_name: str = "리더님") -> str:
@@ -36,38 +64,33 @@ def build_competency_align_message(
     chapter: str,
     user_answer: str | None = None,
 ) -> str:
-    """역량 정의 합의 메시지 생성 (시스템 표준 텍스트).
-
-    COMPETENCY_FRAMEWORK 에서 해당 챕터의 역량 정의와 세부 역량 목록을 읽어
-    리더님께 제시하고 합의 여부를 묻는다.
+    """역량 정의 합의 메시지 생성 (호응 다양화).
 
     Args:
         chapter: 챕터 키 (예: "organization_management")
-        user_answer: 직전 사용자 답변 (있으면 공감 문장 prepend)
+        user_answer: 직전 사용자 답변 (길이에 따라 호응 패턴 선택)
 
     Returns:
         역량 정의 합의 메시지
     """
-    competency = COMPETENCY_FRAMEWORK.get(chapter, {})
-    name = competency.get("name", "해당 역량")
-    description = competency.get("description", "")
-    indicators = competency.get("indicators", {})
-    indicator_names = [v["name"] for v in indicators.values()]
-    n = len(indicator_names)
-    bullets = "\n".join(f"- {ind}" for ind in indicator_names)
+    framework = COMPETENCY_FRAMEWORK.get(chapter)
+    if not framework:
+        return "역량 정보를 찾을 수 없습니다."
 
-    if user_answer and user_answer.strip():
-        opener = (
-            "네, 리더님 말씀 잘 들었습니다. "
-            "리더님이 보시는 관점도 충분히 이해됩니다.\n\n"
-        )
-    else:
-        opener = "네, 리더님 말씀 감사합니다.\n\n"
+    name = framework["name"]
+    description = framework["description"].rstrip(".")
+    indicators = framework["indicators"]
+    indicator_names = [ind["name"] for ind in indicators.values()]
+    indicator_count = len(indicator_names)
+    indicator_list = "\n".join(f"- {n}" for n in indicator_names)
+
+    acknowledgment = _select_acknowledgment(user_answer)
 
     return (
-        f"{opener}"
-        f"저희가 보는 {name}는 '{description}' 으로 정의하고 있습니다.\n\n"
-        f"이 역량은 {n}가지 세부 역량으로 구성됩니다:\n"
-        f"{bullets}\n\n"
-        f"이 {n}가지를 중심으로 이야기 나눠봐도 괜찮으시겠어요?"
+        f"{acknowledgment}\n\n"
+        f"저희가 정의하는 {name}는 '{description}' 으로 보고 있습니다.\n\n"
+        f"이 역량은 {indicator_count}가지 세부 역량으로 구성됩니다:\n"
+        f"{indicator_list}\n\n"
+        f"이 {indicator_count}가지를 중심으로 이야기 나눠봐도 "
+        f"괜찮으시겠어요?"
     )

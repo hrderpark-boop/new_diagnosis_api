@@ -197,12 +197,29 @@ def _extract_reply_from_response(response_text: str) -> tuple[str, dict]:
         except json.JSONDecodeError:
             pass
 
-    # 패턴 4: "reply": "..." 키-값만 추출
+    # 패턴 4: "reply": "..." 키-값만 추출 (닫는 따옴표 있는 완전한 경우)
     kv_match = re.search(r'"reply"\s*:\s*"([^"]+)"', text)
     if kv_match:
         return kv_match.group(1), {}
 
-    # 패턴 5: { 이전 텍스트를 자연어 응답으로 사용
+    # 패턴 5: 잘린 JSON — reply 키 다음 텍스트 추출 (닫는 따옴표 없어도 OK)
+    if text.startswith("{") or '"reply"' in text:
+        trunc_match = re.search(
+            r'"reply"\s*:\s*"((?:[^"\\]|\\.)*?)(?:"|$)',
+            text,
+            re.DOTALL,
+        )
+        if trunc_match:
+            extracted = trunc_match.group(1)
+            extracted = extracted.replace("\\n", "\n").replace('\\"', '"')
+            extracted = extracted.rstrip()
+            if extracted and not text.rstrip().endswith('"}'):
+                if not extracted.endswith((".", "!", "?", "요", "다", "죠")):
+                    extracted = extracted + "..."
+            if extracted:
+                return extracted, {}
+
+    # 패턴 6: JSON 흔적 제거 — { 이전 텍스트를 자연어 응답으로
     if "{" in text:
         before_json = text.split("{")[0].strip()
         if before_json:
@@ -578,7 +595,7 @@ class GeminiService:
             response_text = await self._generate_with_retry(
                 prompt=user_content,
                 system_instruction=system_prompt,
-                max_tokens=1500,
+                max_tokens=2048,
             )
 
             # 강화된 파서로 reply / state 추출
