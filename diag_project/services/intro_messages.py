@@ -32,7 +32,10 @@ def build_diagnosis_intro_message(user_name: str = "리더님") -> str:
     )
 
 
-def build_competency_align_message(chapter: str) -> str:
+def build_competency_align_message(
+    chapter: str,
+    user_answer: str | None = None,
+) -> str:
     """역량 정의 합의 메시지 생성 (시스템 표준 텍스트).
 
     COMPETENCY_FRAMEWORK 에서 해당 챕터의 역량 정의와 세부 역량 목록을 읽어
@@ -40,6 +43,7 @@ def build_competency_align_message(chapter: str) -> str:
 
     Args:
         chapter: 챕터 키 (예: "organization_management")
+        user_answer: 직전 사용자 답변 (있으면 공감 문장 prepend)
 
     Returns:
         역량 정의 합의 메시지
@@ -52,8 +56,16 @@ def build_competency_align_message(chapter: str) -> str:
     n = len(indicator_names)
     bullets = "\n".join(f"- {ind}" for ind in indicator_names)
 
+    if user_answer and user_answer.strip():
+        opener = (
+            "네, 리더님 말씀 잘 들었습니다. "
+            "리더님이 보시는 관점도 충분히 이해됩니다.\n\n"
+        )
+    else:
+        opener = "네, 리더님 말씀 감사합니다.\n\n"
+
     return (
-        f"네, 리더님 말씀 감사합니다.\n\n"
+        f"{opener}"
         f"저희가 보는 {name}는 '{description}' 으로 정의하고 있습니다.\n\n"
         f"이 역량은 {n}가지 세부 역량으로 구성됩니다:\n"
         f"{bullets}\n\n"

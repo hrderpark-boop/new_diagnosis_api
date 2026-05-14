@@ -153,6 +153,64 @@ def _format_chat_context(history: List[Dict[str, Any]]) -> str:
     )
 
 
+def _extract_reply_from_response(response_text: str) -> tuple[str, dict]:
+    """LLM 응답에서 reply 와 state 추출 (강화된 5단계 파서).
+
+    패턴 1: 순수 JSON
+    패턴 2: ```json ... ``` 마크다운 블록
+    패턴 3: 텍스트 안에 내장된 JSON 객체
+    패턴 4: "reply": "..." 키-값만 추출
+    패턴 5: { 이전 텍스트를 자연어 응답으로 사용
+    """
+    text = response_text.strip()
+
+    # 패턴 1: 순수 JSON
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            parsed = json.loads(text)
+            if "reply" in parsed:
+                return parsed["reply"], parsed.get("state") or {}
+        except json.JSONDecodeError:
+            pass
+
+    # 패턴 2: ```json ... ``` 또는 ``` ... ``` 블록
+    block_match = re.search(
+        r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL
+    )
+    if block_match:
+        try:
+            parsed = json.loads(block_match.group(1))
+            if "reply" in parsed:
+                return parsed["reply"], parsed.get("state") or {}
+        except json.JSONDecodeError:
+            pass
+
+    # 패턴 3: 텍스트 안의 독립 JSON 객체 (단순 중첩 없는 것만)
+    obj_match = re.search(
+        r'(\{[^{}]*"reply"\s*:\s*"[^"]*"[^{}]*\})', text, re.DOTALL
+    )
+    if obj_match:
+        try:
+            parsed = json.loads(obj_match.group(1))
+            if "reply" in parsed:
+                return parsed["reply"], parsed.get("state") or {}
+        except json.JSONDecodeError:
+            pass
+
+    # 패턴 4: "reply": "..." 키-값만 추출
+    kv_match = re.search(r'"reply"\s*:\s*"([^"]+)"', text)
+    if kv_match:
+        return kv_match.group(1), {}
+
+    # 패턴 5: { 이전 텍스트를 자연어 응답으로 사용
+    if "{" in text:
+        before_json = text.split("{")[0].strip()
+        if before_json:
+            return before_json, {}
+
+    return text, {}
+
+
 def _safe_parse_json(raw_text: str) -> Dict:
     """JSON 파싱 실패 시 복구 시도"""
     raw_text = raw_text.strip()
@@ -523,30 +581,32 @@ class GeminiService:
                 max_tokens=1500,
             )
 
-            clean_text = response_text.strip()
-            if clean_text.startswith("```"):
-                lines = clean_text.split("\n")
-                clean_text = "\n".join(lines[1:-1]) if len(lines) > 2 else clean_text
-                if clean_text.startswith("json"):
-                    clean_text = clean_text[4:].strip()
+            # 강화된 파서로 reply / state 추출
+            reply, state = _extract_reply_from_response(response_text)
 
-            parsed = json.loads(clean_text)
+            # event_metadata: 전체 JSON 파싱이 성공해야만 추출
+            event_metadata = None
+            try:
+                full = json.loads(response_text.strip())
+                event_metadata = full.get("event_metadata")
+                if full.get("state"):
+                    state = full["state"]
+            except (json.JSONDecodeError, ValueError):
+                pass
+
             return {
-                "reply": parsed.get("reply", response_text),
-                "state": parsed.get("state", {}),
-                "event_metadata": parsed.get("event_metadata"),
+                "reply": reply,
+                "state": state,
+                "event_metadata": event_metadata,
             }
 
-        except json.JSONDecodeError:
-            return {
-                "reply": response_text,
-                "state": {},
-                "event_metadata": None,
-            }
         except Exception as e:
             logger.error(f"Phase 3-A LLM 오류: {e}")
             return {
-                "reply": "죄송합니다. 잠시 생각할 시간을 주시겠어요? 다시 한번 말씀해 주시면 감사하겠습니다.",
+                "reply": (
+                    "죄송합니다. 잠시 생각할 시간을 주시겠어요? "
+                    "다시 한번 말씀해 주시면 감사하겠습니다."
+                ),
                 "state": {},
                 "event_metadata": None,
             }

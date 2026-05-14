@@ -25,7 +25,10 @@ from diag_project.services.event_service import (
     create_event, update_event_star, complete_event,
     increment_probe_count, get_active_event, get_chapter_events,
 )
-from diag_project.prompts.phase3a.layer1_system import LAYER1_SYSTEM_PROMPT
+from diag_project.prompts.phase3a.layer1_system import (
+    LAYER1_SYSTEM_PROMPT,
+    build_layer1_with_persona,
+)
 from diag_project.services.time_greeting import build_rapport_greeting
 from diag_project.services.intro_messages import (
     build_diagnosis_intro_message,
@@ -427,7 +430,9 @@ async def _submit_message_phase3a(
 
     # 4-c. COMPETENCY_ALIGN 는 LLM 없이 시스템 표준 텍스트 직접 출력
     if instruction_used == "COMPETENCY_ALIGN":
-        align_reply = build_competency_align_message(chapter)
+        align_reply = build_competency_align_message(
+            chapter, user_answer=request.content
+        )
         ai_msg = ChatMessage(
             session_id=session.id,
             role="model",
@@ -460,12 +465,23 @@ async def _submit_message_phase3a(
     compressed_history = await compress_conversation_history(db, session.id, chapter)
 
     # 6. 3-Layer 프롬프트 조립
-    chapter_context = CHAPTER_CONTEXTS.get(chapter, CHAPTER_CONTEXTS["organization_management"])
+    chapter_context = CHAPTER_CONTEXTS.get(
+        chapter, CHAPTER_CONTEXTS["organization_management"]
+    )
     turn_state_text = format_turn_state_for_llm(state)
+
+    # 페르소나 통합 system prompt (코치별 톤 반영)
+    coach_key = COACH_UUID_TO_KEY.get(str(session.coach_id), "1")
+    user_name = state.get("user_name", "리더")
+    system_prompt = build_layer1_with_persona(
+        coach_id=coach_key,
+        user_name=user_name,
+        visit_count=1,
+    )
 
     # 7. LLM 호출
     llm_output = await llm.generate_phase3a_interaction(
-        system_prompt=LAYER1_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         chapter_context=chapter_context,
         turn_state_text=turn_state_text,
         compressed_history=compressed_history,

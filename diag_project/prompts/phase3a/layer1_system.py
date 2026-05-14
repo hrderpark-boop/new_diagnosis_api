@@ -457,3 +457,30 @@ L2 이상만 사건으로 카운트한다.
 - ```json 또는 ``` 마크다운 없음 ✓
 - JSON 외 텍스트 없음 ✓
 """
+
+
+def build_layer1_with_persona(
+    coach_id: str | int,
+    user_name: str = "리더",
+    visit_count: int = 1,
+) -> str:
+    """Layer 1 + 코치 페르소나 합산 system prompt."""
+    from diag_project.data.coaches_persona import COACHES_PERSONA
+
+    persona = COACHES_PERSONA.get(str(coach_id), COACHES_PERSONA["1"])
+    persona_prompt = persona["system_prompt"].format(
+        user_name=user_name,
+        visit_count=visit_count,
+    )
+    separator = "=" * 60
+    tone_note = (
+        "위 페르소나의 톤과 말투를 모든 응답에 반영하세요. "
+        "라포, 안내, 챕터 진입 시 페르소나가 명확히 드러나야 합니다.\n"
+    )
+    return (
+        LAYER1_SYSTEM_PROMPT
+        + f"\n\n{separator}\n"
+        + "## 코치 페르소나 (이 톤을 반드시 유지)\n\n"
+        + persona_prompt
+        + f"\n\n{tone_note}"
+    )

@@ -22,6 +22,35 @@ from diag_project.services.avoidance_detector import (
 )
 
 
+def _extract_user_name(text: str) -> str:
+    """첫 user 메시지에서 이름 추출.
+
+    예시:
+    - "안녕하세요 박기진입니다" → "박기진"
+    - "박기진이라고 합니다"     → "박기진"
+    - "박기진이에요"            → "박기진"
+    - "안녕하세요"              → "리더"
+    - ""                       → "리더"
+    """
+    import re
+
+    # 패턴 1: "[이름]입니다" / "[이름]이라고" / "[이름]이에요" / "[이름]예요"
+    match = re.search(
+        r'([가-힣]{2,4})(?:입니다|이라고|이에요|예요|이라|라고)',
+        text,
+    )
+    if match:
+        return match.group(1)
+
+    # 패턴 2: 한글 2-4자 중 인사말 제외
+    excluded = {"안녕", "반갑", "감사", "고맙"}
+    for m in re.findall(r'[가-힣]{2,4}', text):
+        if not any(exc in m for exc in excluded):
+            return m
+
+    return "리더"
+
+
 # 19가지 instruction 타입
 InstructionType = Literal[
     "CHAPTER_OPENING",
@@ -82,6 +111,29 @@ def _force_rapport_category(rapport_turn_count: int) -> str:
         return "기대"
     else:
         return "진단_대화"
+
+
+def is_user_consent(text: str | None) -> bool:
+    """사용자 답변이 동의/진행 의사인지 판단.
+
+    rapport_turn_count >= 3 안전장치에서 [READY_FOR_INTRO] 강제 여부 결정.
+    """
+    if not text:
+        return False
+    stripped = text.strip().rstrip(".,!?~")
+    consent_words = {
+        "네", "예", "응", "좋아요", "괜찮아요", "그래요", "알겠어요",
+        "ok", "OK", "oK", "Ok", "yes", "Yes", "YES", "네요", "넵", "넹",
+    }
+    if stripped in consent_words:
+        return True
+    if len(stripped) <= 12:
+        negative_words = {"아니", "아직", "잠깐", "글쎄", "모르"}
+        if any(neg in stripped for neg in negative_words):
+            return False
+        if stripped.startswith("네") or stripped.startswith("예"):
+            return True
+    return False
 
 
 def decide_instruction(state: dict) -> InstructionType:
@@ -326,7 +378,8 @@ async def build_turn_state(
         .where(ChatMessage.role == "user")
         .where(ChatMessage.chapter == None)  # noqa: E711
     )
-    rapport_turn_count = len(rapport_turn_result.scalars().all())
+    rapport_messages = rapport_turn_result.scalars().all()
+    rapport_turn_count = len(rapport_messages)
 
     # 8-c. 이 챕터의 AI 메시지 수 (CHAPTER_OPENING vs 첫 턴 판별용)
     # COMPETENCY_INTRO / COMPETENCY_ALIGN 은 제외 — 아직 BEI 시작 전이므로
@@ -367,6 +420,19 @@ async def build_turn_state(
         first_key = next(iter(indicators))
         first_subcompetency_name = indicators[first_key].get("name", "")
 
+    # 8-f. user_name 추출 (세션 첫 user 메시지에서 이름 파싱)
+    first_user_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "user")
+        .order_by(ChatMessage.created_at.asc())
+        .limit(1)
+    )
+    first_user_msg = first_user_result.scalars().first()
+    user_name = "리더"
+    if first_user_msg and first_user_msg.content:
+        user_name = _extract_user_name(first_user_msg.content)
+
     # 9. state 조립
     state = {
         "chapter": chapter,
@@ -401,6 +467,7 @@ async def build_turn_state(
         "competency_intro_done": competency_intro_done,
         "competency_aligned": competency_aligned,
         "first_subcompetency_name": first_subcompetency_name,
+        "user_name": user_name,
     }
 
     # 9-d. 시간 정보 (라포 단계 LLM 자연스러운 응답 위해)
@@ -412,6 +479,13 @@ async def build_turn_state(
 
     # 9-e. 라포 카테고리 강제 결정 (가이드 약속이 아닌 시스템 명령)
     state["forced_rapport_category"] = _force_rapport_category(rapport_turn_count)
+
+    # 9-f. 무한 루프 방지 안전장치 (라포 3턴 이상 + 동의 신호 → [READY_FOR_INTRO] 강제)
+    force_ready_for_intro = False
+    last_rapport_response = rapport_messages[-1].content if rapport_messages else None
+    if rapport_turn_count >= 3 and is_user_consent(last_rapport_response):
+        force_ready_for_intro = True
+    state["force_ready_for_intro"] = force_ready_for_intro
 
     # 10. instruction 결정
     state["instruction_for_this_turn"] = decide_instruction(state)
