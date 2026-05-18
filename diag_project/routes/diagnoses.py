@@ -429,9 +429,16 @@ async def _submit_message_phase3a(
     compressed_history = await compress_conversation_history(db, session.id, chapter)
 
     # 6. 3-Layer 프롬프트 조립
-    chapter_context = CHAPTER_CONTEXTS.get(
-        chapter, CHAPTER_CONTEXTS["organization_management"]
-    )
+    # Layer 2: COMPETENCY_INTRO/ALIGN 단계에선 챕터 시작 스크립트가
+    # LLM 응답에 섞이는 문제 방지를 위해 빈 값 전달.
+    # 두 instruction 은 state.chapter_framework 로 필요 정보 받음.
+    _LAYER2_EXCLUDED = {"COMPETENCY_INTRO", "COMPETENCY_ALIGN"}
+    if instruction_used in _LAYER2_EXCLUDED:
+        chapter_context = ""
+    else:
+        chapter_context = CHAPTER_CONTEXTS.get(
+            chapter, CHAPTER_CONTEXTS["organization_management"]
+        )
     turn_state_text = format_turn_state_for_llm(state)
 
     # 페르소나 통합 system prompt (코치별 톤 반영)

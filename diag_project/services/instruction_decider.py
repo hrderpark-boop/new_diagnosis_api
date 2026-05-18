@@ -162,6 +162,14 @@ def decide_instruction(state: dict) -> InstructionType:
 
     # Stage 3: 시작 확인 (인트로 완료, 챕터 미시작)
     if intro_done and not chapter_started:
+        confirm_turn_count = state.get("confirm_turn_count", 0)
+        last_user_response = state.get("last_user_response", "")
+        # 안전망 1: CONFIRM 1회 + 사용자 동의 → 즉시 챕터 진입
+        if confirm_turn_count >= 1 and is_user_consent(last_user_response):
+            return "COMPETENCY_INTRO"
+        # 안전망 2: CONFIRM 2회 초과 → 자동 진행
+        if confirm_turn_count >= 2:
+            return "COMPETENCY_INTRO"
         return "DIAGNOSIS_CONFIRM"
 
     # Stage 4: 챕터 진입 (역량 정의 합의 → 첫 BEI)
@@ -371,6 +379,15 @@ async def build_turn_state(
     )
     chapter_started = chapter_started_result.scalars().first() is not None
 
+    # 8-a4. CONFIRM 턴 수 (DIAGNOSIS_CONFIRM 으로 저장된 model 메시지 수)
+    confirm_msg_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "model")
+        .where(ChatMessage.instruction_used == "DIAGNOSIS_CONFIRM")
+    )
+    confirm_turn_count = len(list(confirm_msg_result.scalars().all()))
+
     # 8-b. 라포 턴 수 (chapter=NULL 인 user 메시지 — 라포 완료 후 소급 변경된 것들)
     rapport_turn_result = await db.execute(
         select(ChatMessage)
@@ -474,6 +491,7 @@ async def build_turn_state(
         "rapport_complete": rapport_complete,
         "intro_done": intro_done,
         "chapter_started": chapter_started,
+        "confirm_turn_count": confirm_turn_count,
         "rapport_turn_count": rapport_turn_count,
         "chapter_message_count": chapter_message_count,
         "competency_intro_done": competency_intro_done,
