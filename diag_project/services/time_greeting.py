@@ -98,18 +98,18 @@ def get_time_greeting() -> dict[str, str]:
 def build_rapport_greeting(coach_name: str) -> str:
     """라포 첫 인사 동적 생성.
 
-    Args:
-        coach_name: 코치 이름 (예: "Ella (엘라)" 또는 "Ella")
-
-    Returns:
-        완성된 라포 인사 메시지
+    환영 + 의미 부여 (강점 발견 여정) + 시간 + 에너지 질문 4단 구조.
     """
     time_info = get_time_greeting()
+    hour_text = time_info["hour_text"]
+    time_tone = time_info["tone"]
 
     return (
-        f"안녕하세요, 리더님! 오늘 진단을 진행할 코치 {coach_name}입니다.\n\n"
-        f"{time_info['hour_text']} 무렵, {time_info['tone']} 시간을 "
-        f"보내고 계신가요? {time_info['reflective_phrase']}\n\n"
+        f"반갑습니다, 리더님! 오늘 진단을 진행할 코치 {coach_name}입니다.\n\n"
+        f"이 진단은 평가가 아니라, 리더님만의 고유한 강점을 발견하고 "
+        f"빛내는 여정이에요. 편안하게 이야기를 나누며 함께 찾아가 봐요.\n\n"
+        f"벌써 {hour_text} 무렵이네요. {time_tone} 시간 속에서 어떤 "
+        f"에너지로 시간을 보내고 계신가요?\n\n"
         f"혹시 제가 리더님의 성함을 어떻게 부르면 좋을지 "
         f"알려주실 수 있을까요?"
     )

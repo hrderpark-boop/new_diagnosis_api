@@ -595,7 +595,7 @@ class GeminiService:
             response_text = await self._generate_with_retry(
                 prompt=user_content,
                 system_instruction=system_prompt,
-                max_tokens=2048,
+                max_tokens=3000,
             )
 
             # 강화된 파서로 reply / state 추출

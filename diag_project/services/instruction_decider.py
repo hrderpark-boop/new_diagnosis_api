@@ -411,7 +411,7 @@ async def build_turn_state(
     )
     competency_aligned = competency_align_result.scalars().first() is not None
 
-    # 8-e. 첫 세부 역량 이름 (CHAPTER_OPENING 가이드용)
+    # 8-e. 첫 세부 역량 이름 (CHAPTER_OPENING 가이드용) + 역량 framework
     from diag_project.data.competencies import COMPETENCY_FRAMEWORK
     chapter_competency = COMPETENCY_FRAMEWORK.get(chapter, {})
     indicators = chapter_competency.get("indicators", {})
@@ -419,6 +419,18 @@ async def build_turn_state(
     if indicators:
         first_key = next(iter(indicators))
         first_subcompetency_name = indicators[first_key].get("name", "")
+
+    # COMPETENCY_ALIGN 가이드용: 정의 + 세부역량 이름 목록
+    if chapter_competency:
+        chapter_framework_state = {
+            "name": chapter_competency.get("name", ""),
+            "description": chapter_competency.get("description", ""),
+            "indicator_names": [
+                v["name"] for v in indicators.values()
+            ],
+        }
+    else:
+        chapter_framework_state = None
 
     # 8-f. user_name 추출 (세션 첫 user 메시지에서 이름 파싱)
     first_user_result = await db.execute(
@@ -468,6 +480,7 @@ async def build_turn_state(
         "competency_aligned": competency_aligned,
         "first_subcompetency_name": first_subcompetency_name,
         "user_name": user_name,
+        "chapter_framework": chapter_framework_state,
     }
 
     # 9-d. 시간 정보 (라포 단계 LLM 자연스러운 응답 위해)
