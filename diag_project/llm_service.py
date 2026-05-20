@@ -228,6 +228,36 @@ def _extract_reply_from_response(response_text: str) -> tuple[str, dict]:
     return text, {}
 
 
+async def _call_with_retry(
+    call_fn,
+    max_retries: int = 3,
+    backoff_seconds: float = 2.0,
+):
+    """LLM 호출 + 503 backoff 재시도.
+
+    503 / UNAVAILABLE 에러 시 backoff 후 재시도, 최대 max_retries 번.
+    다른 에러는 즉시 raise (재시도 없음).
+    """
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return await call_fn()
+        except Exception as e:
+            error_str = str(e)
+            if "503" in error_str or "UNAVAILABLE" in error_str:
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = backoff_seconds * (attempt + 1)
+                    logger.warning(
+                        f"⚠️ 503 에러 (시도 {attempt + 1}/{max_retries}). "
+                        f"{wait_time}초 후 재시도..."
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+            raise
+    raise last_error
+
+
 def _safe_parse_json(raw_text: str) -> Dict:
     """JSON 파싱 실패 시 복구 시도"""
     raw_text = raw_text.strip()
@@ -314,11 +344,18 @@ class GeminiService:
             try:
                 client = genai.Client(api_key=api_key)
 
-                response = await client.aio.models.generate_content(
-                    model=BEST_MODEL,
-                    contents=prompt,
-                    config=genai_types.GenerateContentConfig(**_config_kwargs),
-                )
+                async def _do_call(
+                    _client=client,
+                    _prompt=prompt,
+                    _cfg=_config_kwargs,
+                ):
+                    return await _client.aio.models.generate_content(
+                        model=BEST_MODEL,
+                        contents=_prompt,
+                        config=genai_types.GenerateContentConfig(**_cfg),
+                    )
+
+                response = await _call_with_retry(_do_call, max_retries=3)
 
                 text = response.text
                 if "User:" in text:
