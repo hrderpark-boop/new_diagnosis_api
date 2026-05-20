@@ -161,32 +161,23 @@ def decide_instruction(state: dict) -> InstructionType:
         return "DIAGNOSIS_INTRO"
 
     # Stage 3: 시작 확인 (인트로 완료, 챕터 미시작)
+    # 작업 24: CONFIRM 가이드가 준비 인사 + 챕터 도입 + 정의 묻기 통합.
+    # [START_CHAPTER] 태그가 나올 때까지 CONFIRM 유지.
     if intro_done and not chapter_started:
-        confirm_turn_count = state.get("confirm_turn_count", 0)
-        last_user_response = state.get("last_user_response", "")
-        # 안전망 1: CONFIRM 1회 + 사용자 동의 → 즉시 챕터 진입
-        if confirm_turn_count >= 1 and is_user_consent(last_user_response):
-            return "COMPETENCY_INTRO"
-        # 안전망 2: CONFIRM 2회 초과 → 자동 진행
-        if confirm_turn_count >= 2:
-            return "COMPETENCY_INTRO"
         return "DIAGNOSIS_CONFIRM"
 
-    # Stage 4: 챕터 진입 (역량 정의 합의 → 첫 BEI)
+    # Stage 4: 챕터 진입 (역량 합의 → 첫 BEI)
+    # 작업 24: COMPETENCY_INTRO 단계 skip (CONFIRM 에서 통합됨).
+    # 사용자 정의 답변 → 바로 COMPETENCY_ALIGN.
     if chapter_started or turn_count_total > ONBOARDING_MAX_TURNS:
-        competency_intro_done = state.get("competency_intro_done", False)
         competency_aligned = state.get("competency_aligned", False)
         chapter_msg_count = state.get("chapter_message_count", 0)
 
-        # 4-1: 역량 정의 소개 (LLM 이 리더의 역량 정의 묻기)
-        if not competency_intro_done:
-            return "COMPETENCY_INTRO"
-
-        # 4-2: 역량 합의 (시스템이 프레임워크 정의 + 세부 역량 제시)
+        # 4-1: 역량 합의 (LLM 호응 + 시스템 framework)
         if not competency_aligned:
             return "COMPETENCY_ALIGN"
 
-        # 4-3: 챕터 오프닝 (첫 BEI 질문)
+        # 4-2: 챕터 오프닝 (첫 BEI 질문)
         if chapter_msg_count == 0:
             return "CHAPTER_OPENING"
 

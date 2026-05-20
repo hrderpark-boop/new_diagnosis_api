@@ -31,7 +31,7 @@ from diag_project.prompts.phase3a.layer1_system import (
 )
 from diag_project.services.time_greeting import build_rapport_greeting
 from diag_project.services.intro_messages import (
-    build_diagnosis_intro_message,
+    build_intro_anchor_section,
     build_align_framework_section,
 )
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
@@ -397,37 +397,6 @@ async def _submit_message_phase3a(
         db.add(user_msg)
         await db.commit()
 
-    # 4-b. DIAGNOSIS_INTRO 는 LLM 없이 시스템 표준 텍스트 직접 출력
-    if instruction_used == "DIAGNOSIS_INTRO":
-        intro_reply = build_diagnosis_intro_message()
-        ai_msg = ChatMessage(
-            session_id=session.id,
-            role="model",
-            content=intro_reply,
-            chapter=None,
-            event_id=None,
-            probe_type_used=None,
-            instruction_used="DIAGNOSIS_INTRO",
-        )
-        db.add(ai_msg)
-        await db.commit()
-        return {
-            "coach_response_message": intro_reply,
-            "is_topic_completed": False,
-            "is_session_starting": False,
-            "is_session_completed": False,
-            "is_session_paused": False,
-            "reward": None,
-            "completed_topics": [],
-            "_phase3a_metadata": {
-                "chapter": chapter,
-                "instruction_used": "DIAGNOSIS_INTRO",
-                "probe_type_used": None,
-                "turn_count": state.get("turn_count"),
-                "events_collected": state.get("events_collected"),
-            },
-        }
-
     # 5. 대화 이력 압축
     compressed_history = await compress_conversation_history(db, session.id, chapter)
 
@@ -435,7 +404,7 @@ async def _submit_message_phase3a(
     # Layer 2: COMPETENCY_INTRO/ALIGN 단계에선 챕터 시작 스크립트가
     # LLM 응답에 섞이는 문제 방지를 위해 빈 값 전달.
     # 두 instruction 은 state.chapter_framework 로 필요 정보 받음.
-    _LAYER2_EXCLUDED = {"COMPETENCY_INTRO", "COMPETENCY_ALIGN"}
+    _LAYER2_EXCLUDED = {"COMPETENCY_INTRO", "COMPETENCY_ALIGN", "DIAGNOSIS_INTRO"}
     if instruction_used in _LAYER2_EXCLUDED:
         chapter_context = ""
     else:
@@ -479,6 +448,14 @@ async def _submit_message_phase3a(
         .replace("[START_CHAPTER]", "")
         .strip()
     )
+
+    # 8-a. DIAGNOSIS_INTRO 하이브리드: LLM 호응 + 시스템 진단 안내 본문 합치기
+    if instruction_used == "DIAGNOSIS_INTRO":
+        llm_acknowledgment = clean_reply
+        if not llm_acknowledgment or "죄송합니다" in llm_acknowledgment:
+            llm_acknowledgment = "말씀 감사합니다."
+        anchor_section = build_intro_anchor_section()
+        clean_reply = f"{llm_acknowledgment}\n\n{anchor_section}"
 
     # 8-b. COMPETENCY_ALIGN 하이브리드: LLM 호응 + 시스템 framework 합치기
     if instruction_used == "COMPETENCY_ALIGN":
