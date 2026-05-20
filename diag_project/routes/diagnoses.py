@@ -30,7 +30,10 @@ from diag_project.prompts.phase3a.layer1_system import (
     build_layer1_with_persona,
 )
 from diag_project.services.time_greeting import build_rapport_greeting
-from diag_project.services.intro_messages import build_diagnosis_intro_message
+from diag_project.services.intro_messages import (
+    build_diagnosis_intro_message,
+    build_align_framework_section,
+)
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
 
@@ -476,6 +479,14 @@ async def _submit_message_phase3a(
         .replace("[START_CHAPTER]", "")
         .strip()
     )
+
+    # 8-b. COMPETENCY_ALIGN 하이브리드: LLM 호응 + 시스템 framework 합치기
+    if instruction_used == "COMPETENCY_ALIGN":
+        llm_acknowledgment = clean_reply
+        if not llm_acknowledgment or "죄송합니다" in llm_acknowledgment:
+            llm_acknowledgment = "네, 리더님 말씀 잘 들었습니다."
+        framework_section = build_align_framework_section(chapter)
+        clean_reply = f"{llm_acknowledgment}\n\n{framework_section}"
 
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     probe_type_used = llm_state.get("probe_type_used")

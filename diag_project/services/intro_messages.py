@@ -60,6 +60,42 @@ def build_diagnosis_intro_message(user_name: str = "리더님") -> str:
     )
 
 
+def build_align_framework_section(chapter: str) -> str:
+    """ALIGN 메시지의 framework 부분만 생성 (호응 제외).
+
+    하이브리드 ALIGN 흐름에서 시스템이 직접 출력하는 부분:
+    정의 + 세부역량 목록 + 합의 질문.
+    LLM 이 생성하는 호응 부분(paraphrase + 칭찬)은 별도로 앞에 붙음.
+
+    Args:
+        chapter: 영문 챕터 키 (예: "organization_management")
+
+    Returns:
+        framework 부분 텍스트 (호응 없음)
+    """
+    framework = COMPETENCY_FRAMEWORK.get(chapter)
+    if not framework:
+        return "역량 정보를 찾을 수 없습니다."
+
+    name = framework["name"]
+    description = framework["description"].rstrip(".")
+    indicators = framework["indicators"]
+    indicator_names = [ind["name"] for ind in indicators.values()]
+    indicator_count = len(indicator_names)
+    indicator_list = "\n".join(f"- {n}" for n in indicator_names)
+
+    return (
+        f"저희 진단에서는 {name}를 '{description}' 으로 정의하고 "
+        f"있습니다. 리더님의 생각과도 일맥상통하는 부분이 많죠?\n\n"
+        f"이 역량은 {indicator_count}가지 세부 역량으로 구성됩니다:\n"
+        f"{indicator_list}\n\n"
+        f"이 {indicator_count}가지를 중심으로 이야기 나눠봐도 "
+        f"괜찮으시겠어요?"
+    )
+
+
+# Deprecated: 호응 포함 구버전. 하이브리드 전환 후 호출 안 함.
+# build_align_framework_section + LLM 호응 방식으로 대체됨.
 def build_competency_align_message(
     chapter: str,
     user_answer: str | None = None,
