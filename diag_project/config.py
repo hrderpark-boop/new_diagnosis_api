@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # .env 파일에 GEMINI_API_KEY=... 를 추가해야 합니다.
     # (Canvas 환경에서는 자동으로 키가 주입됩니다)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "") 
-    GEMINI_MODEL_NAME: str = "gemini-2.5-flash-preview-09-2025"
+    GEMINI_MODEL_NAME: str = "gemini-3.5-flash"
 
     model_config = ConfigDict(
         case_sensitive=True

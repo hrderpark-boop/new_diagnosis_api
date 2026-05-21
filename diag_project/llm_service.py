@@ -20,7 +20,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BEST_MODEL = "models/gemini-2.5-flash"
+BEST_MODEL = "models/gemini-3.5-flash"
 
 MAX_HISTORY_TURNS = 20
 
