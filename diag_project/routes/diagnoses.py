@@ -33,6 +33,7 @@ from diag_project.services.time_greeting import build_rapport_greeting
 from diag_project.services.intro_messages import (
     build_intro_anchor_section,
     build_align_framework_section,
+    build_chapter_opening_script,
 )
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
@@ -464,6 +465,15 @@ async def _submit_message_phase3a(
             llm_acknowledgment = "네, 리더님 말씀 잘 들었습니다."
         framework_section = build_align_framework_section(chapter)
         clean_reply = f"{llm_acknowledgment}\n\n{framework_section}"
+
+    # 8-c. CHAPTER_OPENING 하이브리드: 시스템 오프닝 스크립트 + LLM BEI 질문
+    if instruction_used == "CHAPTER_OPENING":
+        first_sub = state.get("first_subcompetency_name", "관련 역량")
+        llm_bei_question = clean_reply
+        if not llm_bei_question or "죄송합니다" in llm_bei_question:
+            llm_bei_question = f"최근에 '{first_sub}'와 관련된 경험이 있으세요?"
+        opening_script = build_chapter_opening_script(chapter, first_sub)
+        clean_reply = f"{opening_script}\n\n{llm_bei_question}"
 
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     probe_type_used = llm_state.get("probe_type_used")

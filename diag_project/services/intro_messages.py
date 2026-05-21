@@ -99,6 +99,31 @@ def build_align_framework_section(chapter: str) -> str:
     )
 
 
+def build_chapter_opening_script(chapter: str, first_subcompetency: str) -> str:
+    """CHAPTER_OPENING 하이브리드에서 시스템이 직접 출력하는 세션 오프닝 스크립트.
+
+    LLM 은 BEI 질문만 생성. 이 스크립트는 시스템이 앞에 붙임.
+
+    Args:
+        chapter: 영문 챕터 키 (예: "organization_management")
+        first_subcompetency: 첫 번째 세부역량 이름 (예: "비전 제시 및 공유")
+    """
+    framework = COMPETENCY_FRAMEWORK.get(chapter)
+    chapter_name = framework["name"] if framework else "이번 영역"
+
+    return (
+        f"리더님, 첫 번째 세션 시작해볼게요. 앞으로 약 30분 정도 "
+        f"'{chapter_name}' 영역에 대해 이야기 나눌 거예요.\n\n"
+        f"편하게 답하시면 되고, 생각이 필요한 질문은 천천히 떠올리셔도 "
+        f"돼요. 답변이 애매하면 제가 다시 여쭤볼 수 있고요.\n\n"
+        f"시작하기 전에 한 가지 약속드릴게요 — 제가 대화 중에 긍정적 "
+        f"피드백이나 상황에 대한 판단을 덜 하는 편이에요. 칭찬보다는 "
+        f"경험 자체에 집중하기 위해서예요. 저는 리더님의 경험을 함께 "
+        f"보는 파트너로 있겠습니다.\n\n"
+        f"그럼 첫 번째 세부 역량인 '{first_subcompetency}'부터 시작하겠습니다."
+    )
+
+
 # Deprecated: 호응 포함 구버전. 하이브리드 전환 후 호출 안 함.
 # build_align_framework_section + LLM 호응 방식으로 대체됨.
 def build_competency_align_message(
