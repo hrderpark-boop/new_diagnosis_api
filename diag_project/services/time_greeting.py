@@ -95,21 +95,41 @@ def get_time_greeting() -> dict[str, str]:
     }
 
 
-def build_rapport_greeting(coach_name: str) -> str:
-    """라포 첫 인사 동적 생성.
+def get_time_phrase() -> str:
+    """첫 인사 템플릿용 간결한 시간대 문구.
 
-    환영 + 의미 부여 (강점 발견 여정) + 시간 + 에너지 질문 4단 구조.
+    Returns: 예) "활기찬 아침", "오전", "점심 무렵", "오후 3시 무렵", "저녁", "늦은 시간"
     """
-    time_info = get_time_greeting()
-    hour_text = time_info["hour_text"]
-    time_tone = time_info["tone"]
+    seoul = ZoneInfo("Asia/Seoul")
+    hour = datetime.now(seoul).hour
+
+    if 5 <= hour < 10:
+        return "활기찬 아침"
+    elif 10 <= hour < 12:
+        return "오전"
+    elif 12 <= hour < 14:
+        return "점심 무렵"
+    elif 14 <= hour < 18:
+        return f"오후 {hour - 12}시 무렵"
+    elif 18 <= hour < 21:
+        return "저녁"
+    else:
+        return "늦은 시간"
+
+
+def build_rapport_greeting(coach_name: str) -> str:
+    """라포 첫 인사 고정 템플릿.
+
+    LLM 호출 없이 서버에서 직접 생성. 톤 고정 + Gemini 호출 1회 절약.
+    """
+    time_phrase = get_time_phrase()
 
     return (
-        f"반갑습니다, 리더님! 오늘 진단을 진행할 코치 {coach_name}입니다.\n\n"
-        f"이 진단은 평가가 아니라, 리더님만의 고유한 강점을 발견하고 "
-        f"빛내는 여정이에요. 편안하게 이야기를 나누며 함께 찾아가 봐요.\n\n"
-        f"벌써 {hour_text} 무렵이네요. {time_tone} 시간 속에서 어떤 "
-        f"에너지로 시간을 보내고 계신가요?\n\n"
-        f"혹시 제가 리더님의 성함을 어떻게 부르면 좋을지 "
-        f"알려주실 수 있을까요?"
+        f"반갑습니다, 리더님. 오늘 진단을 진행하게 된 코치 {coach_name}입니다.\n\n"
+        f"본 진단은 평가 목적이 아닌, 리더님만의 고유한 강점을 발견하고 "
+        f"역량을 극대화하기 위한 과정입니다. 편안한 마음으로 대화하듯 "
+        f"함께 참여해 주시면 좋겠습니다. 벌써 {time_phrase}네요. "
+        f"오늘 하루는 어떤 에너지를 채우며 보내고 계시는지요?\n\n"
+        f"여정을 시작하기 전에, 제가 리더님의 성함을 어떻게 부르면 "
+        f"좋을지 먼저 알려주세요."
     )
