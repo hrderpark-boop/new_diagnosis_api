@@ -136,6 +136,28 @@ def is_user_consent(text: str | None) -> bool:
     return False
 
 
+OBJECTION_KEYWORDS = [
+    "얘기한 적 없",
+    "말한 적 없",
+    "그런 말 안",
+    "말한 적이 없",
+    "얘기한 적이 없",
+    "한 적 없는데",
+    "동의한 적 없",
+    "그런 적 없",
+    "언제 그런",
+    "그런 말 한",
+    "내가 언제",
+]
+
+
+def detect_user_objection(user_response: str) -> bool:
+    """사용자가 진행 흐름에 항의하는지 감지."""
+    if not user_response:
+        return False
+    return any(kw in user_response.strip() for kw in OBJECTION_KEYWORDS)
+
+
 def decide_instruction(state: dict) -> InstructionType:
     """현재 상태 기반으로 LLM 에게 줄 instruction 결정.
 
@@ -165,6 +187,18 @@ def decide_instruction(state: dict) -> InstructionType:
     # [START_CHAPTER] 태그가 나올 때까지 CONFIRM 유지.
     if intro_done and not chapter_started:
         return "DIAGNOSIS_CONFIRM"
+
+    # Stage 4 진입 전: 사용자 항의·일시중지·메타 우선 처리
+    # chapter_started(또는 competency_aligned)이면 스크립트가 이미 진행 중
+    # → 이 시점에 사용자 항의가 오면 스크립트 강행 금지
+    if chapter_started or state.get("competency_aligned"):
+        _last = state.get("last_user_response") or ""
+        if detect_user_objection(_last):
+            return "META_QUESTION_FROM_USER"
+        if detect_pause_request(_last):
+            return "USER_REQUESTS_PAUSE"
+        if detect_meta_question(_last):
+            return "META_QUESTION_FROM_USER"
 
     # Stage 4: 챕터 진입 (역량 합의 → 첫 BEI)
     # 작업 24: COMPETENCY_INTRO 단계 skip (CONFIRM 에서 통합됨).
@@ -365,6 +399,7 @@ async def build_turn_state(
     chapter_started_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.chapter == chapter)
         .where(ChatMessage.role == "model")
         .where(ChatMessage.probe_type_used == "START_CHAPTER")
     )
