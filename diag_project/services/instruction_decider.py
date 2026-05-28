@@ -170,16 +170,21 @@ def decide_instruction(state: dict) -> InstructionType:
     turn_count_total = state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
     ONBOARDING_MAX_TURNS = 8
 
-    # Stage 1: 라포 (rapport_complete 신호 없음, 또는 최소 턴 미달)
+    # Stage 1: 라포 — 최소 턴 미달 시에만 계속
+    # [READY_FOR_INTRO] 신호가 없어도 rapport_turn_count >= RAPPORT_MIN_TURNS 면
+    # Stage 1 을 통과해 DIAGNOSIS_INTRO 로 직행 (D-2 옵션).
     rapport_turn_count = state.get("rapport_turn_count", 0)
     RAPPORT_MIN_TURNS = 2  # 최소 2턴 (사용자 답변 짧아도 보장)
-    if not rapport_complete and turn_count_total <= 6:
+    if (not rapport_complete
+            and rapport_turn_count < RAPPORT_MIN_TURNS
+            and turn_count_total <= 6):
         return "RAPPORT_BUILDING"
     if rapport_complete and rapport_turn_count < RAPPORT_MIN_TURNS:
         return "RAPPORT_BUILDING"
 
-    # Stage 2: 진단 인트로 (라포 끝, 인트로 미완)
-    if rapport_complete and not intro_done:
+    # Stage 2: 진단 인트로 (라포 끝, 또는 최소 턴 충족, 인트로 미완)
+    # rapport_complete OR 라포 턴 충족 → INTRO 직행 ([READY_FOR_INTRO] 불필요)
+    if (rapport_complete or rapport_turn_count >= RAPPORT_MIN_TURNS) and not intro_done:
         return "DIAGNOSIS_INTRO"
 
     # Stage 3: 시작 확인 (인트로 완료, 챕터 미시작)
