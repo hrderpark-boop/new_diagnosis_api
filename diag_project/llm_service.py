@@ -244,7 +244,9 @@ async def _call_with_retry(
             return await call_fn()
         except Exception as e:
             error_str = str(e)
-            if "503" in error_str or "UNAVAILABLE" in error_str:
+            if ("503" in error_str
+                    or "UNAVAILABLE" in error_str
+                    or "LLM_EMPTY_RESPONSE" in error_str):
                 last_error = e
                 if attempt < max_retries - 1:
                     wait_time = backoff_seconds * (attempt + 1)
@@ -304,6 +306,7 @@ class GeminiService:
         stop_seq: List[str] = None,
         max_tokens: int = 8192,
         system_instruction: str | None = None,
+        json_mode: bool = False,
     ) -> str:
         if not self.available_keys:
             raise Exception("사용 가능한 API 키가 없습니다.")
@@ -338,6 +341,8 @@ class GeminiService:
         }
         if system_instruction:
             _config_kwargs["system_instruction"] = system_instruction
+        if json_mode:
+            _config_kwargs["response_mime_type"] = "application/json"
 
         last_error = None
         for api_key in trial_keys:
@@ -357,7 +362,11 @@ class GeminiService:
 
                 response = await _call_with_retry(_do_call, max_retries=3)
 
-                text = response.text
+                text = response.text if hasattr(response, "text") else ""
+                if not text or not text.strip():
+                    raise ValueError(
+                        f"LLM_EMPTY_RESPONSE (키: ...{api_key[-4:]})"
+                    )
                 if "User:" in text:
                     text = text.split("User:")[0]
                 if "사용자:" in text:
@@ -689,7 +698,9 @@ class GeminiService:
 {chat_transcript}
 """
         try:
-            raw = await self._generate_with_retry(prompt, max_tokens=4096)
+            raw = await self._generate_with_retry(
+                prompt, max_tokens=4096, json_mode=True
+            )
             return _safe_parse_json(raw)
         except Exception as e:
             logger.error(f"발화 분류 실패: {e}")
@@ -794,7 +805,9 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 {full_transcript[:3000]}
 """
         try:
-            raw = await self._generate_with_retry(prompt, max_tokens=3000)
+            raw = await self._generate_with_retry(
+                prompt, max_tokens=16384, json_mode=True
+            )
             raw = raw.replace("```json", "").replace("```", "").strip()
 
             result = json.loads(raw)
@@ -903,7 +916,9 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 }}
 """
         try:
-            raw = await self._generate_with_retry(prompt, max_tokens=2048)
+            raw = await self._generate_with_retry(
+                prompt, max_tokens=4096, json_mode=True
+            )
             raw = raw.replace("```json", "").replace("```", "").strip()
 
             summary = json.loads(raw)
