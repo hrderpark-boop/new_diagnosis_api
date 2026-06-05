@@ -8,6 +8,30 @@ import random
 
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 
+# 5개 챕터의 진단 정의 (LLM 이 아닌 시스템이 직접 사용)
+CHAPTER_DEFINITIONS = {
+    "organization_management": (
+        "조직의 비전과 전략을 구성원과 정렬하고, 자원을 효과적으로 배분하여 "
+        "조직 전체가 한 방향으로 움직이도록 만드는 역량"
+    ),
+    "performance_management": (
+        "명확한 목표를 설정하고 진척을 관리하며, 객관적인 피드백을 통해 "
+        "구성원의 성과 창출을 견인하는 역량"
+    ),
+    "people_management": (
+        "구성원과 신뢰 관계를 구축하고, 동기를 부여하며, "
+        "잠재력을 발휘할 수 있도록 코칭하고 육성하는 역량"
+    ),
+    "work_management": (
+        "업무의 우선순위를 정하고 효율적으로 실행하며, "
+        "협업과 자원 활용을 최적화하는 역량"
+    ),
+    "self_management": (
+        "자신의 감정과 시간, 학습을 객관적으로 인식하고 관리하여 "
+        "지속 가능한 리더십을 발휘하는 역량"
+    ),
+}
+
 _ACKNOWLEDGMENT_PATTERNS = {
     "short": [
         "네, 그렇게 보실 수 있어요. 큰 틀에서 그게 맞죠.",
@@ -158,4 +182,44 @@ def build_competency_align_message(
         f"{indicator_list}\n\n"
         f"이 {indicator_count}가지를 중심으로 이야기 나눠봐도 "
         f"괜찮으시겠어요?"
+    )
+
+
+def build_chapter_opening_with_user_def(
+    chapter: str,
+    user_definition: str,
+    first_subcompetency_name: str,
+) -> str:
+    """CHAPTER_OPENING — 사용자 정의 인용 + framework 정의 + 첫 BEI 질문.
+
+    LLM 이 생성할 때 framework 정의 누락 / 자기소개 반복이 반복 발생.
+    LLM 호출 제거 후 구조화 템플릿으로 일관성 보장.
+
+    구조:
+    1. 사용자 답변 인용 (호응 효과)
+    2. framework 정의 명시
+    3. 사용자 정의도 포함됨을 안내
+    4. 첫 BEI 질문
+    """
+    framework = COMPETENCY_FRAMEWORK.get(chapter, {})
+    chapter_name = framework.get("name", "이 역량")
+    framework_def = CHAPTER_DEFINITIONS.get(
+        chapter,
+        framework.get("description", "").rstrip("."),
+    )
+
+    # 사용자 정의가 너무 길면 앞 60자만 인용
+    user_def_short = user_definition.strip()
+    if len(user_def_short) > 60:
+        user_def_short = user_def_short[:60] + "..."
+
+    first_sub = first_subcompetency_name or f"{chapter_name} 관련 역량"
+
+    return (
+        f"리더님께서 말씀해주신 '{user_def_short}' 라는 관점, 잘 들었습니다.\n\n"
+        f"본 진단에서 {chapter_name}는 {framework_def}으로 정의합니다. "
+        f"리더님의 관점도 이 안에 자연스럽게 포함됩니다.\n\n"
+        f"그럼 가장 최근 6개월 안에 '{first_sub}'와 관련하여 "
+        f"리더십을 발휘하셨던 구체적인 경험을 하나 들려주실 수 있을까요? "
+        f"어떤 상황이었고 어떤 행동을 하셨는지 떠오르시는 사례면 됩니다."
     )

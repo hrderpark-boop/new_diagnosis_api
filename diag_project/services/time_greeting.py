@@ -117,6 +117,32 @@ def get_time_phrase() -> str:
         return "늦은 시간"
 
 
+def build_rapport_first_turn_response(
+    user_name: str,
+    coach_name: str,
+    current_hour_text: str,
+    current_ampm_phrase: str,
+) -> str:
+    """라포 1턴 (이름 받은 직후) 응답을 시스템이 직접 생성.
+
+    LLM 이 생성할 때 자기소개 반복·추측성 시간 표현이 반복 발생.
+    LLM 호출 제거 후 4단 구조 템플릿으로 일관성 보장.
+
+    구조:
+    1. 사용자 인사 받기
+    2. 만남 표현
+    3. 자기소개 (자연스럽게)
+    4. 시간 다리 → 시간대 질문
+    """
+    return (
+        f"네, 안녕하세요 {user_name} 리더님! "
+        f"만나 뵙게 되어 정말 반가워요. "
+        f"오늘 대화를 나누게 된 코치 {coach_name}입니다. "
+        f"벌써 {current_hour_text} 무렵이네요. "
+        f"오늘 {current_ampm_phrase} 시간은 어떻게 보내고 계세요?"
+    )
+
+
 def build_rapport_greeting(coach_name: str) -> str:
     """라포 첫 인사 고정 템플릿.
 

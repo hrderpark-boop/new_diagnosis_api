@@ -29,11 +29,14 @@ from diag_project.prompts.phase3a.layer1_system import (
     LAYER1_SYSTEM_PROMPT,
     build_layer1_with_persona,
 )
-from diag_project.services.time_greeting import build_rapport_greeting
+from diag_project.services.time_greeting import (
+    build_rapport_greeting,
+    build_rapport_first_turn_response,
+)
 from diag_project.services.intro_messages import (
     build_intro_anchor_section,
     build_align_framework_section,
-    build_chapter_opening_script,
+    build_chapter_opening_with_user_def,
 )
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
@@ -423,18 +426,45 @@ async def _submit_message_phase3a(
         visit_count=1,
     )
 
-    # 7. LLM 호출
-    llm_output = await llm.generate_phase3a_interaction(
-        system_prompt=system_prompt,
-        chapter_context=chapter_context,
-        turn_state_text=turn_state_text,
-        compressed_history=compressed_history,
-        user_message=request.content,
-    )
+    # 7. 응답 생성 — 라포 1턴 / CHAPTER_OPENING 은 시스템 직접 출력 (LLM 우회)
+    # 두 턴은 LLM 확률적 행동(자기소개 반복·정의 누락)이 반복되어
+    # 템플릿으로 고정. 나머지 턴은 기존대로 LLM 생성.
+    system_override_text = None
 
-    reply = llm_output["reply"]
-    llm_state = llm_output.get("state") or {}
-    event_metadata = llm_output.get("event_metadata")
+    if (instruction_used == "RAPPORT_BUILDING"
+            and state.get("rapport_turn_count", 0) == 0):
+        # 라포 1턴 (이름 받은 직후) — 4단 구조 템플릿
+        coach_name_full = COACHES_PERSONA.get(coach_key, {}).get("name", "코치")
+        coach_name = coach_name_full.split(" ")[0]  # "Ella (엘라)" → "Ella"
+        system_override_text = build_rapport_first_turn_response(
+            user_name=user_name,
+            coach_name=coach_name,
+            current_hour_text=state.get("current_hour_text", "지금"),
+            current_ampm_phrase=state.get("current_ampm_phrase", "오늘"),
+        )
+    elif instruction_used == "CHAPTER_OPENING":
+        # 챕터 도입 — 사용자 정의 인용 + framework 정의 + 첫 BEI 질문
+        system_override_text = build_chapter_opening_with_user_def(
+            chapter=chapter,
+            user_definition=state.get("last_user_response", "") or "",
+            first_subcompetency_name=state.get("first_subcompetency_name", ""),
+        )
+
+    if system_override_text is not None:
+        reply = system_override_text
+        llm_state = {}
+        event_metadata = None
+    else:
+        llm_output = await llm.generate_phase3a_interaction(
+            system_prompt=system_prompt,
+            chapter_context=chapter_context,
+            turn_state_text=turn_state_text,
+            compressed_history=compressed_history,
+            user_message=request.content,
+        )
+        reply = llm_output["reply"]
+        llm_state = llm_output.get("state") or {}
+        event_metadata = llm_output.get("event_metadata")
 
     # 8. 제어 태그 처리 (감사 위험 #4 해결)
     is_chapter_completed = "[CHAPTER_COMPLETE]" in reply
@@ -466,14 +496,9 @@ async def _submit_message_phase3a(
         framework_section = build_align_framework_section(chapter)
         clean_reply = f"{llm_acknowledgment}\n\n{framework_section}"
 
-    # 8-c. CHAPTER_OPENING 하이브리드: 시스템 오프닝 스크립트 + LLM BEI 질문
-    if instruction_used == "CHAPTER_OPENING":
-        first_sub = state.get("first_subcompetency_name", "관련 역량")
-        llm_bei_question = clean_reply
-        if not llm_bei_question or "죄송합니다" in llm_bei_question:
-            llm_bei_question = f"최근에 '{first_sub}'와 관련된 경험이 있으세요?"
-        opening_script = build_chapter_opening_script(chapter, first_sub)
-        clean_reply = f"{opening_script}\n\n{llm_bei_question}"
+    # 8-c. CHAPTER_OPENING 은 Step 7 에서 시스템이 전체 출력 (하이브리드 폐지).
+    # build_chapter_opening_with_user_def 가 정의 + 첫 BEI 질문까지 포함하므로
+    # 별도 후처리 불필요.
 
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     probe_type_used = llm_state.get("probe_type_used")
