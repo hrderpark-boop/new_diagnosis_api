@@ -53,6 +53,7 @@ def _extract_user_name(text: str) -> str:
 
 # 19가지 instruction 타입
 InstructionType = Literal[
+    "ONBOARDING_LAUNCH",
     "CHAPTER_OPENING",
     "RAPPORT_BUILDING",
     "DIAGNOSIS_INTRO",
@@ -163,34 +164,30 @@ def decide_instruction(state: dict) -> InstructionType:
 
     우선순위 순서로 체크. 위에서부터 매칭되면 즉시 반환.
     """
-    # 0-3. 4단계 온보딩 (라포 → 인트로 → 확인 → 챕터)
-    rapport_complete = state.get("rapport_complete", False)
-    intro_done = state.get("intro_done", False)
+    # 0. 온보딩 (3-Step 압축): 라포·인트로 핑퐁 제거
+    #   Step1 코치 인사(시스템 첫 메시지) → Step2 유저 이름 →
+    #   Step3 오리엔테이션 + 첫 영역 첫 질문(ONBOARDING_LAUNCH)
     chapter_started = state.get("chapter_started", False)
-    turn_count_total = state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
+    chapter = state.get("chapter", "")
+    is_first_chapter = chapter == "organization_management"
+    turn_count_total = (
+        state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
+    )
     ONBOARDING_MAX_TURNS = 8
 
-    # Stage 1: 라포 — 최소 턴 미달 시에만 계속
-    # [READY_FOR_INTRO] 신호가 없어도 rapport_turn_count >= RAPPORT_MIN_TURNS 면
-    # Stage 1 을 통과해 DIAGNOSIS_INTRO 로 직행 (D-2 옵션).
-    rapport_turn_count = state.get("rapport_turn_count", 0)
-    RAPPORT_MIN_TURNS = 2  # 최소 2턴 (사용자 답변 짧아도 보장)
-    if (not rapport_complete
-            and rapport_turn_count < RAPPORT_MIN_TURNS
-            and turn_count_total <= 6):
-        return "RAPPORT_BUILDING"
-    if rapport_complete and rapport_turn_count < RAPPORT_MIN_TURNS:
-        return "RAPPORT_BUILDING"
+    # Step 3: 첫 영역의 첫 응답 → 오리엔테이션 + 조직관리 첫 질문 한 번에
+    if is_first_chapter and not chapter_started:
+        return "ONBOARDING_LAUNCH"
 
-    # Stage 2: 진단 인트로 (라포 끝, 또는 최소 턴 충족, 인트로 미완)
-    # rapport_complete OR 라포 턴 충족 → INTRO 직행 ([READY_FOR_INTRO] 불필요)
-    if (rapport_complete or rapport_turn_count >= RAPPORT_MIN_TURNS) and not intro_done:
-        return "DIAGNOSIS_INTRO"
-
-    # Stage 3: 시작 확인 (인트로 완료, 챕터 미시작)
-    # 작업 24: CONFIRM 가이드가 준비 인사 + 챕터 도입 + 정의 묻기 통합.
-    # [START_CHAPTER] 태그가 나올 때까지 CONFIRM 유지.
-    if intro_done and not chapter_started:
+    # 챕터 2+ 진입 → 직전 영역에서 자연스럽게 브리지하며 CONFIRM
+    if not is_first_chapter and not chapter_started:
+        _last0 = state.get("last_user_response") or ""
+        if detect_user_objection(_last0):
+            return "META_QUESTION_FROM_USER"
+        if detect_pause_request(_last0):
+            return "USER_REQUESTS_PAUSE"
+        if detect_meta_question(_last0):
+            return "META_QUESTION_FROM_USER"
         return "DIAGNOSIS_CONFIRM"
 
     # Stage 4 진입 전: 사용자 항의·일시중지·메타 우선 처리

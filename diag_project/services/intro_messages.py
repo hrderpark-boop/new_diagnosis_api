@@ -186,6 +186,46 @@ def build_competency_align_message(
     )
 
 
+_ONBOARDING_CHAPTER_ORDER = [
+    "organization_management",
+    "performance_management",
+    "people_management",
+    "work_management",
+    "self_management",
+]
+
+
+def build_onboarding_launch(user_name: str) -> str:
+    """온보딩 3-Step의 마지막 — 이름 수용 + 로드맵 + 첫 영역 첫 질문.
+
+    코치 인사(시스템 첫 메시지)에서 이미 자기소개·진단 취지를 전했으므로
+    이 턴에서는 자기소개·안부 반복 금지. 이름을 딱 한 문장으로 수용한 뒤
+    바로 5개 영역 로드맵을 안내하고 첫 영역(조직관리)의 첫 질문으로 브릿지.
+
+    LLM 호출 없이 시스템이 직접 출력 → 앵무새(반복) 현상 원천 차단.
+    """
+    names = [
+        COMPETENCY_FRAMEWORK[k]["name"]
+        for k in _ONBOARDING_CHAPTER_ORDER
+        if k in COMPETENCY_FRAMEWORK
+    ]
+    roadmap = " · ".join(names) if names else "다섯 가지 리더십 영역"
+    first_name = COMPETENCY_FRAMEWORK.get(
+        "organization_management", {}
+    ).get("name", "조직관리")
+
+    return (
+        f"반갑습니다, {user_name} 리더님!\n\n"
+        f"그럼 바로 시작해볼게요. 오늘은 {roadmap}, 이렇게 다섯 영역을 "
+        f"차례로 함께 살펴볼 텐데요. 평가가 아니라 리더님의 실제 경험을 "
+        f"같이 들여다보는 자리이니, 정답 걱정 없이 떠오르는 대로 편하게 "
+        f"말씀해 주시면 됩니다. 중간에 저장하고 이어서 하셔도 괜찮아요.\n\n"
+        f"첫 영역인 '{first_name}'부터 가볍게 열어볼게요. 리더님께 "
+        f"'{first_name}' 하면 가장 먼저 떠오르는 장면이나 생각이 "
+        f"있으세요? [START_CHAPTER]"
+    )
+
+
 def build_chapter_opening_with_user_def(
     chapter: str,
     user_definition: str,

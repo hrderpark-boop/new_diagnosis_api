@@ -29,14 +29,12 @@ from diag_project.prompts.phase3a.layer1_system import (
     LAYER1_SYSTEM_PROMPT,
     build_layer1_with_persona,
 )
-from diag_project.services.time_greeting import (
-    build_rapport_greeting,
-    build_rapport_first_turn_response,
-)
+from diag_project.services.time_greeting import build_rapport_greeting
 from diag_project.services.intro_messages import (
     build_intro_anchor_section,
     build_align_framework_section,
     build_chapter_opening_with_user_def,
+    build_onboarding_launch,
 )
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
@@ -395,7 +393,12 @@ async def _submit_message_phase3a(
 
     # 4-a. 진단 전 단계면 user_msg.chapter 를 NULL 로 소급 변경
     instruction_used = state.get("instruction_for_this_turn")
-    PRE_DIAGNOSIS_INSTRUCTIONS = {"RAPPORT_BUILDING", "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM"}
+    PRE_DIAGNOSIS_INSTRUCTIONS = {
+        "ONBOARDING_LAUNCH",
+        "RAPPORT_BUILDING",
+        "DIAGNOSIS_INTRO",
+        "DIAGNOSIS_CONFIRM",
+    }
     if instruction_used in PRE_DIAGNOSIS_INSTRUCTIONS:
         user_msg.chapter = None
         db.add(user_msg)
@@ -431,17 +434,10 @@ async def _submit_message_phase3a(
     # 템플릿으로 고정. 나머지 턴은 기존대로 LLM 생성.
     system_override_text = None
 
-    if (instruction_used == "RAPPORT_BUILDING"
-            and state.get("rapport_turn_count", 0) == 0):
-        # 라포 1턴 (이름 받은 직후) — 4단 구조 템플릿
-        coach_name_full = COACHES_PERSONA.get(coach_key, {}).get("name", "코치")
-        coach_name = coach_name_full.split(" ")[0]  # "Ella (엘라)" → "Ella"
-        system_override_text = build_rapport_first_turn_response(
-            user_name=user_name,
-            coach_name=coach_name,
-            current_hour_text=state.get("current_hour_text", "지금"),
-            current_ampm_phrase=state.get("current_ampm_phrase", "오늘"),
-        )
+    if instruction_used == "ONBOARDING_LAUNCH":
+        # 온보딩 3-Step 마지막 — 이름 수용 + 로드맵 + 첫 영역 첫 질문
+        # (자기소개·안부 반복 없음. [START_CHAPTER] 포함)
+        system_override_text = build_onboarding_launch(user_name=user_name)
     elif instruction_used == "CHAPTER_OPENING":
         # 챕터 도입 — 사용자 정의 인용 + framework 정의 + 첫 BEI 질문
         system_override_text = build_chapter_opening_with_user_def(
@@ -504,8 +500,11 @@ async def _submit_message_phase3a(
     probe_type_used = llm_state.get("probe_type_used")
 
     # 마커 → probe_type_used 에 저장 (우선순위: READY_FOR_INTRO > START_CHAPTER)
+    # ONBOARDING_LAUNCH 는 템플릿에 [START_CHAPTER] 가 항상 포함됨.
     if instruction_used == "RAPPORT_BUILDING" and is_ready_for_intro:
         probe_type_used = "READY_FOR_INTRO"
+    elif instruction_used == "ONBOARDING_LAUNCH":
+        probe_type_used = "START_CHAPTER"
     elif instruction_used == "DIAGNOSIS_CONFIRM" and is_chapter_starting:
         probe_type_used = "START_CHAPTER"
 
@@ -523,11 +522,19 @@ async def _submit_message_phase3a(
             user_message_text=request.content,
         )
 
+    # START_CHAPTER 마커 메시지는 진단 전 단계라도 해당 챕터로 태깅.
+    # (chapter_started 쿼리가 chapter 별로 스코프되므로 — 안 그러면
+    #  마커가 chapter=None 에 저장돼 chapter_started 가 영영 False)
+    if probe_type_used == "START_CHAPTER":
+        ai_msg_chapter = chapter
+    else:
+        ai_msg_chapter = None if is_pre_diagnosis else chapter
+
     ai_msg = ChatMessage(
         session_id=session.id,
         role="model",
         content=clean_reply,
-        chapter=None if is_pre_diagnosis else chapter,
+        chapter=ai_msg_chapter,
         event_id=None if is_pre_diagnosis else real_event_id,
         probe_type_used=probe_type_used,
         instruction_used=instruction_used,
