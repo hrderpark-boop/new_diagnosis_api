@@ -29,12 +29,14 @@ from diag_project.prompts.phase3a.layer1_system import (
     LAYER1_SYSTEM_PROMPT,
     build_layer1_with_persona,
 )
-from diag_project.services.time_greeting import build_rapport_greeting
+from diag_project.services.time_greeting import (
+    build_rapport_greeting,
+    build_rapport_first_turn_response,
+)
 from diag_project.services.intro_messages import (
     build_intro_anchor_section,
     build_align_framework_section,
     build_chapter_opening_with_user_def,
-    build_onboarding_launch,
 )
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
@@ -394,7 +396,6 @@ async def _submit_message_phase3a(
     # 4-a. 진단 전 단계면 user_msg.chapter 를 NULL 로 소급 변경
     instruction_used = state.get("instruction_for_this_turn")
     PRE_DIAGNOSIS_INSTRUCTIONS = {
-        "ONBOARDING_LAUNCH",
         "RAPPORT_BUILDING",
         "DIAGNOSIS_INTRO",
         "DIAGNOSIS_CONFIRM",
@@ -434,10 +435,14 @@ async def _submit_message_phase3a(
     # 템플릿으로 고정. 나머지 턴은 기존대로 LLM 생성.
     system_override_text = None
 
-    if instruction_used == "ONBOARDING_LAUNCH":
-        # 온보딩 3-Step 마지막 — 이름 수용 + 로드맵 + 첫 영역 첫 질문
-        # (자기소개·안부 반복 없음. [START_CHAPTER] 포함)
-        system_override_text = build_onboarding_launch(user_name=user_name)
+    if (instruction_used == "RAPPORT_BUILDING"
+            and state.get("rapport_turn_count", 0) == 0):
+        # 라포 1턴 (이름 받은 직후) — Step1 이름수용 + Step2 아이스브레이킹.
+        # 자기소개 반복 절대 금지 (인사말에서 이미 함). 템플릿으로 고정.
+        system_override_text = build_rapport_first_turn_response(
+            user_name=user_name,
+            current_ampm_phrase=state.get("current_ampm_phrase", "오늘"),
+        )
     elif instruction_used == "CHAPTER_OPENING":
         # 챕터 도입 — 사용자 정의 인용 + framework 정의 + 첫 BEI 질문
         system_override_text = build_chapter_opening_with_user_def(
@@ -500,11 +505,8 @@ async def _submit_message_phase3a(
     probe_type_used = llm_state.get("probe_type_used")
 
     # 마커 → probe_type_used 에 저장 (우선순위: READY_FOR_INTRO > START_CHAPTER)
-    # ONBOARDING_LAUNCH 는 템플릿에 [START_CHAPTER] 가 항상 포함됨.
     if instruction_used == "RAPPORT_BUILDING" and is_ready_for_intro:
         probe_type_used = "READY_FOR_INTRO"
-    elif instruction_used == "ONBOARDING_LAUNCH":
-        probe_type_used = "START_CHAPTER"
     elif instruction_used == "DIAGNOSIS_CONFIRM" and is_chapter_starting:
         probe_type_used = "START_CHAPTER"
 

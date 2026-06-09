@@ -110,14 +110,14 @@ def build_align_framework_section(chapter: str) -> str:
     indicator_count = len(indicator_names)
     indicator_list = "\n".join(f"- {n}" for n in indicator_names)
 
+    # 중립적 정의 제시 (Step 6). '맞닿아 있다'는 식의 평가는 하지 않음 —
+    # 그 판단(공감/유연 분기)은 LLM 호응 부분이 담당 (무성의 답변 환각 방지).
     return (
-        f"리더님께서 보시는 관점, 저희가 생각하는 {name}의 핵심과 "
-        f"정확히 맞닿아 있어요.\n\n"
+        f"저희 진단에서는 {name}를 '{description}'으로 봅니다.\n\n"
         f"이 역량은 현업에서 보통 이런 {indicator_count}가지 모습으로 "
         f"드러나곤 하는데요:\n"
         f"{indicator_list}\n\n"
-        f"리더님께서는 이 중 어떤 장면들을 직접 만들어 오셨을지, "
-        f"실제 경험이 궁금해지네요."
+        f"이제 이 결을 따라, 리더님의 실제 경험을 하나씩 들여다볼게요."
     )
 
 
@@ -231,36 +231,21 @@ def build_chapter_opening_with_user_def(
     user_definition: str,
     first_subcompetency_name: str,
 ) -> str:
-    """CHAPTER_OPENING — 사용자 정의 인용 + framework 정의 + 첫 BEI 질문.
+    """CHAPTER_OPENING (Step 7) — 첫 BEI(경험) 질문.
 
-    LLM 이 생성할 때 framework 정의 누락 / 자기소개 반복이 반복 발생.
-    LLM 호출 제거 후 구조화 템플릿으로 일관성 보장.
+    공식 정의·하위역량 소개는 직전 Step 6(COMPETENCY_ALIGN)에서 이미 했으므로
+    여기서는 반복하지 않고, 첫 세부역량에 관한 구체적 경험만 부드럽게 묻는다.
 
-    구조:
-    1. 사용자 답변 인용 (호응 효과)
-    2. framework 정의 명시
-    3. 사용자 정의도 포함됨을 안내
-    4. 첫 BEI 질문
+    user_definition 은 호환을 위해 유지하나 본문에서는 사용하지 않음
+    (정의 반복 방지).
     """
     framework = COMPETENCY_FRAMEWORK.get(chapter, {})
     chapter_name = framework.get("name", "이 역량")
-    framework_def = CHAPTER_DEFINITIONS.get(
-        chapter,
-        framework.get("description", "").rstrip("."),
-    )
-
-    # 사용자 정의가 너무 길면 앞 60자만 인용
-    user_def_short = user_definition.strip()
-    if len(user_def_short) > 60:
-        user_def_short = user_def_short[:60] + "..."
-
     first_sub = first_subcompetency_name or f"{chapter_name} 관련 역량"
 
     return (
-        f"리더님께서 말씀해주신 '{user_def_short}' 라는 관점, 잘 들었습니다.\n\n"
-        f"본 진단에서 {chapter_name}는 {framework_def}으로 정의합니다. "
-        f"리더님의 관점도 이 안에 자연스럽게 포함됩니다.\n\n"
-        f"그럼 가장 최근 6개월 안에 '{first_sub}'와 관련하여 "
-        f"리더십을 발휘하셨던 구체적인 경험을 하나 들려주실 수 있을까요? "
-        f"어떤 상황이었고 어떤 행동을 하셨는지 떠오르시는 사례면 됩니다."
+        f"그럼 이제 리더님의 실제 경험을 들어볼게요.\n\n"
+        f"가장 최근 6개월 안에 '{first_sub}'와 관련해서 리더십을 "
+        f"발휘하셨던 구체적인 경험이 있으실까요? 어떤 상황이었고 어떻게 "
+        f"대응하셨는지, 떠오르시는 장면 하나면 충분합니다."
     )

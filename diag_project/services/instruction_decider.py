@@ -164,23 +164,30 @@ def decide_instruction(state: dict) -> InstructionType:
 
     우선순위 순서로 체크. 위에서부터 매칭되면 즉시 반환.
     """
-    # 0. 온보딩 (3-Step 압축): 라포·인트로 핑퐁 제거
-    #   Step1 코치 인사(시스템 첫 메시지) → Step2 유저 이름 →
-    #   Step3 오리엔테이션 + 첫 영역 첫 질문(ONBOARDING_LAUNCH)
+    # === 7단계 코칭 프로세스: 한 턴에 한 스텝, 엄격한 순서 (압축·건너뛰기 금지) ===
+    #   Step1 인사+이름확인 → Step2 라포(아이스브레이킹) → Step3 시작 동의 →
+    #   Step4 로드맵 안내 → Step5 평소 생각/정의 묻기 →
+    #   Step6 수용+공식정의·하위역량 → Step7 STAR 경험 진단
+    rapport_complete = state.get("rapport_complete", False)
+    intro_done = state.get("intro_done", False)
     chapter_started = state.get("chapter_started", False)
-    chapter = state.get("chapter", "")
-    is_first_chapter = chapter == "organization_management"
-    turn_count_total = (
-        state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
-    )
+    rapport_turn_count = state.get("rapport_turn_count", 0)
+    turn_count_total = state.get("turn_count", 0) + rapport_turn_count
     ONBOARDING_MAX_TURNS = 8
+    RAPPORT_MAX_TURNS = 5  # 무한 라포 방지 안전장치
 
-    # Step 3: 첫 영역의 첫 응답 → 오리엔테이션 + 조직관리 첫 질문 한 번에
-    if is_first_chapter and not chapter_started:
-        return "ONBOARDING_LAUNCH"
+    # Step 1-3: 라포 (이름확인 → 아이스브레이킹 1~2 → 시작 동의)
+    # 사용자 '시작 동의'([READY_FOR_INTRO]) 전까지 라포 유지. 동의 없이 진도 X.
+    if not rapport_complete and rapport_turn_count < RAPPORT_MAX_TURNS:
+        return "RAPPORT_BUILDING"
 
-    # 챕터 2+ 진입 → 직전 영역에서 자연스럽게 브리지하며 CONFIRM
-    if not is_first_chapter and not chapter_started:
+    # Step 4: 진단 목적·로드맵 안내 (전체 1회, 첫 영역에서)
+    if not intro_done:
+        return "DIAGNOSIS_INTRO"
+
+    # Step 5: 해당 역량 평소 생각/정의 묻기 (챕터별)
+    # 챕터 2+ 는 직전 영역과 브리지하며 진입 (CONFIRM 가이드가 분기).
+    if not chapter_started:
         _last0 = state.get("last_user_response") or ""
         if detect_user_objection(_last0):
             return "META_QUESTION_FROM_USER"
