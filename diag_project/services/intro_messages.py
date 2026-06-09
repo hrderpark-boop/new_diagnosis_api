@@ -111,12 +111,13 @@ def build_align_framework_section(chapter: str) -> str:
     indicator_list = "\n".join(f"- {n}" for n in indicator_names)
 
     return (
-        f"저희 진단에서는 {name}를 '{description}' 으로 정의하고 "
-        f"있습니다. 리더님의 생각과도 일맥상통하는 부분이 많죠?\n\n"
-        f"이 역량은 {indicator_count}가지 세부 역량으로 구성됩니다:\n"
+        f"리더님께서 보시는 관점, 저희가 생각하는 {name}의 핵심과 "
+        f"정확히 맞닿아 있어요.\n\n"
+        f"이 역량은 현업에서 보통 이런 {indicator_count}가지 모습으로 "
+        f"드러나곤 하는데요:\n"
         f"{indicator_list}\n\n"
-        f"이 {indicator_count}가지를 중심으로 이야기 나눠봐도 "
-        f"괜찮으시겠어요?"
+        f"리더님께서는 이 중 어떤 장면들을 직접 만들어 오셨을지, "
+        f"실제 경험이 궁금해지네요."
     )
 
 
