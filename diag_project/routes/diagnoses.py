@@ -456,12 +456,24 @@ async def _submit_message_phase3a(
         llm_state = {}
         event_metadata = None
     else:
+        # 경량 모드: BEI 진입 전 턴(라포·INTRO·CONFIRM·ALIGN 등)은
+        # state·event_metadata 가 불필요 → JSON 봉투 생략 (지연 최소화).
+        _LIGHT_MODE_INSTRUCTIONS = {
+            "RAPPORT_BUILDING",
+            "DIAGNOSIS_INTRO",
+            "DIAGNOSIS_CONFIRM",
+            "COMPETENCY_ALIGN",
+            "META_QUESTION_FROM_USER",
+            "USER_REQUESTS_PAUSE",
+            "INVALID_INPUT",
+        }
         llm_output = await llm.generate_phase3a_interaction(
             system_prompt=system_prompt,
             chapter_context=chapter_context,
             turn_state_text=turn_state_text,
             compressed_history=compressed_history,
             user_message=request.content,
+            light_mode=(instruction_used in _LIGHT_MODE_INSTRUCTIONS),
         )
         reply = llm_output["reply"]
         llm_state = llm_output.get("state") or {}

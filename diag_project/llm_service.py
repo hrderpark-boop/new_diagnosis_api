@@ -20,7 +20,14 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BEST_MODEL = "models/gemini-3.5-flash"
+# 투 트랙(Dual Model) 전략:
+#  - 실시간 대화(핑퐁): 속도 우선 → gemini-2.0-flash
+#  - 진단 채점/리포트(깊은 사고): 품질 우선 → gemini-2.5-pro
+CHAT_MODEL = "models/gemini-2.0-flash"
+ANALYSIS_MODEL = "models/gemini-2.5-pro"
+
+# 하위 호환: 기존 BEST_MODEL 참조는 채점용(고품질) 모델로 유지
+BEST_MODEL = ANALYSIS_MODEL
 
 MAX_HISTORY_TURNS = 20
 
@@ -339,9 +346,13 @@ class GeminiService:
         max_tokens: int = 8192,
         system_instruction: str | None = None,
         json_mode: bool = False,
+        model: str | None = None,
     ) -> str:
         if not self.available_keys:
             raise Exception("사용 가능한 API 키가 없습니다.")
+
+        # 모델 미지정 시 대화용(빠른) 모델 기본값
+        model_name = model or CHAT_MODEL
 
         trial_keys = list(self.available_keys)
         random.shuffle(trial_keys)
@@ -385,9 +396,10 @@ class GeminiService:
                     _client=client,
                     _prompt=prompt,
                     _cfg=_config_kwargs,
+                    _model=model_name,
                 ):
                     return await _client.aio.models.generate_content(
-                        model=BEST_MODEL,
+                        model=_model,
                         contents=_prompt,
                         config=genai_types.GenerateContentConfig(**_cfg),
                     )
@@ -640,6 +652,7 @@ class GeminiService:
         turn_state_text: str,
         compressed_history: list[dict],
         user_message: str,
+        light_mode: bool = False,
     ) -> dict:
         """Phase 3-A: 3-Layer 프롬프트로 LLM 호출.
 
@@ -669,25 +682,39 @@ class GeminiService:
             f"[Latest User Message]\n{user_message}"
         )
 
+        # 경량 모드(BEI 진입 전 턴: 라포·INTRO·CONFIRM·ALIGN 등):
+        # state·event_metadata 가 불필요 → JSON 봉투 생략하고 reply 텍스트만
+        # 생성하도록 지시 → 출력 토큰·지연 최소화.
+        if light_mode:
+            user_content += (
+                "\n\n🚨 [이번 턴 출력 규칙 — 최우선]\n"
+                "이번 턴은 JSON 을 만들지 마세요. state·event_metadata 도 "
+                "출력하지 마세요. 사용자에게 보여줄 한국어 reply 문장만 "
+                "그대로 출력하고 끝내세요. (제어 태그가 필요하면 문장 끝에 "
+                "그대로 붙이세요.)"
+            )
+
         try:
             response_text = await self._generate_with_retry(
                 prompt=user_content,
                 system_instruction=system_prompt,
-                max_tokens=3000,
+                max_tokens=800 if light_mode else 3000,
             )
 
-            # 강화된 파서로 reply / state 추출
+            # 강화된 파서로 reply / state 추출 (평문·JSON 모두 견고하게 처리)
             reply, state = _extract_reply_from_response(response_text)
 
-            # event_metadata: 전체 JSON 파싱이 성공해야만 추출
+            # 경량 모드: event_metadata 파싱 스킵 (항상 None)
             event_metadata = None
-            try:
-                full = json.loads(response_text.strip())
-                event_metadata = full.get("event_metadata")
-                if full.get("state"):
-                    state = full["state"]
-            except (json.JSONDecodeError, ValueError):
-                pass
+            if not light_mode:
+                # event_metadata: 전체 JSON 파싱이 성공해야만 추출
+                try:
+                    full = json.loads(response_text.strip())
+                    event_metadata = full.get("event_metadata")
+                    if full.get("state"):
+                        state = full["state"]
+                except (json.JSONDecodeError, ValueError):
+                    pass
 
             return {
                 "reply": reply,
@@ -731,7 +758,7 @@ class GeminiService:
 """
         try:
             raw = await self._generate_with_retry(
-                prompt, max_tokens=4096, json_mode=True
+                prompt, max_tokens=4096, json_mode=True, model=ANALYSIS_MODEL
             )
             return _safe_parse_json(raw)
         except Exception as e:
@@ -838,7 +865,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 """
         try:
             raw = await self._generate_with_retry(
-                prompt, max_tokens=16384, json_mode=True
+                prompt, max_tokens=16384, json_mode=True, model=ANALYSIS_MODEL
             )
             raw = raw.replace("```json", "").replace("```", "").strip()
 
@@ -949,7 +976,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 """
         try:
             raw = await self._generate_with_retry(
-                prompt, max_tokens=4096, json_mode=True
+                prompt, max_tokens=4096, json_mode=True, model=ANALYSIS_MODEL
             )
             raw = raw.replace("```json", "").replace("```", "").strip()
 
