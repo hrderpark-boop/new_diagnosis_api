@@ -110,14 +110,17 @@ def build_align_framework_section(chapter: str) -> str:
     indicator_count = len(indicator_names)
     indicator_list = "\n".join(f"- {n}" for n in indicator_names)
 
-    # 중립적 정의 제시 (Step 6). '맞닿아 있다'는 식의 평가는 하지 않음 —
-    # 그 판단(공감/유연 분기)은 LLM 호응 부분이 담당 (무성의 답변 환각 방지).
+    # 포괄적 정의 + 하위역량 + 동의 게이트 (Step 6).
+    # '맞닿아 있다'는 식의 단정은 하지 않음 — 사용자 답변 반영(공감/유연 분기)은
+    # LLM 호응 부분이 담당 (무성의 답변 환각 방지). 시스템은 정의·하위역량·동의 요청.
     return (
-        f"저희 진단에서는 {name}를 '{description}'으로 봅니다.\n\n"
-        f"이 역량은 현업에서 보통 이런 {indicator_count}가지 모습으로 "
-        f"드러나곤 하는데요:\n"
+        f"이번 진단에서는 리더님 말씀을 포함해서 {name}를 "
+        f"'{description}'이라고 정의합니다.\n\n"
+        f"이 역량은 다음 {indicator_count}가지 하위 역량으로 이뤄지는데요:\n"
         f"{indicator_list}\n\n"
-        f"이제 이 결을 따라, 리더님의 실제 경험을 하나씩 들여다볼게요."
+        f"앞으로 이 하위 역량들을 중심으로 리더님의 실제 경험을 "
+        f"여쭤보려고 해요. 저희가 정리한 이 정의와 방향, "
+        f"리더님 보시기에 괜찮으실까요?"
     )
 
 
@@ -243,9 +246,10 @@ def build_chapter_opening_with_user_def(
     chapter_name = framework.get("name", "이 역량")
     first_sub = first_subcompetency_name or f"{chapter_name} 관련 역량"
 
+    # 동의 직후 호출됨 → 위로·딴소리 없이 곧장 BEI 경험 질문으로.
     return (
-        f"그럼 이제 리더님의 실제 경험을 들어볼게요.\n\n"
-        f"가장 최근 6개월 안에 '{first_sub}'와 관련해서 리더십을 "
-        f"발휘하셨던 구체적인 경험이 있으실까요? 어떤 상황이었고 어떻게 "
-        f"대응하셨는지, 떠오르시는 장면 하나면 충분합니다."
+        f"좋습니다! 그럼 바로 구체적인 경험 이야기로 들어가 볼게요.\n\n"
+        f"최근 6개월 안에 '{first_sub}'와 관련해서 리더십을 발휘하셨던 "
+        f"경험이 있으실까요? 어떤 상황이었고 어떻게 대응하셨는지, "
+        f"떠오르시는 장면 하나면 충분합니다."
     )
