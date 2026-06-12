@@ -110,13 +110,13 @@ def build_align_framework_section(chapter: str) -> str:
     indicator_count = len(indicator_names)
     indicator_list = "\n".join(f"- {n}" for n in indicator_names)
 
-    # 포괄적 정의 + 하위역량 + 동의 게이트 (Step 6).
-    # '맞닿아 있다'는 식의 단정은 하지 않음 — 사용자 답변 반영(공감/유연 분기)은
-    # LLM 호응 부분이 담당 (무성의 답변 환각 방지). 시스템은 정의·하위역량·동의 요청.
+    # Step 6 쿠션어: LLM 호응부('…리더님의 그 철학과 같은 맥락으로,')에서
+    # 이어받아 한 호흡으로 묶어줌. 사용자 답변 반영(공감/유연 분기)은 LLM 담당.
     return (
-        f"이번 진단에서는 리더님 말씀을 포함해서 {name}를 "
-        f"'{description}'이라고 정의합니다.\n\n"
-        f"이 역량은 다음 {indicator_count}가지 하위 역량으로 이뤄지는데요:\n"
+        f"저희 진단에서는 이를 포괄하여 {name}를 '{description}'이라고 "
+        f"정의하고 있습니다. 말씀하신 결이 이 맥락에 아주 자연스럽게 "
+        f"녹아들죠?\n\n"
+        f"이 역량의 하위 역량은 다음 {indicator_count}가지입니다:\n"
         f"{indicator_list}\n\n"
         f"앞으로 이 하위 역량들을 중심으로 리더님의 실제 경험을 "
         f"여쭤보려고 해요. 저희가 정리한 이 정의와 방향, "
@@ -234,22 +234,39 @@ def build_chapter_opening_with_user_def(
     user_definition: str,
     first_subcompetency_name: str,
 ) -> str:
-    """CHAPTER_OPENING (Step 7) — 첫 BEI(경험) 질문.
+    """CHAPTER_OPENING (Step 7) — 하위역량 타겟팅 기반 첫 BEI 질문.
 
-    공식 정의·하위역량 소개는 직전 Step 6(COMPETENCY_ALIGN)에서 이미 했으므로
-    여기서는 반복하지 않고, 첫 세부역량에 관한 구체적 경험만 부드럽게 묻는다.
+    대주제로 뭉뚱그린 질문('이 역량 관련 경험 있으세요?')은 답하기 어렵다.
+    Step 6 에서 소개한 하위 역량 중 1~2개를 콕 집어 구체적 상황(Anchor)을
+    제시하며 시작한다.
 
-    user_definition 은 호환을 위해 유지하나 본문에서는 사용하지 않음
-    (정의 반복 방지).
+    user_definition 은 호환을 위해 유지하나 본문에서는 사용하지 않음.
     """
     framework = COMPETENCY_FRAMEWORK.get(chapter, {})
     chapter_name = framework.get("name", "이 역량")
-    first_sub = first_subcompetency_name or f"{chapter_name} 관련 역량"
+    indicators = framework.get("indicators", {})
+    sub_names = [
+        v.get("name", "") for v in indicators.values() if v.get("name")
+    ]
 
-    # 동의 직후 호출됨 → 위로·딴소리 없이 곧장 BEI 경험 질문으로.
+    # 타겟 하위역량 1~2개 선정 (없으면 first_subcompetency_name 폴백)
+    targets = sub_names[:2] if sub_names else (
+        [first_subcompetency_name] if first_subcompetency_name else []
+    )
+    if len(targets) >= 2:
+        target_phrase = f"'{targets[0]}' 혹은 '{targets[1]}'"
+    elif targets:
+        target_phrase = f"'{targets[0]}'"
+    else:
+        target_phrase = f"'{chapter_name}'"
+
+    anchor = targets[0] if targets else chapter_name
+
+    # 동의 직후 호출됨 → 위로·딴소리 없이 곧장 하위역량 타겟 STAR 질문으로.
     return (
         f"좋습니다! 그럼 바로 구체적인 경험 이야기로 들어가 볼게요.\n\n"
-        f"최근 6개월 안에 '{first_sub}'와 관련해서 리더십을 발휘하셨던 "
-        f"경험이 있으실까요? 어떤 상황이었고 어떻게 대응하셨는지, "
-        f"떠오르시는 장면 하나면 충분합니다."
+        f"방금 말씀드린 하위 역량 중에서, 최근 리더님께서 가장 에너지를 "
+        f"쏟으셨거나 고민이 깊으셨던 {target_phrase}와 관련된 구체적인 "
+        f"사례로 시작해 볼까요? 예를 들어 '{anchor}'를 두고 팀과 부딪히거나 "
+        f"설득해야 했던 상황이 있었다면, 그 장면을 떠올려 주셔도 좋습니다."
     )
