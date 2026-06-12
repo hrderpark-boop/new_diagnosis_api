@@ -6,7 +6,10 @@ LLM 이 가이드 텍스트를 학습 데이터 패턴으로 변형하는 문제
 
 import random
 
-from diag_project.data.competencies import COMPETENCY_FRAMEWORK
+from diag_project.data.competencies import (
+    COMPETENCY_FRAMEWORK,
+    SUBCOMPETENCY_ANCHORS,
+)
 
 # 5개 챕터의 진단 정의 (LLM 이 아닌 시스템이 직접 사용)
 CHAPTER_DEFINITIONS = {
@@ -237,36 +240,50 @@ def build_chapter_opening_with_user_def(
     """CHAPTER_OPENING (Step 7) — 하위역량 타겟팅 기반 첫 BEI 질문.
 
     대주제로 뭉뚱그린 질문('이 역량 관련 경험 있으세요?')은 답하기 어렵다.
-    Step 6 에서 소개한 하위 역량 중 1~2개를 콕 집어 구체적 상황(Anchor)을
-    제시하며 시작한다.
+    Step 6 에서 소개한 하위 역량 중 무작위 1~2개를 콕 집고, 그 하위역량의
+    SUBCOMPETENCY_ANCHORS(현업 딜레마/갈등 상황)를 앵커로 녹여 시작한다.
 
     user_definition 은 호환을 위해 유지하나 본문에서는 사용하지 않음.
     """
     framework = COMPETENCY_FRAMEWORK.get(chapter, {})
     chapter_name = framework.get("name", "이 역량")
     indicators = framework.get("indicators", {})
-    sub_names = [
-        v.get("name", "") for v in indicators.values() if v.get("name")
-    ]
 
-    # 타겟 하위역량 1~2개 선정 (없으면 first_subcompetency_name 폴백)
-    targets = sub_names[:2] if sub_names else (
-        [first_subcompetency_name] if first_subcompetency_name else []
-    )
-    if len(targets) >= 2:
-        target_phrase = f"'{targets[0]}' 혹은 '{targets[1]}'"
-    elif targets:
-        target_phrase = f"'{targets[0]}'"
+    # 무작위로 1~2개 하위역량 선택
+    keys = list(indicators.keys())
+    random.shuffle(keys)
+    selected = keys[:2]
+
+    names = [indicators[k].get("name", "") for k in selected]
+    if not names and first_subcompetency_name:
+        names = [first_subcompetency_name]
+
+    if len(names) >= 2:
+        target_phrase = f"'{names[0]}' 혹은 '{names[1]}'"
+    elif names:
+        target_phrase = f"'{names[0]}'"
     else:
         target_phrase = f"'{chapter_name}'"
 
-    anchor = targets[0] if targets else chapter_name
+    # 선택된 하위역량의 맞춤 앵커 무작위 1개 (selected[0] 우선, 없으면 다음)
+    anchor_text = None
+    for k in selected:
+        anchors = SUBCOMPETENCY_ANCHORS.get(k)
+        if anchors:
+            anchor_text = random.choice(anchors)
+            break
+
+    anchor_sentence = (
+        f" 예를 들어 {anchor_text}처럼요. 그 장면이 떠오르신다면 "
+        f"편하게 들려주셔도 좋습니다."
+        if anchor_text
+        else " 떠오르시는 구체적인 장면 하나면 충분합니다."
+    )
 
     # 동의 직후 호출됨 → 위로·딴소리 없이 곧장 하위역량 타겟 STAR 질문으로.
     return (
         f"좋습니다! 그럼 바로 구체적인 경험 이야기로 들어가 볼게요.\n\n"
         f"방금 말씀드린 하위 역량 중에서, 최근 리더님께서 가장 에너지를 "
-        f"쏟으셨거나 고민이 깊으셨던 {target_phrase}와 관련된 구체적인 "
-        f"사례로 시작해 볼까요? 예를 들어 '{anchor}'를 두고 팀과 부딪히거나 "
-        f"설득해야 했던 상황이 있었다면, 그 장면을 떠올려 주셔도 좋습니다."
+        f"쏟으셨거나 고민이 깊으셨던 {target_phrase}, 이와 관련된 사례로 "
+        f"시작해 볼까요?{anchor_sentence}"
     )
