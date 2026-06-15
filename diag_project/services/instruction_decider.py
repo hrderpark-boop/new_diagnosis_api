@@ -433,14 +433,21 @@ async def build_turn_state(
     rapport_messages = rapport_turn_result.scalars().all()
     rapport_turn_count = len(rapport_messages)
 
-    # 8-c. 이 챕터의 AI 메시지 수 (CHAPTER_OPENING vs 첫 턴 판별용)
-    # COMPETENCY_INTRO / COMPETENCY_ALIGN 은 제외 — 아직 BEI 시작 전이므로
+    # 8-c. 이 챕터의 실제 BEI AI 메시지 수 (CHAPTER_OPENING 발화 판별용).
+    # 진단 전 단계(INTRO/CONFIRM/ALIGN/INTRO)는 제외 — 아직 BEI 시작 전이므로.
+    # ⚠️ DIAGNOSIS_CONFIRM 은 START_CHAPTER 마커 때문에 chapter 로 태깅되므로
+    #    반드시 제외해야 CHAPTER_OPENING(첫 BEI 템플릿)이 정상 발화함.
     chapter_msg_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.chapter == chapter)
         .where(ChatMessage.role == "model")
-        .where(ChatMessage.instruction_used.not_in(["COMPETENCY_INTRO", "COMPETENCY_ALIGN"]))
+        .where(ChatMessage.instruction_used.not_in([
+            "COMPETENCY_INTRO",
+            "COMPETENCY_ALIGN",
+            "DIAGNOSIS_CONFIRM",
+            "DIAGNOSIS_INTRO",
+        ]))
     )
     chapter_message_count = len(list(chapter_msg_result.scalars().all()))
 

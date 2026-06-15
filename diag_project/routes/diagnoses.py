@@ -419,6 +419,10 @@ async def _submit_message_phase3a(
         chapter_context = CHAPTER_CONTEXTS.get(
             chapter, CHAPTER_CONTEXTS["organization_management"]
         )
+        # 구버전 '챕터 시작 스크립트'(일반 질문 + 중립성 선언 + 위로성 backup)는
+        # 첫 질문이 시스템 템플릿(CHAPTER_OPENING)으로 대체되어 더 이상 불필요.
+        # LLM 이 이를 그대로 echo 하는 문제 방지를 위해 BEI 턴 컨텍스트에서 제거.
+        chapter_context = chapter_context.split("## 챕터 시작 스크립트")[0].rstrip()
     turn_state_text = format_turn_state_for_llm(state)
 
     # 페르소나 통합 system prompt (코치별 톤 반영)
