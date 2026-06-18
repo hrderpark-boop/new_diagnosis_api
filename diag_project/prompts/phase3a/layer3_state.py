@@ -425,6 +425,13 @@ def _get_instruction_guide(
     ]
     _sub_list_str = ", ".join(f"'{n}'" for n in _sub_names) or "하위 역량들"
 
+    # 명시적 상태 추적 (백엔드 계산) — LLM 추론/환각 방지
+    _unexplored = (state or {}).get("unexplored_subcompetencies") or []
+    _explored = (state or {}).get("explored_subcompetencies") or []
+    _unexplored_str = ", ".join(f"'{n}'" for n in _unexplored)
+    _explored_str = ", ".join(f"'{n}'" for n in _explored) or "(아직 없음)"
+    _first_unexplored = f"'{_unexplored[0]}'" if _unexplored else "다른 하위 역량"
+
     if _next_name:
         _ready_to_end_guide = (
             "이 영역의 조건이 모두 충족됐습니다. 새 탐침은 던지지 마세요.\n\n"
@@ -569,25 +576,26 @@ def _get_instruction_guide(
             "자연스럽게 끌어내세요. 수치가 있으면 더 좋지만 강요는 금지."
         ),
         "STAR_COMPLETE_NEW_EVENT": (
-            "한 경험을 충분히 들었습니다. 이제 '하위 역량 릴레이'로 "
-            "다음 경험을 끌어냅니다.\n\n"
-            f"현재 영역('{_cur_chapter_name}')의 하위 역량: "
-            f"{_sub_list_str}\n\n"
-            "🚨 **STRICTLY PROHIBITED — 대주제로 뭉뚱그린 질문 금지**:\n"
-            f"'{_cur_chapter_name}와 관련해서 다른 경험이 있나요?' 처럼 "
-            "대주제 단어로 포괄해 묻는 것은 인지 과부하를 줘 절대 금지.\n\n"
+            "한 경험을 충분히 들었습니다. '하위 역량 릴레이'로 다음 경험을 "
+            "끌어냅니다.\n\n"
+            f"📊 **[백엔드 계산 — 이것만 신뢰하라, 스스로 추론 금지]**\n"
+            f"- 이미 탐색한 하위 역량: {_explored_str}\n"
+            f"- 🎯 아직 안 다룬 하위 역량(이번 타겟 후보): "
+            f"[{_unexplored_str}]\n\n"
+            "🚨 **STRICTLY PROHIBITED**:\n"
+            f"- '{_cur_chapter_name}와 관련해서 다른 경험이 있나요?' 식 "
+            "대주제 뭉뚱그림 절대 금지.\n"
+            "- 이미 탐색한 하위 역량을 또 묻는 것(중복) 금지.\n\n"
             "**필수 흐름 (도장 깨기)**:\n"
             "1. 방금 들은 경험이 어떤 하위 역량을 보여줬는지 한 줄로 짚어 "
             "따뜻하게 매듭.\n"
-            "   예: '방금 이야기에서 리더님의 \\'비전 제시\\' 역량이 "
-            "선명하게 보였어요.'\n"
-            "2. 대화 이력을 보고 **아직 다루지 않은 하위 역량 1~2개를 "
-            "콕 집어** 이름을 말하며 새 경험을 초대.\n"
-            "   예: '그럼 이번엔 관점을 살짝 바꿔서, \\'변화 관리\\'나 "
-            "\\'전략적 사고\\' 측면에서 최근 새롭게 시도하셨거나 고민이 "
-            "깊으셨던 경험이 있다면 하나 들려주시겠어요?'\n\n"
-            "위 4개 하위 역량을 하나씩 짚어가며 빠짐없이 탐색하도록 리드. "
-            "기계적인 '다음 사례 말씀해 주세요' 금지."
+            "2. 🎯 위 '아직 안 다룬 하위 역량' 목록에서 **반드시 1~2개를 "
+            "콕 집어** 이름을 말하며 새 경험을 초대. (목록 밖 단어 금지)\n"
+            f"   예: '그럼 이번엔 관점을 살짝 바꿔서, {_first_unexplored} "
+            "측면에서 최근 새롭게 시도하셨거나 고민이 깊으셨던 경험이 "
+            "있다면 하나 들려주시겠어요?'\n\n"
+            "※ 목록이 비어 있으면(모든 하위 역량 탐색 완료) 새 사례를 "
+            "억지로 더 청하지 말고 영역 마무리 흐름으로 부드럽게 전환."
         ),
         "CONTRARY_NEEDED": (
             "반례 탐침을 지금 수행하세요. Module 2의 3가지 변형 중 "

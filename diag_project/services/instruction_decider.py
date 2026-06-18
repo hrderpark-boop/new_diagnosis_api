@@ -479,6 +479,16 @@ async def build_turn_state(
         first_key = next(iter(indicators))
         first_subcompetency_name = indicators[first_key].get("name", "")
 
+    # 8-e2. 하위역량 탐색 상태 추적 (명시적 State — LLM 추론/환각 방지)
+    #   결정론적 순회: N개 사건이 수집되면 앞에서부터 N개 하위역량을 '탐색됨'
+    #   으로 간주하고 나머지를 '미탐색'으로 노출. (질문 타겟이 순서대로 진행)
+    all_subcompetencies = [
+        v.get("name", "") for v in indicators.values() if v.get("name")
+    ]
+    _covered_count = min(len(events), len(all_subcompetencies))
+    explored_subcompetencies = all_subcompetencies[:_covered_count]
+    unexplored_subcompetencies = all_subcompetencies[_covered_count:]
+
     # COMPETENCY_ALIGN 가이드용: 정의 + 세부역량 이름 목록
     if chapter_competency:
         chapter_framework_state = {
@@ -539,6 +549,9 @@ async def build_turn_state(
         "competency_intro_done": competency_intro_done,
         "competency_aligned": competency_aligned,
         "first_subcompetency_name": first_subcompetency_name,
+        "all_subcompetencies": all_subcompetencies,
+        "explored_subcompetencies": explored_subcompetencies,
+        "unexplored_subcompetencies": unexplored_subcompetencies,
         "user_name": user_name,
         "chapter_framework": chapter_framework_state,
     }

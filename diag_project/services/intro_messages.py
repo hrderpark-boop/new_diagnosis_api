@@ -249,29 +249,17 @@ def build_chapter_opening_with_user_def(
     chapter_name = framework.get("name", "이 역량")
     indicators = framework.get("indicators", {})
 
-    # 무작위로 1~2개 하위역량 선택
+    # 첫 하위역량을 결정론적으로 타겟 (하위역량 릴레이 추적과 순서 일치).
+    # 첫 사건은 항상 sub[0] 을 다룬 것으로 간주됨.
     keys = list(indicators.keys())
-    random.shuffle(keys)
-    selected = keys[:2]
+    first_key = keys[0] if keys else None
+    first_name = (
+        indicators[first_key].get("name", "") if first_key else ""
+    ) or first_subcompetency_name or chapter_name
 
-    names = [indicators[k].get("name", "") for k in selected]
-    if not names and first_subcompetency_name:
-        names = [first_subcompetency_name]
-
-    if len(names) >= 2:
-        target_phrase = f"'{names[0]}' 혹은 '{names[1]}'"
-    elif names:
-        target_phrase = f"'{names[0]}'"
-    else:
-        target_phrase = f"'{chapter_name}'"
-
-    # 선택된 하위역량의 맞춤 앵커 무작위 1개 (selected[0] 우선, 없으면 다음)
-    anchor_text = None
-    for k in selected:
-        anchors = SUBCOMPETENCY_ANCHORS.get(k)
-        if anchors:
-            anchor_text = random.choice(anchors)
-            break
+    # 첫 하위역량의 맞춤 앵커 무작위 1개
+    anchors = SUBCOMPETENCY_ANCHORS.get(first_key) if first_key else None
+    anchor_text = random.choice(anchors) if anchors else None
 
     anchor_sentence = (
         f" 예를 들어 {anchor_text}처럼요. 그 장면이 떠오르신다면 "
@@ -280,10 +268,10 @@ def build_chapter_opening_with_user_def(
         else " 떠오르시는 구체적인 장면 하나면 충분합니다."
     )
 
-    # 동의 직후 호출됨 → 위로·딴소리 없이 곧장 하위역량 타겟 STAR 질문으로.
+    # 동의 직후 호출됨 → 위로·딴소리 없이 곧장 첫 하위역량 타겟 STAR 질문으로.
     return (
         f"좋습니다! 그럼 바로 구체적인 경험 이야기로 들어가 볼게요.\n\n"
-        f"방금 말씀드린 하위 역량 중에서, 최근 리더님께서 가장 에너지를 "
-        f"쏟으셨거나 고민이 깊으셨던 {target_phrase}, 이와 관련된 사례로 "
-        f"시작해 볼까요?{anchor_sentence}"
+        f"방금 말씀드린 하위 역량 중에서, 먼저 '{first_name}' 측면부터 "
+        f"여쭤볼게요. 최근 이와 관련해서 리더님께서 에너지를 쏟으셨거나 "
+        f"고민이 깊으셨던 사례가 있으실까요?{anchor_sentence}"
     )
