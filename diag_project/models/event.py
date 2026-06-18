@@ -34,6 +34,11 @@ class Event(SQLModel, table=True):
     time_context: Optional[str] = None
     core_action: Optional[str] = None
 
+    # 실제 답변 내용 기반으로 LLM 이 매핑한 하위역량 이름 (동적 태깅)
+    mapped_subcompetency: Optional[str] = Field(
+        default=None, sa_column=Column(String(100))
+    )
+
     tags: List[str] = Field(default_factory=list, sa_column=Column(JSON))
 
     started_at: datetime = Field(default_factory=datetime.utcnow)

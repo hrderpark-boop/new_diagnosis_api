@@ -86,6 +86,10 @@ async def complete_event(
     event.time_context = metadata.get("time_context")
     event.core_action = metadata.get("core_action")
     event.tags = metadata.get("tags", []) or []
+    # 동적 태깅: 실제 스토리에 가장 부합하는 하위역량
+    _mapped = metadata.get("mapped_subcompetency")
+    if _mapped:
+        event.mapped_subcompetency = _mapped
 
     db.add(event)
     await db.commit()

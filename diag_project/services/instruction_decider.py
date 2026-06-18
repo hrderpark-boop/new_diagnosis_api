@@ -51,6 +51,34 @@ def _extract_user_name(text: str) -> str:
     return "리더"
 
 
+def _norm_sub(text: str) -> str:
+    """하위역량 이름 정규화 — 공백·괄호 내용 제거 (방어 매칭용)."""
+    return text.strip().replace(" ", "").split("(")[0]
+
+
+def _match_subcompetency(
+    tagged: str | None, all_names: list[str]
+) -> str | None:
+    """LLM 이 태깅한 하위역량 값을 4개 정식 이름 중 하나로 안전 매칭.
+
+    정확히 일치하지 않아도(예: '변화 관리' vs '변화관리(변화지향)')
+    정규화·부분일치로 보정. 매칭 실패 시 None (방어 — 엉뚱한 값 무시).
+    """
+    if not tagged:
+        return None
+    t = tagged.strip()
+    if t in all_names:
+        return t
+    tn = _norm_sub(t)
+    if not tn:
+        return None
+    for name in all_names:
+        nn = _norm_sub(name)
+        if nn == tn or tn in nn or nn in tn:
+            return name
+    return None
+
+
 # 19가지 instruction 타입
 InstructionType = Literal[
     "ONBOARDING_LAUNCH",
@@ -479,15 +507,25 @@ async def build_turn_state(
         first_key = next(iter(indicators))
         first_subcompetency_name = indicators[first_key].get("name", "")
 
-    # 8-e2. 하위역량 탐색 상태 추적 (명시적 State — LLM 추론/환각 방지)
-    #   결정론적 순회: N개 사건이 수집되면 앞에서부터 N개 하위역량을 '탐색됨'
-    #   으로 간주하고 나머지를 '미탐색'으로 노출. (질문 타겟이 순서대로 진행)
+    # 8-e2. 하위역량 탐색 상태 추적 (동적 태깅 — LLM 추론/환각 방지)
+    #   각 사건의 mapped_subcompetency(실제 스토리 기반 태깅)를 모아 탐색
+    #   세트 구성. 질문 순서가 아니라 '실제 답변 내용'으로 체크리스트 관리.
     all_subcompetencies = [
         v.get("name", "") for v in indicators.values() if v.get("name")
     ]
-    _covered_count = min(len(events), len(all_subcompetencies))
-    explored_subcompetencies = all_subcompetencies[:_covered_count]
-    unexplored_subcompetencies = all_subcompetencies[_covered_count:]
+    _explored_set = set()
+    for _e in events:
+        _matched = _match_subcompetency(
+            getattr(_e, "mapped_subcompetency", None), all_subcompetencies
+        )
+        if _matched:
+            _explored_set.add(_matched)
+    explored_subcompetencies = [
+        n for n in all_subcompetencies if n in _explored_set
+    ]
+    unexplored_subcompetencies = [
+        n for n in all_subcompetencies if n not in _explored_set
+    ]
 
     # COMPETENCY_ALIGN 가이드용: 정의 + 세부역량 이름 목록
     if chapter_competency:

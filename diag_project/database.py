@@ -52,5 +52,17 @@ async def init_db():
         
         # 테이블 생성
         await conn.run_sync(SQLModel.metadata.create_all)
-    
+
+        # 경량 마이그레이션: 기존 events 테이블에 신규 컬럼이 없으면 추가.
+        # (create_all 은 기존 테이블에 컬럼을 추가하지 않으므로 방어적으로 처리)
+        try:
+            from sqlalchemy import text
+            await conn.execute(text(
+                "ALTER TABLE events ADD COLUMN mapped_subcompetency VARCHAR(100)"
+            ))
+            logger.info("✅ events.mapped_subcompetency 컬럼 추가됨")
+        except Exception:
+            # 이미 존재하면 무시
+            pass
+
     logger.info(f"✅ Database initialized at: {DATABASE_URL}")
