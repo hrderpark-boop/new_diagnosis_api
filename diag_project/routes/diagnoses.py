@@ -573,6 +573,17 @@ async def _submit_message_phase3a(
         db.add(session)
         await db.commit()
 
+    # 12-a. 누적 완료 역량 계산 (Hall of Achievements 배지 유지용).
+    #   매 턴 빈 배열을 반환하면 프론트가 배지를 덮어써 초기화되는 버그 →
+    #   현재 진행 토픽 기준으로 '이미 완료된 토픽'을 누적해서 반환.
+    _topic_order = _get_topic_order()
+    if session.status == "completed" or session.current_topic == "Completed":
+        completed_topics = _topic_order[:]
+    elif session.current_topic in _topic_order:
+        completed_topics = _topic_order[: _topic_order.index(session.current_topic)]
+    else:
+        completed_topics = []
+
     # 12. 응답 (감사 위험 #3 해결: reply → coach_response_message 매핑)
     return {
         "coach_response_message": clean_reply,
@@ -581,7 +592,7 @@ async def _submit_message_phase3a(
         "is_session_completed": is_session_completed,
         "is_session_paused": is_session_paused,
         "reward": None,
-        "completed_topics": [],
+        "completed_topics": completed_topics,
         "_phase3a_metadata": {
             "chapter": chapter,
             "instruction_used": instruction_used,
