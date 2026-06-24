@@ -475,6 +475,9 @@ async def build_turn_state(
             "COMPETENCY_ALIGN",
             "DIAGNOSIS_CONFIRM",
             "DIAGNOSIS_INTRO",
+            # 종결+전환 1턴: 경계 메시지가 다음 챕터로 태깅되므로 제외해야
+            # 새 챕터의 CHAPTER_OPENING(첫 BEI)이 정상 발화함.
+            "CHAPTER_READY_TO_END",
         ]))
     )
     chapter_message_count = len(list(chapter_msg_result.scalars().all()))

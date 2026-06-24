@@ -520,10 +520,20 @@ async def _submit_message_phase3a(
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     probe_type_used = llm_state.get("probe_type_used")
 
+    # Core Rule 4: 종결+전환 1턴 처리 — CHAPTER_READY_TO_END 가 [CHAPTER_COMPLETE]
+    # 와 [START_CHAPTER] 를 함께 내면, 다음 챕터를 '시작됨'으로 표시해
+    # 중간 CONFIRM 턴 없이 바로 다음 영역 합의(ALIGN)로 이어지게 한다.
+    _seamless_next_chapter = None
+    if (instruction_used == "CHAPTER_READY_TO_END"
+            and is_chapter_completed and is_chapter_starting):
+        _seamless_next_chapter = _get_next_chapter(chapter)
+
     # 마커 → probe_type_used 에 저장 (우선순위: READY_FOR_INTRO > START_CHAPTER)
     if instruction_used == "RAPPORT_BUILDING" and is_ready_for_intro:
         probe_type_used = "READY_FOR_INTRO"
     elif instruction_used == "DIAGNOSIS_CONFIRM" and is_chapter_starting:
+        probe_type_used = "START_CHAPTER"
+    elif _seamless_next_chapter:
         probe_type_used = "START_CHAPTER"
 
     # 진단 전 단계는 사건 생명주기 스킵
@@ -543,8 +553,10 @@ async def _submit_message_phase3a(
     # START_CHAPTER 마커 메시지는 진단 전 단계라도 해당 챕터로 태깅.
     # (chapter_started 쿼리가 chapter 별로 스코프되므로 — 안 그러면
     #  마커가 chapter=None 에 저장돼 chapter_started 가 영영 False)
+    # 종결+전환 1턴(CHAPTER_READY_TO_END)이면 마커를 '다음 챕터'로 태깅해
+    # 새 챕터를 시작됨으로 만든다.
     if probe_type_used == "START_CHAPTER":
-        ai_msg_chapter = chapter
+        ai_msg_chapter = _seamless_next_chapter or chapter
     else:
         ai_msg_chapter = None if is_pre_diagnosis else chapter
 
