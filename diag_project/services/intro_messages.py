@@ -275,3 +275,25 @@ def build_chapter_opening_with_user_def(
         f"여쭤볼게요. 최근 이와 관련해서 리더님께서 에너지를 쏟으셨거나 "
         f"고민이 깊으셨던 사례가 있으실까요?{anchor_sentence}"
     )
+
+
+def build_chapter_transition_question(chapter: str) -> str:
+    """종결+전환 하이브리드용 — 다음 영역에 대한 '실무적 전환 질문' 1개 무작위.
+
+    CHAPTER_READY_TO_END 에서 LLM 은 wrap-up(요약+공감)만 담당하고,
+    이 전환 질문 + 마커는 시스템이 강제로 덧붙인다 (마커 누락 0%).
+    Core Rule 3(다변화·실무 톤, '철학/본질' 배제) 준수.
+    """
+    framework = COMPETENCY_FRAMEWORK.get(chapter, {})
+    name = framework.get("name", "다음 영역")
+    variations = [
+        f"이 경험을 바탕으로 바로 이어서, 현장에서 직접 부딪히며 "
+        f"체감하신 '{name}'을 리더님만의 언어로 짧게 표현해 주신다면요?",
+        f"이어서 '{name}' 이야기로 가볼게요 — 리더님 팀에서 '{name}'은 "
+        f"평소 어떤 모습으로 작동하고 있나요?",
+        f"그대로 이어서, 리더님은 '{name}' 하면 실무에서 어떤 장면이 "
+        f"먼저 떠오르세요?",
+        f"현실에서 '{name}'을 챙긴다는 건 참 쉽지 않죠. 실무에서 이 "
+        f"부분을 관리하실 때 가장 신경 쓰시는 포인트는 뭐예요?",
+    ]
+    return random.choice(variations)

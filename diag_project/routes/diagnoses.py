@@ -37,6 +37,7 @@ from diag_project.services.intro_messages import (
     build_intro_anchor_section,
     build_align_framework_section,
     build_chapter_opening_with_user_def,
+    build_chapter_transition_question,
 )
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
@@ -516,6 +517,24 @@ async def _submit_message_phase3a(
     # 8-c. CHAPTER_OPENING 은 Step 7 에서 시스템이 전체 출력 (하이브리드 폐지).
     # build_chapter_opening_with_user_def 가 정의 + 첫 BEI 질문까지 포함하므로
     # 별도 후처리 불필요.
+
+    # 8-d. CHAPTER_READY_TO_END 하이브리드 (종결+전환 안전장치):
+    #   LLM 은 wrap-up(요약+공감)만 담당. 시스템이 '다변화된 전환 질문'과
+    #   필수 마커를 강제 부착 → LLM 의 마커 누락 확률 0%, 무조건 다음
+    #   챕터 ALIGN 으로 직행. (다음 챕터가 없으면 종결만 강제)
+    if instruction_used == "CHAPTER_READY_TO_END":
+        _next_ch = _get_next_chapter(chapter)
+        wrap_up = clean_reply.strip() or "이 영역, 여기서 잘 매듭짓겠습니다."
+        if _next_ch:
+            transition_q = build_chapter_transition_question(_next_ch)
+            clean_reply = f"{wrap_up}\n\n{transition_q}"
+            # 마커 강제 (LLM 출력과 무관하게 100% 보장)
+            is_chapter_completed = True
+            is_chapter_starting = True
+        else:
+            clean_reply = wrap_up
+            is_chapter_completed = True
+            is_chapter_starting = False
 
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     probe_type_used = llm_state.get("probe_type_used")
