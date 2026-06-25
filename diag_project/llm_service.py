@@ -23,11 +23,18 @@ logger = logging.getLogger(__name__)
 # 투 트랙(Dual Model) 전략:
 #  - 실시간 대화(핑퐁): 속도 우선 → gemini-2.0-flash
 #  - 진단 채점/리포트(깊은 사고): 품질 우선 → gemini-2.5-pro
-CHAT_MODEL = "models/gemini-2.0-flash"
+CHAT_MODEL = "models/gemini-2.5-flash"
 ANALYSIS_MODEL = "models/gemini-2.5-pro"
 
 # 하위 호환: 기존 BEST_MODEL 참조는 채점용(고품질) 모델로 유지
 BEST_MODEL = ANALYSIS_MODEL
+
+# Phase 3-A 대화 토큰 한도 (light/heavy 분리).
+#  - HEAVY(BEI 본진단): reply + state + event_metadata JSON Envelope 가 커서
+#    절대 잘리면 안 됨 → 넉넉하게.
+#  - LIGHT(라포·INTRO·CONFIRM·ALIGN 등): reply 텍스트만 → 속도 위해 낮게.
+PHASE3A_MAX_TOKENS_HEAVY = 8192
+PHASE3A_MAX_TOKENS_LIGHT = 1000
 
 MAX_HISTORY_TURNS = 20
 
@@ -698,7 +705,10 @@ class GeminiService:
             response_text = await self._generate_with_retry(
                 prompt=user_content,
                 system_instruction=system_prompt,
-                max_tokens=800 if light_mode else 3000,
+                max_tokens=(
+                    PHASE3A_MAX_TOKENS_LIGHT if light_mode
+                    else PHASE3A_MAX_TOKENS_HEAVY
+                ),
             )
 
             # 강화된 파서로 reply / state 추출 (평문·JSON 모두 견고하게 처리)
