@@ -244,9 +244,17 @@ def _extract_reply_from_response(response_text: str) -> tuple[str, dict]:
             pass
 
     # 패턴 4: "reply": "..." 키-값만 추출 (닫는 따옴표 있는 완전한 경우)
+    #   정규식 추출이므로 JSON 이스케이프(\\n, \\")를 직접 복원해야
+    #   프론트에 '\\n' 리터럴이 노출되지 않음.
     kv_match = re.search(r'"reply"\s*:\s*"([^"]+)"', text)
     if kv_match:
-        return kv_match.group(1), {}
+        extracted = (
+            kv_match.group(1)
+            .replace("\\n", "\n")
+            .replace('\\"', '"')
+            .replace("\\t", "\t")
+        )
+        return extracted, {}
 
     # 패턴 5: 잘린 JSON — reply 키 다음 텍스트 추출 (닫는 따옴표 없어도 OK)
     if text.startswith("{") or '"reply"' in text:

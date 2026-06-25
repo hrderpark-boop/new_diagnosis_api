@@ -497,6 +497,11 @@ async def _submit_message_phase3a(
         .replace("[START_CHAPTER]", "")
         .strip()
     )
+    # 개행 정규화: 정규식 파서가 못 푼 '\n' 리터럴이 프론트에 노출되는 버그 방지.
+    # (json.loads 로 이미 풀린 경우엔 리터럴이 없어 무해)
+    clean_reply = (
+        clean_reply.replace("\\n", "\n").replace('\\"', '"').replace("\\t", "\t")
+    )
 
     # 8-a. DIAGNOSIS_INTRO 하이브리드: LLM 호응 + 시스템 진단 안내 본문 합치기
     if instruction_used == "DIAGNOSIS_INTRO":
