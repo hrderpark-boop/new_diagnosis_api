@@ -489,12 +489,14 @@ async def _submit_message_phase3a(
     is_session_paused = "[SESSION_PAUSE]" in reply
     is_ready_for_intro = "[READY_FOR_INTRO]" in reply
     is_chapter_starting = "[START_CHAPTER]" in reply
+    is_diagnosis_complete = "[DIAGNOSIS_COMPLETE]" in reply
     clean_reply = (
         reply
         .replace("[CHAPTER_COMPLETE]", "")
         .replace("[SESSION_PAUSE]", "")
         .replace("[READY_FOR_INTRO]", "")
         .replace("[START_CHAPTER]", "")
+        .replace("[DIAGNOSIS_COMPLETE]", "")
         .strip()
     )
     # 개행 정규화: 정규식 파서가 못 푼 '\n' 리터럴이 프론트에 노출되는 버그 방지.
@@ -537,9 +539,12 @@ async def _submit_message_phase3a(
             is_chapter_completed = True
             is_chapter_starting = True
         else:
+            # 🏁 마지막 챕터 — Grand Finale 만, 전환 없음.
+            #   [START_CHAPTER] 절대 X, 대신 [DIAGNOSIS_COMPLETE] 로 진단 종료 확정.
             clean_reply = wrap_up
             is_chapter_completed = True
             is_chapter_starting = False
+            is_diagnosis_complete = True
 
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     probe_type_used = llm_state.get("probe_type_used")
@@ -600,9 +605,10 @@ async def _submit_message_phase3a(
     is_session_completed = False
     if is_chapter_completed:
         next_chapter = _get_next_chapter(chapter)
-        if next_chapter:
+        if next_chapter and not is_diagnosis_complete:
             session.current_topic = chapter_to_topic(next_chapter)
         else:
+            # 마지막 챕터(다음 없음) 또는 [DIAGNOSIS_COMPLETE] → 진단 종료 확정
             session.current_topic = "Completed"
             session.status = "completed"
             is_session_completed = True

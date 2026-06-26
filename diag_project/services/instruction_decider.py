@@ -401,6 +401,20 @@ async def build_turn_state(
         for e in prev_events
     ]
 
+    # 6-b. Global Memory: 전 챕터 + 현재 챕터의 '완료된' 모든 사건 요약.
+    #   LLM 이 챕터 전환 후에도 과거 사례 전체를 기억해 '복붙 중복'을 캐치.
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK as _CF
+    _all_done_events = list(prev_events) + [e for e in events if e.is_complete]
+    all_collected_events = []
+    for e in _all_done_events:
+        _cname = _CF.get(e.chapter, {}).get("name", e.chapter)
+        _title = e.summary or (e.core_action or "")[:60] or "(요약 없음)"
+        all_collected_events.append({
+            "chapter": _cname,
+            "summary": _title,
+            "mapped_subcompetency": getattr(e, "mapped_subcompetency", None),
+        })
+
     # 7. 회피 감지
     contains_avoidance = check_avoidance(last_response)
 
@@ -576,6 +590,7 @@ async def build_turn_state(
         "last_avoidance_type": None,
         "avoidance_retry_count": 0,
         "existing_events": existing_for_check,
+        "all_collected_events": all_collected_events,  # Global Memory
         "cross_chapter_signals": None,  # 자기관리 챕터에서 별도 채움 (Step 5+)
         "last_user_response": last_response,
         "response_length": len(last_response) if last_response else 0,
