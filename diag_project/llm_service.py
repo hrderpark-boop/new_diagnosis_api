@@ -877,9 +877,9 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 {relevant_utterances}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[참고용 전체 대화 로그 (맥락 보완용)]
+[참고용 대화 로그 (맥락 보완용)]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{full_transcript[:3000]}
+{full_transcript[:12000]}
 """
         try:
             raw = await self._generate_with_retry(
@@ -1016,33 +1016,58 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 "top_keywords": [],
             }
 
-    async def generate_diagnosis_result(self, history: List[Dict], user_name: str) -> Dict[str, Any]:
+    async def generate_diagnosis_result(
+        self,
+        history: List[Dict],
+        user_name: str,
+        chapter_transcripts: Dict[str, str] | None = None,
+    ) -> Dict[str, Any]:
         """
-        Chain of Thought 3단계 분석:
-        1단계: 역량별 발화 분류
-        2단계: 역량별 개별 심층 분석 (병렬)
-        3단계: 종합 요약 (archetype, blind_spot, IDP)
+        Map-Reduce 채점:
+        - Map: 역량(챕터)별로 분리된 대화·사건만 각각 gemini-2.5-pro 에 주입해
+          병렬로 5번 개별 분석. (통짜 컨텍스트 절단/날조 방지)
+        - Reduce: 5개 결과를 하나의 종합 리포트로 취합.
+
+        chapter_transcripts 가 주어지면 LLM 분류(STEP 1)를 건너뛰고 DB chapter
+        태그 기반의 결정론적 필터링 데이터를 사용한다. (권장 경로)
+        없으면 하위호환으로 기존 STEP 1(LLM 분류) 사용.
         """
-        logger.info(f"🧠 [{user_name}] Chain-of-Thought 분석 시작")
-        chat_transcript = "\n".join([
-            f"{msg['role']}: {msg['parts']}" for msg in history
-        ])
-
-        # STEP 1: 역량별 발화 분류
-        logger.info("📋 STEP 1: 역량별 발화 분류 중...")
-        utterances_by_competency = await self._extract_utterances_by_competency(chat_transcript)
-
-        # STEP 2: 역량별 병렬 심층 분석
-        logger.info("🔍 STEP 2: 역량별 심층 분석 중 (병렬)...")
+        logger.info(f"🧠 [{user_name}] Map-Reduce 분석 시작")
         competency_keys = _get_competency_keys()
-        tasks = [
-            self._analyze_single_competency(
-                competency_key=key,
-                relevant_utterances=utterances_by_competency.get(key, "관련 발언 없음"),
-                full_transcript=chat_transcript,
-            )
-            for key in competency_keys
-        ]
+
+        if chapter_transcripts is not None:
+            # ✅ 결정론적 챕터별 필터링 — 통짜 주입/절단 없음
+            logger.info("📋 STEP 1 생략: DB chapter 태그 기반 결정론적 분리 사용")
+
+            def _chapter_data(key: str) -> str:
+                return chapter_transcripts.get(key) or "이 영역에 대한 대화 기록이 없습니다."
+
+            tasks = [
+                self._analyze_single_competency(
+                    competency_key=key,
+                    relevant_utterances=_chapter_data(key),
+                    full_transcript=_chapter_data(key),
+                )
+                for key in competency_keys
+            ]
+        else:
+            # 하위호환: 기존 LLM 분류 경로
+            chat_transcript = "\n".join([
+                f"{msg['role']}: {msg['parts']}" for msg in history
+            ])
+            logger.info("📋 STEP 1: 역량별 발화 분류 중 (LLM)...")
+            utterances_by_competency = await self._extract_utterances_by_competency(chat_transcript)
+            tasks = [
+                self._analyze_single_competency(
+                    competency_key=key,
+                    relevant_utterances=utterances_by_competency.get(key, "관련 발언 없음"),
+                    full_transcript=chat_transcript,
+                )
+                for key in competency_keys
+            ]
+
+        # STEP 2(Map): 역량별 병렬 심층 분석
+        logger.info("🔍 STEP 2(Map): 역량별 심층 분석 중 (병렬 5회)...")
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         competency_results = {}

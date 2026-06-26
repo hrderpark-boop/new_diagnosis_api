@@ -14,9 +14,54 @@ from diag_project.models.diagnosis_report import DiagnosisReport
 from diag_project.models.diagnosis_session import DiagnosisSession, ChatMessage
 from diag_project.models.participant import Participant
 from diag_project.models.coach_persona import CoachPersona
+from diag_project.models.event import Event
+from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 from diag_project.llm_service import GeminiService
 
 logger = logging.getLogger(__name__)
+
+
+def _build_chapter_transcripts(
+    messages: list, events: list
+) -> Dict[str, str]:
+    """역량(챕터)별로 대화·사건을 결정론적으로 분리 (Map-Reduce 의 Map 입력).
+
+    - ChatMessage.chapter 가 None 인 메시지(라포·INTRO 등 첫 START_CHAPTER
+      이전 사담)는 자동 제외 → 채점 노이즈 차단.
+    - LLM 분류(환각 위험) 대신, DB 의 chapter 태그로 100% 정확히 필터링.
+    - 각 챕터에 수집된 Event(STAR·mapped_subcompetency)도 함께 묶어 근거 강화.
+    """
+    transcripts: Dict[str, str] = {}
+    for key in COMPETENCY_FRAMEWORK.keys():
+        if key == "supplementary":
+            continue
+        chap_msgs = [m for m in messages if getattr(m, "chapter", None) == key]
+        lines = [
+            f"{'리더' if m.role == 'user' else '코치'}: {m.content}"
+            for m in chap_msgs
+            if m.content
+        ]
+
+        chap_events = [e for e in events if getattr(e, "chapter", None) == key]
+        ev_lines = []
+        for e in chap_events:
+            parts = []
+            if e.mapped_subcompetency:
+                parts.append(f"하위역량={e.mapped_subcompetency}")
+            if e.summary:
+                parts.append(f"요약={e.summary}")
+            if e.core_action:
+                parts.append(f"핵심행동={e.core_action}")
+            if e.result:
+                parts.append(f"결과={e.result}")
+            if parts:
+                ev_lines.append("  - " + " | ".join(parts))
+
+        body = "\n".join(lines)
+        if ev_lines:
+            body += "\n\n[수집된 핵심 사건]\n" + "\n".join(ev_lines)
+        transcripts[key] = body.strip() or "이 영역에 대한 대화 기록이 없습니다."
+    return transcripts
 
 router = APIRouter(
     tags=["Reports"],
@@ -124,11 +169,24 @@ async def analyze_session(
     history_query = select(ChatMessage).where(ChatMessage.session_id == session_uuid).order_by(ChatMessage.created_at.asc())
     history_res = await db.execute(history_query)
     messages = history_res.scalars().all()
-    
+
+    events_res = await db.execute(
+        select(Event).where(Event.session_id == session_uuid).order_by(Event.sequence_num.asc())
+    )
+    events = events_res.scalars().all()
+
     formatted_history = [{"role": msg.role, "parts": msg.content} for msg in messages]
 
-    # AI 분석 실행
-    analysis_result = await llm.generate_diagnosis_result(history=formatted_history, user_name=user_name)
+    # Map-Reduce: 역량별로 대화·사건을 결정론적으로 분리해 주입.
+    #  - 통짜 컨텍스트 주입(절단/날조) 방지, 라포 사담(chapter=None) 제외.
+    chapter_transcripts = _build_chapter_transcripts(messages, events)
+
+    # AI 분석 실행 (chapter_transcripts 제공 시 챕터별 Map 호출 → Reduce)
+    analysis_result = await llm.generate_diagnosis_result(
+        history=formatted_history,
+        user_name=user_name,
+        chapter_transcripts=chapter_transcripts,
+    )
     if not analysis_result:
         raise HTTPException(status_code=500, detail="AI 분석 결과를 생성하지 못했습니다.")
 
