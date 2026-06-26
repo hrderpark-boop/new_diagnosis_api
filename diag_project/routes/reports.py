@@ -156,12 +156,17 @@ async def analyze_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # 기존 리포트가 있으면 스킵하지 않고 삭제 → 무조건 처음부터 재분석(Overwrite).
     existing_query = select(DiagnosisReport).where(DiagnosisReport.session_id == session_uuid)
     result = await db.execute(existing_query)
-    existing_report = result.scalars().first()
-    
-    if existing_report:
-        return {"status": "success", "message": "Report already exists", "report_id": str(existing_report.id)}
+    existing_reports = result.scalars().all()
+    if existing_reports:
+        for _r in existing_reports:
+            await db.delete(_r)
+        await db.commit()
+        logger.info(
+            f"♻️ 기존 리포트 {len(existing_reports)}건 삭제 → 강제 재생성: {session_id}"
+        )
 
     user = await db.get(Participant, session.user_id)
     user_name = user.name if user else "리더"
