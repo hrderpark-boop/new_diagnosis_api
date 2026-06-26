@@ -18,7 +18,7 @@ class ParticipantAnswer(ParticipantAnswerBase, table=True):
 
     id: UUID = Field(
         default_factory=uuid4,
-        sa_column=Column(GUID(), primary_key=True, index=True, server_default=text("LOWER(HEX(RANDOMBLOB(16)))"))
+        sa_column=Column(GUID(), primary_key=True, index=True)
     )
 
     # 외래 키

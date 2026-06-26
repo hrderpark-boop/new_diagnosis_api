@@ -24,7 +24,7 @@ class Diagnosis(DiagnosisBase, table=True):
     __tablename__ = "diagnosis" 
     id: UUID = Field(  
         default_factory=uuid4,
-        sa_column=Column(GUID(), primary_key=True, server_default=text("LOWER(HEX(RANDOMBLOB(16)))")),
+        sa_column=Column(GUID(), primary_key=True),
     )
     participant_id: UUID = Field(sa_column=Column(GUID(), ForeignKey("participants.id"), index=True))
     diagnosis_template_id: UUID = Field(sa_column=Column(GUID(), ForeignKey("diagnosis_templates.id"), index=True))

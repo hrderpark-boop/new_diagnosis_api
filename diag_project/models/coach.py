@@ -18,7 +18,7 @@ class Coach(CoachBase, table=True):
     __tablename__ = "coaches"
     id: UUID = Field(
         default_factory=uuid4,
-        sa_column=Column(GUID(), primary_key=True, index=True, server_default=text("LOWER(HEX(RANDOMBLOB(16)))"))
+        sa_column=Column(GUID(), primary_key=True, index=True)
     )
     user_id: UUID = Field(sa_column=Column(GUID(), ForeignKey("participants.id"), index=True))
     created_at: Optional[datetime] = Field(

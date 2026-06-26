@@ -25,7 +25,7 @@ class DiagnosisQuestion(DiagnosisQuestionBase, table=True):
     __tablename__ = "diagnosis_questions"
     id: UUID = Field(
         default_factory=uuid4,
-        sa_column=Column(GUID(), primary_key=True, index=True, server_default=text("LOWER(HEX(RANDOMBLOB(16)))"))
+        sa_column=Column(GUID(), primary_key=True, index=True)
     )
     diagnosis_template_id: UUID = Field(sa_column=Column(GUID(), ForeignKey("diagnosis_templates.id"), index=True))
     question_category_id: UUID = Field(sa_column=Column(GUID(), ForeignKey("question_categories.id"), index=True))
@@ -50,7 +50,7 @@ class QuestionChoice(QuestionChoiceBase, table=True):
     __tablename__ = "question_choices"
     id: UUID = Field(
         default_factory=uuid4,
-        sa_column=Column(GUID(), primary_key=True, index=True, server_default=text("LOWER(HEX(RANDOMBLOB(16)))"))
+        sa_column=Column(GUID(), primary_key=True, index=True)
     )
     diagnosis_question_id: UUID = Field(sa_column=Column(GUID(), ForeignKey("diagnosis_questions.id"), index=True))
     created_at: Optional[datetime] = Field(

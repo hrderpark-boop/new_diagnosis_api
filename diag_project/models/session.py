@@ -20,7 +20,7 @@ class Session(SessionBase, table=True):
     __tablename__ = "sessions"
     id: UUID = Field(
         default_factory=uuid4,
-        sa_column=Column(GUID(), primary_key=True, index=True, server_default=text("LOWER(HEX(RANDOMBLOB(16)))"))
+        sa_column=Column(GUID(), primary_key=True, index=True)
     )
     diagnosis_id: UUID = Field(sa_column=Column(GUID(), ForeignKey("diagnosis.id"), index=True))
     participant_id: UUID = Field(sa_column=Column(GUID(), ForeignKey("participants.id"), index=True))

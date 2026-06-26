@@ -28,7 +28,7 @@ class QuestionAnswer(QuestionAnswerBase, table=True):
     id: str = Field(
         default_factory=lambda: str(uuid4()),
         max_length=36,
-        sa_column=Column(GUID(), primary_key=True, index=True, server_default=text("LOWER(HEX(RANDOMBLOB(16)))")),
+        sa_column=Column(GUID(), primary_key=True, index=True),
     )
 
     # Foreign Keys (Table)

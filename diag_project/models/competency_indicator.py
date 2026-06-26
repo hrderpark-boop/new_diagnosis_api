@@ -17,7 +17,7 @@ class Competency(CompetencyBase, table=True):
     __tablename__ = "competencies"
     id: UUID = Field(
         default_factory=uuid4,
-        sa_column=Column(GUID(), primary_key=True, index=True, server_default=text("LOWER(HEX(RANDOMBLOB(16)))")),
+        sa_column=Column(GUID(), primary_key=True, index=True),
     )
     created_at: Optional[datetime] = Field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -41,7 +41,7 @@ class Indicator(IndicatorBase, table=True):
     __tablename__ = "indicators"
     id: UUID = Field(
         default_factory=uuid4,
-        sa_column=Column(GUID(), primary_key=True, index=True, server_default=text("LOWER(HEX(RANDOMBLOB(16)))")),
+        sa_column=Column(GUID(), primary_key=True, index=True),
     )
     competency_id: UUID = Field(sa_column=Column(GUID(), ForeignKey("competencies.id"), index=True))
     created_at: Optional[datetime] = Field(

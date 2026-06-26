@@ -25,7 +25,7 @@ class Participant(ParticipantBase, table=True):
     # UUID Primary Key 설정
     id: UUID = Field(
         default_factory=uuid4,
-        sa_column=Column(GUID(), primary_key=True, index=True, server_default=text("LOWER(HEX(RANDOMBLOB(16)))"))
+        sa_column=Column(GUID(), primary_key=True, index=True)
     )
 
     password_hash: Optional[str] = Field(default=None)

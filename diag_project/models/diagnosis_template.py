@@ -17,7 +17,7 @@ class DiagnosisTemplate(DiagnosisTemplateBase, table=True):
     __tablename__ = "diagnosis_templates"
     id: UUID = Field(
         default_factory=uuid4,
-        sa_column=Column(GUID(), primary_key=True, index=True, server_default=text("LOWER(HEX(RANDOMBLOB(16)))"))
+        sa_column=Column(GUID(), primary_key=True, index=True)
     )
     coach_id: UUID = Field(sa_column=Column(GUID(), ForeignKey("coaches.id"), index=True))
     created_at: Optional[datetime] = Field(
