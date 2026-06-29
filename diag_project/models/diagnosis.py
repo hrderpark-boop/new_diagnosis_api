@@ -1,12 +1,15 @@
 #diag_project/models/diagnosis.py
 
-from typing import Optional
+from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
-from enum import Enum 
-from sqlmodel import Field, SQLModel
+from enum import Enum
+from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import func, Column, DateTime, text, ForeignKey
-from .uuid_type import GUID 
+from .uuid_type import GUID
+
+if TYPE_CHECKING:
+    from .evaluation_result import EvaluationResult
 
 class DiagnosisStatus(str, Enum):
     NOT_STARTED = "not_started"
@@ -34,3 +37,6 @@ class Diagnosis(DiagnosisBase, table=True):
         sa_column=Column(DateTime(timezone=True), nullable=False, default=func.now()),
     )
     completed_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+
+    # 역방향: EvaluationResult.diagnosis 와 매칭 (1:N)
+    evaluation_results: List["EvaluationResult"] = Relationship(back_populates="diagnosis")

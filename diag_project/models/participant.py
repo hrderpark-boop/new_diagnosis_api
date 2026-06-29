@@ -1,11 +1,14 @@
 # diag_project/models/participant.py
 
-from typing import Optional, List # [수정] List 추가
+from typing import Optional, List, TYPE_CHECKING # [수정] List 추가
 from uuid import UUID, uuid4
 from sqlmodel import Field, SQLModel, Relationship # [수정] Relationship 추가
 from sqlalchemy import text, Column, DateTime, ForeignKey, func
 from datetime import datetime, timezone
 from diag_project.models.uuid_type import GUID
+
+if TYPE_CHECKING:
+    from diag_project.models.evaluation_result import EvaluationResult
 
 # ✅ 기본 속성 정의 (Base)
 class ParticipantBase(SQLModel):
@@ -48,3 +51,6 @@ class Participant(ParticipantBase, table=True):
     # ✅ [NEW] 세션과의 관계 설정 (1:N)
     # DiagnosisSession 모델의 'user' 필드와 연결됩니다.
     sessions: List["DiagnosisSession"] = Relationship(back_populates="user")
+
+    # 역방향: EvaluationResult.participant 와 매칭 (1:N)
+    evaluation_results: List["EvaluationResult"] = Relationship(back_populates="participant")

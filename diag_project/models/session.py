@@ -1,12 +1,16 @@
 # diag_project/models/session.py
 
-from typing import Optional
+from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
 from enum import Enum
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import Column, DateTime, func, text, ForeignKey
 from diag_project.models.uuid_type import GUID
+
+if TYPE_CHECKING:
+    from diag_project.models.evaluation_result import EvaluationResult
+    from diag_project.models.question_answer import QuestionAnswer
 
 class SessionStatus(str, Enum):
     IN_PROGRESS = "in_progress"
@@ -34,3 +38,9 @@ class Session(SessionBase, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True), nullable=False, default=func.now(), onupdate=func.now())
     )
+
+    # 역방향: EvaluationResult.session 와 매칭 (1:N)
+    evaluation_results: List["EvaluationResult"] = Relationship(back_populates="session")
+
+    # 역방향: QuestionAnswer.session 와 매칭 (1:N)
+    question_answers: List["QuestionAnswer"] = Relationship(back_populates="session")

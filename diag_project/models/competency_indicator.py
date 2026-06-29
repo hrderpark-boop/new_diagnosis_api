@@ -1,11 +1,14 @@
 # diag_project/models/competency_indicator.py
 
-from typing import Optional, Dict
+from typing import Optional, Dict, List, TYPE_CHECKING
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import func, Column, DateTime, text, ForeignKey, JSON
 from diag_project.models.uuid_type import GUID
+
+if TYPE_CHECKING:
+    from diag_project.models.evaluation_result import EvaluationResult
 
 class CompetencyBase(SQLModel):
     name: str = Field(max_length=255)
@@ -27,6 +30,9 @@ class Competency(CompetencyBase, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True), nullable=False, default=func.now(), onupdate=func.now()),
     )
+
+    # 역방향: EvaluationResult.competency 와 매칭 (1:N)
+    evaluation_results: List["EvaluationResult"] = Relationship(back_populates="competency")
 
 class IndicatorBase(SQLModel):
     name: str = Field(max_length=255)
@@ -52,3 +58,6 @@ class Indicator(IndicatorBase, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True), nullable=False, default=func.now(), onupdate=func.now()),
     )
+
+    # 역방향: EvaluationResult.indicator 와 매칭 (1:N)
+    evaluation_results: List["EvaluationResult"] = Relationship(back_populates="indicator")

@@ -1,12 +1,15 @@
 # diag_project/models/diagnosis_question.py
 
-from typing import Optional
+from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
 from enum import Enum
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import Column, DateTime, func, text, ForeignKey
 from diag_project.models.uuid_type import GUID
+
+if TYPE_CHECKING:
+    from diag_project.models.question_answer import QuestionAnswer
 
 class QuestionType(str, Enum):
     SINGLE_CHOICE = "single_choice"
@@ -39,6 +42,9 @@ class DiagnosisQuestion(DiagnosisQuestionBase, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True), nullable=False, default=func.now(), onupdate=func.now())
     )
+
+    # 역방향: QuestionAnswer.diagnosis_question 와 매칭 (1:N)
+    question_answers_ref: List["QuestionAnswer"] = Relationship(back_populates="diagnosis_question")
 
 class QuestionChoiceBase(SQLModel):
     choice_text: str = Field()
