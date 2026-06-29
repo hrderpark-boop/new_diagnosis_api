@@ -30,11 +30,14 @@ class GUID(TypeDecorator):
         raise ValueError(f"Cannot bind '{value}' of type {type(value)} as GUID.")
 
     def process_result_value(self, value, dialect):
+        # 1) None 은 그대로
         if value is None:
             return value
-        if isinstance(value, str):
-            return PyUUID(value)
-        raise ValueError(f"Cannot process result '{value}' of type {type(value)} as GUID.")
+        # 2) 이미 표준 파이썬 UUID 면 그대로 반환
+        if isinstance(value, PyUUID):
+            return value
+        # 3) 그 외(asyncpg.pgproto UUID, 문자열 등)는 str() 경유로 안전 변환
+        return PyUUID(str(value))
 
     def copy_value(self, value):
         return value
