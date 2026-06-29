@@ -6,6 +6,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles # ✅ 이미지 서빙을 위해 필요
 
+# ✅ [중요] 모든 ORM 모델을 미리 로드해 SQLAlchemy 매퍼가 한 번에 평가되도록 한다.
+# (Participant 등 일부 모델이 Relationship("EvaluationResult") 처럼 '문자열'로
+#  다른 모델을 참조하므로, 해당 모델 모듈이 import 되어 있지 않으면 런타임에
+#  'failed to locate a name' 에러가 난다.)
+import diag_project.models  # noqa: F401
+
 from diag_project.database import init_db
 # ✅ [수정] coaches 모듈을 반드시 포함해야 합니다.
 from diag_project.routes import diagnoses, reports, participants, coaches
