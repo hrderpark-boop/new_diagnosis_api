@@ -54,10 +54,10 @@ async def seed_data():
             # 프론트엔드가 public/images 폴더를 바라본다고 가정하고 경로 설정
             
             for key, p_data in COACHES_PERSONA.items():
-                # ID 생성 규칙 (고정된 ID를 사용하여 매번 바뀌지 않게 함)
-                # key가 '1'이면 ...0010, '2'면 ...0011 
-                coach_uuid = UUID(f"10000000-0000-0000-0000-0000000000{int(key) + 9:02d}")
-                persona_uuid = UUID(f"10000000-0000-0000-0000-0000000001{int(key) + 9:02d}")
+                # ID 생성 규칙 (고정 ID). 런타임 COACH_UUID_TO_KEY 및 /coaches API 와
+                # 반드시 일치해야 한다: coach_id = ...00{key+10} → key '1' 이면 ...0011.
+                coach_uuid = UUID(f"10000000-0000-0000-0000-0000000000{int(key) + 10:02d}")
+                persona_uuid = UUID(f"10000000-0000-0000-0000-0000000001{int(key) + 10:02d}")
 
                 # 코치 생성
                 db.add(Coach(
@@ -74,7 +74,7 @@ async def seed_data():
                 # 시스템 프롬프트 구성
                 full_system_prompt = f"""
                 {p_data['system_prompt']}
-                [Opening Remarks]: "{p_data['opening_remarks']}"
+                [Opening Remarks]: "{p_data.get('opening_new', '')}"
                 """
                 
                 # 페르소나 생성
@@ -93,8 +93,8 @@ async def seed_data():
 
             # 3. 진단 템플릿 (필수)
             if not await db.get(DiagnosisTemplate, TEMPLATE_ID):
-                # Ella 코치(10번)를 기본으로 하는 템플릿 생성
-                default_coach_id = UUID("10000000-0000-0000-0000-000000000010")
+                # Ella 코치(...0011)를 기본으로 하는 템플릿 생성 (유효 coach_id)
+                default_coach_id = UUID("10000000-0000-0000-0000-000000000011")
                 db.add(DiagnosisTemplate(
                     id=TEMPLATE_ID, 
                     coach_id=default_coach_id,
