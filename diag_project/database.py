@@ -23,9 +23,13 @@ load_dotenv()
 # 로깅 설정
 logger = logging.getLogger(__name__)
 
-# 1. DB URL 설정 (파일로 저장되도록 설정)
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./sql_app.db")
-
+# 1. DB URL 설정 — 보안상 코드에 하드코딩 금지. .env 의 DATABASE_URL 사용.
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL 환경 변수가 설정되지 않았습니다. "
+        ".env 파일에 DATABASE_URL=... 을 추가하세요."
+    )
 # 2. 비동기 엔진 생성
 engine = create_async_engine(
     DATABASE_URL,
