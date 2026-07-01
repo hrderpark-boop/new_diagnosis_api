@@ -505,6 +505,11 @@ async def _submit_message_phase3a(
         clean_reply.replace("\\n", "\n").replace('\\"', '"').replace("\\t", "\t")
     )
 
+    # 일시중지 확정: USER_REQUESTS_PAUSE 면 LLM 의 [SESSION_PAUSE] 마커 누락과
+    # 무관하게 무조건 일시중지 처리 (챕터 전환 차단 + 세션 대기 전환).
+    if instruction_used == "USER_REQUESTS_PAUSE":
+        is_session_paused = True
+
     # 8-a. DIAGNOSIS_INTRO 하이브리드: LLM 호응 + 시스템 진단 안내 본문 합치기
     if instruction_used == "DIAGNOSIS_INTRO":
         llm_acknowledgment = clean_reply
@@ -525,23 +530,22 @@ async def _submit_message_phase3a(
     # build_chapter_opening_with_user_def 가 정의 + 첫 BEI 질문까지 포함하므로
     # 별도 후처리 불필요.
 
-    # 8-d. CHAPTER_READY_TO_END 하이브리드 (종결+전환 안전장치):
-    #   LLM 은 wrap-up(요약+공감)만 담당. 시스템이 '다변화된 전환 질문'과
-    #   필수 마커를 강제 부착 → LLM 의 마커 누락 확률 0%, 무조건 다음
-    #   챕터 ALIGN 으로 직행. (다음 챕터가 없으면 종결만 강제)
+    _next_ch = _get_next_chapter(chapter)
+
+    # 8-d. CHAPTER_READY_TO_END 하이브리드 (종결 후 '계속/휴식' 의사 확인):
+    #   중간 챕터: LLM 이 wrap-up(요약+공감) + '계속/휴식 질문'을 생성한다.
+    #   여기서는 챕터를 전환하지 않고 사용자 답변을 '대기'한다 (AWAIT_CONTINUE).
+    #   → 다음 턴에 decider 가 계속/휴식으로 분기.
     if instruction_used == "CHAPTER_READY_TO_END":
-        _next_ch = _get_next_chapter(chapter)
         wrap_up = clean_reply.strip() or "이 영역, 여기서 잘 매듭짓겠습니다."
         if _next_ch:
-            # LLM 이 프롬프트 지시대로 'wrap-up + 계속/휴식 의사 질문'을 생성한다.
-            # 질문이 누락된 경우에만 시스템이 다변화된 계속/휴식 질문을 덧붙여
-            # 어색한 종결(요약·공감으로 끝남)을 방지한다.
+            # 질문 누락 시에만 시스템이 다변화된 계속/휴식 질문을 덧붙임.
             if "?" not in wrap_up:
                 wrap_up = f"{wrap_up}\n\n{build_chapter_transition_question(_next_ch)}"
             clean_reply = wrap_up
-            # 마커 강제 (LLM 출력과 무관하게 100% 보장)
-            is_chapter_completed = True
-            is_chapter_starting = True
+            # 🚧 전환 보류: 완료/시작 마커를 세우지 않는다 (사용자 답변까지 대기).
+            is_chapter_completed = False
+            is_chapter_starting = False
         else:
             # 🏁 마지막 챕터 — Grand Finale 만, 전환 없음.
             #   [START_CHAPTER] 절대 X, 대신 [DIAGNOSIS_COMPLETE] 로 진단 종료 확정.
@@ -550,22 +554,34 @@ async def _submit_message_phase3a(
             is_chapter_starting = False
             is_diagnosis_complete = True
 
+    # 8-e. CHAPTER_CONTINUE_CONFIRMED (사용자가 '계속' 동의):
+    #   짧은 브릿지 멘트 + 이제 실제로 챕터 완료·다음 챕터 시작 마커를 세운다.
+    #   → 다음 턴에 다음 영역 COMPETENCY_ALIGN 으로 자연스럽게 진입.
+    if instruction_used == "CHAPTER_CONTINUE_CONFIRMED":
+        clean_reply = clean_reply.strip() or "좋습니다. 그럼 바로 이어가 볼게요."
+        is_chapter_completed = True
+        is_chapter_starting = True
+
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     probe_type_used = llm_state.get("probe_type_used")
 
-    # Core Rule 4: 종결+전환 1턴 처리 — CHAPTER_READY_TO_END 가 [CHAPTER_COMPLETE]
-    # 와 [START_CHAPTER] 를 함께 내면, 다음 챕터를 '시작됨'으로 표시해
-    # 중간 CONFIRM 턴 없이 바로 다음 영역 합의(ALIGN)로 이어지게 한다.
+    # 사용자가 '계속' 동의(CHAPTER_CONTINUE_CONFIRMED)했을 때만 다음 챕터를
+    # '시작됨'으로 표시해, 중간 CONFIRM 턴 없이 바로 다음 영역 합의(ALIGN)로
+    # 이어지게 한다. (CHAPTER_READY_TO_END 는 이제 전환하지 않고 대기만 한다.)
     _seamless_next_chapter = None
-    if (instruction_used == "CHAPTER_READY_TO_END"
+    if (instruction_used == "CHAPTER_CONTINUE_CONFIRMED"
             and is_chapter_completed and is_chapter_starting):
         _seamless_next_chapter = _get_next_chapter(chapter)
 
-    # 마커 → probe_type_used 에 저장 (우선순위: READY_FOR_INTRO > START_CHAPTER)
+    # 마커 → probe_type_used 에 저장 (우선순위: READY_FOR_INTRO > AWAIT_CONTINUE
+    # > START_CHAPTER)
     if instruction_used == "RAPPORT_BUILDING" and is_ready_for_intro:
         probe_type_used = "READY_FOR_INTRO"
     elif instruction_used == "DIAGNOSIS_CONFIRM" and is_chapter_starting:
         probe_type_used = "START_CHAPTER"
+    elif instruction_used == "CHAPTER_READY_TO_END" and _next_ch:
+        # 중간 챕터 종료: '계속/휴식' 질문 던지고 대기 중임을 마커로 표시.
+        probe_type_used = "AWAIT_CONTINUE"
     elif _seamless_next_chapter:
         probe_type_used = "START_CHAPTER"
 
@@ -616,6 +632,15 @@ async def _submit_message_phase3a(
             session.current_topic = "Completed"
             session.status = "completed"
             is_session_completed = True
+        db.add(session)
+        await db.commit()
+
+    # 11-b. 일시중지: 세션을 '대기(paused)' 상태로 전환.
+    #   비정상 챕터 전환 없이(위 전진 블록은 is_chapter_completed=False 라 스킵)
+    #   진단을 보류하고, 프론트가 대기 상태로 인지하도록 status 를 바꾼다.
+    #   현재 챕터/토픽은 그대로 두어 나중에 이어서 재개할 수 있게 한다.
+    if is_session_paused and session.status != "completed":
+        session.status = "paused"
         db.add(session)
         await db.commit()
 

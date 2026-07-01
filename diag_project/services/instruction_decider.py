@@ -96,6 +96,7 @@ InstructionType = Literal[
     "DUPLICATE_SUSPECTED",
     "CROSS_CHAPTER_OPPORTUNITY",
     "CHAPTER_READY_TO_END",
+    "CHAPTER_CONTINUE_CONFIRMED",
     "MAX_TURNS_REACHED",
     "USER_REQUESTS_PAUSE",
     "META_QUESTION_FROM_USER",
@@ -192,6 +193,17 @@ def decide_instruction(state: dict) -> InstructionType:
 
     우선순위 순서로 체크. 위에서부터 매칭되면 즉시 반환.
     """
+    # === 최우선: 챕터 종료 후 '계속/휴식' 의사 대기 중이면 사용자 답변으로 분기 ===
+    #   직전 AI 턴(CHAPTER_READY_TO_END)이 "계속할까요, 쉴까요?"를 물었고
+    #   아직 챕터를 전환하지 않은 상태. 사용자 답변 의도로 두 갈래 분기한다.
+    #   - 휴식 의도 → USER_REQUESTS_PAUSE (일시중지, 챕터 전환 차단)
+    #   - 그 외(계속/동의/모호) → CHAPTER_CONTINUE_CONFIRMED (다음 챕터로 전환)
+    if state.get("awaiting_continue_decision"):
+        _decision = state.get("last_user_response") or ""
+        if detect_pause_request(_decision):
+            return "USER_REQUESTS_PAUSE"
+        return "CHAPTER_CONTINUE_CONFIRMED"
+
     # === 7단계 코칭 프로세스: 한 턴에 한 스텝, 엄격한 순서 (압축·건너뛰기 금지) ===
     #   Step1 인사+이름확인 → Step2 라포(아이스브레이킹) → Step3 시작 동의 →
     #   Step4 로드맵 안내 → Step5 평소 생각/정의 묻기 →
@@ -456,6 +468,22 @@ async def build_turn_state(
     )
     chapter_started = chapter_started_result.scalars().first() is not None
 
+    # 8-a3b. 챕터 종료 후 '계속/휴식' 의사 대기 여부.
+    #   직전(가장 최근) AI 메시지가 AWAIT_CONTINUE 마커면, 방금 "계속할까요/
+    #   쉴까요?"를 물어놓고 사용자 답을 기다리는 상태 → 이번 user 턴이 '결정 턴'.
+    latest_model_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "model")
+        .order_by(ChatMessage.created_at.desc())
+        .limit(1)
+    )
+    latest_model_msg = latest_model_result.scalars().first()
+    awaiting_continue_decision = (
+        latest_model_msg is not None
+        and latest_model_msg.probe_type_used == "AWAIT_CONTINUE"
+    )
+
     # 8-a4. CONFIRM 턴 수 (DIAGNOSIS_CONFIRM 으로 저장된 model 메시지 수)
     confirm_msg_result = await db.execute(
         select(ChatMessage)
@@ -489,9 +517,11 @@ async def build_turn_state(
             "COMPETENCY_ALIGN",
             "DIAGNOSIS_CONFIRM",
             "DIAGNOSIS_INTRO",
-            # 종결+전환 1턴: 경계 메시지가 다음 챕터로 태깅되므로 제외해야
+            # 종결+전환 경계 메시지가 다음 챕터로 태깅되므로 제외해야
             # 새 챕터의 CHAPTER_OPENING(첫 BEI)이 정상 발화함.
             "CHAPTER_READY_TO_END",
+            # '계속' 확정 브릿지도 다음 챕터로 태깅됨 → 첫 BEI 판별에서 제외.
+            "CHAPTER_CONTINUE_CONFIRMED",
         ]))
     )
     chapter_message_count = len(list(chapter_msg_result.scalars().all()))
@@ -604,6 +634,7 @@ async def build_turn_state(
         "chapter_message_count": chapter_message_count,
         "competency_intro_done": competency_intro_done,
         "competency_aligned": competency_aligned,
+        "awaiting_continue_decision": awaiting_continue_decision,
         "first_subcompetency_name": first_subcompetency_name,
         "all_subcompetencies": all_subcompetencies,
         "explored_subcompetencies": explored_subcompetencies,
