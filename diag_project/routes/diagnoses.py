@@ -533,8 +533,12 @@ async def _submit_message_phase3a(
         _next_ch = _get_next_chapter(chapter)
         wrap_up = clean_reply.strip() or "이 영역, 여기서 잘 매듭짓겠습니다."
         if _next_ch:
-            transition_q = build_chapter_transition_question(_next_ch)
-            clean_reply = f"{wrap_up}\n\n{transition_q}"
+            # LLM 이 프롬프트 지시대로 'wrap-up + 계속/휴식 의사 질문'을 생성한다.
+            # 질문이 누락된 경우에만 시스템이 다변화된 계속/휴식 질문을 덧붙여
+            # 어색한 종결(요약·공감으로 끝남)을 방지한다.
+            if "?" not in wrap_up:
+                wrap_up = f"{wrap_up}\n\n{build_chapter_transition_question(_next_ch)}"
+            clean_reply = wrap_up
             # 마커 강제 (LLM 출력과 무관하게 100% 보장)
             is_chapter_completed = True
             is_chapter_starting = True
