@@ -500,6 +500,20 @@ async def _submit_message_phase3a(
     is_ready_for_intro = "[READY_FOR_INTRO]" in reply
     is_chapter_starting = "[START_CHAPTER]" in reply
     is_diagnosis_complete = "[DIAGNOSIS_COMPLETE]" in reply
+
+    # 🛡️ [방어 로직 — 최우선] 남은 역량(챕터)이 있으면 '전체 진단 종료'를 절대
+    # 허용하지 않는다. LLM 이 [DIAGNOSIS_COMPLETE] 를 환각으로 내보내거나 로직이
+    # 오판해도, 다음 챕터가 존재하는 한 강제 종료를 원천 차단한다.
+    # (사람관리 뒤 일관리·자기관리가 남았는데 종료되던 버그의 근본 방어선)
+    _next_chapter_guard = _get_next_chapter(chapter)
+    if _next_chapter_guard is not None and is_diagnosis_complete:
+        logger.warning(
+            "⛔ 조기 종료 차단: chapter=%s 뒤에 '%s'(외 남은 역량)이 있는데 "
+            "[DIAGNOSIS_COMPLETE] 감지됨 → 전체 종료 무시하고 다음 역량으로 전환.",
+            chapter, _next_chapter_guard,
+        )
+        is_diagnosis_complete = False
+
     clean_reply = (
         reply
         .replace("[CHAPTER_COMPLETE]", "")
@@ -635,10 +649,19 @@ async def _submit_message_phase3a(
     is_session_completed = False
     if is_chapter_completed:
         next_chapter = _get_next_chapter(chapter)
-        if next_chapter and not is_diagnosis_complete:
+        if next_chapter:
+            # 🛡️ 다음 역량이 존재하면 '무조건' 다음으로 전환한다.
+            #   (is_diagnosis_complete 는 위 방어 로직에서 이미 False 로 정정됐지만,
+            #    이중 안전장치로 next_chapter 존재를 최우선 조건으로 둔다.)
             session.current_topic = chapter_to_topic(next_chapter)
+            if is_diagnosis_complete:
+                logger.warning(
+                    "⛔ 종료 플래그 무시: '%s' 역량이 남아있어 전환 우선.",
+                    next_chapter,
+                )
+                is_diagnosis_complete = False
         else:
-            # 마지막 챕터(다음 없음) 또는 [DIAGNOSIS_COMPLETE] → 진단 종료 확정
+            # 진짜 마지막 챕터(다음 없음) → 진단 종료 확정
             session.current_topic = "Completed"
             session.status = "completed"
             is_session_completed = True
@@ -665,6 +688,16 @@ async def _submit_message_phase3a(
     else:
         completed_topics = []
 
+    # 12-b. [안전장치 — req 3] 다음 역량 정보 노출.
+    #   혹시라도 종료로 오판되더라도, 프론트가 '다음 항목 확인'을 시도할 수 있게
+    #   현재 챕터 기준 '다음 역량' 존재 여부와 이름을 함께 반환한다.
+    #   has_next_chapter=True 인데 is_session_completed 라면 프론트는 종료 대신
+    #   '다음 항목 확인'을 노출해야 한다 (조기 종료 방어의 클라이언트측 안전망).
+    _safety_next_chapter = _get_next_chapter(chapter)
+    _safety_next_topic = (
+        chapter_to_topic(_safety_next_chapter) if _safety_next_chapter else None
+    )
+
     # 12. 응답 (감사 위험 #3 해결: reply → coach_response_message 매핑)
     return {
         "coach_response_message": clean_reply,
@@ -672,6 +705,8 @@ async def _submit_message_phase3a(
         "is_session_starting": False,
         "is_session_completed": is_session_completed,
         "is_session_paused": is_session_paused,
+        "has_next_chapter": _safety_next_chapter is not None,
+        "next_topic": _safety_next_topic,
         "reward": None,
         "completed_topics": completed_topics,
         "_phase3a_metadata": {
