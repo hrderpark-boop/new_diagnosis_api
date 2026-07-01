@@ -236,12 +236,18 @@ def build_chapter_opening_with_user_def(
     chapter: str,
     user_definition: str,
     first_subcompetency_name: str,
+    bridge_context: str | None = None,
 ) -> str:
     """CHAPTER_OPENING (Step 7) — 하위역량 타겟팅 기반 첫 BEI 질문.
 
     대주제로 뭉뚱그린 질문('이 역량 관련 경험 있으세요?')은 답하기 어렵다.
-    Step 6 에서 소개한 하위 역량 중 무작위 1~2개를 콕 집고, 그 하위역량의
-    SUBCOMPETENCY_ANCHORS(현업 딜레마/갈등 상황)를 앵커로 녹여 시작한다.
+    Step 6 에서 소개한 하위 역량의 SUBCOMPETENCY_ANCHORS(현업 딜레마/갈등
+    상황)를 앵커로 녹여 시작한다.
+
+    bridge_context (직전 챕터에서 리더가 들려준 사건의 핵심 키워드/요약)가
+    있으면 '목차 노출형'(역량명/하위역량명 직접 호명)을 폐기하고, 그 키워드에서
+    파생되는 '대화형 브릿지 질문'으로 시작한다 → 대화가 이전 답변에서
+    자연스럽게 이어지는 느낌을 준다. (첫 챕터 등 브릿지가 없으면 기존 방식)
 
     user_definition 은 호환을 위해 유지하나 본문에서는 사용하지 않음.
     """
@@ -257,18 +263,38 @@ def build_chapter_opening_with_user_def(
         indicators[first_key].get("name", "") if first_key else ""
     ) or first_subcompetency_name or chapter_name
 
-    # 첫 하위역량의 맞춤 앵커 무작위 1개
+    # 첫 하위역량의 맞춤 앵커 무작위 1개 (주제를 '이름 없이' 유도하는 데 사용)
     anchors = SUBCOMPETENCY_ANCHORS.get(first_key) if first_key else None
     anchor_text = random.choice(anchors) if anchors else None
 
+    # 🌉 브릿지 모드: 직전 답변 키워드에서 파생되는 대화형 전환 (역량명 호명 X)
+    if bridge_context:
+        _ctx = bridge_context.strip().rstrip(".!?~ ")
+        lead = random.choice([
+            f"방금 '{_ctx}' 이야기를 들으면서, 리더님이 그런 순간들을 "
+            f"어떻게 마주해오셨는지가 더 궁금해졌어요.",
+            f"'{_ctx}' 하시던 그 결이 마음에 오래 남네요. 그 이야기에서 "
+            f"자연스럽게 한 걸음 더 들어가 볼게요.",
+            f"조금 전 '{_ctx}' 말씀이 계속 맴도네요. 그 흐름을 그대로 이어서 "
+            f"여쭤보고 싶은 게 하나 생겼어요.",
+        ])
+        invite = (
+            f" 최근 {anchor_text}처럼, 리더님께서 유독 에너지를 쏟으셨거나 "
+            f"고민이 깊으셨던 또 다른 경험이 있다면 그 장면 하나 "
+            f"들려주시겠어요?"
+            if anchor_text
+            else " 최근 비슷한 무게로 씨름하셨던 경험이 하나 떠오르신다면, "
+                 "편하게 들려주시겠어요?"
+        )
+        return f"{lead}{invite}"
+
+    # (브릿지 없음 — 첫 챕터 등) 기존 방식: 하위역량 타겟 STAR 질문.
     anchor_sentence = (
         f" 예를 들어 {anchor_text}처럼요. 그 장면이 떠오르신다면 "
         f"편하게 들려주셔도 좋습니다."
         if anchor_text
         else " 떠오르시는 구체적인 장면 하나면 충분합니다."
     )
-
-    # 동의 직후 호출됨 → 위로·딴소리 없이 곧장 첫 하위역량 타겟 STAR 질문으로.
     return (
         f"좋습니다! 그럼 바로 구체적인 경험 이야기로 들어가 볼게요.\n\n"
         f"방금 말씀드린 하위 역량 중에서, 먼저 '{first_name}' 측면부터 "

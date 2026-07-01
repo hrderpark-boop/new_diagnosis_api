@@ -449,11 +449,21 @@ async def _submit_message_phase3a(
             current_ampm_phrase=state.get("current_ampm_phrase", "오늘"),
         )
     elif instruction_used == "CHAPTER_OPENING":
-        # 챕터 도입 — 사용자 정의 인용 + framework 정의 + 첫 BEI 질문
+        # 챕터 도입 — '목차 노출형'(역량명 호명) 대신, 리더의 직전 답변에서
+        # 추출된 키워드(직전 챕터 마지막 사건의 summary)를 브릿지로 삼아
+        # 대화가 이전 답변에서 파생되는 느낌을 준다. (첫 챕터엔 키워드 없음)
+        _collected = state.get("all_collected_events") or []
+        _bridge_ctx = None
+        for _ev in reversed(_collected):
+            _kw = (_ev.get("summary") or "").strip()
+            if _kw:
+                _bridge_ctx = _kw
+                break
         system_override_text = build_chapter_opening_with_user_def(
             chapter=chapter,
             user_definition=state.get("last_user_response", "") or "",
             first_subcompetency_name=state.get("first_subcompetency_name", ""),
+            bridge_context=_bridge_ctx,
         )
 
     if system_override_text is not None:
