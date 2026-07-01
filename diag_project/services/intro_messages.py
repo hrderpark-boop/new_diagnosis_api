@@ -122,8 +122,8 @@ def build_align_framework_section(chapter: str) -> str:
         f"이 역량의 하위 역량은 다음 {indicator_count}가지입니다:\n"
         f"{indicator_list}\n\n"
         f"앞으로 이 하위 역량들을 중심으로 리더님의 실제 경험을 "
-        f"여쭤보려고 해요. 저희가 정리한 이 정의와 방향, "
-        f"리더님 보시기에 괜찮으실까요?"
+        f"여쭤보려고 해요. 우리가 함께 진행할 역량에 대한 정의가 "
+        f"충분히 이해되셨나요?"
     )
 
 
