@@ -855,9 +855,26 @@ async def get_session_state(
     elif session.current_topic == "Completed":
         completed_topics = topic_order[:]
 
+    # 상태 재동기화(Sync)용 부가 정보 — 프론트가 현재 단계를 명확히 인지하고
+    # '진단 계속하기'/'다음 챕터로 이동' 버튼을 정확히 노출할 수 있도록 제공.
+    _is_completed = (
+        session.status == "completed" or session.current_topic == "Completed"
+    )
+    _next_chapter = None
+    _next_topic = None
+    if not _is_completed:
+        _cur_chapter = topic_to_chapter(session.current_topic)
+        _next_chapter = _get_next_chapter(_cur_chapter)
+        _next_topic = chapter_to_topic(_next_chapter) if _next_chapter else None
+
     return {
         "session_id": session.id,
         "current_topic": session.current_topic,
         "completed_topics": completed_topics,
+        "status": session.status,
+        "is_paused": session.status == "paused",
+        "is_completed": _is_completed,
+        "has_next_chapter": _next_chapter is not None,
+        "next_topic": _next_topic,
         "messages": formatted_messages
     }
