@@ -31,12 +31,13 @@ app = FastAPI(
 )
 
 # CORS 설정
-# allow_credentials=True를 쓸 때는 allow_origins=["*"]가 스펙 위반이므로
-# config.py의 명시적 목록을 사용한다.
+# 모든 origin 허용. CORS 스펙상 allow_origins=["*"] 와 allow_credentials=True 는
+# 함께 쓸 수 없으므로(브라우저가 자격증명 요청에서 "*" 를 거부) credentials 는 끈다.
+# 현재 앱은 Bearer 토큰(헤더) 인증이라 쿠키 자격증명이 필요 없어 영향 없음.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
