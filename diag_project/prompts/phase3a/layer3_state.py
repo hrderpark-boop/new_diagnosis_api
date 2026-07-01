@@ -10,6 +10,37 @@ import json
 import random
 
 
+def get_josa(word: str, josa: str) -> str:
+    """한국어 조사 자동 보정 — 앞 단어의 받침(종성) 유무로 올바른 조사 선택.
+
+    josa 는 '받침있을때/받침없을때' 형식 문자열:
+      '을/를', '이/가', '은/는', '과/와', '으로/로', '이라는/라는' 등.
+
+    예)
+      get_josa('성과관리', '을/를') -> '를'   (리: 받침 없음)
+      get_josa('직원',     '을/를') -> '을'   (원: ㄴ받침)
+      get_josa('사람관리', '이/가') -> '가'
+      get_josa('서울',     '으로/로') -> '로'  (울: ㄹ받침 특례)
+
+    한글 음절이 아닌 문자로 끝나면 받침 없는 형태를 기본값으로 반환한다.
+    """
+    with_batchim, without_batchim = josa.split("/")
+    if not word:
+        return without_batchim
+
+    code = ord(word[-1])
+    # 한글 음절 영역(가~힣): 종성 인덱스 = (code - 0xAC00) % 28, 0이면 받침 없음.
+    if 0xAC00 <= code <= 0xD7A3:
+        jongseong = (code - 0xAC00) % 28
+        # '으로/로' 특례: 받침이 없거나(0) ㄹ받침(8)이면 '로'.
+        if with_batchim == "으로":
+            return without_batchim if jongseong in (0, 8) else with_batchim
+        return without_batchim if jongseong == 0 else with_batchim
+
+    # 한글이 아닌 문자(영문/숫자/기호)로 끝나면 받침 없는 형태를 기본값으로.
+    return without_batchim
+
+
 def format_turn_state_for_llm(state: dict) -> str:
     """state dict 를 LLM 프롬프트 텍스트로 변환.
 
@@ -520,19 +551,22 @@ def _get_instruction_guide(
     #   아래 풀(5+)에서 매 턴 무작위로 하나를 뽑아 참고 형식으로 주입한다.
     #   '[핵심 요약]'은 LLM 이 리더님 실제 답변의 핵심으로 채우고, 문장 끝은
     #   시스템 정의('저희 진단에서는 이를 포괄하여…')로 자연스럽게 이어지도록 한다.
+    _cn = _cur_chapter_name
     _align_connectors = [
         f"네, 리더님께서 말씀하신 '[핵심 요약]'이라는 포인트가 "
-        f"{_cur_chapter_name}의 본질을 정확히 짚으셨네요. 리더님의 그 철학과 "
-        "같은 맥락으로,",
+        f"{_cn}{get_josa(_cn, '을/를')} 관통하는 본질을 정확히 짚으셨네요. "
+        "리더님의 그 철학과 같은 맥락으로,",
         f"리더님의 '[핵심 요약]'이라는 철학이 저희가 정의한 "
-        f"{_cur_chapter_name}과(와) 자연스럽게 맞닿아 있네요. 같은 결에서,",
-        f"말씀하신 '[핵심 요약]'이라는 관점이 {_cur_chapter_name}이라는 역량의 "
-        "핵심을 정말 잘 짚어주셨어요. 그 생각을 그대로 이어서,",
-        f"'[핵심 요약]'이라는 {_cur_chapter_name}에 대한 리더님만의 관점이 "
+        f"{_cn}{get_josa(_cn, '과/와')} 자연스럽게 맞닿아 있네요. 같은 결에서,",
+        f"말씀하신 '[핵심 요약]'이라는 관점이 "
+        f"{_cn}{get_josa(_cn, '이라는/라는')} 역량의 핵심을 정말 잘 "
+        "짚어주셨어요. 그 생각을 그대로 이어서,",
+        f"'[핵심 요약]'이라는 {_cn}에 대한 리더님만의 관점이 "
         "저희 정의와 자연스럽게 어우러지네요. 그 흐름을 이어받아,",
         f"리더님께서 짚어주신 '[핵심 요약]', 바로 그 지점이 "
-        f"{_cur_chapter_name}의 가장 중요한 축이에요. 그 맥락 그대로,",
-        f"'[핵심 요약]'이라는 말씀 안에 이미 {_cur_chapter_name}의 핵심이 "
+        f"{_cn}{get_josa(_cn, '이/가')} 지향하는 가장 중요한 축이에요. "
+        "그 맥락 그대로,",
+        f"'[핵심 요약]'이라는 말씀 안에 이미 {_cn}의 핵심이 "
         "담겨 있네요. 리더님의 그 관점을 살려서,",
     ]
     _align_connector = random.choice(_align_connectors)
