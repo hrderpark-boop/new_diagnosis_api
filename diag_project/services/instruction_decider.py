@@ -357,12 +357,30 @@ def decide_instruction(state: dict) -> InstructionType:
         return "CROSS_CHAPTER_OPPORTUNITY"
 
     # 12. 사건 진행 상태에 따라
+    _all_subs = state.get("all_subcompetencies") or []
+    _all_explored = bool(_all_subs) and not state.get(
+        "unexplored_subcompetencies"
+    )
     if state.get("current_event_id"):
         coverage = state.get("current_event_star_coverage") or {}
         if coverage and all(coverage.values()):
+            # 🛡️ 탈출구 A: 사건은 완결됐고 더 탐색할 하위역량이 없으면
+            # 새 사건을 청하지 말고 즉시 종료 경계로 전진.
+            # (마지막 챕터면 CHAPTER_READY_TO_END → Grand Finale →
+            #  DIAGNOSIS_COMPLETE 로 확실히 종결 — 제자리 루프 방지)
+            if _all_explored:
+                return "CHAPTER_READY_TO_END"
             return "STAR_COMPLETE_NEW_EVENT"
         else:
             return "STAR_INCOMPLETE"
+
+    # 12-b. 🛡️ 탈출구 B: 활성 사건도 없고 모든 하위역량 탐색 완료.
+    #   #9(사건 수·반례·최소 턴) 카운터가 태깅 누락 등으로 뒤처져 있어도,
+    #   실질적으로 더 물을 것이 없는 상태 → 종료 경계로 강제 전진.
+    #   (이 탈출구가 없으면 CONTINUE_NORMAL 에 갇혀 같은 요약을 반복하는
+    #    앵무새 루프가 발생한다. 사용자 '네' 단답도 여기로 흡수돼 전진.)
+    if _all_explored and state.get("events_collected", 0) >= 1:
+        return "CHAPTER_READY_TO_END"
 
     # 13. 기본 진행
     return "CONTINUE_NORMAL"

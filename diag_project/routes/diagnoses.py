@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 import uuid
 from uuid import UUID
 import re
@@ -48,6 +49,10 @@ from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
 
 logger = logging.getLogger(__name__)
+
+# 시스템 제어 마커 패턴: [CHAPTER_COMPLETE], [EVENT_COMPLETE] 등
+# '[대문자/숫자/언더바]' 전부. 프론트로 나가는 텍스트에서 완벽 제거용.
+_MARKER_RE = re.compile(r"\[[A-Z][A-Z0-9_]*\]")
 
 router = APIRouter(
     tags=["Diagnosis Flow"],
@@ -586,15 +591,10 @@ async def _submit_message_phase3a(
         )
         is_session_paused = False
 
-    clean_reply = (
-        reply
-        .replace("[CHAPTER_COMPLETE]", "")
-        .replace("[SESSION_PAUSE]", "")
-        .replace("[READY_FOR_INTRO]", "")
-        .replace("[START_CHAPTER]", "")
-        .replace("[DIAGNOSIS_COMPLETE]", "")
-        .strip()
-    )
+    # 시스템 제어 마커 완벽 제거 — 고정 목록 replace 는 [EVENT_COMPLETE] 같은
+    # 목록 밖 마커가 새어 나가므로, '[대문자_언더바]' 패턴 전체를 정규식으로
+    # 스트립한다. (상태 전진용 파싱은 위에서 원본 reply 로 이미 완료됨)
+    clean_reply = _MARKER_RE.sub("", reply).strip()
     # 개행 정규화: 정규식 파서가 못 푼 '\n' 리터럴이 프론트에 노출되는 버그 방지.
     # (json.loads 로 이미 풀린 경우엔 리터럴이 없어 무해)
     clean_reply = (
@@ -664,6 +664,38 @@ async def _submit_message_phase3a(
             )
         is_chapter_completed = True
         is_chapter_starting = True
+
+    # 8-f. 🦜 앵무새 방어: 직전 AI 멘트와 '동일한' 응답이 또 생성되면
+    #   (상태 정체 + 사용자 '네' 단답 시 같은 요약을 반복하는 병목),
+    #   반복 대신 대화를 앞으로 미는 진행 유도 질문으로 교체한다.
+    if system_override_text is None and clean_reply:
+        _last_model_q = await db.execute(
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session.id)
+            .where(ChatMessage.role == "model")
+            .order_by(ChatMessage.created_at.desc())
+            .limit(1)
+        )
+        _last_model_msg = _last_model_q.scalars().first()
+        if (_last_model_msg
+                and _last_model_msg.content
+                and _last_model_msg.content.strip() == clean_reply.strip()):
+            logger.warning("🦜 동일 응답 반복 감지 → 진행 유도 멘트로 교체")
+            clean_reply = random.choice([
+                "네, 이 부분은 충분히 나눈 것 같아요. 조금 다른 각도에서 "
+                "여쭤볼게요 — 최근 이와 관련해 새롭게 고민되셨던 지점이 "
+                "있다면 어떤 걸까요?",
+                "좋습니다, 여기까지는 잘 정리된 것 같아요. 그럼 한 걸음 더 "
+                "들어가서, 그 상황에서 리더님이 내리신 판단의 기준이 "
+                "궁금해지는데요 — 어떤 기준이었어요?",
+                "말씀 감사해요. 이 이야기는 여기서 잘 매듭짓고, 이어서 "
+                "여쭤보고 싶은 게 하나 있어요 — 비슷한 상황이 다시 온다면 "
+                "그때도 같은 선택을 하실까요?",
+            ])
+
+    # 8-g. 최종 안전망: 하이브리드 조립 이후에도 남아있을 수 있는 시스템
+    #   마커를 프론트 전달 직전에 한 번 더 완벽 제거.
+    clean_reply = _MARKER_RE.sub("", clean_reply).strip()
 
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     probe_type_used = llm_state.get("probe_type_used")
