@@ -32,9 +32,16 @@ BEST_MODEL = ANALYSIS_MODEL
 # Phase 3-A 대화 토큰 한도 (light/heavy 분리).
 #  - HEAVY(BEI 본진단): reply + state + event_metadata JSON Envelope 가 커서
 #    절대 잘리면 안 됨 → 넉넉하게.
-#  - LIGHT(라포·INTRO·CONFIRM·ALIGN 등): reply 텍스트만 → 속도 위해 낮게.
+#  - LIGHT(라포·INTRO·CONFIRM·ALIGN 등): reply 텍스트만.
+#    ⚠️ Gemini 2.5 계열은 thinking(내부 추론)이 기본 활성이고
+#    max_output_tokens 가 thinking 토큰까지 '포함'한다. 한도가 빠듯하면
+#    thinking 이 예산을 잠식해 보이는 답변이 문장 중간에 잘린다
+#    → LIGHT 를 3000 으로 상향 + 대화 light 턴은 thinking 비활성(budget=0).
 PHASE3A_MAX_TOKENS_HEAVY = 8192
-PHASE3A_MAX_TOKENS_LIGHT = 1000
+PHASE3A_MAX_TOKENS_LIGHT = 3000
+
+# LLM HTTP 타임아웃 (ms). 응답 생성이 길어져도 통신 계층이 끊지 않도록 90초.
+LLM_HTTP_TIMEOUT_MS = 90_000
 
 MAX_HISTORY_TURNS = 20
 
@@ -362,6 +369,7 @@ class GeminiService:
         system_instruction: str | None = None,
         json_mode: bool = False,
         model: str | None = None,
+        thinking_budget: int | None = None,
     ) -> str:
         if not self.available_keys:
             raise Exception("사용 가능한 API 키가 없습니다.")
@@ -401,11 +409,25 @@ class GeminiService:
             _config_kwargs["system_instruction"] = system_instruction
         if json_mode:
             _config_kwargs["response_mime_type"] = "application/json"
+        if thinking_budget is not None:
+            # Gemini 2.5: max_output_tokens 는 thinking 토큰을 포함한다.
+            # budget=0 이면 thinking 비활성 → 한도 전체를 '보이는 답변'에 사용
+            # (짧은 대화 턴이 문장 중간에 잘리는 현상 방지).
+            _config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
+                thinking_budget=thinking_budget
+            )
 
         last_error = None
         for api_key in trial_keys:
             try:
-                client = genai.Client(api_key=api_key)
+                # 통신 계층 타임아웃을 넉넉히(90초) 명시 — 긴 생성 중 연결이
+                # 끊겨 부분 응답/에러가 나는 것을 방지.
+                client = genai.Client(
+                    api_key=api_key,
+                    http_options=genai_types.HttpOptions(
+                        timeout=LLM_HTTP_TIMEOUT_MS
+                    ),
+                )
 
                 async def _do_call(
                     _client=client,
@@ -717,6 +739,10 @@ class GeminiService:
                     PHASE3A_MAX_TOKENS_LIGHT if light_mode
                     else PHASE3A_MAX_TOKENS_HEAVY
                 ),
+                # light 턴(짧은 호응/브릿지)은 thinking 불필요 — 비활성해
+                # 한도 전체를 답변에 쓰고(중간 잘림 방지) 지연도 줄인다.
+                # heavy 턴은 기본 thinking 유지 (8192 로 충분).
+                thinking_budget=0 if light_mode else None,
             )
 
             # 강화된 파서로 reply / state 추출 (평문·JSON 모두 견고하게 처리)
