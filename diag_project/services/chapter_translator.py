@@ -8,6 +8,30 @@ Phase 3-A 의 chapter context 는 영문 key ("organization_management") 사용.
 DB 데이터 영문화 마이그레이션은 향후 Phase 에서 별도 진행.
 """
 
+# 챕터 진행 순서 — 단일 소스(Single Source of Truth).
+# ⚠️ 이 리스트를 복제하지 말 것: 순서 리스트가 여러 곳에 흩어지면
+#    next_chapter 계산이 어긋나 챕터 전환 표지판이 꼬인다.
+CHAPTER_ORDER: list[str] = [
+    "organization_management",
+    "performance_management",
+    "people_management",
+    "work_management",
+    "self_management",
+]
+
+
+def get_next_chapter(current_chapter: str) -> str | None:
+    """현재 챕터의 '진짜 다음' 챕터. 마지막이거나 미지의 값이면 None.
+
+    반환값은 절대 current_chapter 와 같을 수 없다 (큐 전진 보장).
+    """
+    try:
+        idx = CHAPTER_ORDER.index(current_chapter)
+    except ValueError:
+        return None
+    return CHAPTER_ORDER[idx + 1] if idx + 1 < len(CHAPTER_ORDER) else None
+
+
 # 한국어 → 영문 key
 TOPIC_TO_CHAPTER: dict[str, str] = {
     "조직관리": "organization_management",

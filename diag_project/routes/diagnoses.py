@@ -18,7 +18,11 @@ from diag_project.models.coach_persona import CoachPersona
 from diag_project.models.participant import Participant
 from diag_project.llm_service import GeminiService
 from diag_project.data.coaches_persona import COACHES_PERSONA
-from diag_project.services.chapter_translator import topic_to_chapter, chapter_to_topic
+from diag_project.services.chapter_translator import (
+    topic_to_chapter,
+    chapter_to_topic,
+    get_next_chapter,
+)
 from diag_project.services.instruction_decider import build_turn_state
 from diag_project.services.conversation_compressor import compress_conversation_history
 from diag_project.services.event_service import (
@@ -379,6 +383,29 @@ async def _submit_message_phase3a(
     session = await db.get(DiagnosisSession, request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # 1-a. 🛡️ [무한 루프 차단 — 최우선] 완료된 세션은 상태 머신에 절대 재진입 금지.
+    #   가드가 없으면 topic_to_chapter("Completed") 가 fallback 으로 '첫 챕터'를
+    #   반환해, 끝난 진단이 조직관리부터 좀비처럼 재주행하며 "다음 역량인
+    #   ○○로 넘어갈까요?" 를 반복하는 루프가 발생한다.
+    if session.status == "completed" or session.current_topic == "Completed":
+        _all_topics = _get_topic_order()
+        return {
+            "coach_response_message": (
+                "리더님, 이번 진단은 이미 모두 마무리되었어요. 함께해 주셔서 "
+                "감사합니다. 결과 리포트에서 여정을 확인해 보시겠어요?"
+            ),
+            "is_topic_completed": False,
+            "is_session_starting": False,
+            "is_session_completed": True,
+            "is_session_paused": False,
+            "is_awaiting_continue": False,
+            "has_next_chapter": False,
+            "next_topic": None,
+            "reward": None,
+            "completed_topics": _all_topics[:],
+            "_phase3a_metadata": {"guard": "SESSION_ALREADY_COMPLETED"},
+        }
 
     # 1-b. 일시중지 세션 재개: 사용자가 다시 말을 걸면 paused → in_progress 복원.
     #   (이번 턴이 다시 pause 로 끝나면 11-b 블록이 다시 paused 로 되돌린다.)
@@ -775,19 +802,11 @@ async def _submit_message_phase3a(
 
 
 def _get_next_chapter(current_chapter: str) -> str | None:
-    """다음 챕터 결정. 마지막 챕터면 None 반환."""
-    chapter_order = [
-        "organization_management",
-        "performance_management",
-        "people_management",
-        "work_management",
-        "self_management",
-    ]
-    try:
-        idx = chapter_order.index(current_chapter)
-        return chapter_order[idx + 1] if idx + 1 < len(chapter_order) else None
-    except ValueError:
-        return None
+    """다음 챕터 결정 — chapter_translator 의 단일 소스에 위임.
+
+    (순서 리스트 중복 정의가 next_chapter 어긋남 버그의 온상이라 제거함.)
+    """
+    return get_next_chapter(current_chapter)
 
 
 async def _handle_event_lifecycle(

@@ -469,22 +469,18 @@ def _get_instruction_guide(
     if instruction == "DIAGNOSIS_CONFIRM":
         return _build_confirm_guide(state)
 
-    # 챕터 종료 멘트가 다음 영역으로 자연스럽게 브리지하도록 다음 영역명 계산
+    # 챕터 종료 멘트가 다음 영역으로 자연스럽게 브리지하도록 다음 영역명 계산.
+    # ⚠️ 순서는 chapter_translator.CHAPTER_ORDER 단일 소스만 사용 —
+    #    지역 복제 리스트가 어긋나면 '다음 역량'이 현재 챕터를 다시 부르는
+    #    표지판 꼬임이 발생한다. get_next_chapter 는 현재≠다음을 보장.
     from diag_project.data.competencies import COMPETENCY_FRAMEWORK
-    _chapter_order = [
-        "organization_management",
-        "performance_management",
-        "people_management",
-        "work_management",
-        "self_management",
-    ]
+    from diag_project.services.chapter_translator import get_next_chapter
     _cur = (state or {}).get("chapter", "")
-    _next_name = None
-    if _cur in _chapter_order:
-        _idx = _chapter_order.index(_cur)
-        if _idx + 1 < len(_chapter_order):
-            _next_key = _chapter_order[_idx + 1]
-            _next_name = COMPETENCY_FRAMEWORK.get(_next_key, {}).get("name")
+    _next_key = get_next_chapter(_cur)
+    _next_name = (
+        COMPETENCY_FRAMEWORK.get(_next_key, {}).get("name")
+        if _next_key else None
+    )
 
     # 현재 챕터의 하위역량 목록 (BEI '하위역량 릴레이'용)
     _cur_fw = COMPETENCY_FRAMEWORK.get(_cur, {})

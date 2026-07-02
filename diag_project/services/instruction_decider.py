@@ -126,6 +126,17 @@ MAX_TURNS: dict[str, int] = {
     "supplementary": 15,
 }
 
+# 챕터별 '최소' BEI 턴 수 — 이 바닥을 채우기 전에는 종료 경계
+# (CHAPTER_READY_TO_END)로 진입하지 않는다. 사건 수·반례 조건이 일찍
+# 충족돼도 심층 질문 없이 성급하게 종료 배너가 뜨는 것을 방지.
+MIN_TURNS_BEFORE_END: dict[str, int] = {
+    "organization_management": 8,
+    "performance_management": 8,
+    "people_management": 10,
+    "work_management": 8,
+    "self_management": 8,
+}
+
 
 def _force_rapport_category(rapport_turn_count: int) -> str:
     """라포 user 메시지 수 기반으로 이번 AI 턴의 카테고리를 강제 결정.
@@ -180,6 +191,21 @@ OBJECTION_KEYWORDS = [
     "언제 그런",
     "그런 말 한",
     "내가 언제",
+    # 흐름 모순 지적 ("이미/지금 그거 하고 있는데?") — 상태 강제 전진 방지.
+    # 일반 발화 오탐을 피하려 '지금/그거/이미/방금+반문' 조합으로 좁게 매칭.
+    "지금 그거",
+    "그거 하고 있",
+    "지금 하고 있잖",
+    "이미 했잖",
+    "방금 했잖",
+    "이미 말했",
+    "방금 말했잖",
+    "아까 말했잖",
+    "이미 대답했",
+    "왜 또 물어",
+    "또 물어보",
+    "같은 질문",
+    "질문이 이상",
 ]
 
 
@@ -204,13 +230,21 @@ def decide_instruction(state: dict) -> InstructionType:
 
     # === 최우선: 챕터 종료 후 '계속/휴식' 의사 대기 중이면 사용자 답변으로 분기 ===
     #   직전 AI 턴(CHAPTER_READY_TO_END)이 "계속할까요, 쉴까요?"를 물었고
-    #   아직 챕터를 전환하지 않은 상태. 사용자 답변 의도로 두 갈래 분기한다.
+    #   아직 챕터를 전환하지 않은 상태. 사용자 답변 의도로 분기한다.
+    #   - 항의/메타 질문 → META_QUESTION_FROM_USER (🛡️ 상태 보존: 강제 전진
+    #     금지. "지금 그거 하고 있잖아" 같은 예외 지적을 '계속 동의'로
+    #     오판해 다음 챕터 ALIGN 으로 밀어붙이면 AI 가 하위 역량을 지어내는
+    #     환각이 발생한다. 다음 턴에 조건이 유지되면 경계 질문을 다시 묻는다.)
     #   - 휴식 의도 → USER_REQUESTS_PAUSE (일시중지, 챕터 전환 차단)
-    #   - 그 외(계속/동의/모호) → CHAPTER_CONTINUE_CONFIRMED (다음 챕터로 전환)
+    #   - 명확한 계속/동의 → CHAPTER_CONTINUE_CONFIRMED (다음 챕터로 전환)
     if state.get("awaiting_continue_decision"):
         _decision = state.get("last_user_response") or ""
+        if detect_user_objection(_decision) or detect_meta_question(_decision):
+            return "META_QUESTION_FROM_USER"
         if detect_pause_request(_decision):
             return "USER_REQUESTS_PAUSE"
+        if is_invalid_input(_decision):
+            return "INVALID_INPUT"
         return "CHAPTER_CONTINUE_CONFIRMED"
 
     # === 7단계 코칭 프로세스: 한 턴에 한 스텝, 엄격한 순서 (압축·건너뛰기 금지) ===
@@ -304,10 +338,12 @@ def decide_instruction(state: dict) -> InstructionType:
     if state["turn_count"] >= chapter_max:
         return "MAX_TURNS_REACHED"
 
-    # 9. 종료 가능 체크 (반례 있고, 사건 충분)
+    # 9. 종료 가능 체크 (반례 있고, 사건 충분, '최소 턴 수' 바닥 충족)
     min_events = MIN_EVENTS.get(state["chapter"], 2)
+    min_turns = MIN_TURNS_BEFORE_END.get(state["chapter"], 8)
     if (state["events_with_star_70"] >= min_events
-            and state["has_contrary_probe"]):
+            and state["has_contrary_probe"]
+            and state["turn_count"] >= min_turns):
         return "CHAPTER_READY_TO_END"
 
     # 10. 반례 탐침 필요
