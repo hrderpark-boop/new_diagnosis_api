@@ -305,14 +305,25 @@ async def _call_with_retry(
             return await call_fn()
         except Exception as e:
             error_str = str(e)
-            if ("503" in error_str
+            is_rate_limited = (
+                "429" in error_str
+                or "RESOURCE_EXHAUSTED" in error_str
+                or "rate limit" in error_str.lower()
+            )
+            if (is_rate_limited
+                    or "503" in error_str
                     or "UNAVAILABLE" in error_str
                     or "LLM_EMPTY_RESPONSE" in error_str):
                 last_error = e
                 if attempt < max_retries - 1:
-                    wait_time = backoff_seconds * (attempt + 1)
+                    # 429(쿼터/RPM 초과)는 분당 윈도우가 풀릴 때까지 길게 대기
+                    if is_rate_limited:
+                        wait_time = 20.0 * (attempt + 1)
+                    else:
+                        wait_time = backoff_seconds * (attempt + 1)
                     logger.warning(
-                        f"⚠️ 503 에러 (시도 {attempt + 1}/{max_retries}). "
+                        f"⚠️ {'429 쿼터' if is_rate_limited else '503'} 에러 "
+                        f"(시도 {attempt + 1}/{max_retries}). "
                         f"{wait_time}초 후 재시도..."
                     )
                     await asyncio.sleep(wait_time)
