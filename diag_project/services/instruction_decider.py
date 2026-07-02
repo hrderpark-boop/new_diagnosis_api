@@ -18,6 +18,7 @@ from diag_project.services.avoidance_detector import (
     check_avoidance,
     detect_pause_request,
     detect_meta_question,
+    detect_prompt_injection,
     is_invalid_input,
 )
 
@@ -99,6 +100,7 @@ InstructionType = Literal[
     "CHAPTER_CONTINUE_CONFIRMED",
     "MAX_TURNS_REACHED",
     "USER_REQUESTS_PAUSE",
+    "PROMPT_INJECTION_DETECTED",
     "META_QUESTION_FROM_USER",
     "FIRST_TURN_AVOIDANCE",
     "INVALID_INPUT",
@@ -193,6 +195,13 @@ def decide_instruction(state: dict) -> InstructionType:
 
     우선순위 순서로 체크. 위에서부터 매칭되면 즉시 반환.
     """
+    # === 0순위: 프롬프트 주입/역할 탈취 시도 — 어떤 단계에서든 최우선 차단 ===
+    #   (내부 지시 노출·규칙 무시·역할 변경 요구, 제어 마커 직접 입력 등.
+    #    가드가 없으면 라포·경계 대기 등 모든 분기가 주입 문장을 '답변'으로
+    #    취급해 흐름이 오염된다.)
+    if detect_prompt_injection(state.get("last_user_response")):
+        return "PROMPT_INJECTION_DETECTED"
+
     # === 최우선: 챕터 종료 후 '계속/휴식' 의사 대기 중이면 사용자 답변으로 분기 ===
     #   직전 AI 턴(CHAPTER_READY_TO_END)이 "계속할까요, 쉴까요?"를 물었고
     #   아직 챕터를 전환하지 않은 상태. 사용자 답변 의도로 두 갈래 분기한다.

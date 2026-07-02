@@ -30,6 +30,24 @@ META_KEYWORDS = [
     "AI는", "AI랑", "이 평가",
 ]
 
+# 프롬프트 주입/역할 탈취 시도 키워드 (한/영)
+INJECTION_KEYWORDS = [
+    # 내부 지시 노출 요구
+    "시스템 프롬프트", "시스템프롬프트", "프롬프트 보여", "프롬프트를 알려",
+    "지시문 보여", "지시사항을 알려", "내부 지시", "규칙을 알려",
+    "system prompt", "your instructions", "reveal your",
+    # 지시 무시/재정의 시도
+    "지시 무시", "지시를 무시", "규칙 무시", "규칙을 무시", "앞의 내용 무시",
+    "이전 지시", "무시하고 답", "ignore previous", "ignore all",
+    "disregard", "override your",
+    # 역할 탈취
+    "이제부터 너는", "지금부터 너는", "역할을 바꿔", "역할극", "~인 척",
+    "you are now", "act as", "pretend to be", "jailbreak", "DAN 모드",
+    # 마커/태그 조작
+    "[CHAPTER_COMPLETE]", "[DIAGNOSIS_COMPLETE]", "[SESSION_PAUSE]",
+    "[START_CHAPTER]", "[READY_FOR_INTRO]",
+]
+
 
 def check_avoidance(text: str | None) -> bool:
     """회피 감지: 너무 짧거나 회피 키워드 포함."""
@@ -53,6 +71,20 @@ def detect_meta_question(text: str | None) -> bool:
     if not text:
         return False
     return any(kw in text for kw in META_KEYWORDS)
+
+
+def detect_prompt_injection(text: str | None) -> bool:
+    """프롬프트 주입/역할 탈취 시도 감지.
+
+    사용자가 내부 지시 노출·규칙 무시·역할 변경을 요구하거나, 시스템
+    제어 마커를 직접 입력해 흐름을 조작하려는 경우 True.
+    (감지 시 LLM 에 PROMPT_INJECTION_DETECTED 지시 → 정중히 거절하고
+    진단 맥락으로 복귀. 백엔드 마커 게이트가 2차 방어선.)
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(kw.lower() in lowered for kw in INJECTION_KEYWORDS)
 
 
 def is_invalid_input(text: str | None) -> bool:

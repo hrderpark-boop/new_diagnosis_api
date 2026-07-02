@@ -74,5 +74,10 @@ class ChatMessage(SQLModel, table=True):
     probe_type_used: Optional[str] = Field(default=None)
     instruction_used: Optional[str] = Field(default=None)
 
+    # ML 학습(Fine-Tuning/RAG) 대비 메타데이터:
+    # 세션 내 누적 user 턴 번호. user/model 메시지 쌍이 같은 값을 가져
+    # (turn_index, chapter, instruction_used) 만으로 학습 레코드 페어링 가능.
+    turn_index: Optional[int] = Field(default=None, index=True)
+
     # 관계 설정
     session: DiagnosisSession = Relationship(back_populates="messages")

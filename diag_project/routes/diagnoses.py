@@ -404,17 +404,25 @@ async def _submit_message_phase3a(
     # 4. Turn State 빌드
     state = await build_turn_state(db, session.id, chapter)
 
-    # 4-a. 진단 전 단계면 user_msg.chapter 를 NULL 로 소급 변경
+    # 4-a. user 메시지 메타데이터 소급 기록 (ML 학습 데이터 구조화):
+    #   - 진단 전 단계면 chapter 를 NULL 로 소급 변경 (라포 사담 분리)
+    #   - turn_index: 세션 내 누적 user 턴 번호 (user/model 쌍 페어링 키)
+    #   - instruction_used: 이 발화가 촉발한 instruction (학습 라벨)
     instruction_used = state.get("instruction_for_this_turn")
     PRE_DIAGNOSIS_INSTRUCTIONS = {
         "RAPPORT_BUILDING",
         "DIAGNOSIS_INTRO",
         "DIAGNOSIS_CONFIRM",
     }
+    _turn_index = (
+        state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
+    )
     if instruction_used in PRE_DIAGNOSIS_INSTRUCTIONS:
         user_msg.chapter = None
-        db.add(user_msg)
-        await db.commit()
+    user_msg.turn_index = _turn_index
+    user_msg.instruction_used = instruction_used
+    db.add(user_msg)
+    await db.commit()
 
     # 5. 대화 이력 압축
     compressed_history = await compress_conversation_history(db, session.id, chapter)
@@ -491,6 +499,10 @@ async def _submit_message_phase3a(
             "META_QUESTION_FROM_USER",
             "USER_REQUESTS_PAUSE",
             "INVALID_INPUT",
+            # 주입 대응 턴: 사건 수집 없음 — 거절+복귀 문장만 (경량)
+            "PROMPT_INJECTION_DETECTED",
+            # 경계 브릿지 턴: 한 문장 브릿지만 (경량)
+            "CHAPTER_CONTINUE_CONFIRMED",
         }
         llm_output = await llm.generate_phase3a_interaction(
             system_prompt=system_prompt,
@@ -681,6 +693,7 @@ async def _submit_message_phase3a(
         event_id=None if is_pre_diagnosis else real_event_id,
         probe_type_used=probe_type_used,
         instruction_used=instruction_used,
+        turn_index=_turn_index,  # user 메시지와 동일 값 → ML 페어링 키
     )
     db.add(ai_msg)
     await db.commit()

@@ -48,23 +48,34 @@ async def get_db():
     async with async_session() as session:
         yield session
 
+# 경량 마이그레이션 대상: create_all 은 '기존 테이블'에 컬럼을 추가하지
+# 않으므로, 모델에 새 컬럼을 더할 때는 여기 등록해 방어적으로 ALTER 한다.
+_LIGHT_MIGRATIONS = [
+    "ALTER TABLE events ADD COLUMN mapped_subcompetency VARCHAR(100)",
+    # ML 학습(Fine-Tuning) 대비: user/model 메시지 페어링용 턴 번호
+    "ALTER TABLE chat_messages ADD COLUMN turn_index INTEGER",
+]
+
+
 # 5. DB 초기화 함수 (테이블 생성)
 async def init_db():
     async with engine.begin() as conn:
         # ⚠️ [주의] 데이터 보존을 위해 drop_all은 주석 처리 유지
         # await conn.run_sync(SQLModel.metadata.drop_all)
-        
-        # 테이블 생성
+
+        # 테이블 생성 (없는 테이블만)
         await conn.run_sync(SQLModel.metadata.create_all)
 
-        # 경량 마이그레이션: 기존 events 테이블에 신규 컬럼이 없으면 추가.
-        # (create_all 은 기존 테이블에 컬럼을 추가하지 않으므로 방어적으로 처리)
+    # 경량 마이그레이션은 ALTER 하나당 '독립 트랜잭션'으로 실행한다.
+    # (PostgreSQL 은 트랜잭션 안에서 한 문장이 실패하면 이후 문장이 전부
+    #  중단되므로, 같은 트랜잭션에 묶으면 '이미 존재' 실패 하나가 나머지
+    #  마이그레이션까지 막는다.)
+    from sqlalchemy import text
+    for _ddl in _LIGHT_MIGRATIONS:
         try:
-            from sqlalchemy import text
-            await conn.execute(text(
-                "ALTER TABLE events ADD COLUMN mapped_subcompetency VARCHAR(100)"
-            ))
-            logger.info("✅ events.mapped_subcompetency 컬럼 추가됨")
+            async with engine.begin() as conn:
+                await conn.execute(text(_ddl))
+            logger.info(f"✅ 경량 마이그레이션 적용: {_ddl}")
         except Exception:
             # 이미 존재하면 무시
             pass
