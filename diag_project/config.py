@@ -25,12 +25,13 @@ class Settings(BaseSettings):
     # 3. DB 로깅 설정 (False로 유지)
     DB_ECHO: bool = False 
 
-    # 4. CORS 설정
-    # 프로덕션에서는 환경변수로 덮어쓸 것:
+    # 4. CORS 설정 — 화이트리스트 (여기 없는 origin 은 브라우저 접근 차단)
+    # 공식 프론트엔드 도메인 + 로컬 개발용, 딱 두 곳만 허용.
+    # 필요 시 환경변수로 덮어쓸 것:
     #   CORS_ALLOWED_ORIGINS="https://app.example.com,https://admin.example.com"
     CORS_ALLOWED_ORIGINS: List[str] = [
+        "https://fm.connectn.co.kr",
         "http://localhost:3000",
-        "http://127.0.0.1:3000",
     ]
     
     # 5. 💡 (C-4 LLM) Gemini API 설정 추가
