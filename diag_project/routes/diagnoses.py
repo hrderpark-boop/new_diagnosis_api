@@ -38,6 +38,7 @@ from diag_project.services.intro_messages import (
     build_align_framework_section,
     build_chapter_opening_with_user_def,
     build_chapter_transition_question,
+    build_chapter_thought_question,
 )
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
@@ -123,11 +124,12 @@ async def start_diagnosis(
     user = await db.get(Participant, request.participant_id)
     user_name = user.name if user else "리더"
 
-    # 1. 가장 최근의 '진행 중'인 세션 찾기 (이어하기)
-    # created_at 내림차순(desc)으로 정렬하여 가장 마지막 세션을 가져옵니다.
+    # 1. 가장 최근의 '진행 중/일시중지' 세션 찾기 (이어하기)
+    # paused(휴식 선택) 세션도 반드시 이어하기 대상 — 빠뜨리면 새 세션이 생성돼
+    # 기존 진행 내역이 유실된다.
     existing_query = select(DiagnosisSession).where(
         DiagnosisSession.user_id == request.participant_id,
-        DiagnosisSession.status == "in_progress"
+        DiagnosisSession.status.in_(["in_progress", "paused"])
     ).order_by(desc(DiagnosisSession.created_at))
     
     result = await db.execute(existing_query)
@@ -378,6 +380,14 @@ async def _submit_message_phase3a(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    # 1-b. 일시중지 세션 재개: 사용자가 다시 말을 걸면 paused → in_progress 복원.
+    #   (이번 턴이 다시 pause 로 끝나면 11-b 블록이 다시 paused 로 되돌린다.)
+    if session.status == "paused":
+        session.status = "in_progress"
+        db.add(session)
+        await db.commit()
+        logger.info(f"▶️ paused 세션 재개: {session.id}")
+
     # 2. 현재 챕터 결정 (current_topic 한국어 → 영문 key)
     chapter = topic_to_chapter(session.current_topic)
 
@@ -514,6 +524,29 @@ async def _submit_message_phase3a(
         )
         is_diagnosis_complete = False
 
+    # 🛡️ [환각 게이트] 챕터 완료/일시중지 마커는 '그 결정이 정당한 instruction'
+    # 에서 나왔을 때만 신뢰한다. (예: STAR_INCOMPLETE 도중 LLM 이
+    # [CHAPTER_COMPLETE] 를 환각으로 내면 챕터가 조기 전환되던 구멍 차단.
+    # 8-d/8-e 블록이 READY_TO_END/CONTINUE_CONFIRMED 의 플래그를 코드로
+    # 확정하므로, 이 게이트는 그 외 턴의 환각만 걸러낸다.)
+    _COMPLETE_ALLOWED = {
+        "CHAPTER_READY_TO_END",       # 최종 챕터 Grand Finale (코드가 확정)
+        "CHAPTER_CONTINUE_CONFIRMED",  # 사용자 '계속' 동의 (코드가 확정)
+        "MAX_TURNS_REACHED",           # 강제 종료 지시 턴
+    }
+    if is_chapter_completed and instruction_used not in _COMPLETE_ALLOWED:
+        logger.warning(
+            "⛔ 환각 차단: instruction=%s 턴에서 [CHAPTER_COMPLETE] 감지 → 무시.",
+            instruction_used,
+        )
+        is_chapter_completed = False
+    if is_session_paused and instruction_used != "USER_REQUESTS_PAUSE":
+        logger.warning(
+            "⛔ 환각 차단: instruction=%s 턴에서 [SESSION_PAUSE] 감지 → 무시.",
+            instruction_used,
+        )
+        is_session_paused = False
+
     clean_reply = (
         reply
         .replace("[CHAPTER_COMPLETE]", "")
@@ -583,6 +616,13 @@ async def _submit_message_phase3a(
     #   → 다음 턴에 다음 영역 COMPETENCY_ALIGN 으로 자연스럽게 진입.
     if instruction_used == "CHAPTER_CONTINUE_CONFIRMED":
         clean_reply = clean_reply.strip() or "좋습니다. 그럼 바로 이어가 볼게요."
+        # 🛡️ 대화 정체 방지: 브릿지만 나가고 질문이 없으면 사용자가 무엇을
+        # 답해야 할지 알 수 없다(다음 턴 ALIGN 이 받을 '사용자 생각'도 미수집).
+        # 다음 역량에 대한 생각을 여는 질문을 시스템이 이어 붙인다.
+        if _next_ch and "?" not in clean_reply:
+            clean_reply = (
+                f"{clean_reply}\n\n{build_chapter_thought_question(_next_ch)}"
+            )
         is_chapter_completed = True
         is_chapter_starting = True
 
@@ -705,6 +745,8 @@ async def _submit_message_phase3a(
         "is_session_starting": False,
         "is_session_completed": is_session_completed,
         "is_session_paused": is_session_paused,
+        # 챕터 경계에서 '계속/휴식' 답변을 기다리는 중 — 프론트가 선택 버튼 노출
+        "is_awaiting_continue": probe_type_used == "AWAIT_CONTINUE",
         "has_next_chapter": _safety_next_chapter is not None,
         "next_topic": _safety_next_topic,
         "reward": None,
@@ -867,6 +909,17 @@ async def get_session_state(
         _next_chapter = _get_next_chapter(_cur_chapter)
         _next_topic = chapter_to_topic(_next_chapter) if _next_chapter else None
 
+    # 챕터 경계 '계속/휴식' 대기 여부 — 마지막 AI 메시지의 AWAIT_CONTINUE 마커.
+    # (새로고침/재동기화 후에도 프론트가 선택 버튼을 복원할 수 있도록 제공)
+    _last_model_msg = next(
+        (m for m in reversed(messages) if m.role == "model"), None
+    )
+    _is_awaiting_continue = (
+        _last_model_msg is not None
+        and _last_model_msg.probe_type_used == "AWAIT_CONTINUE"
+        and not _is_completed
+    )
+
     return {
         "session_id": session.id,
         "current_topic": session.current_topic,
@@ -874,6 +927,7 @@ async def get_session_state(
         "status": session.status,
         "is_paused": session.status == "paused",
         "is_completed": _is_completed,
+        "is_awaiting_continue": _is_awaiting_continue,
         "has_next_chapter": _next_chapter is not None,
         "next_topic": _next_topic,
         "messages": formatted_messages
