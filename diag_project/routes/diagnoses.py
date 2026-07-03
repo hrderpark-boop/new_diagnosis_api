@@ -554,6 +554,10 @@ async def _submit_message_phase3a(
     is_ready_for_intro = "[READY_FOR_INTRO]" in reply
     is_chapter_starting = "[START_CHAPTER]" in reply
     is_diagnosis_complete = "[DIAGNOSIS_COMPLETE]" in reply
+    # Core Rule 7/9: 코치가 능동적으로 세션을 중단하는 조기 종료 마커
+    # (극심한 스트레스·거부감, 동문서답 3진 아웃). 일시중지로 처리해
+    # 사용자가 준비되면 이어서 재개할 수 있게 한다.
+    is_session_end_early = "[SESSION_END_EARLY]" in reply
 
     # 🛡️ [방어 로직 — 최우선] 남은 역량(챕터)이 있으면 '전체 진단 종료'를 절대
     # 허용하지 않는다. LLM 이 [DIAGNOSIS_COMPLETE] 를 환각으로 내보내거나 로직이
@@ -590,6 +594,34 @@ async def _submit_message_phase3a(
             instruction_used,
         )
         is_session_paused = False
+
+    # [SESSION_END_EARLY] 게이트: 코치의 능동적 조기 종료(Core Rule 7/9)는
+    # '실제 대화 턴'에서만 신뢰한다. 시스템 조립/전환 턴(INTRO·ALIGN·경계 등)
+    # 에서 나오면 환각으로 간주해 무시 — 정당하면 일시중지로 전환.
+    _EARLY_END_ALLOWED = {
+        "CONTINUE_NORMAL", "STAR_INCOMPLETE", "STAR_COMPLETE_NEW_EVENT",
+        "CONTRARY_NEEDED", "AVOIDANCE_DETECTED", "DUPLICATE_SUSPECTED",
+        "CROSS_CHAPTER_OPPORTUNITY", "META_QUESTION_FROM_USER",
+        "FIRST_TURN_AVOIDANCE", "INVALID_INPUT", "RAPPORT_BUILDING",
+        "PROMPT_INJECTION_DETECTED",
+    }
+    if is_session_end_early:
+        if instruction_used in _EARLY_END_ALLOWED:
+            logger.info(
+                "🛑 코치 판단 조기 종료(SESSION_END_EARLY): instruction=%s "
+                "→ 세션 일시중지로 전환.", instruction_used,
+            )
+            is_session_paused = True
+            # 조기 종료 턴에는 챕터 전환/완료 마커가 있어도 무효
+            is_chapter_completed = False
+            is_chapter_starting = False
+            is_diagnosis_complete = False
+        else:
+            logger.warning(
+                "⛔ 환각 차단: instruction=%s 턴에서 [SESSION_END_EARLY] "
+                "감지 → 무시.", instruction_used,
+            )
+            is_session_end_early = False
 
     # 시스템 제어 마커 완벽 제거 — 고정 목록 replace 는 [EVENT_COMPLETE] 같은
     # 목록 밖 마커가 새어 나가므로, '[대문자_언더바]' 패턴 전체를 정규식으로
