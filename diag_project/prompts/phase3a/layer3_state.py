@@ -73,7 +73,24 @@ def format_turn_state_for_llm(state: dict) -> str:
     if instruction == "COMPETENCY_ALIGN" and state.get("chapter_framework"):
         core_state["chapter_framework"] = state["chapter_framework"]
 
+    # 조기 종료 제안 이력 (2-Strike 판단용 — Core Rule 7)
+    _suggest_count = state.get("suggest_pause_count", 0)
+    if _suggest_count > 0:
+        core_state["suggest_pause_count"] = _suggest_count
+
     state_text = json.dumps(core_state, ensure_ascii=False, indent=2)
+
+    # 🚨 2-Strike 강제: 이미 2회 제안했으면 이번 턴엔 제안 금지, 강제 종료만.
+    if _suggest_count >= 2:
+        state_text += (
+            "\n\n🚨 [2-Strike 소진 — 시스템 강제 지시] 조기 종료 제안"
+            "([SUGGEST_PAUSE])을 이미 2회 사용했습니다. 이번 턴에는 더 이상"
+            " 제안하거나 묻지 마세요. 사용자가 여전히 진단을 거부하거나 감정"
+            " 토로만 반복한다면, 단호하고 따뜻하게 마무리를 '선언'하고 응답"
+            " 맨 끝에 [SESSION_END_EARLY] 를 붙이세요.\n"
+            "예: '오늘은 더 진행이 어려워 여기서 마무리하겠습니다. 마음이"
+            " 회복되면 그때 다시 뵙겠습니다. [SESSION_END_EARLY]'"
+        )
 
     instruction_guide = _get_instruction_guide(instruction, state)
 

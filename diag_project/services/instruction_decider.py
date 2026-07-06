@@ -558,6 +558,17 @@ async def build_turn_state(
         and latest_model_msg.probe_type_used == "AWAIT_CONTINUE"
     )
 
+    # 8-a3c. 코치의 '조기 종료 제안(SUGGEST_PAUSE)' 누적 횟수.
+    #   2-Strike 규칙: 제안은 최대 2회 — 2회를 넘기면 3번째부터는 제안이
+    #   아니라 강제 종료(SESSION_END_EARLY)로 전환해야 한다.
+    suggest_pause_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "model")
+        .where(ChatMessage.probe_type_used == "SUGGEST_PAUSE")
+    )
+    suggest_pause_count = len(list(suggest_pause_result.scalars().all()))
+
     # 8-a4. CONFIRM 턴 수 (DIAGNOSIS_CONFIRM 으로 저장된 model 메시지 수)
     confirm_msg_result = await db.execute(
         select(ChatMessage)
@@ -709,6 +720,7 @@ async def build_turn_state(
         "competency_intro_done": competency_intro_done,
         "competency_aligned": competency_aligned,
         "awaiting_continue_decision": awaiting_continue_decision,
+        "suggest_pause_count": suggest_pause_count,
         "first_subcompetency_name": first_subcompetency_name,
         "all_subcompetencies": all_subcompetencies,
         "explored_subcompetencies": explored_subcompetencies,

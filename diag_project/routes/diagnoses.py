@@ -558,6 +558,9 @@ async def _submit_message_phase3a(
     # (극심한 스트레스·거부감, 동문서답 3진 아웃). 일시중지로 처리해
     # 사용자가 준비되면 이어서 재개할 수 있게 한다.
     is_session_end_early = "[SESSION_END_EARLY]" in reply
+    # Core Rule 7: 조기 종료 '제안' 마커 — 프론트가 '다음에 하기/계속
+    # 진행하기' 버튼을 띄우도록 needs_user_decision 플래그로 변환된다.
+    is_suggest_pause = "[SUGGEST_PAUSE]" in reply
 
     # 🛡️ [방어 로직 — 최우선] 남은 역량(챕터)이 있으면 '전체 진단 종료'를 절대
     # 허용하지 않는다. LLM 이 [DIAGNOSIS_COMPLETE] 를 환각으로 내보내거나 로직이
@@ -627,6 +630,38 @@ async def _submit_message_phase3a(
             )
             is_session_end_early = False
 
+    # [SUGGEST_PAUSE] 처리 (Core Rule 7 — 제안 vs 강제 분리):
+    #   - 제안이 유효하면 needs_user_decision=True → 프론트가
+    #     '다음에 하기/계속 진행하기' 버튼을 띄운다. 세션 상태는 그대로.
+    #   - 2-Strike: 이미 2회 제안했다면 3번째 '제안'은 백엔드가 강제 종료로
+    #     '승격'한다 — 프롬프트가 한도를 어겨도 시스템이 결정론적으로 보장.
+    needs_user_decision = False
+    _escalated_forced_end = False
+    if is_suggest_pause:
+        if is_session_end_early:
+            # 두 마커가 함께 오면 강제 종료가 우선
+            is_suggest_pause = False
+        elif instruction_used not in _EARLY_END_ALLOWED:
+            logger.warning(
+                "⛔ 환각 차단: instruction=%s 턴에서 [SUGGEST_PAUSE] "
+                "감지 → 무시.", instruction_used,
+            )
+            is_suggest_pause = False
+        elif state.get("suggest_pause_count", 0) >= 2:
+            logger.info(
+                "🛑 2-Strike 소진(제안 %d회) → 3번째 제안을 강제 종료로 승격.",
+                state.get("suggest_pause_count", 0),
+            )
+            is_suggest_pause = False
+            is_session_end_early = True
+            is_session_paused = True
+            is_chapter_completed = False
+            is_chapter_starting = False
+            is_diagnosis_complete = False
+            _escalated_forced_end = True
+        else:
+            needs_user_decision = True
+
     # 시스템 제어 마커 완벽 제거 — 고정 목록 replace 는 [EVENT_COMPLETE] 같은
     # 목록 밖 마커가 새어 나가므로, '[대문자_언더바]' 패턴 전체를 정규식으로
     # 스트립한다. (상태 전진용 파싱은 위에서 원본 reply 로 이미 완료됨)
@@ -636,6 +671,16 @@ async def _submit_message_phase3a(
     clean_reply = (
         clean_reply.replace("\\n", "\n").replace('\\"', '"').replace("\\t", "\t")
     )
+
+    # 2-Strike 승격 턴: LLM 이 '제안'형 문장을 썼지만 시스템이 강제 종료로
+    # 승격했으므로, 어색하지 않게 단호한 마무리 선언을 시스템이 덧붙인다.
+    if _escalated_forced_end:
+        clean_reply = (
+            f"{clean_reply}\n\n"
+            "리더님, 오늘은 여기서 마무리하는 것이 좋겠습니다. 지금은 진단보다 "
+            "마음을 돌보는 시간이 더 필요해 보여요. 세션은 잘 정리해 둘 테니, "
+            "마음이 회복되셨을 때 언제든 이어서 진행하실 수 있습니다."
+        )
 
     # 일시중지 확정: USER_REQUESTS_PAUSE 면 LLM 의 [SESSION_PAUSE] 마커 누락과
     # 무관하게 무조건 일시중지 처리 (챕터 전환 차단 + 세션 대기 전환).
@@ -758,6 +803,9 @@ async def _submit_message_phase3a(
         probe_type_used = "AWAIT_CONTINUE"
     elif _seamless_next_chapter:
         probe_type_used = "START_CHAPTER"
+    elif needs_user_decision:
+        # 조기 종료 '제안' 턴 — 2-Strike 카운팅과 /state 복원의 근거 마커.
+        probe_type_used = "SUGGEST_PAUSE"
 
     # 진단 전 단계는 사건 생명주기 스킵
     is_pre_diagnosis = (instruction_used in PRE_DIAGNOSIS_INSTRUCTIONS)
@@ -858,6 +906,9 @@ async def _submit_message_phase3a(
         "is_session_paused": is_session_paused,
         # 챕터 경계에서 '계속/휴식' 답변을 기다리는 중 — 프론트가 선택 버튼 노출
         "is_awaiting_continue": probe_type_used == "AWAIT_CONTINUE",
+        # 코치가 조기 종료를 '제안'함 — 프론트가 '다음에 하기/계속 진행하기'
+        # 버튼을 노출해야 함 (Core Rule 7, 최대 2회)
+        "needs_user_decision": needs_user_decision,
         "has_next_chapter": _safety_next_chapter is not None,
         "next_topic": _safety_next_topic,
         "reward": None,
@@ -1022,6 +1073,13 @@ async def get_session_state(
         and _last_model_msg.probe_type_used == "AWAIT_CONTINUE"
         and not _is_completed
     )
+    # 조기 종료 '제안' 대기 여부 — 새로고침 후에도 선택 버튼 복원
+    _needs_user_decision = (
+        _last_model_msg is not None
+        and _last_model_msg.probe_type_used == "SUGGEST_PAUSE"
+        and not _is_completed
+        and session.status != "paused"
+    )
 
     return {
         "session_id": session.id,
@@ -1031,6 +1089,7 @@ async def get_session_state(
         "is_paused": session.status == "paused",
         "is_completed": _is_completed,
         "is_awaiting_continue": _is_awaiting_continue,
+        "needs_user_decision": _needs_user_decision,
         "has_next_chapter": _next_chapter is not None,
         "next_topic": _next_topic,
         "messages": formatted_messages
