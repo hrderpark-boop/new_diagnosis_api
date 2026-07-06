@@ -604,6 +604,10 @@ async def _submit_message_phase3a(
         "CROSS_CHAPTER_OPPORTUNITY", "META_QUESTION_FROM_USER",
         "FIRST_TURN_AVOIDANCE", "INVALID_INPUT", "RAPPORT_BUILDING",
         "PROMPT_INJECTION_DETECTED",
+        # 진단 전 단계에서도 극심한 스트레스 호소는 발생한다 — 실전 검증에서
+        # 감정 호소자가 CONFIRM 단계에 갇힌 채 코치의 종료 선언이 8회나
+        # 차단됐던 사례의 재발 방지.
+        "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "COMPETENCY_ALIGN",
     }
     if is_session_end_early:
         if instruction_used in _EARLY_END_ALLOWED:
@@ -639,7 +643,9 @@ async def _submit_message_phase3a(
         is_session_paused = True
 
     # 8-a. DIAGNOSIS_INTRO 하이브리드: LLM 호응 + 시스템 진단 안내 본문 합치기
-    if instruction_used == "DIAGNOSIS_INTRO":
+    # (코치가 조기 종료를 선언한 턴이면 작별 인사 뒤에 안내 본문을 붙이지
+    #  않는다 — 마무리 멘트가 온전히 응답이 되도록.)
+    if instruction_used == "DIAGNOSIS_INTRO" and not is_session_end_early:
         llm_acknowledgment = clean_reply
         if not llm_acknowledgment or "죄송합니다" in llm_acknowledgment:
             llm_acknowledgment = "말씀 감사합니다."
@@ -647,7 +653,8 @@ async def _submit_message_phase3a(
         clean_reply = f"{llm_acknowledgment}\n\n{anchor_section}"
 
     # 8-b. COMPETENCY_ALIGN 하이브리드: LLM 호응 + 시스템 framework 합치기
-    if instruction_used == "COMPETENCY_ALIGN":
+    # (조기 종료 턴이면 framework 본문 생략 — 위와 동일 원칙.)
+    if instruction_used == "COMPETENCY_ALIGN" and not is_session_end_early:
         llm_acknowledgment = clean_reply
         if not llm_acknowledgment or "죄송합니다" in llm_acknowledgment:
             llm_acknowledgment = "네, 리더님 말씀 잘 들었습니다."
