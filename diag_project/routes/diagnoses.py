@@ -687,10 +687,17 @@ async def _submit_message_phase3a(
     if instruction_used == "USER_REQUESTS_PAUSE":
         is_session_paused = True
 
+    # 🛡️ 문맥 붕괴 방지: 코치가 감정 대응/휴식 제안/조기 종료를 하는 턴에는
+    #   진단 안내·역량 정의·억지 동의 같은 '기계적 하이브리드 텍스트'를 절대
+    #   붙이지 않는다. (예: 휴식 제안 직후 "저희 진단에서는 조직관리를 …라고
+    #   정의합니다. 자연스럽게 녹아들죠?" 가 이어붙던 문맥 붕괴 차단.)
+    #   → 감정 대응/종료 제안 멘트가 온전히 응답이 되도록 LLM 원문만 남긴다.
+    _suppress_mechanical_text = (
+        is_session_end_early or needs_user_decision or is_session_paused
+    )
+
     # 8-a. DIAGNOSIS_INTRO 하이브리드: LLM 호응 + 시스템 진단 안내 본문 합치기
-    # (코치가 조기 종료를 선언한 턴이면 작별 인사 뒤에 안내 본문을 붙이지
-    #  않는다 — 마무리 멘트가 온전히 응답이 되도록.)
-    if instruction_used == "DIAGNOSIS_INTRO" and not is_session_end_early:
+    if instruction_used == "DIAGNOSIS_INTRO" and not _suppress_mechanical_text:
         llm_acknowledgment = clean_reply
         if not llm_acknowledgment or "죄송합니다" in llm_acknowledgment:
             llm_acknowledgment = "말씀 감사합니다."
@@ -698,8 +705,7 @@ async def _submit_message_phase3a(
         clean_reply = f"{llm_acknowledgment}\n\n{anchor_section}"
 
     # 8-b. COMPETENCY_ALIGN 하이브리드: LLM 호응 + 시스템 framework 합치기
-    # (조기 종료 턴이면 framework 본문 생략 — 위와 동일 원칙.)
-    if instruction_used == "COMPETENCY_ALIGN" and not is_session_end_early:
+    if instruction_used == "COMPETENCY_ALIGN" and not _suppress_mechanical_text:
         llm_acknowledgment = clean_reply
         if not llm_acknowledgment or "죄송합니다" in llm_acknowledgment:
             llm_acknowledgment = "네, 리더님 말씀 잘 들었습니다."
