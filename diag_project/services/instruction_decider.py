@@ -19,6 +19,7 @@ from diag_project.services.avoidance_detector import (
     detect_pause_request,
     detect_meta_question,
     detect_prompt_injection,
+    detect_abstract_avoidance,
     is_invalid_input,
 )
 
@@ -105,6 +106,8 @@ InstructionType = Literal[
     "STAR_COMPLETE_NEW_EVENT",
     "CONTRARY_NEEDED",
     "AVOIDANCE_DETECTED",
+    "ABSTRACT_AVOIDANCE",
+    "CHAPTER_NO_YIELD_ULTIMATUM",
     "DUPLICATE_SUSPECTED",
     "CROSS_CHAPTER_OPPORTUNITY",
     "CHAPTER_READY_TO_END",
@@ -147,6 +150,10 @@ MIN_TURNS_BEFORE_END: dict[str, int] = {
     "work_management": 8,
     "self_management": 8,
 }
+
+# N턴 무수확 방어: 한 챕터 BEI 질문을 이만큼 던졌는데도 강한 STAR(≥0.7)
+# 사건이 하나도 없으면 '무한 개념화 루프'로 간주 → 최후통첩 후 강제 전환.
+NO_YIELD_TURNS = 5
 
 
 def _force_rapport_category(rapport_turn_count: int) -> str:
@@ -332,13 +339,29 @@ def decide_instruction(state: dict) -> InstructionType:
     if detect_meta_question(last_response):
         return "META_QUESTION_FROM_USER"
 
+    # 4-b. 🛡️ N턴 무수확 방어 (무한 개념화 루프 탈출):
+    #   BEI 질문을 NO_YIELD_TURNS 이상 던졌는데도 강한 STAR 사건이 0이면,
+    #   추상적 회피에 끌려다니는 상태 → 최후통첩 1회 후 강제 전환.
+    _bei_turns = state.get("chapter_message_count", 0)
+    _no_strong = state.get("events_with_star_70", 0) == 0
+    if _bei_turns >= NO_YIELD_TURNS and _no_strong:
+        if not state.get("no_yield_ultimatum_given"):
+            return "CHAPTER_NO_YIELD_ULTIMATUM"      # 최후통첩 (1회)
+        # 최후통첩 후에도 무수확 → 이 역량 미달 기록하고 강제 전환.
+        return "CHAPTER_READY_TO_END"
+
     # 5. 첫 턴 회피 (라포 회복)
     if state["turn_count"] <= 2 and state["contains_avoidance_keywords"]:
         return "FIRST_TURN_AVOIDANCE"
 
-    # 6. 일반 회피
+    # 6. 일반 회피 (단답/모르겠음)
     if state["contains_avoidance_keywords"]:
         return "AVOIDANCE_DETECTED"
+
+    # 6-b. 🛡️ 추상적 회피('그럴듯한 공허함') — 개념/이론만 늘어놓고 구체가 없음.
+    #   BEI 진입 후(최소 1회 질문)에만, 구체 장면을 정면으로 압박한다.
+    if _bei_turns >= 1 and detect_abstract_avoidance(last_response):
+        return "ABSTRACT_AVOIDANCE"
 
     # 7. 중복 의심
     if state.get("duplicate_suspected"):
@@ -513,6 +536,16 @@ async def build_turn_state(
         .where(ChatMessage.probe_type_used == "CONTRARY")
     )
     has_contrary = contrary_result.scalars().first() is not None
+
+    # 8-0. N턴 무수확 '최후통첩'을 이 챕터에서 이미 던졌는지 (probe 마커).
+    ultimatum_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.chapter == chapter)
+        .where(ChatMessage.role == "model")
+        .where(ChatMessage.probe_type_used == "NO_YIELD_ULTIMATUM")
+    )
+    no_yield_ultimatum_given = ultimatum_result.scalars().first() is not None
 
     # 8-a. 마커 1: 라포 완료 → 인트로 진입 ([READY_FOR_INTRO] 또는 하위호환 RAPPORT_COMPLETE)
     rapport_result = await db.execute(
@@ -721,6 +754,7 @@ async def build_turn_state(
         "competency_aligned": competency_aligned,
         "awaiting_continue_decision": awaiting_continue_decision,
         "suggest_pause_count": suggest_pause_count,
+        "no_yield_ultimatum_given": no_yield_ultimatum_given,
         "first_subcompetency_name": first_subcompetency_name,
         "all_subcompetencies": all_subcompetencies,
         "explored_subcompetencies": explored_subcompetencies,
@@ -745,6 +779,15 @@ async def build_turn_state(
     if rapport_turn_count >= 3 and is_user_consent(last_rapport_response):
         force_ready_for_intro = True
     state["force_ready_for_intro"] = force_ready_for_intro
+
+    # 9-g. 무수확 강제 전환 플래그 (READY_TO_END 가이드가 문구를 바꾸도록):
+    #   최후통첩까지 했는데도 강한 STAR 가 0이면, 챕터 종료 멘트를 '강점 요약'
+    #   대신 '구체 사례 확보 실패 → 미달, 정리하고 전환'으로 바꿔야 한다.
+    state["no_yield_forced"] = (
+        state["events_with_star_70"] == 0
+        and chapter_message_count >= NO_YIELD_TURNS
+        and no_yield_ultimatum_given
+    )
 
     # 10. instruction 결정
     state["instruction_for_this_turn"] = decide_instruction(state)

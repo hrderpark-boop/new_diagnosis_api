@@ -812,6 +812,9 @@ async def _submit_message_phase3a(
     elif needs_user_decision:
         # 조기 종료 '제안' 턴 — 2-Strike 카운팅과 /state 복원의 근거 마커.
         probe_type_used = "SUGGEST_PAUSE"
+    elif instruction_used == "CHAPTER_NO_YIELD_ULTIMATUM":
+        # 무수확 최후통첩 턴 — 다음 턴에 '이미 통첩함'을 판별하는 근거 마커.
+        probe_type_used = "NO_YIELD_ULTIMATUM"
 
     # 진단 전 단계는 사건 생명주기 스킵
     is_pre_diagnosis = (instruction_used in PRE_DIAGNOSIS_INSTRUCTIONS)

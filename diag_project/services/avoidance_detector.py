@@ -30,6 +30,17 @@ META_KEYWORDS = [
     "AI는", "AI랑", "이 평가",
 ]
 
+# '그럴듯한 공허함' 추상어 — 구체 없이 개념/이론만 나열하는 회피의 표지.
+# (이론가_교과서형, AI_복붙형_위장자 대응)
+ABSTRACT_KEYWORDS = [
+    "전략", "혁신", "시너지", "데이터 기반", "패러다임", "역량", "본질",
+    "지속가능", "지속 가능", "이해관계자", "선제적", "효율성 극대화",
+    "리더십 철학", "성장 동력", "체계적", "심층적", "다각적", "궁극적",
+    "방법론", "프레임워크", "인사이트", "통찰", "최적화", "고도화",
+    "촉진자", "심리적 안정", "내재적 동기", "애자일", "서번트",
+    "결론적으로", "궁극적으로", "본질적으로", "전사적", "유의미한",
+]
+
 # 프롬프트 주입/역할 탈취 시도 키워드 (한/영)
 INJECTION_KEYWORDS = [
     # 내부 지시 노출 요구
@@ -71,6 +82,56 @@ def detect_meta_question(text: str | None) -> bool:
     if not text:
         return False
     return any(kw in text for kw in META_KEYWORDS)
+
+
+def detect_abstract_avoidance(text: str | None) -> bool:
+    """'그럴듯한 공허함' 감지 — 추상적 개념/이론만 늘어놓고 구체가 없는 답변.
+
+    구체성의 증거(고유명사·수치/기간·직접 발화)가 거의 없으면서 추상어
+    밀도가 높은, 충분히 긴 답변을 True 로 판정한다.
+    - 너무 짧은 답(단답 회피)은 check_avoidance 가 따로 처리하므로 제외.
+    - 구체 증거가 하나라도 뚜렷하면 (사람 이름+직접 발화 등) 통과시킨다.
+    """
+    import re
+
+    if not text:
+        return False
+    stripped = text.strip()
+    # 충분히 길어야(개념 나열형은 길다) 판정 대상. 짧은 답은 단답 회피로.
+    if len(stripped) < 60:
+        return False
+
+    # 1) 구체성 증거 카운트
+    concrete = 0
+    # 직접 발화: '~라고 말/했' , 따옴표로 감싼 발화
+    if re.search(r"라고\s*(말|얘기|이야기|하|했|말씀)", stripped):
+        concrete += 2
+    if re.search(r"[\"'“”].{2,}[\"'“”]", stripped):
+        concrete += 1
+    # 수치/기간/날짜: 숫자+단위, 연·월·일, 지난주/이번달 등
+    if re.search(r"\d+\s*(년|월|일|주|시간|분|명|건|%|퍼센트|억|만|천|개|차)",
+                 stripped):
+        concrete += 1
+    if re.search(r"(지난|이번|저번|작년|올해|어제|그제|당시)\s*"
+                 r"(주|달|월|해|분기|회의|프로젝트)?", stripped):
+        concrete += 1
+    # 고유명사 신호: 'OO 팀/부/과/파트', 'A씨/B님/○ 대리·과장·차장·부장'
+    if re.search(r"[가-힣A-Za-z]{1,6}\s*(팀|부서|본부|파트|과|실|센터)",
+                 stripped):
+        concrete += 1
+    if re.search(r"[가-힣A-Za-z]{1,4}\s*"
+                 r"(씨|님|대리|과장|차장|부장|팀장|사원|주임|이사|대표)",
+                 stripped):
+        concrete += 1
+
+    # 2) 추상어 밀도
+    abstract_hits = sum(1 for kw in ABSTRACT_KEYWORDS if kw in stripped)
+
+    # 구체 증거가 뚜렷하면(2점 이상) 회피 아님.
+    if concrete >= 2:
+        return False
+    # 추상어가 3개 이상 쏟아지고 구체 증거가 빈약하면 '공허한 추상' 회피.
+    return abstract_hits >= 3
 
 
 def detect_prompt_injection(text: str | None) -> bool:
