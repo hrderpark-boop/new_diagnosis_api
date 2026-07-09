@@ -30,6 +30,21 @@ META_KEYWORDS = [
     "AI는", "AI랑", "이 평가",
 ]
 
+# 사용자의 '종료 수용/요청' 발화 — 상태 동기화의 핵심 신호.
+#  - explicit: 명시적 종료 동사 (끝내자/마무리/종료/이만) → 확실한 종료 의사
+#  - soft: 감사/작별 인사 — 마지막 챕터 후반에서만 종료 신호로 해석
+#    (대화 중간의 예의상 '감사합니다'를 종료로 오판하면 안 되므로 분리)
+CLOSING_EXPLICIT_KEYWORDS = [
+    "끝내죠", "끝냅시다", "끝내고 싶", "이제 끝", "끝난 건가요", "끝났나요",
+    "끝인가요", "다 끝난", "마무리하죠", "마무리합시다", "마무리해 주",
+    "마무리 지", "마무리할게요", "종료하죠", "종료할게요", "종료해 주",
+    "이만 마치", "이만 줄이", "여기서 마치", "이제 마치",
+]
+CLOSING_SOFT_KEYWORDS = [
+    "감사합니다", "감사했습니다", "감사드립니다", "고맙습니다",
+    "고마웠습니다", "수고하셨", "고생하셨", "잘 들었습니다", "덕분에",
+]
+
 # '그럴듯한 공허함' 추상어 — 구체 없이 개념/이론만 나열하는 회피의 표지.
 # (이론가_교과서형, AI_복붙형_위장자 대응)
 ABSTRACT_KEYWORDS = [
@@ -82,6 +97,25 @@ def detect_meta_question(text: str | None) -> bool:
     if not text:
         return False
     return any(kw in text for kw in META_KEYWORDS)
+
+
+def detect_closing_intent(text: str | None) -> str | None:
+    """사용자의 종료 수용/요청 의사 감지.
+
+    반환:
+    - "explicit": 명시적 종료 요청 ('이제 끝내죠', '마무리하죠' 등)
+    - "soft":     감사/작별 인사만 ('감사합니다', '수고하셨습니다' 등)
+    - None:       종료 신호 없음
+
+    라우팅은 decider 가 챕터 맥락(마지막 챕터 여부·진행량)과 함께 판단한다.
+    """
+    if not text:
+        return None
+    if any(kw in text for kw in CLOSING_EXPLICIT_KEYWORDS):
+        return "explicit"
+    if any(kw in text for kw in CLOSING_SOFT_KEYWORDS):
+        return "soft"
+    return None
 
 
 def detect_abstract_avoidance(text: str | None) -> bool:

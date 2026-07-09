@@ -20,6 +20,7 @@ from diag_project.services.avoidance_detector import (
     detect_meta_question,
     detect_prompt_injection,
     detect_abstract_avoidance,
+    detect_closing_intent,
     is_invalid_input,
 )
 
@@ -264,6 +265,30 @@ def decide_instruction(state: dict) -> InstructionType:
         if is_invalid_input(_decision):
             return "INVALID_INPUT"
         return "CHAPTER_CONTINUE_CONFIRMED"
+
+    # === 0.7순위: 사용자의 '종료 수용/요청' 감지 (상태 동기화 버그 방어) ===
+    #   사용자가 "이제 끝내죠/마무리하죠/감사합니다" 로 종료 의사를 밝혔는데
+    #   회피(AVOIDANCE)로 오분류되면, 코치는 작별 인사를 하면서도 상태는
+    #   in_progress 에 머물러 프론트가 무한 루프에 빠진다.
+    #   - 마지막 챕터(자기관리): 명시적 종료 → 즉시 CHAPTER_READY_TO_END
+    #     (→ Grand Finale → status=completed, 5번째 뱃지 점등).
+    #     감사/작별 인사(soft)는 어느 정도 진행된 뒤에만 종료로 해석
+    #     (초반의 예의상 인사를 종료로 오판 방지).
+    #   - 중간 챕터: 명시적 종료 요청은 일시중지(재개 가능)로 처리.
+    #     soft(감사 인사)는 무시 — 대화 중 예의 표현일 뿐.
+    if state.get("chapter_started"):
+        _closing = detect_closing_intent(state.get("last_user_response"))
+        if _closing:
+            _is_final = state.get("chapter") == "self_management"
+            if _is_final:
+                _progressed = (
+                    state.get("turn_count", 0) >= 3
+                    or state.get("events_collected", 0) >= 1
+                )
+                if _closing == "explicit" or _progressed:
+                    return "CHAPTER_READY_TO_END"
+            elif _closing == "explicit":
+                return "USER_REQUESTS_PAUSE"
 
     # === 7단계 코칭 프로세스: 한 턴에 한 스텝, 엄격한 순서 (압축·건너뛰기 금지) ===
     #   Step1 인사+이름확인 → Step2 라포(아이스브레이킹) → Step3 시작 동의 →
