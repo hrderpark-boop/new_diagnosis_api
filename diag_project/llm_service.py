@@ -927,9 +927,18 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {{
   "reasoning_process": {{
-    "1_situation": "이 역량이 요구된 조직적 맥락과 배경. '왜 이 역량이 필요했는가'까지 포함하되 단문 2문장으로",
-    "2_action": "리더가 취한 구체적 행동과 그 방식의 특징을 단문 2문장으로. 전문 용어를 쓰면 짧은 풀이를 곁들일 것",
-    "3_result": "그 행동이 팀/조직에 가져온 변화와 영향. 인터뷰에 언급된 결과가 있으면 그대로, 없으면 맥락 기반 합리적 추론. 단문 2문장"
+    "1_situation": {{
+      "description": "이 역량이 요구된 조직적 맥락과 배경 + 그 상황의 '비즈니스적 함의'(방치 시 리스크·기회비용)를 최소 3문장의 밀도 있는 단문으로. 단순 현상 요약 절대 금지",
+      "evidence": ["이 상황(S) 판단의 근거가 된 리더의 실제 발화 — 전체 대화를 샅샅이 뒤져 원문 그대로(verbatim) 1개 이상 인용"]
+    }},
+    "2_action": {{
+      "description": "리더가 취한 구체적 행동 + 그 이면의 '내적 딜레마와 극복 논리'(무엇과 무엇 사이에서 갈등했고, 어떤 판단 기준으로 돌파했는가)를 전문 HR 관점에서 최소 3문장으로. 행동 나열식 요약 절대 금지",
+      "evidence": ["이 행동(A) 판단의 근거가 된 리더의 실제 발화 — 원문 그대로 1개 이상 인용"]
+    }},
+    "3_result": {{
+      "description": "그 행동이 조직에 만든 '비즈니스적 임팩트(Business Impact)' — 팀 성과·의사결정 속도·리스크 감소·구성원 몰입 등 경영적 가치로 무엇이 달라졌는지 최소 3문장으로. 인터뷰 언급 결과 우선, 없으면 맥락 기반 추론임이 드러나게 서술",
+      "evidence": ["이 결과(R) 판단의 근거가 된 리더의 실제 발화 — 원문 그대로 1개 이상 인용"]
+    }}
   }},
   "score_breakdown": {{
     "rubric_base": <float, 1.0~4.0, 소수점 1자리>,
@@ -940,12 +949,6 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
   "sub_scores": {{
     {self._build_sub_scores_json_template(sub_indicators)}
   }},
-  "evidence_list": [
-    "[상황(S) 근거] 상황 판단의 근거가 된 리더의 실제 발화 — 원문 그대로 인용",
-    "[행동(A) 근거] 행동 판단의 근거가 된 리더의 실제 발화 — 원문 그대로 인용",
-    "[결과(R) 근거] 결과 판단의 근거가 된 리더의 실제 발화 — 원문 그대로 인용",
-    "(추가 근거 발화가 있으면 계속 — 많을수록 좋음)"
-  ],
   "strength_point": "이 역량에서 확인된 핵심적인 강점 1가지 — '구체적 행동 + 그것이 조직에 미치는 가치'를 연결해 단문 1문장으로 서술",
   "growth_point": "현재 수준을 한 단계 올리기 위한 가장 시급한 개선 필요점 — '~해보세요' 수준이 아닌 구체적 전략 방향으로 단문 1문장",
   "gap_analysis": "🚨 첫 문장은 무조건 '향후 이상적인 리더십 역량 개발을 위해서는'이라는 고정 문자열로 시작 (다른 어떤 시작도 불허). 발전적 코칭 문장 2개(각 50자 내외 단문)로 이 리더에게 지금 가장 필요한 한 가지를 행동 가능한 조건으로 제시. 🚨 NEVER: '5.0', '만점', '점수', '도달', '수준은' 이라는 단어를 절대(NEVER) 쓰지 마시오 — 위반 시 응답 전체가 폐기됨",
@@ -967,17 +970,20 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 규칙 5. 지표 간 최소 0.3점 이상의 편차가 반드시 존재해야 함
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[🚨 evidence_list 발췌 원칙 — 반드시 준수 (리포트 신뢰도의 핵심)]
+[🚨 S/A/R evidence 발췌 원칙 — 반드시 준수 (리포트 신뢰도의 핵심)]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-규칙 1. 상황(S)·행동(A)·결과(R) '각 단계별'로 판단 근거가 된 리더의 구체적
-        발화를 아래 [전체 대화 기록]까지 샅샅이 뒤져 찾아낼 것
+규칙 1. S·A·R '각 객체의 evidence 배열'에 그 단계 판단의 근거 발화를
+        1:1 매칭해 넣을 것 — 아래 [전체 대화 기록]까지 샅샅이 뒤질 것
 규칙 2. 반드시 '원문 그대로(verbatim)' 발췌 — 요약·의역·창작 절대 금지.
         대충 요약해서 넣으면 리포트 전체의 신뢰가 무너진다
-규칙 3. 최소 3문장 이상 풍부하게 발췌할 것 (S/A/R 각 1개 이상).
-        근거 발화가 더 있으면 4~6개까지 추가 — 많을수록 좋다
-규칙 4. 각 항목 앞에 [상황(S) 근거]/[행동(A) 근거]/[결과(R) 근거] 접두를
-        붙여 어떤 판단의 근거인지 명시할 것
-규칙 5. 코치의 발화가 아닌 '리더(사용자)의 발화'만 발췌할 것
+규칙 3. 세 단계 합쳐 최소 3문장 이상 풍부하게 (각 단계 1개 이상).
+        근거 발화가 더 있으면 단계별 2~3개까지 — 많을수록 좋다
+규칙 4. 코치의 발화가 아닌 '리더(사용자)의 발화'만 발췌할 것
+
+[🚨 description 분석 깊이 원칙]
+- 단순 현상 요약 절대 금지. 각 description 은 최소 3문장.
+- 반드시 포함: ① 그 행동/상황의 '비즈니스적 임팩트' ② 리더의 '내적
+  딜레마와 극복 논리' — 전문 HR 컨설턴트의 밀도로 서술하되 단문 유지.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [분석 대상 발언 — {korean_name} 관련]
@@ -1004,8 +1010,19 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                     result["gap_analysis"]
                 )
 
-            # evidence_list → evidence 하위 호환
-            if "evidence_list" in result and result["evidence_list"]:
+            # S/A/R 단계별 evidence → evidence_list/evidence 하위 호환 평탄화
+            # (신규 스키마는 reasoning_process.{단계}.evidence 에 1:1 매칭 저장)
+            _rp = result.get("reasoning_process") or {}
+            _flat_ev = []
+            for _step_key in ("1_situation", "2_action", "3_result"):
+                _step = _rp.get(_step_key)
+                if isinstance(_step, dict):
+                    for _q in (_step.get("evidence") or []):
+                        if _q and isinstance(_q, str):
+                            _flat_ev.append(_q)
+            if _flat_ev:
+                result["evidence_list"] = _flat_ev
+            if result.get("evidence_list"):
                 result["evidence"] = result["evidence_list"][0]
 
             # sub_scores 방어: 비어있으면 하위 지표 기반 기본값 생성
@@ -1050,9 +1067,9 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         fallback_subs = {name: 2.0 for name in sub_indicators} if sub_indicators else {}
         return {
             "reasoning_process": {
-                "1_situation": "분석 데이터 부족",
-                "2_action": "분석 데이터 부족",
-                "3_result": "분석 데이터 부족"
+                "1_situation": {"description": "분석 데이터 부족", "evidence": []},
+                "2_action": {"description": "분석 데이터 부족", "evidence": []},
+                "3_result": {"description": "분석 데이터 부족", "evidence": []},
             },
             "score_breakdown": {"rubric_base": 2.0, "star_depth_bonus": 0.0, "confidence_adj": 0.0, "final": 2.0},
             "sub_scores": fallback_subs,
