@@ -54,6 +54,11 @@ def _sanitize_gap_analysis(text: str) -> str:
     """
     import re
 
+    # LLM 이 '문장 2개'를 배열로 반환하는 경우 — str(list) 는 대괄호/따옴표가
+    # 그대로 박제되므로 반드시 줄글로 병합
+    if isinstance(text, (list, tuple)):
+        text = " ".join(str(x).strip() for x in text if x)
+
     t = str(text).strip()
 
     # "현재 점수에서 5.0 만점 도달을 위해서는" 같은 선행절 통째로 제거
