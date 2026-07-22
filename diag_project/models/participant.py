@@ -37,6 +37,13 @@ class Participant(ParticipantBase, table=True):
     
     # 그룹 ID (나중에 관계형으로 쓸 때 대비)
     group_id: Optional[UUID] = Field(default=None, sa_column=Column(GUID(), ForeignKey("groups.id"), nullable=True))
+
+    # ✅ [RBAC] 소속 고객사. Client Admin 의 데이터 격리 기준 키.
+    # 로그인 시 group_code 와 일치하는 companies.code 로 자동 매핑된다.
+    company_id: Optional[UUID] = Field(
+        default=None,
+        sa_column=Column(GUID(), ForeignKey("companies.id"), nullable=True, index=True),
+    )
     
     # 생성/수정 시간 자동 기록
     created_at: Optional[datetime] = Field(

@@ -15,6 +15,8 @@
   그래서 아래 import 순서와 무관하게 순환 import 가 발생하지 않는다.
 """
 
+from diag_project.models.company import Company
+from diag_project.models.admin_user import AdminUser, UserRole
 from diag_project.models.group import Group
 from diag_project.models.participant import Participant
 from diag_project.models.coach import Coach
@@ -36,6 +38,9 @@ from diag_project.models.diagnosis_result import DiagnosisResult
 from diag_project.models.diagnosis_report import DiagnosisReport
 
 __all__ = [
+    "Company",
+    "AdminUser",
+    "UserRole",
     "Group",
     "Participant",
     "Coach",

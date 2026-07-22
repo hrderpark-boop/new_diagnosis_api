@@ -16,6 +16,7 @@ from diag_project.database import init_db
 # ✅ [수정] coaches 모듈을 반드시 포함해야 합니다.
 from diag_project.routes import diagnoses, reports, participants, coaches
 from diag_project.routes import framework
+from diag_project.routes import admin
 from diag_project.config import settings
 
 # 로깅 설정
@@ -70,6 +71,9 @@ app.include_router(coaches.router, prefix="/api/v1/coaches")
 app.include_router(diagnoses.router, prefix="/api/v1/diagnoses")
 app.include_router(reports.router, prefix="/api/v1/reports")
 app.include_router(framework.router, prefix="/api/v1/framework")
+# 어드민(RBAC): 라우터 자체가 prefix="/admin" 을 갖고 있어 최종 경로는
+# /api/v1/admin/... 이 된다. 모든 엔드포인트는 JWT 인증을 요구한다.
+app.include_router(admin.router, prefix="/api/v1")
 
 # 헬스 체크
 @app.get("/")

@@ -6,6 +6,8 @@ from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 
 # [매우 중요] DB 테이블 생성 전에 모든 모델을 미리 Import 해야 합니다.
+from diag_project.models.company import Company
+from diag_project.models.admin_user import AdminUser
 from diag_project.models.group import Group
 from diag_project.models.participant import Participant
 from diag_project.models.coach import Coach
@@ -54,6 +56,8 @@ _LIGHT_MIGRATIONS = [
     "ALTER TABLE events ADD COLUMN mapped_subcompetency VARCHAR(100)",
     # ML 학습(Fine-Tuning) 대비: user/model 메시지 페어링용 턴 번호
     "ALTER TABLE chat_messages ADD COLUMN turn_index INTEGER",
+    # RBAC: 진단 대상자의 소속 고객사 (Client Admin 데이터 격리 기준)
+    "ALTER TABLE participants ADD COLUMN company_id UUID",
 ]
 
 
