@@ -48,3 +48,7 @@ package-lock.json
 
 # VS Code workspace (개인 설정)
 *.code-workspace
+
+# 시뮬레이터 (로컬 전용, 페르소나 튜닝용 실험 스크립트)
+simulate_test.py
+test_logs/
