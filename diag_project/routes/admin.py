@@ -73,6 +73,12 @@ class AdminMeResponse(BaseModel):
     company_name: Optional[str]
 
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+
 class CompanyCreateRequest(BaseModel):
     name: str
     code: str
@@ -206,6 +212,65 @@ async def admin_me(
         company_id=str(ctx.company_id) if ctx.company_id else None,
         company_name=await _company_name(db, ctx.company_id),
     )
+
+
+@router.patch("/users/me/password")
+async def change_my_password(
+    body: PasswordChangeRequest,
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """본인 비밀번호 변경 — super_admin / client_admin 공통.
+
+    대상 계정은 요청 본문이 아니라 '항상 JWT 토큰의 주체'로 결정된다.
+    (본문으로 대상을 받으면 남의 비밀번호를 바꾸는 통로가 되므로 절대 받지 않는다)
+
+    발급받은 임시 비밀번호를 최초 로그인 후 교체하는 것이 주 용도다.
+    """
+    admin = ctx.admin
+
+    # 1) 현재 비밀번호 확인 — 토큰이 탈취된 상태에서의 계정 탈취를 막는 마지막 관문
+    if not verify_password(body.current_password, admin.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="현재 비밀번호가 올바르지 않습니다.",
+        )
+
+    # 2) 새 비밀번호 정책 검증
+    new_password = body.new_password
+    if new_password != body.confirm_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="새 비밀번호와 확인 값이 일치하지 않습니다.",
+        )
+    if len(new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="새 비밀번호는 8자 이상이어야 합니다.",
+        )
+    # bcrypt 는 72바이트까지만 검증에 사용하므로, 그 이상은 잘린 부분이
+    # 무시돼 사용자가 기대한 것과 다르게 동작한다. 미리 막는다.
+    if len(new_password.encode("utf-8")) > 72:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="새 비밀번호가 너무 깁니다. (최대 72바이트)",
+        )
+    if verify_password(new_password, admin.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="현재 비밀번호와 다른 비밀번호를 사용하세요.",
+        )
+
+    # 3) 해시 갱신
+    admin.password_hash = hash_password(new_password)
+    db.add(admin)
+    await db.commit()
+
+    logger.info("관리자 비밀번호 변경: %s", admin.email)
+    return {
+        "success": True,
+        "message": "비밀번호가 성공적으로 변경되었습니다.",
+    }
 
 
 # ===========================================================================
