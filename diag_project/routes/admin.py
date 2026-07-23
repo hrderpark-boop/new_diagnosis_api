@@ -119,6 +119,50 @@ async def _company_map(db: AsyncSession) -> Dict[UUID, str]:
     return {row[0]: row[1] for row in result.all()}
 
 
+# 조직 DNA 키워드에서 제외할 '방법론·시스템 용어'.
+# LLM 이 평가 방법론 자체를 키워드로 뱉는 경우가 있어(STAR, BEI 등),
+# 조직의 행동·성향을 나타내는 키워드만 남기도록 걸러낸다.
+_KEYWORD_BLOCKLIST = {
+    "star", "star 방법론", "star방법론", "bei", "bei 인터뷰", "행동사건면접",
+    "루브릭", "rubric", "리더십 진단", "진단", "평가", "분석", "리포트",
+    "인터뷰", "코칭", "코치", "ai", "gpt", "프롬프트", "역량", "역량 진단",
+    "행동 지표", "행동지표", "채점", "점수", "메타인지", "자가진단",
+    "situation", "action", "result", "task", "상황", "행동", "결과",
+    "리더십", "리더", "조직", "구성원", "피드백",
+}
+
+# 방법론 용어가 부분 문자열로 섞인 경우까지 차단 (예: "STAR 기법 활용")
+_KEYWORD_BLOCK_SUBSTRINGS = (
+    "star", "bei", "루브릭", "rubric", "프롬프트", "방법론",
+    "행동사건", "인터뷰", "채점", "진단 도구",
+)
+
+
+def _is_valid_keyword(word: str) -> bool:
+    """조직 DNA 키워드로 채택할 만한 값인지 판정한다."""
+    if not word:
+        return False
+    normalized = str(word).strip()
+    if not normalized:
+        return False
+    # 지나치게 길면 키워드가 아니라 문장이다
+    if len(normalized) > 20:
+        return False
+    lowered = normalized.lower()
+    if lowered in _KEYWORD_BLOCKLIST:
+        return False
+    if any(bad in lowered for bad in _KEYWORD_BLOCK_SUBSTRINGS):
+        return False
+    # 숫자·기호만으로 이루어진 값 제외
+    if not any(ch.isalnum() for ch in normalized):
+        return False
+    return True
+
+
+def _avg(values: List[float]) -> Optional[float]:
+    return round(sum(values) / len(values), 2) if values else None
+
+
 def _correlation_matrix(series: Dict[str, List[float]]) -> List[Dict[str, Any]]:
     """역량 간 피어슨 상관계수를 실제 리포트 점수로 계산한다.
 
@@ -646,6 +690,12 @@ async def stats_competencies(
     keyword_freq: Dict[str, int] = defaultdict(int)
     # 상관계수 계산용: 역량명 → 참여자별 점수 벡터
     series: Dict[str, List[float]] = defaultdict(list)
+    # 전사 아코디언용 누적기: 역량 → 세부지표/산출근거/분포/발췌
+    sub_scores_acc: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
+    breakdown_acc: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
+    distribution_acc: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    strength_samples: Dict[str, List[str]] = defaultdict(list)
+    growth_samples: Dict[str, List[str]] = defaultdict(list)
 
     for report, _p in rows:
         if report.total_score:
@@ -669,22 +719,80 @@ async def stats_competencies(
             series[comp].append(value)
 
         # 실제 리포트에서 추출된 핵심 키워드 빈도 (조직 DNA 키워드의 근거)
+        # 평가 방법론 용어(STAR/BEI 등)는 조직의 특성이 아니므로 걸러낸다.
         for kw in saved.get("top_keywords") or []:
             word = kw.get("keyword") if isinstance(kw, dict) else kw
-            if word:
-                keyword_freq[str(word)] += 1
+            if _is_valid_keyword(word):
+                keyword_freq[str(word).strip()] += 1
 
-        if report.top_competency:
-            keyword_freq.setdefault(report.top_competency, keyword_freq.get(report.top_competency, 0))
+        # ── 역량별 세부 지표 집계 (전사 단위 아코디언용) ──
+        for comp, block in (saved.get("details") or {}).items():
+            if not isinstance(block, dict):
+                continue
 
-    competencies = [
-        {
+            # 세부 역량(sub_scores) 평균
+            for sub_name, sub_score in (block.get("sub_scores") or {}).items():
+                try:
+                    sub_scores_acc[comp][str(sub_name)].append(float(sub_score))
+                except (TypeError, ValueError):
+                    continue
+
+            # 점수 산출 근거(score_breakdown) 평균
+            for field, value in (block.get("score_breakdown") or {}).items():
+                try:
+                    breakdown_acc[comp][str(field)].append(float(value))
+                except (TypeError, ValueError):
+                    continue
+
+            # 점수 분포 (상/중/하 인원)
+            try:
+                comp_score = float(block.get("score"))
+            except (TypeError, ValueError):
+                comp_score = None
+            if comp_score is not None:
+                bucket = "high" if comp_score >= 4.0 else ("low" if comp_score < 3.0 else "mid")
+                distribution_acc[comp][bucket] += 1
+
+            # 강점·개선점은 개인별 자유 서술이라 '평균'을 낼 수 없다.
+            # 대신 익명 발췌를 모아 조직 차원의 경향을 읽을 수 있게 한다.
+            sp = (block.get("strength_point") or "").strip()
+            gp = (block.get("growth_point") or "").strip()
+            if sp:
+                strength_samples[comp].append(sp)
+            if gp:
+                growth_samples[comp].append(gp)
+
+    competencies = []
+    for comp in sorted(sums.keys()):
+        sub_avg = {
+            name: _avg(values)
+            for name, values in sorted(sub_scores_acc.get(comp, {}).items())
+        }
+        bd = breakdown_acc.get(comp, {})
+        dist = distribution_acc.get(comp, {})
+        competencies.append({
             "competency": comp,
             "average": round(sums[comp] / counts[comp], 2),
             "sample_size": counts[comp],
-        }
-        for comp in sorted(sums.keys())
-    ]
+            # 전사 평균 세부 역량 (스파이더 차트 + 막대)
+            "sub_scores": sub_avg,
+            # 전사 평균 점수 산출 근거
+            "score_breakdown": {
+                "rubric_base": _avg(bd.get("rubric_base", [])),
+                "star_depth_bonus": _avg(bd.get("star_depth_bonus", [])),
+                "confidence_adj": _avg(bd.get("confidence_adj", [])),
+                "final": _avg(bd.get("final", [])),
+            },
+            # 점수 분포: 4.0 이상 / 3.0~3.9 / 3.0 미만
+            "distribution": {
+                "high": dist.get("high", 0),
+                "mid": dist.get("mid", 0),
+                "low": dist.get("low", 0),
+            },
+            # 익명 발췌 (최대 3건). 평균 낼 수 없는 서술형의 대안.
+            "strength_samples": strength_samples.get(comp, [])[:3],
+            "growth_samples": growth_samples.get(comp, [])[:3],
+        })
 
     # ── 인식의 차이(Gap Analysis): 자가진단 평균 vs AI 분석 평균 ──
     # 리포트가 있는 세션 중 '자가진단을 제출한' 건만 대상으로 한다.
