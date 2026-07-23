@@ -33,6 +33,7 @@ from diag_project.models.participant import Participant
 from diag_project.services.auth import (
     AdminContext,
     create_access_token,
+    generate_temp_password,
     get_current_admin,
     hash_password,
     require_super_admin,
@@ -80,7 +81,9 @@ class CompanyCreateRequest(BaseModel):
 
 class AdminCreateRequest(BaseModel):
     email: str
-    password: str
+    # 미지정 시 서버가 안전한 임시 비밀번호를 생성해 1회 응답으로만 반환한다.
+    # (해시만 저장되므로 이후 어떤 경로로도 다시 조회할 수 없다)
+    password: Optional[str] = None
     name: Optional[str] = None
     role: str = UserRole.CLIENT_ADMIN.value
     company_id: Optional[str] = None
@@ -605,13 +608,21 @@ async def create_company(
     return {"id": str(company.id), "name": company.name, "code": company.code}
 
 
-@router.post("/admins", status_code=status.HTTP_201_CREATED)
-async def create_admin(
+@router.post("/users", status_code=status.HTTP_201_CREATED)
+async def create_admin_user(
     body: AdminCreateRequest,
     ctx: AdminContext = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """관리자 계정 발급 (운영자만 가능)."""
+    """관리자 계정 발급 — 운영자(Super Admin) 전용.
+
+    require_super_admin 의존성이 role 을 검증하므로, client_admin 토큰으로는
+    이 엔드포인트에 도달할 수 없다(403).
+
+    비밀번호를 생략하면 서버가 안전한 임시 비밀번호를 생성해 응답에 1회만
+    담아 돌려준다. DB 에는 bcrypt 해시만 남으므로 이후 재조회는 불가능하며,
+    운영자는 이 값을 담당자에게 전달한 뒤 변경을 안내해야 한다.
+    """
     if body.role not in (UserRole.SUPER_ADMIN.value, UserRole.CLIENT_ADMIN.value):
         raise HTTPException(status_code=400, detail="허용되지 않는 role 입니다.")
     if body.role == UserRole.CLIENT_ADMIN.value and not body.company_id:
@@ -626,17 +637,89 @@ async def create_admin(
     if exists:
         raise HTTPException(status_code=409, detail="이미 등록된 이메일입니다.")
 
+    company = None
+    if body.company_id:
+        try:
+            company_uuid = UUID(body.company_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="company_id 형식이 올바르지 않습니다.")
+        company = (
+            await db.execute(select(Company).where(Company.id == company_uuid))
+        ).scalars().first()
+        if not company:
+            raise HTTPException(status_code=404, detail="존재하지 않는 고객사입니다.")
+
+    # 비밀번호 미지정 → 서버 생성 (평문은 이 응답에만 존재)
+    generated = None
+    if body.password:
+        if len(body.password) < 8:
+            raise HTTPException(status_code=400, detail="비밀번호는 8자 이상이어야 합니다.")
+        raw_password = body.password
+    else:
+        raw_password = generate_temp_password()
+        generated = raw_password
+
     admin = AdminUser(
         email=email,
         name=body.name,
         role=body.role,
-        password_hash=hash_password(body.password),
-        company_id=UUID(body.company_id) if body.company_id else None,
+        password_hash=hash_password(raw_password),
+        company_id=company.id if company else None,
     )
     db.add(admin)
     await db.commit()
     await db.refresh(admin)
-    return {"id": str(admin.id), "email": admin.email, "role": admin.role}
+
+    return {
+        "id": str(admin.id),
+        "email": admin.email,
+        "name": admin.name,
+        "role": admin.role,
+        "company_id": str(admin.company_id) if admin.company_id else None,
+        "company_name": company.name if company else None,
+        # 자동 생성한 경우에만 채워진다. 화면에서 1회 노출 후 다시 볼 수 없다.
+        "generated_password": generated,
+    }
+
+
+# 하위 호환: 이전 경로(/admins)로 들어오는 호출도 동일하게 처리한다.
+@router.post("/admins", status_code=status.HTTP_201_CREATED, include_in_schema=False)
+async def create_admin_legacy(
+    body: AdminCreateRequest,
+    ctx: AdminContext = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return await create_admin_user(body, ctx, db)
+
+
+@router.get("/users")
+async def list_admin_users(
+    company_id: Optional[UUID] = Query(None),
+    ctx: AdminContext = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """발급된 관리자 계정 목록 (운영자 전용). 비밀번호는 어떤 형태로도 반환하지 않는다."""
+    query = select(AdminUser)
+    if company_id:
+        query = query.where(AdminUser.company_id == company_id)
+
+    admins = (await db.execute(query.order_by(AdminUser.created_at.desc()))).scalars().all()
+    cmap = await _company_map(db)
+
+    return [
+        {
+            "id": str(a.id),
+            "email": a.email,
+            "name": a.name,
+            "role": a.role,
+            "company_id": str(a.company_id) if a.company_id else None,
+            "company_name": cmap.get(a.company_id) if a.company_id else None,
+            "is_active": a.is_active,
+            "last_login_at": a.last_login_at,
+            "created_at": a.created_at,
+        }
+        for a in admins
+    ]
 
 
 @router.post("/companies/sync-participants")

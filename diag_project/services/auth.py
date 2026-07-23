@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -61,6 +62,29 @@ def verify_password(plain: str, hashed: Optional[str]) -> bool:
         return bcrypt.checkpw(_truncate(plain), hashed.encode("utf-8"))
     except (ValueError, TypeError):
         return False
+
+
+# 임시 비밀번호 문자 집합.
+# 사람이 눈으로 읽고 옮겨 적는 값이므로 혼동하기 쉬운 문자(0/O, 1/l/I)는 제외한다.
+_TEMP_PW_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+_TEMP_PW_SYMBOLS = "!@#$%^&*"
+
+
+def generate_temp_password(length: int = 14) -> str:
+    """계정 발급용 임시 비밀번호를 생성한다.
+
+    난수는 반드시 secrets(CSPRNG)를 사용한다. random 모듈은 예측 가능해
+    자격증명 생성에 쓰면 안 된다.
+    """
+    length = max(12, length)
+    chars = [
+        secrets.choice(_TEMP_PW_ALPHABET) for _ in range(length - 2)
+    ]
+    # 기호와 숫자를 각각 최소 1개 보장한 뒤 위치를 섞는다.
+    chars.append(secrets.choice(_TEMP_PW_SYMBOLS))
+    chars.append(secrets.choice("23456789"))
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
 
 
 # ---------------------------------------------------------------------------
