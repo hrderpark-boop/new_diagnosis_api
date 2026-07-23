@@ -1,10 +1,11 @@
 # diag_project/models/diagnosis_session.py
 
-from typing import List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from uuid import UUID, uuid4
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship, Column
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, JSON
+from sqlalchemy.dialects import postgresql
 
 from diag_project.models.uuid_type import GUID
 
@@ -35,6 +36,20 @@ class DiagnosisSession(SQLModel, table=True):
     # ✅ [핵심 추가] 현재 진행 중인 대화 주제 (기본값: General)
     # 이 필드가 있어야 "조직관리"로 넘어갔다는 사실을 DB가 기억합니다.
     current_topic: str = Field(default="General")
+
+    # ✅ [자가진단] 대화 시작 직전 대상자가 입력한 자기 평가.
+    # 구조: {
+    #   "scores": {"organization_management": 4.0, ... 5개 역량 (1.0~5.0)},
+    #   "strength_weakness_text": "주관식 강점·약점 서술",
+    #   "submitted_at": "ISO8601"
+    # }
+    # 키는 AI 채점 결과(radar_chart)와 동일한 영문 역량 키를 쓴다.
+    # 그래야 '자가 인식 vs AI 분석' 갭을 역량 단위로 정렬해 비교할 수 있다.
+    # PostgreSQL 에서는 JSONB(색인·연산 유리), 그 외 방언에서는 JSON 으로 매핑.
+    self_assessment_data: Optional[Dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSON().with_variant(postgresql.JSONB, "postgresql"), nullable=True),
+    )
 
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)

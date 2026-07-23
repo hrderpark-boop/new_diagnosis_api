@@ -58,6 +58,10 @@ _LIGHT_MIGRATIONS = [
     "ALTER TABLE chat_messages ADD COLUMN turn_index INTEGER",
     # RBAC: 진단 대상자의 소속 고객사 (Client Admin 데이터 격리 기준)
     "ALTER TABLE participants ADD COLUMN company_id UUID",
+    # 자가진단(Self-Assessment): 대상자의 자기 평가 점수 + 주관식 강약점.
+    # JSONB 는 PostgreSQL 전용 타입이지만, SQLite 는 컬럼 타입명을 자유롭게
+    # 받아들이므로(동적 타입) 두 방언에서 모두 안전하게 실행된다.
+    "ALTER TABLE diagnosis_sessions ADD COLUMN self_assessment_data JSONB",
     # Human-in-the-Loop: 관리자 교정 여부·원본 스냅샷·감사 정보
     "ALTER TABLE diagnosis_reports ADD COLUMN is_human_edited BOOLEAN DEFAULT FALSE",
     "ALTER TABLE diagnosis_reports ADD COLUMN ai_original JSON",

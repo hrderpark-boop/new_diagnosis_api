@@ -455,6 +455,9 @@ async def get_report_detail(
     participant = await db.get(Participant, report.user_id)
     ctx.assert_can_access_company(participant.company_id if participant else None)
 
+    # 자가진단은 세션에 저장돼 있다
+    session = await db.get(DiagnosisSession, report.session_id)
+
     saved = report.scores or {}
     return {
         "id": str(report.id),
@@ -477,6 +480,8 @@ async def get_report_detail(
         "edited_at": report.edited_at,
         "edited_by": report.edited_by,
         "has_ai_original": report.ai_original is not None,
+        # 대상자가 대화 시작 전 스스로 매긴 평가 (메타인지 비교용)
+        "self_assessment": session.self_assessment_data if session else None,
     }
 
 
@@ -681,6 +686,68 @@ async def stats_competencies(
         for comp in sorted(sums.keys())
     ]
 
+    # ── 인식의 차이(Gap Analysis): 자가진단 평균 vs AI 분석 평균 ──
+    # 리포트가 있는 세션 중 '자가진단을 제출한' 건만 대상으로 한다.
+    # (미제출 건을 0점으로 섞으면 갭이 왜곡되므로 표본에서 제외)
+    session_ids = [r.session_id for r, _p in rows]
+    self_sums: Dict[str, float] = defaultdict(float)
+    self_counts: Dict[str, int] = defaultdict(int)
+    self_averages: List[float] = []
+    ai_averages_paired: List[float] = []
+
+    if session_ids:
+        s_rows = (
+            await db.execute(
+                select(DiagnosisSession).where(DiagnosisSession.id.in_(session_ids))
+            )
+        ).scalars().all()
+        self_by_session = {
+            s.id: s.self_assessment_data for s in s_rows if s.self_assessment_data
+        }
+
+        for report, _p in rows:
+            sa = self_by_session.get(report.session_id)
+            if not sa:
+                continue
+            sa_scores = sa.get("scores") or {}
+            if not sa_scores:
+                continue
+
+            for comp, value in sa_scores.items():
+                try:
+                    self_sums[comp] += float(value)
+                    self_counts[comp] += 1
+                except (TypeError, ValueError):
+                    continue
+
+            # 동일 인물의 자가 평균 ↔ AI 총점을 쌍으로 모아야 갭이 의미를 갖는다
+            try:
+                self_averages.append(float(sa.get("self_average") or 0))
+                ai_averages_paired.append(float(report.total_score or 0))
+            except (TypeError, ValueError):
+                continue
+
+    self_avg = round(sum(self_averages) / len(self_averages), 2) if self_averages else 0.0
+    ai_avg_paired = (
+        round(sum(ai_averages_paired) / len(ai_averages_paired), 2)
+        if ai_averages_paired else 0.0
+    )
+
+    gap_by_competency = []
+    for comp in sorted(set(list(sums.keys()) + list(self_sums.keys()))):
+        ai_value = round(sums[comp] / counts[comp], 2) if counts[comp] else None
+        self_value = (
+            round(self_sums[comp] / self_counts[comp], 2) if self_counts[comp] else None
+        )
+        gap_by_competency.append({
+            "competency": comp,
+            "ai_score": ai_value,
+            "self_score": self_value,
+            # 양수 = 실제보다 자신을 높게 평가(과대 인식)
+            "gap": round(self_value - ai_value, 2)
+            if (ai_value is not None and self_value is not None) else None,
+        })
+
     return {
         "participants_count": len(rows),
         "total_average": round(sum(total_scores) / len(total_scores), 2) if total_scores else 0.0,
@@ -691,6 +758,14 @@ async def stats_competencies(
             for k, v in sorted(keyword_freq.items(), key=lambda x: -x[1])[:12]
             if v > 0
         ],
+        "gap_analysis": {
+            # 자가진단을 제출한 표본 수. 0 이면 프론트는 '데이터 없음'을 표시한다.
+            "sample_size": len(self_averages),
+            "self_average": self_avg,
+            "ai_average": ai_avg_paired,
+            "gap": round(self_avg - ai_avg_paired, 2) if self_averages else 0.0,
+            "by_competency": gap_by_competency,
+        },
     }
 
 
