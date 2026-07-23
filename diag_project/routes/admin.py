@@ -418,6 +418,10 @@ async def list_reports(
             "top_competency": r.top_competency,
             "bottom_competency": r.bottom_competency,
             "created_at": r.created_at,
+            # 관리자 검수 여부 — 목록에서 교정 완료 건을 구분한다
+            "is_human_edited": r.is_human_edited,
+            "edited_at": r.edited_at,
+            "edited_by": r.edited_by,
         }
         for r, p in rows
     ]
@@ -429,6 +433,80 @@ async def list_reports(
         page_size=page_size,
         total_pages=max(1, (total + page_size - 1) // page_size),
     )
+
+
+@router.get("/reports/{report_id}")
+async def get_report_detail(
+    report_id: UUID,
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """리포트 단건 상세 (관리자 교정 화면용).
+
+    프론트 리포트 뷰어는 session_id 로 조회하지만, 어드민 목록에서는
+    report_id 를 키로 다루므로 별도 엔드포인트를 둔다. 회사 격리 적용.
+    """
+    report = (
+        await db.execute(select(DiagnosisReport).where(DiagnosisReport.id == report_id))
+    ).scalars().first()
+    if not report:
+        raise HTTPException(status_code=404, detail="리포트를 찾을 수 없습니다.")
+
+    participant = await db.get(Participant, report.user_id)
+    ctx.assert_can_access_company(participant.company_id if participant else None)
+
+    saved = report.scores or {}
+    return {
+        "id": str(report.id),
+        "session_id": str(report.session_id),
+        "user_name": participant.name if participant else "알 수 없음",
+        "user_email": participant.email if participant else None,
+        "company_name": await _company_name(
+            db, participant.company_id if participant else None
+        ),
+        "total_score": report.total_score,
+        "summary": report.summary,
+        "radar_chart": saved.get("radar_chart", {}),
+        "details": saved.get("details", {}),
+        "top_keywords": saved.get("top_keywords", []),
+        "blind_spot": saved.get("blind_spot"),
+        "idp": saved.get("idp", []),
+        "created_at": report.created_at,
+        # Human-in-the-Loop 상태
+        "is_human_edited": report.is_human_edited,
+        "edited_at": report.edited_at,
+        "edited_by": report.edited_by,
+        "has_ai_original": report.ai_original is not None,
+    }
+
+
+@router.get("/reports/{report_id}/ai-original")
+async def get_report_ai_original(
+    report_id: UUID,
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """교정 전 AI 원본 스냅샷. 교정 결과와 나란히 비교할 때 사용한다."""
+    report = (
+        await db.execute(select(DiagnosisReport).where(DiagnosisReport.id == report_id))
+    ).scalars().first()
+    if not report:
+        raise HTTPException(status_code=404, detail="리포트를 찾을 수 없습니다.")
+
+    participant = await db.get(Participant, report.user_id)
+    ctx.assert_can_access_company(participant.company_id if participant else None)
+
+    if not report.ai_original:
+        raise HTTPException(
+            status_code=404, detail="이 리포트에는 저장된 AI 원본이 없습니다(교정 이력 없음)."
+        )
+
+    original = report.ai_original
+    return {
+        "summary": original.get("summary"),
+        "details": (original.get("scores") or {}).get("details", {}),
+        "snapshot_at": original.get("snapshot_at"),
+    }
 
 
 # ===========================================================================

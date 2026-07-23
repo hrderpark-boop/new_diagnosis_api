@@ -1,8 +1,9 @@
+import copy
 import uuid
 import json
 import logging
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,7 @@ from diag_project.models.coach_persona import CoachPersona
 from diag_project.models.event import Event
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 from diag_project.llm_service import GeminiService
+from diag_project.services.auth import AdminContext, get_current_admin
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,36 @@ def _build_chapter_transcripts(
 router = APIRouter(
     tags=["Reports"],
 )
+
+
+# ==========================================================================
+# Human-in-the-Loop: 관리자 교정 스키마
+# ==========================================================================
+class ReasoningStepEdit(BaseModel):
+    """STAR 단계별 교정. description 만 수정 대상이며,
+    evidence(원문 발췌)는 '리더의 실제 발화'이므로 교정 대상에서 제외한다."""
+    description: Optional[str] = None
+
+
+class CompetencyEdit(BaseModel):
+    comment: Optional[str] = None            # 코치 피드백
+    strength_point: Optional[str] = None
+    growth_point: Optional[str] = None
+    gap_analysis: Optional[str] = None
+    # 키: "1_situation" | "2_action" | "3_result"
+    reasoning_process: Optional[Dict[str, ReasoningStepEdit]] = None
+
+
+class ReportUpdateRequest(BaseModel):
+    """부분 갱신(PATCH 시맨틱)을 따른다.
+
+    None 인 필드는 '변경 없음'으로 간주하고 기존 값을 유지한다.
+    전체 치환이 아니므로 관리자가 특정 문단만 고쳐도 나머지가 날아가지 않는다.
+    """
+    summary: Optional[str] = None
+    blind_spot: Optional[str] = None
+    details: Optional[Dict[str, CompetencyEdit]] = None
+
 
 # --------------------------------------------------------------------------
 # [신규] 관리자용 전체 리포트 목록 조회 (GET /)
@@ -135,6 +167,150 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db)):
         "top_keywords": saved_scores.get("top_keywords", []),
         "created_at": report.created_at.strftime("%Y-%m-%d") if report.created_at else datetime.now().strftime("%Y-%m-%d")
     }
+
+# --------------------------------------------------------------------------
+# [1-b] 관리자 교정 (PUT /{report_id}) — Human-in-the-Loop
+# --------------------------------------------------------------------------
+def _apply_competency_edit(target: Dict[str, Any], edit: CompetencyEdit) -> List[str]:
+    """단일 역량 블록에 교정 내용을 적용하고, 변경된 필드명을 반환한다."""
+    changed: List[str] = []
+
+    for field in ("comment", "strength_point", "growth_point", "gap_analysis"):
+        value = getattr(edit, field)
+        if value is None:
+            continue
+        new_value = value.strip()
+        if target.get(field) != new_value:
+            target[field] = new_value
+            changed.append(field)
+
+    if edit.reasoning_process:
+        rp = target.setdefault("reasoning_process", {})
+        for step_key, step_edit in edit.reasoning_process.items():
+            if step_key not in ("1_situation", "2_action", "3_result"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"알 수 없는 STAR 단계입니다: {step_key}",
+                )
+            if step_edit.description is None:
+                continue
+            # 구버전 리포트는 이 값이 문자열일 수 있다 → 객체로 승격
+            step = rp.get(step_key)
+            if not isinstance(step, dict):
+                step = {"description": step or "", "evidence": []}
+            new_desc = step_edit.description.strip()
+            if step.get("description") != new_desc:
+                step["description"] = new_desc
+                changed.append(f"reasoning_process.{step_key}")
+            rp[step_key] = step
+
+    return changed
+
+
+@router.put("/{report_id}")
+async def update_report(
+    report_id: str,
+    body: ReportUpdateRequest,
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """관리자가 교정한 AI 피드백을 DB 에 덮어쓴다 (골든 데이터셋 구축).
+
+    - 관리자 인증 필수. Client Admin 은 자사 소속 대상자의 리포트만 교정 가능.
+    - 최초 교정 시 AI 원본(scores)을 ai_original 에 스냅샷으로 보존한다.
+      학습 데이터는 (AI 원본 → 사람 교정본) 쌍에서 나오므로, 원본 없이
+      덮어쓰기만 하면 데이터셋으로서의 가치가 사라진다.
+    - is_human_edited 를 True 로 올려 '사람이 검수·확정한 샘플'을 식별한다.
+    """
+    try:
+        target_uuid = uuid.UUID(report_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+
+    report = (
+        await db.execute(select(DiagnosisReport).where(DiagnosisReport.id == target_uuid))
+    ).scalars().first()
+    if not report:
+        raise HTTPException(status_code=404, detail="리포트를 찾을 수 없습니다.")
+
+    # 회사 격리: 리포트에는 company 컬럼이 없으므로 대상자를 통해 확인한다.
+    participant = await db.get(Participant, report.user_id)
+    ctx.assert_can_access_company(participant.company_id if participant else None)
+
+    # SQLAlchemy 는 JSON 컬럼 '내부' 변경을 자동 감지하지 못한다.
+    # 깊은 복사본을 수정한 뒤 통째로 재할당해야 UPDATE 가 발생한다.
+    scores: Dict[str, Any] = copy.deepcopy(report.scores or {})
+    details: Dict[str, Any] = scores.setdefault("details", {})
+    changed_fields: List[str] = []
+
+    if body.details:
+        for comp_key, edit in body.details.items():
+            if comp_key not in details:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"리포트에 존재하지 않는 역량입니다: {comp_key}",
+                )
+            block = details[comp_key]
+            if not isinstance(block, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"교정할 수 없는 역량 데이터 구조입니다: {comp_key}",
+                )
+            for field in _apply_competency_edit(block, edit):
+                changed_fields.append(f"details.{comp_key}.{field}")
+
+    if body.blind_spot is not None:
+        new_blind = body.blind_spot.strip()
+        if scores.get("blind_spot") != new_blind:
+            scores["blind_spot"] = new_blind
+            changed_fields.append("blind_spot")
+
+    new_summary = report.summary
+    if body.summary is not None:
+        new_summary = body.summary.strip()
+        if new_summary != report.summary:
+            changed_fields.append("summary")
+
+    if not changed_fields:
+        return {
+            "success": True,
+            "message": "변경된 내용이 없습니다.",
+            "is_human_edited": report.is_human_edited,
+            "changed_fields": [],
+        }
+
+    # 최초 교정에 한해 AI 원본 스냅샷 보존 (이후 교정에서는 덮어쓰지 않는다)
+    if not report.is_human_edited and report.ai_original is None:
+        report.ai_original = {
+            "scores": copy.deepcopy(report.scores or {}),
+            "summary": report.summary,
+            "snapshot_at": datetime.now().isoformat(),
+        }
+
+    report.scores = scores
+    report.summary = new_summary
+    report.is_human_edited = True
+    report.edited_at = datetime.now()
+    report.edited_by = ctx.admin.email
+
+    db.add(report)
+    await db.commit()
+    await db.refresh(report)
+
+    logger.info(
+        "리포트 교정: report_id=%s, by=%s, fields=%s",
+        report_id, ctx.admin.email, changed_fields,
+    )
+
+    return {
+        "success": True,
+        "message": "교정 내용이 저장되었습니다.",
+        "is_human_edited": report.is_human_edited,
+        "edited_at": report.edited_at,
+        "edited_by": report.edited_by,
+        "changed_fields": changed_fields,
+    }
+
 
 # --------------------------------------------------------------------------
 # [2] 결과 분석 요청 (POST) - 진단 종료 시 호출

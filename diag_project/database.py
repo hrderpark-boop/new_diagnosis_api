@@ -58,6 +58,11 @@ _LIGHT_MIGRATIONS = [
     "ALTER TABLE chat_messages ADD COLUMN turn_index INTEGER",
     # RBAC: 진단 대상자의 소속 고객사 (Client Admin 데이터 격리 기준)
     "ALTER TABLE participants ADD COLUMN company_id UUID",
+    # Human-in-the-Loop: 관리자 교정 여부·원본 스냅샷·감사 정보
+    "ALTER TABLE diagnosis_reports ADD COLUMN is_human_edited BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE diagnosis_reports ADD COLUMN ai_original JSON",
+    "ALTER TABLE diagnosis_reports ADD COLUMN edited_at TIMESTAMP",
+    "ALTER TABLE diagnosis_reports ADD COLUMN edited_by VARCHAR(255)",
 ]
 
 
