@@ -718,20 +718,22 @@ async def _submit_message_phase3a(
 
     _next_ch = _get_next_chapter(chapter)
 
-    # 8-d. CHAPTER_READY_TO_END 하이브리드 (종결 후 '계속/휴식' 의사 확인):
-    #   중간 챕터: LLM 이 wrap-up(요약+공감) + '계속/휴식 질문'을 생성한다.
-    #   여기서는 챕터를 전환하지 않고 사용자 답변을 '대기'한다 (AWAIT_CONTINUE).
-    #   → 다음 턴에 decider 가 계속/휴식으로 분기.
+    # 8-d. CHAPTER_READY_TO_END 하이브리드 (종결 + 강제 전환):
+    #   중간 챕터: LLM 이 wrap-up(요약+공감) + '강제 전환 선언 + 다음 역량 첫
+    #   질문'을 생성한다. 사용자에게 계속/휴식을 묻지 않고(선택권 이양 금지),
+    #   코치가 주도권을 쥐고 즉시 다음 챕터로 전환한다.
+    #   → CHAPTER_CONTINUE_CONFIRMED 와 동일하게 완료·시작 마커를 세운다.
     if instruction_used == "CHAPTER_READY_TO_END":
         wrap_up = clean_reply.strip() or "이 영역, 여기서 잘 매듭짓겠습니다."
         if _next_ch:
-            # 질문 누락 시에만 시스템이 다변화된 계속/휴식 질문을 덧붙임.
+            # 질문 누락 시에만 시스템이 다음 역량 도입 질문을 덧붙여, 종결·
+            # 전환·첫 질문이 한 턴에 매끄럽게 이어지게 한다.
             if "?" not in wrap_up:
-                wrap_up = f"{wrap_up}\n\n{build_chapter_transition_question(_next_ch)}"
+                wrap_up = f"{wrap_up}\n\n{build_chapter_thought_question(_next_ch)}"
             clean_reply = wrap_up
-            # 🚧 전환 보류: 완료/시작 마커를 세우지 않는다 (사용자 답변까지 대기).
-            is_chapter_completed = False
-            is_chapter_starting = False
+            # ✅ 즉시 전환: 완료·시작 마커를 세워 다음 챕터로 견인 (대기 없음).
+            is_chapter_completed = True
+            is_chapter_starting = True
         else:
             # 🏁 마지막 챕터 — Grand Finale 만, 전환 없음.
             #   [START_CHAPTER] 절대 X, 대신 [DIAGNOSIS_COMPLETE] 로 진단 종료 확정.
@@ -794,19 +796,17 @@ async def _submit_message_phase3a(
     # '시작됨'으로 표시해, 중간 CONFIRM 턴 없이 바로 다음 영역 합의(ALIGN)로
     # 이어지게 한다. (CHAPTER_READY_TO_END 는 이제 전환하지 않고 대기만 한다.)
     _seamless_next_chapter = None
-    if (instruction_used == "CHAPTER_CONTINUE_CONFIRMED"
+    if (instruction_used in ("CHAPTER_CONTINUE_CONFIRMED", "CHAPTER_READY_TO_END")
             and is_chapter_completed and is_chapter_starting):
+        # CHAPTER_READY_TO_END(중간 챕터)도 이제 대기 없이 강제 전환하므로
+        # CONTINUE_CONFIRMED 와 동일하게 다음 챕터를 seamless 로 이어붙인다.
         _seamless_next_chapter = _get_next_chapter(chapter)
 
-    # 마커 → probe_type_used 에 저장 (우선순위: READY_FOR_INTRO > AWAIT_CONTINUE
-    # > START_CHAPTER)
+    # 마커 → probe_type_used 에 저장 (우선순위: READY_FOR_INTRO > START_CHAPTER)
     if instruction_used == "RAPPORT_BUILDING" and is_ready_for_intro:
         probe_type_used = "READY_FOR_INTRO"
     elif instruction_used == "DIAGNOSIS_CONFIRM" and is_chapter_starting:
         probe_type_used = "START_CHAPTER"
-    elif instruction_used == "CHAPTER_READY_TO_END" and _next_ch:
-        # 중간 챕터 종료: '계속/휴식' 질문 던지고 대기 중임을 마커로 표시.
-        probe_type_used = "AWAIT_CONTINUE"
     elif _seamless_next_chapter:
         probe_type_used = "START_CHAPTER"
     elif needs_user_decision:
