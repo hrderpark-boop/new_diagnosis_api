@@ -28,7 +28,7 @@ from diag_project.database import get_db
 from diag_project.models.admin_user import AdminUser, UserRole
 from diag_project.models.company import Company
 from diag_project.models.diagnosis_report import DiagnosisReport
-from diag_project.models.diagnosis_session import DiagnosisSession
+from diag_project.models.diagnosis_session import DiagnosisSession, ChatMessage
 from diag_project.models.participant import Participant
 from diag_project.services.auth import (
     AdminContext,
@@ -161,6 +161,45 @@ def _is_valid_keyword(word: str) -> bool:
 
 def _avg(values: List[float]) -> Optional[float]:
     return round(sum(values) / len(values), 2) if values else None
+
+
+# 진단 챕터(역량) 순서 — 진행률 계산 기준. current_topic 은 한글로 저장된다.
+_KOREAN_TOPIC_ORDER = ["조직관리", "성과관리", "사람관리", "일관리", "자기관리"]
+
+
+def _progress_pct(last_topic: Optional[str], last_status: str) -> int:
+    """세션의 current_topic 으로 진행률(%)을 계산한다.
+
+    5개 역량 중 몇 번째까지 왔는지를 백분율로 환산. 리포트 유무와 무관하게
+    '진행 중' 대상자의 현재 위치를 시각화하기 위함.
+    """
+    if last_status == "completed" or last_topic == "Completed":
+        return 100
+    if last_status == "미시작":
+        return 0
+    if not last_topic or last_topic in ("General", ""):
+        return 5  # 세션은 시작했으나 아직 첫 역량 진입 전(라포)
+    if last_topic in _KOREAN_TOPIC_ORDER:
+        # 현재 진행 중인 역량의 '시작 지점' 백분율
+        return round(_KOREAN_TOPIC_ORDER.index(last_topic) / 5 * 100)
+    return 0
+
+
+def _behavior_tag(user_msg_lengths: List[int], last_status: str) -> Optional[str]:
+    """대화 기록으로 사용자 태도를 휴리스틱 분류한다 (LLM/크레딧 불필요).
+
+    사용자 발화의 평균 길이만으로 결정론적으로 판정하는 1차 태그.
+    ('협조적/방어적/불신형' 같은 정성 태그는 리포트 생성 시 LLM 이 판정해
+     저장하는 behavior_profile 필드로 확장 권장 — 아래 스키마 제안 참조)
+    """
+    if last_status == "미시작" or not user_msg_lengths:
+        return None
+    avg = sum(user_msg_lengths) / len(user_msg_lengths)
+    if avg >= 200:
+        return "투머치토커"
+    if avg < 25:
+        return "단답형"
+    return "표준형"
 
 
 def _correlation_matrix(series: Dict[str, List[float]]) -> List[Dict[str, Any]]:
@@ -363,8 +402,12 @@ async def list_participants(
     # 세션 통계를 참여자별로 한 번에 집계 (N+1 방지)
     p_ids = [p.id for p in participants]
     session_stats: Dict[UUID, Dict[str, Any]] = defaultdict(
-        lambda: {"total": 0, "completed": 0, "last_status": "미시작", "last_at": None}
+        lambda: {
+            "total": 0, "completed": 0, "last_status": "미시작",
+            "last_at": None, "last_topic": None, "last_session_id": None,
+        }
     )
+    # 참여자 → 최근 세션 id (대화 원문 모달 연결용)
     if p_ids:
         s_result = await db.execute(
             select(DiagnosisSession).where(DiagnosisSession.user_id.in_(p_ids))
@@ -377,11 +420,37 @@ async def list_participants(
             if stat["last_at"] is None or (s.created_at and s.created_at > stat["last_at"]):
                 stat["last_at"] = s.created_at
                 stat["last_status"] = s.status
+                stat["last_topic"] = s.current_topic
+                stat["last_session_id"] = s.id
+
+    # 행동 태그용: 사용자 발화 길이를 참여자별로 배치 집계 (단일 쿼리, N+1 없음)
+    user_len_by_pid: Dict[UUID, List[int]] = defaultdict(list)
+    if p_ids:
+        msg_result = await db.execute(
+            select(DiagnosisSession.user_id, ChatMessage.content)
+            .join(DiagnosisSession, ChatMessage.session_id == DiagnosisSession.id)
+            .where(DiagnosisSession.user_id.in_(p_ids))
+            .where(ChatMessage.role == "user")
+        )
+        for uid, content in msg_result.all():
+            if content:
+                user_len_by_pid[uid].append(len(content))
+
+    # 완료 참여자 → 리포트 id (완료 시 리포트 상세로 이동)
+    report_by_pid: Dict[UUID, str] = {}
+    if p_ids:
+        r_result = await db.execute(
+            select(DiagnosisReport.user_id, DiagnosisReport.id)
+            .where(DiagnosisReport.user_id.in_(p_ids))
+        )
+        for uid, rid in r_result.all():
+            report_by_pid[uid] = str(rid)
 
     cmap = await _company_map(db)
     items = []
     for p in participants:
         stat = session_stats[p.id]
+        last_status = stat["last_status"]
         items.append(
             {
                 "id": str(p.id),
@@ -394,8 +463,18 @@ async def list_participants(
                 "age_group": p.age_group or "-",
                 "total_sessions": stat["total"],
                 "completed_sessions": stat["completed"],
-                "last_status": stat["last_status"],
+                "last_status": last_status,
                 "joined_at": p.created_at,
+                # ── 신규: 진행률·행동태그·연결 정보 ──
+                "progress_pct": _progress_pct(stat["last_topic"], last_status),
+                "current_topic": stat["last_topic"],
+                "behavior_tag": _behavior_tag(
+                    user_len_by_pid.get(p.id, []), last_status
+                ),
+                "last_session_id": (
+                    str(stat["last_session_id"]) if stat["last_session_id"] else None
+                ),
+                "report_id": report_by_pid.get(p.id),
             }
         )
 
@@ -555,6 +634,50 @@ async def get_report_ai_original(
         "summary": original.get("summary"),
         "details": (original.get("scores") or {}).get("details", {}),
         "snapshot_at": original.get("snapshot_at"),
+    }
+
+
+@router.get("/sessions/{session_id}/transcript")
+async def get_session_transcript(
+    session_id: UUID,
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """세션의 전체 턴(Turn-by-Turn) 대화 기록. 대화 원문 모달 뷰어용.
+
+    회사 격리: 세션 소유자(participant)의 company_id 로 접근 권한을 확인한다.
+    시스템 마커([CHAPTER_COMPLETE] 등)가 남아있을 수 있으나, 원문 보존을 위해
+    그대로 반환하고 표시는 프론트가 담당한다(관리자 화면이라 노출 무방).
+    """
+    session = await db.get(DiagnosisSession, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+
+    participant = await db.get(Participant, session.user_id)
+    ctx.assert_can_access_company(participant.company_id if participant else None)
+
+    msg_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at.asc())
+    )
+    messages = msg_result.scalars().all()
+
+    return {
+        "session_id": str(session_id),
+        "user_name": participant.name if participant else "대상자",
+        "status": session.status,
+        "current_topic": session.current_topic,
+        "messages": [
+            {
+                # user = 대상자, model = AI 코치
+                "role": m.role,
+                "content": m.content,
+                "chapter": m.chapter,
+                "created_at": m.created_at,
+            }
+            for m in messages
+        ],
     }
 
 
