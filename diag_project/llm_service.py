@@ -45,6 +45,35 @@ LLM_HTTP_TIMEOUT_MS = 90_000
 
 MAX_HISTORY_TURNS = 20
 
+# ── 슬라이딩 윈도우(Sliding Window) 메모리 ─────────────────────────────────
+# 실시간 채팅 매 턴마다 전체 대화를 LLM 에 보내면 세션이 길어질수록 토큰이
+# 기하급수적으로 늘어(비용 폭탄) 지연·429/500 오류까지 유발한다.
+# → 최근 N턴(user+model)만 잘라 보낸다. 오래된 대화는 DB 에 전량 보존되어
+#   최종 리포트 analyze 에서만 쓰이고, 실시간 호출에서는 제외한다.
+# 시스템 프롬프트는 system_instruction 으로 항상 별도 고정 전달되므로
+# 이 슬라이딩과 무관하게 절대 잘리지 않는다.
+PHASE3A_HISTORY_WINDOW_TURNS = int(
+    os.getenv("PHASE3A_HISTORY_WINDOW_TURNS", "5")
+)
+# user+model 합산 최대 메시지 수 (5턴 → 10개)
+PHASE3A_HISTORY_WINDOW_MESSAGES = PHASE3A_HISTORY_WINDOW_TURNS * 2
+
+
+def _apply_sliding_window(compressed_history: list[dict]) -> list[dict]:
+    """대화 이력에 슬라이딩 윈도우를 적용해 최근 N턴만 남긴다.
+
+    - 완료 사건 요약(role == "system")은 이미 compress 단계에서 짧게 압축된
+      '이번 챕터의 핵심 맥락'이라 전량 유지한다. 이걸 버리면 코치가 방금
+      마친 사건조차 잊어 진단 품질이 무너진다(요약이라 토큰 부담은 미미).
+    - 실제 turn-by-turn 대화(user/model)만 최근 WINDOW 개로 슬라이스한다.
+      → 긴 챕터에서 turn 누적으로 인한 토큰 폭증을 차단한다.
+    """
+    summaries = [m for m in compressed_history if m.get("role") == "system"]
+    turns = [m for m in compressed_history if m.get("role") != "system"]
+    recent_turns = turns[-PHASE3A_HISTORY_WINDOW_MESSAGES:]
+    return summaries + recent_turns
+
+
 def _sanitize_gap_analysis(text: str) -> str:
     """Gap Analysis 금지어 필터 (LLM 프롬프트 무시 대비 하드 가드).
 
@@ -755,9 +784,12 @@ class GeminiService:
                 "event_metadata": dict | None,
             }
         """
+        # 🪟 슬라이딩 윈도우: 매 턴 전체 대화를 보내지 않고 최근 N턴만.
+        #   (전체 이력은 DB 에 보존 → 리포트 analyze 에서만 사용)
+        windowed_history = _apply_sliding_window(compressed_history)
         history_text = "\n".join(
             f"{m['role']}: {m['content']}"
-            for m in compressed_history
+            for m in windowed_history
         )
 
         user_content = (
