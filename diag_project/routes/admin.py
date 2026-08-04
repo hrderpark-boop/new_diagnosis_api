@@ -195,7 +195,9 @@ def _behavior_tag(user_msg_lengths: List[int], last_status: str) -> Optional[str
     if last_status == "미시작" or not user_msg_lengths:
         return None
     avg = sum(user_msg_lengths) / len(user_msg_lengths)
-    if avg >= 200:
+    # LLM 기본 답변이 길어 200자 기준으로는 대부분 '투머치토커'로 편중된다.
+    # 280자로 상향해 변별력을 높인다(진짜 장황한 경우만 투머치토커로 분류).
+    if avg >= 280:
         return "투머치토커"
     if avg < 25:
         return "단답형"
