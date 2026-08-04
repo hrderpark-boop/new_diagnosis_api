@@ -85,6 +85,37 @@ def check_avoidance(text: str | None) -> bool:
     return any(kw in stripped for kw in AVOIDANCE_KEYWORDS)
 
 
+# 남탓(외부 귀인) · 비아냥 · 진단 자체를 무시하는 도발 패턴.
+# 유효 데이터(STAR) 없이 이런 반응만 반복되면 '유의미한 진단 불가'로 보고
+# Fail-Fast 강제 전환의 근거로 쓴다. (check_avoidance 의 단순 회피어와 별개)
+DEFLECTION_KEYWORDS = [
+    # 남탓 / 외부 귀인
+    "무능", "시스템이 엉망", "시스템 문제", "회사가 문제", "회사 탓",
+    "팀원들 때문", "팀원이 문제", "쟤네가", "걔네가", "위에서",
+    "제 잘못이 아", "내 잘못이 아", "어쩔 수 없", "환경이 안",
+    # 비아냥 / 진단 무시 / 도발
+    "왜 물어", "왜 해요", "뭐가 달라", "뭐가 바뀌", "의미가 있",
+    "알기나 해", "네가 뭘", "당신이 뭘", "이런 거 해서",
+    "쓸데없", "시간 낭비", "그래서 뭐", "관심 없",
+]
+
+
+def detect_deflection(text: str | None) -> bool:
+    """남탓·비아냥·도발 감지 (유효 데이터 회피의 또 다른 형태)."""
+    if not text:
+        return False
+    return any(kw in text for kw in DEFLECTION_KEYWORDS)
+
+
+def is_unproductive_response(text: str | None) -> bool:
+    """이번 발화가 '유효 데이터 없는 비생산적 응답'인지 종합 판정.
+
+    단순 회피(check_avoidance) + 남탓/비아냥/도발(detect_deflection)을
+    합쳐, Fail-Fast(회피/남탓/비아냥 3회 반복) 카운팅의 단일 기준으로 쓴다.
+    """
+    return check_avoidance(text) or detect_deflection(text)
+
+
 def detect_pause_request(text: str | None) -> bool:
     """사용자 종료/일시정지 요청 감지."""
     if not text:

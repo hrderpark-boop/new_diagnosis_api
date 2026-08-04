@@ -16,6 +16,7 @@ from diag_project.models.event import Event
 from diag_project.models.diagnosis_session import ChatMessage
 from diag_project.services.avoidance_detector import (
     check_avoidance,
+    is_unproductive_response,
     detect_pause_request,
     detect_meta_question,
     detect_prompt_injection,
@@ -364,11 +365,20 @@ def decide_instruction(state: dict) -> InstructionType:
     if detect_meta_question(last_response):
         return "META_QUESTION_FROM_USER"
 
+    # 4-a. 🛡️ Fail-Fast: 회피/남탓/비아냥 3회 반복 → 즉시 강제 전환
+    #   유효 데이터(강한 STAR) 없이 회피성 응답이 한 챕터에서 3회 이상이면,
+    #   더 구슬리지 않고 "유의미한 진단 불가"를 선언하며 다음 역량으로
+    #   강제 전환한다. (극단 회피 페르소나가 한 챕터에서 수십 턴 헛도는 것
+    #   방지 — 최후통첩보다 먼저, 더 빠르게 손절한다.)
+    _bei_turns = state.get("chapter_message_count", 0)
+    _no_strong = state.get("events_with_star_70", 0) == 0
+    _avoid_count = state.get("avoidance_count_in_chapter", 0)
+    if _no_strong and _avoid_count >= 3 and _bei_turns >= 3:
+        return "CHAPTER_READY_TO_END"  # no_yield_forced 로 무수확 강제 전환
+
     # 4-b. 🛡️ N턴 무수확 방어 (무한 개념화 루프 탈출):
     #   BEI 질문을 NO_YIELD_TURNS 이상 던졌는데도 강한 STAR 사건이 0이면,
     #   추상적 회피에 끌려다니는 상태 → 최후통첩 1회 후 강제 전환.
-    _bei_turns = state.get("chapter_message_count", 0)
-    _no_strong = state.get("events_with_star_70", 0) == 0
     if _bei_turns >= NO_YIELD_TURNS and _no_strong:
         if not state.get("no_yield_ultimatum_given"):
             return "CHAPTER_NO_YIELD_ULTIMATUM"      # 최후통첩 (1회)
@@ -757,8 +767,10 @@ async def build_turn_state(
         ),
         "has_contrary_probe": has_contrary,
         "contrary_retry_count": 0,  # TODO: Phase 3-A 후속에서 정밀 추적
+        # 회피 + 남탓/비아냥/도발을 합산 — Fail-Fast(비생산 응답 3회) 근거.
+        # (단순 회피어만 세면 공격형의 남탓·비아냥이 안 잡혀 손절이 안 됨)
         "avoidance_count_in_chapter": sum(
-            1 for m in user_messages if check_avoidance(m.content)
+            1 for m in user_messages if is_unproductive_response(m.content)
         ),
         "last_avoidance_type": None,
         "avoidance_retry_count": 0,
@@ -806,12 +818,17 @@ async def build_turn_state(
     state["force_ready_for_intro"] = force_ready_for_intro
 
     # 9-g. 무수확 강제 전환 플래그 (READY_TO_END 가이드가 문구를 바꾸도록):
-    #   최후통첩까지 했는데도 강한 STAR 가 0이면, 챕터 종료 멘트를 '강점 요약'
-    #   대신 '구체 사례 확보 실패 → 미달, 정리하고 전환'으로 바꿔야 한다.
+    #   강한 STAR 가 0인 채로 종료가 결정되는 두 경로 모두에서 True:
+    #     ① 최후통첩까지 했는데도 무수확(기존 NO_YIELD 경로)
+    #     ② 회피/남탓/비아냥 3회 반복으로 Fail-Fast 강제 전환(4-a)
+    #   → 챕터 종료 멘트를 '강점 요약' 대신 '유의미한 진단 불가 → 전환'으로.
+    _avoid_ct = state.get("avoidance_count_in_chapter", 0)
     state["no_yield_forced"] = (
         state["events_with_star_70"] == 0
-        and chapter_message_count >= NO_YIELD_TURNS
-        and no_yield_ultimatum_given
+        and (
+            (chapter_message_count >= NO_YIELD_TURNS and no_yield_ultimatum_given)
+            or (_avoid_ct >= 3 and chapter_message_count >= 3)
+        )
     )
 
     # 10. instruction 결정

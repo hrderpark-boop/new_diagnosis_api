@@ -394,10 +394,43 @@ async def analyze_session(
     )
     
     db.add(new_report)
-    session.status = "completed"
-    session.current_topic = "Completed"
+
+    # 🚨 [버그 수정] 미완료 세션을 'completed' 로 덮어쓰는 데이터 오염 방지.
+    #   기존엔 analyze 만 호출하면 5역량 미완주라도 무조건 completed 가 되어
+    #   대시보드가 100% 완주로 오인했다. 실제 완료 역량 수로 분리 판정한다.
+    _TOPIC_ORDER = ["조직관리", "성과관리", "사람관리", "일관리", "자기관리"]
+    _ct = session.current_topic
+    if session.status == "completed" or _ct == "Completed":
+        _completed_count = 5
+    elif _ct in _TOPIC_ORDER:
+        _completed_count = _TOPIC_ORDER.index(_ct)  # 진행 중 = 그 앞까지 완료
+    else:
+        _completed_count = 0  # General/라포 등 첫 역량 진입 전
+
+    if _completed_count >= 5:
+        session.status = "completed"
+        session.current_topic = "Completed"
+    else:
+        # 5역량 미완주 → 'incomplete'. current_topic(진행 위치)은 그대로 두어
+        # 진행률(progress_pct) 이 실제 위치를 반영하게 한다. 리포트 자체는
+        # 수집된 만큼의 데이터로 생성되지만, 세션은 완주로 위장하지 않는다.
+        session.status = "incomplete"
+        logger.warning(
+            "⚠️ 미완주 세션 analyze: %d/5 역량만 완료 → status=incomplete "
+            "(current_topic=%s 유지)", _completed_count, _ct,
+        )
+
     db.add(session)
     await db.commit()
-    
-    logger.info(f"✅ 리포트 생성 완료: {new_report.id}")
-    return {"status": "success", "message": "Analysis completed", "report_id": str(new_report.id)}
+
+    logger.info(
+        "✅ 리포트 생성 완료: %s (완료역량 %d/5, status=%s)",
+        new_report.id, _completed_count, session.status,
+    )
+    return {
+        "status": "success",
+        "message": "Analysis completed",
+        "report_id": str(new_report.id),
+        "completed_competencies": _completed_count,
+        "session_status": session.status,
+    }
