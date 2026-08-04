@@ -25,6 +25,7 @@ from diag_project.services.chapter_translator import (
     get_next_chapter,
 )
 from diag_project.services.instruction_decider import build_turn_state
+from diag_project.services.avoidance_detector import detect_deflection
 from diag_project.services.conversation_compressor import compress_conversation_history
 from diag_project.services.event_service import (
     create_event, update_event_star, complete_event,
@@ -494,9 +495,12 @@ async def _submit_message_phase3a(
             and state.get("rapport_turn_count", 0) == 0):
         # 라포 1턴 (이름 받은 직후) — Step1 이름수용 + Step2 아이스브레이킹.
         # 자기소개 반복 절대 금지 (인사말에서 이미 함). 템플릿으로 고정.
+        # 사용자의 이번 답변에 비아냥·불만·거부가 있으면 차분한 톤으로 분기.
+        _hostile = detect_deflection(request.content)
         system_override_text = build_rapport_first_turn_response(
             user_name=user_name,
             current_ampm_phrase=state.get("current_ampm_phrase", "오늘"),
+            is_hostile=_hostile,
         )
     elif instruction_used == "CHAPTER_OPENING":
         # 챕터 도입 — '목차 노출형'(역량명 호명) 대신, 리더의 직전 답변에서

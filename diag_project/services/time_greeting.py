@@ -118,19 +118,39 @@ def get_time_phrase() -> str:
 
 
 def build_rapport_first_turn_response(
-    user_name: str,
+    user_name: str | None,
     current_ampm_phrase: str,
+    is_hostile: bool = False,
 ) -> str:
     """라포 1턴 (이름 받은 직후) — Step 1 이름 수용 + Step 2 아이스브레이킹.
 
     [중요] 인사말(build_rapport_greeting)에서 이미 자기소개를 마쳤으므로
     여기서 코치 자기소개를 절대 반복하지 않는다 (앵무새 방지).
-    이름을 딱 한 문장으로 수용한 뒤 가벼운 아이스브레이킹 질문 하나만.
-    로드맵·진단 질문은 다음 스텝(별도 턴) 담당 — 절대 섞지 않음.
+
+    맥락 분기:
+    - is_hostile(사용자가 비아냥·불만·거부): 해맑게 "반갑습니다!" 하지 않고,
+      차분하고 객관적인 톤으로 부담을 낮추며 응답한다. (요구사항 4)
+    - 이름이 없거나(None) 기본값('리더')이면: 이름을 억지로 부르지 않고
+      기본 호칭 '리더님'만 사용한다. (요구사항 3)
     """
+    # user_name 이 실명인지 판정 (None/'리더'/'리더님' 은 이름 없음으로 취급)
+    has_name = bool(user_name) and user_name not in ("리더", "리더님")
+
+    if is_hostile:
+        # 공격성/불만 인식 — 반갑다며 해맑게 넘기지 않고 차분히 받아준다.
+        return (
+            "네, 리더님. 마음이 편치 않으실 수 있는데, 부담 갖지 않으셔도 "
+            "됩니다. 이 자리는 평가가 아니라 편하게 이야기 나누는 시간이에요. "
+            f"오늘 {current_ampm_phrase} 시간은 어떻게 보내고 계세요?"
+        )
+
+    greeting = (
+        f"반갑습니다, {user_name} 리더님! " if has_name
+        else "네, 리더님. "
+    )
     return (
-        f"반갑습니다, {user_name} 리더님! "
-        f"본격적으로 시작하기 전에 잠깐 편하게 이야기 나눠볼게요. "
+        f"{greeting}"
+        "본격적으로 시작하기 전에 잠깐 편하게 이야기 나눠볼게요. "
         f"오늘 {current_ampm_phrase} 시간은 어떻게 보내고 계세요?"
     )
 

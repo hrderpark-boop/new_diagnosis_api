@@ -26,22 +26,36 @@ from diag_project.services.avoidance_detector import (
 )
 
 
-def _extract_user_name(text: str) -> str:
-    """첫 user 메시지에서 이름 추출.
+def _extract_user_name(text: str) -> str | None:
+    """첫 user 메시지에서 이름 추출. 명확한 자기소개가 없으면 None.
+
+    🚨 억지 추출 절대 금지: 사용자가 이름을 명확히 밝히지 않고 비아냥·거부·
+    반말·불만으로 응답하면, 문장 속 무의미한 명사(예: '환영은', '이딴')를
+    이름으로 뽑지 않는다. '명확한 자기소개 어미' 패턴이 있을 때만 신뢰하고,
+    없으면 None 을 반환한다(→ 코치는 기본 호칭 '리더님'으로 부른다).
 
     예시:
-    - "안녕하세요 박기진입니다" → "박기진"
-    - "박기진이라고 합니다"     → "박기진"
-    - "박기진이에요"            → "박기진"
-    - "안녕하세요"              → "리더"
-    - ""                       → "리더"
+    - "안녕하세요 박기진입니다"        → "박기진"
+    - "박기진이라고 합니다"            → "박기진"
+    - "환영은 무슨. 이딴 진단인지..."  → None (비아냥 — 억지 추출 안 함)
+    - "안녕하세요"                     → None (이름 없음)
+    - ""                              → None
     """
     import re
+    from diag_project.services.avoidance_detector import detect_deflection
 
-    # 패턴 1: "[이름]+자기소개 어미" — 조사/어미가 이름에 붙지 않도록:
-    #  - 이름 그룹은 '게으른(lazy)' 매칭: 탐욕적이면 '김민준이라고'에서
-    #    '김민준이'+'라고'로 잘못 쪼개져 조사 '이'가 이름에 붙는다.
-    #  - 어미 대안은 '긴 것 우선' 정렬 (이라고 합니다 > 이라고 > 라고 등).
+    if not text or not text.strip():
+        return None
+
+    # 비아냥·남탓·도발·거부 신호가 있으면 이름 추출 자체를 포기한다.
+    # (이런 문장에서 우연히 어미 패턴이 매칭돼도 이름일 가능성이 낮다)
+    if detect_deflection(text):
+        return None
+
+    # 명확한 '자기소개 어미' 패턴만 신뢰한다. (fallback 명사 추출은 폐기 —
+    # 그게 '환영은' 같은 무의미 명사를 이름으로 뽑던 근본 원인이었다.)
+    #  - 이름 그룹은 lazy 매칭: 탐욕적이면 '김민준이라고'가 '김민준이'로 잘림.
+    #  - 어미 대안은 긴 것 우선 (이라고 합니다 > 이라고 > 라고 …).
     match = re.search(
         r'([가-힣]{2,4}?)'
         r'(?:이라고\s*(?:합니다|해요|불러)|라고\s*(?:합니다|해요|불러)'
@@ -50,20 +64,13 @@ def _extract_user_name(text: str) -> str:
         text,
     )
     if match:
-        return match.group(1)
+        name = match.group(1)
+        # 인사말/역할어가 이름으로 잡히는 것 방지
+        if not any(exc in name for exc in ("안녕", "반갑", "감사", "고맙", "리더", "코치")):
+            return name
 
-    # 패턴 2: 한글 2-4자 중 인사말 제외 (fallback)
-    excluded = {"안녕", "반갑", "감사", "고맙", "리더", "코치"}
-    for m in re.findall(r'[가-힣]{2,4}', text):
-        if not any(exc in m for exc in excluded):
-            # 4글자 후보가 주격조사 '이'로 끝나면 3글자 이름+조사로 판단해 제거
-            # (예: '김민준이 인사드립니다' → '김민준'. 2~3글자는 실명 어미일 수
-            #  있어 건드리지 않음: '하은이' 등)
-            if len(m) == 4 and m.endswith("이"):
-                return m[:-1]
-            return m
-
-    return "리더"
+    # 명확한 자기소개가 없음 → 억지로 뽑지 않고 None.
+    return None
 
 
 def _norm_sub(text: str) -> str:
@@ -748,9 +755,10 @@ async def build_turn_state(
         .limit(1)
     )
     first_user_msg = first_user_result.scalars().first()
+    # 이름을 못 뽑으면(None) 기본 호칭 '리더'로 폴백 → 코치가 '리더님'으로 부름.
     user_name = "리더"
     if first_user_msg and first_user_msg.content:
-        user_name = _extract_user_name(first_user_msg.content)
+        user_name = _extract_user_name(first_user_msg.content) or "리더"
 
     # 9. state 조립
     state = {
