@@ -491,7 +491,19 @@ async def _submit_message_phase3a(
     # 템플릿으로 고정. 나머지 턴은 기존대로 LLM 생성.
     system_override_text = None
 
-    if (instruction_used == "RAPPORT_BUILDING"
+    # 🚨 3-Strike 강제 종료 (Session Abort) — 최우선 처리.
+    #   세션 전체 비생산 응답 3회 도달 → 고정 최후통첩 출력 후 세션 영구 종료.
+    #   LLM 을 우회해 정해진 문구만 내보내고 다음 질문은 절대 생성하지 않는다.
+    _is_aborted = (instruction_used == "SESSION_ABORT_3STRIKE")
+    if _is_aborted:
+        system_override_text = (
+            "현재 3회 이상 유의미한 진단 진행이 불가능한 것으로 판단되었습니다. "
+            "상호 간의 시간 낭비를 방지하기 위해 오늘 진단은 여기서 강제 "
+            "종료합니다. 진단 준비가 되셨을 때 다시 접속해 주시기 바랍니다."
+        )
+
+    if (not _is_aborted
+            and instruction_used == "RAPPORT_BUILDING"
             and state.get("rapport_turn_count", 0) == 0):
         # 라포 1턴 (이름 받은 직후) — Step1 이름수용 + Step2 아이스브레이킹.
         # 자기소개 반복 절대 금지 (인사말에서 이미 함). 템플릿으로 고정.
@@ -889,6 +901,18 @@ async def _submit_message_phase3a(
         db.add(session)
         await db.commit()
 
+    # 11-c. 🚨 3-Strike 강제 종료: 세션 상태를 'aborted' 로 확정한다.
+    #   재개 불가 — 완료도 일시중지도 아닌 '중단' 상태로 명확히 분리한다.
+    if _is_aborted:
+        session.status = "aborted"
+        session.current_topic = "Aborted"
+        db.add(session)
+        await db.commit()
+        logger.warning(
+            "🛑 3-Strike Session Abort: session=%s (비생산 응답 %d회 누적)",
+            session.id, state.get("session_deflection_count", 0),
+        )
+
     # 12-a. 누적 완료 역량 계산 (Hall of Achievements 배지 유지용).
     #   매 턴 빈 배열을 반환하면 프론트가 배지를 덮어써 초기화되는 버그 →
     #   현재 진행 토픽 기준으로 '이미 완료된 토픽'을 누적해서 반환.
@@ -917,6 +941,9 @@ async def _submit_message_phase3a(
         "is_session_starting": False,
         "is_session_completed": is_session_completed,
         "is_session_paused": is_session_paused,
+        # 🚨 3-Strike 강제 종료 — 프론트가 입력창을 영구 잠금해야 하는 신호.
+        "is_terminated": _is_aborted,
+        "session_status": session.status,
         # 챕터 경계에서 '계속/휴식' 답변을 기다리는 중 — 프론트가 선택 버튼 노출
         "is_awaiting_continue": probe_type_used == "AWAIT_CONTINUE",
         # 코치가 조기 종료를 '제안'함 — 프론트가 '다음에 하기/계속 진행하기'

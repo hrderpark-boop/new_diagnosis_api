@@ -17,6 +17,7 @@ from diag_project.models.diagnosis_session import ChatMessage
 from diag_project.services.avoidance_detector import (
     check_avoidance,
     is_unproductive_response,
+    detect_deflection,
     detect_pause_request,
     detect_meta_question,
     detect_prompt_injection,
@@ -101,8 +102,9 @@ def _match_subcompetency(
     return None
 
 
-# 19가지 instruction 타입
+# instruction 타입
 InstructionType = Literal[
+    "SESSION_ABORT_3STRIKE",
     "ONBOARDING_LAUNCH",
     "CHAPTER_OPENING",
     "RAPPORT_BUILDING",
@@ -254,6 +256,14 @@ def decide_instruction(state: dict) -> InstructionType:
     #    취급해 흐름이 오염된다.)
     if detect_prompt_injection(state.get("last_user_response")):
         return "PROMPT_INJECTION_DETECTED"
+
+    # === 0.5순위: 3-Strike 강제 종료 (Session Abort) ===
+    #   세션 전체에 걸쳐 비생산 응답(남탓·욕설·비아냥·거부)이 누적 3회에
+    #   도달하면, 코치가 종료를 '선언'했는데도 사용자가 억지로 붙잡아 턴을
+    #   낭비하는 것을 막기 위해 세션 자체를 즉시 강제 종료한다.
+    #   (동의를 구하지 않는다 — 챕터 전환/최후통첩보다도 우선.)
+    if state.get("session_deflection_count", 0) >= 3:
+        return "SESSION_ABORT_3STRIKE"
 
     # === 최우선: 챕터 종료 후 '계속/휴식' 의사 대기 중이면 사용자 답변으로 분기 ===
     #   직전 AI 턴(CHAPTER_READY_TO_END)이 "계속할까요, 쉴까요?"를 물었고
@@ -512,6 +522,19 @@ async def build_turn_state(
     )
     user_messages = msg_result.scalars().all()
     turn_count = len(user_messages)
+
+    # 2-b. 🚨 3-Strike: 세션 '전체'(챕터 무관)의 비생산 응답 누적 카운트.
+    #   남탓·욕설·비아냥·거부(detect_deflection)가 세션 통틀어 3회 도달하면
+    #   챕터 전환이 아니라 세션 자체를 강제 종료(Abort)한다.
+    all_user_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "user")
+    )
+    session_deflection_count = sum(
+        1 for m in all_user_result.scalars().all()
+        if detect_deflection(m.content)
+    )
 
     # 3. 마지막 user 메시지
     last_response = user_messages[-1].content if user_messages else None
@@ -799,6 +822,7 @@ async def build_turn_state(
         "competency_aligned": competency_aligned,
         "awaiting_continue_decision": awaiting_continue_decision,
         "suggest_pause_count": suggest_pause_count,
+        "session_deflection_count": session_deflection_count,
         "no_yield_ultimatum_given": no_yield_ultimatum_given,
         "first_subcompetency_name": first_subcompetency_name,
         "all_subcompetencies": all_subcompetencies,
