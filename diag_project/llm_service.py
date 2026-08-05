@@ -1026,14 +1026,24 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
   딜레마와 극복 논리' — 전문 HR 컨설턴트의 밀도로 서술하되 단문 유지.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[분석 대상 발언 — {korean_name} 관련]
+[분석 대상 발언 — {korean_name} 관련 (챕터 태그로 1차 분리)]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {relevant_utterances}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[참고용 대화 로그 (맥락 보완용)]
+[전체 대화 로그 (맥락 보완 + 누락 발화 탐색용)]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{full_transcript[:12000]}
+{full_transcript[:16000]}
+
+🚨 [채점 정확도 — 매우 중요]
+- 위 '분석 대상 발언'이 부실하거나 "대화 기록이 없습니다" 여도, 곧바로
+  최저점(1.0)으로 단정하지 마세요. 아래 '전체 대화 로그'까지 샅샅이 뒤져
+  이 역량('{korean_name}')과 관련된 리더의 발화·행동을 반드시 찾아보세요.
+  (챕터 태그가 특정 발화에서 누락됐을 수 있습니다.)
+- 전체 대화를 다 뒤져도 이 역량의 구체적 실사례가 정말로 없을 때만
+  Level 1(1.0~1.5)을 부여하세요. 근거가 있으면 그에 맞게 정당하게 채점.
+- evidence(발화 인용)는 반드시 '전체 대화 로그'에 실제로 존재하는 원문만
+  쓰세요. 없는 발화를 지어내면 응답 전체가 폐기됩니다.
 """
         try:
             raw = await self._generate_with_retry(
@@ -1050,16 +1060,21 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                     result["gap_analysis"]
                 )
 
-            # S/A/R 단계별 evidence → evidence_list/evidence 하위 호환 평탄화
-            # (신규 스키마는 reasoning_process.{단계}.evidence 에 1:1 매칭 저장)
+            # S/A/R 단계별 evidence → quotes 별칭 + evidence_list/evidence 평탄화.
+            #  - 요구 스키마: 각 단계에 quotes[] (실제 대화 원문 발췌).
+            #    프롬프트는 evidence 로 생성하므로 quotes 로 복사(하위호환 유지).
             _rp = result.get("reasoning_process") or {}
             _flat_ev = []
             for _step_key in ("1_situation", "2_action", "3_result"):
                 _step = _rp.get(_step_key)
                 if isinstance(_step, dict):
-                    for _q in (_step.get("evidence") or []):
-                        if _q and isinstance(_q, str):
-                            _flat_ev.append(_q)
+                    _ev = [
+                        _q for _q in (_step.get("evidence") or [])
+                        if _q and isinstance(_q, str)
+                    ]
+                    # quotes 별칭 세팅 (프론트 발췌 박스가 읽는 필드)
+                    _step["quotes"] = _ev
+                    _flat_ev.extend(_ev)
             if _flat_ev:
                 result["evidence_list"] = _flat_ev
             if result.get("evidence_list"):
@@ -1228,11 +1243,20 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             def _chapter_data(key: str) -> str:
                 return chapter_transcripts.get(key) or "이 영역에 대한 대화 기록이 없습니다."
 
+            # 🔑 전체 대화 맥락 (chapter=None 라포/경계 발화 포함).
+            #   각 역량 분석에 '그 역량 대화(집중)' + '전체 대화(맥락)'를 함께
+            #   주어, 챕터 태그가 특정 발화에서 누락돼도 LLM 이 전체에서 근거를
+            #   찾을 수 있게 한다 → 데이터 유실로 점수가 1.0 으로 붕괴하는 것 방지.
+            _full = "\n".join(
+                f"{m.get('role', '')}: {m.get('parts', m.get('content', ''))}"
+                for m in history
+            )
+
             tasks = [
                 self._analyze_single_competency(
                     competency_key=key,
                     relevant_utterances=_chapter_data(key),
-                    full_transcript=_chapter_data(key),
+                    full_transcript=_full,
                 )
                 for key in competency_keys
             ]
