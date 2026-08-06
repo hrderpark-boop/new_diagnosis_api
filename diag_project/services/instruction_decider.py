@@ -105,6 +105,8 @@ def _match_subcompetency(
 # instruction 타입
 InstructionType = Literal[
     "SESSION_ABORT_3STRIKE",
+    "SESSION_ABORT_WARNING",
+    "NAME_RECONFIRM",
     "ONBOARDING_LAUNCH",
     "CHAPTER_OPENING",
     "RAPPORT_BUILDING",
@@ -257,13 +259,22 @@ def decide_instruction(state: dict) -> InstructionType:
     if detect_prompt_injection(state.get("last_user_response")):
         return "PROMPT_INJECTION_DETECTED"
 
-    # === 0.5순위: 3-Strike 강제 종료 (Session Abort) ===
-    #   세션 전체에 걸쳐 비생산 응답(남탓·욕설·비아냥·거부)이 누적 3회에
-    #   도달하면, 코치가 종료를 '선언'했는데도 사용자가 억지로 붙잡아 턴을
-    #   낭비하는 것을 막기 위해 세션 자체를 즉시 강제 종료한다.
-    #   (동의를 구하지 않는다 — 챕터 전환/최후통첩보다도 우선.)
-    if state.get("session_deflection_count", 0) >= 3:
+    # === 0.5순위: 3-Strike 강제 종료 + 최후 의향 확인(Warning) ===
+    #   비생산 응답(남탓·욕설·비아냥·거부) 누적으로 세션을 손절하되, 곧바로
+    #   끊지 않고 '경고 1턴'을 사이에 끼워 사용자에게 마지막 선택권을 준다.
+    #     · 누적 2회 도달 & 아직 경고 안 함  → SESSION_ABORT_WARNING (1회)
+    #     · 누적 3회 도달                    → SESSION_ABORT_3STRIKE (종료)
+    #     · 경고 후에도 유효 답변 없이 회피/억지 → 즉시 SESSION_ABORT_3STRIKE
+    #   (경고는 종료보다 앞서지만, 이미 3회면 바로 종료. 동의를 구하지 않음.)
+    _defl = state.get("session_deflection_count", 0)
+    _warned = state.get("session_already_warned", False)
+    if _defl >= 3:
         return "SESSION_ABORT_3STRIKE"
+    if _warned and is_unproductive_response(state.get("last_user_response")):
+        # 이미 경고를 줬는데도 구체적 답변 없이 또 회피/억지 → 즉시 종료.
+        return "SESSION_ABORT_3STRIKE"
+    if _defl >= 2 and not _warned:
+        return "SESSION_ABORT_WARNING"
 
     # === 최우선: 챕터 종료 후 '계속/휴식' 의사 대기 중이면 사용자 답변으로 분기 ===
     #   직전 AI 턴(CHAPTER_READY_TO_END)이 "계속할까요, 쉴까요?"를 물었고
@@ -319,6 +330,15 @@ def decide_instruction(state: dict) -> InstructionType:
     turn_count_total = state.get("turn_count", 0) + rapport_turn_count
     ONBOARDING_MAX_TURNS = 8
     RAPPORT_MAX_TURNS = 5  # 무한 라포 방지 안전장치
+
+    # Step 1-0: 이름 재확인 (Fallback) — 첫 발화에서 명확한 성함을 못 뽑았고
+    #   아직 재확인을 안 했다면, 임의 명사를 이름으로 부르지 말고 1회에 한해
+    #   호칭을 정중히 되묻는다. (예: '환영은 무슨...' 비아냥 → '환영은' 오추출
+    #   방지). 재확인 후에도 못 뽑으면 marker 가 남아 기본 호칭 '리더님'으로 폴백.
+    if (not rapport_complete
+            and state.get("name_extraction_failed", False)
+            and not state.get("name_reconfirm_asked", False)):
+        return "NAME_RECONFIRM"
 
     # Step 1-3: 라포 (이름확인 → 아이스브레이킹 1~2 → 시작 동의)
     # 사용자 '시작 동의'([READY_FOR_INTRO]) 전까지 라포 유지. 동의 없이 진도 X.
@@ -530,10 +550,11 @@ async def build_turn_state(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.role == "user")
+        .order_by(ChatMessage.created_at.asc())
     )
+    all_user_msgs = list(all_user_result.scalars().all())
     session_deflection_count = sum(
-        1 for m in all_user_result.scalars().all()
-        if detect_deflection(m.content)
+        1 for m in all_user_msgs if detect_deflection(m.content)
     )
 
     # 3. 마지막 user 메시지
@@ -611,6 +632,26 @@ async def build_turn_state(
         .where(ChatMessage.probe_type_used == "NO_YIELD_ULTIMATUM")
     )
     no_yield_ultimatum_given = ultimatum_result.scalars().first() is not None
+
+    # 8-0b. 세션 강제 종료 '경고(Warning)'를 이미 1회 냈는지 (probe 마커).
+    #   경고를 이미 줬다면 다음 회피 턴에서 곧바로 종료(재경고 루프 방지).
+    warning_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "model")
+        .where(ChatMessage.probe_type_used == "ABORT_WARNING")
+    )
+    session_already_warned = warning_result.scalars().first() is not None
+
+    # 8-0c. 이름 재확인(NAME_RECONFIRM)을 이미 1회 물었는지 (probe 마커).
+    #   재확인 후에도 성함을 못 뽑으면 기본 호칭 '리더님'으로 폴백(재질문 X).
+    reconfirm_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "model")
+        .where(ChatMessage.probe_type_used == "NAME_RECONFIRM")
+    )
+    name_reconfirm_asked = reconfirm_result.scalars().first() is not None
 
     # 8-a. 마커 1: 라포 완료 → 인트로 진입 ([READY_FOR_INTRO] 또는 하위호환 RAPPORT_COMPLETE)
     rapport_result = await db.execute(
@@ -779,9 +820,18 @@ async def build_turn_state(
     )
     first_user_msg = first_user_result.scalars().first()
     # 이름을 못 뽑으면(None) 기본 호칭 '리더'로 폴백 → 코치가 '리더님'으로 부름.
+    #   단, 첫 발화에서 실패해도 이후 발화(재확인 답변)에서 다시 시도한다.
+    #   name_extraction_failed: 발화는 있는데 어디서도 명확한 성함을 못 뽑음.
     user_name = "리더"
-    if first_user_msg and first_user_msg.content:
-        user_name = _extract_user_name(first_user_msg.content) or "리더"
+    name_extraction_failed = False
+    _named = next(
+        (n for n in (_extract_user_name(m.content) for m in all_user_msgs) if n),
+        None,
+    )
+    if _named:
+        user_name = _named
+    elif all_user_msgs and (all_user_msgs[0].content or "").strip():
+        name_extraction_failed = True
 
     # 9. state 조립
     state = {
@@ -823,6 +873,9 @@ async def build_turn_state(
         "awaiting_continue_decision": awaiting_continue_decision,
         "suggest_pause_count": suggest_pause_count,
         "session_deflection_count": session_deflection_count,
+        "session_already_warned": session_already_warned,
+        "name_extraction_failed": name_extraction_failed,
+        "name_reconfirm_asked": name_reconfirm_asked,
         "no_yield_ultimatum_given": no_yield_ultimatum_given,
         "first_subcompetency_name": first_subcompetency_name,
         "all_subcompetencies": all_subcompetencies,

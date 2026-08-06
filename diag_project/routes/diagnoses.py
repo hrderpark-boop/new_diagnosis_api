@@ -446,6 +446,9 @@ async def _submit_message_phase3a(
         "RAPPORT_BUILDING",
         "DIAGNOSIS_INTRO",
         "DIAGNOSIS_CONFIRM",
+        "NAME_RECONFIRM",
+        "SESSION_ABORT_WARNING",
+        "SESSION_ABORT_3STRIKE",
     }
     _turn_index = (
         state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
@@ -492,17 +495,39 @@ async def _submit_message_phase3a(
     system_override_text = None
 
     # 🚨 3-Strike 강제 종료 (Session Abort) — 최우선 처리.
-    #   세션 전체 비생산 응답 3회 도달 → 고정 최후통첩 출력 후 세션 영구 종료.
+    #   세션 전체 비생산 응답 누적 → 정중한 종료 멘트 출력 후 세션 영구 종료.
+    #   (3회 카운팅은 철저히 백엔드 내부 처리 — 멘트에 '3회' 등 수치 노출 금지.)
     #   LLM 을 우회해 정해진 문구만 내보내고 다음 질문은 절대 생성하지 않는다.
     _is_aborted = (instruction_used == "SESSION_ABORT_3STRIKE")
     if _is_aborted:
         system_override_text = (
-            "현재 3회 이상 유의미한 진단 진행이 불가능한 것으로 판단되었습니다. "
-            "상호 간의 시간 낭비를 방지하기 위해 오늘 진단은 여기서 강제 "
-            "종료합니다. 진단 준비가 되셨을 때 다시 접속해 주시기 바랍니다."
+            "저는 현재 리더님께서 진단을 진행하실 준비가 필요하다고 생각됩니다. "
+            "진단 준비가 되셨을 때 다시 접속해 주시기 바랍니다. "
+            "그럼 진단은 여기서 종료하겠습니다."
         )
 
-    if (not _is_aborted
+    # ⚠️ 최후 의향 확인(Warning) — 종료 직전 1회. 세션은 아직 종료하지 않는다.
+    #   (경고 후에도 유효 답변 없이 억지 → 다음 턴에 SESSION_ABORT_3STRIKE)
+    _is_warning = (not _is_aborted
+                   and instruction_used == "SESSION_ABORT_WARNING")
+    if _is_warning:
+        system_override_text = (
+            "리더님, 현재 진단에 온전히 집중하시기 어려운 상황인 것 같습니다. "
+            "계속 진행을 원하신다면 앞서 드린 질문에 대한 구체적인 경험을 "
+            "나누어 주시고, 그렇지 않다면 오늘은 여기서 마무리하는 것이 "
+            "좋겠습니다."
+        )
+
+    # 🙋 이름 재확인(Fallback) — 명확한 성함을 못 뽑았을 때 1회. 억지 호칭 금지.
+    _is_name_reconfirm = (not _is_aborted and not _is_warning
+                          and instruction_used == "NAME_RECONFIRM")
+    if _is_name_reconfirm:
+        system_override_text = (
+            "제가 성함을 정확히 파악하지 못했습니다. 본격적으로 시작하기 전에, "
+            "편하게 부를 호칭을 다시 한번 알려주시겠어요?"
+        )
+
+    if (not _is_aborted and not _is_warning and not _is_name_reconfirm
             and instruction_used == "RAPPORT_BUILDING"
             and state.get("rapport_turn_count", 0) == 0):
         # 라포 1턴 (이름 받은 직후) — Step1 이름수용 + Step2 아이스브레이킹.
@@ -831,6 +856,13 @@ async def _submit_message_phase3a(
     elif instruction_used == "CHAPTER_NO_YIELD_ULTIMATUM":
         # 무수확 최후통첩 턴 — 다음 턴에 '이미 통첩함'을 판별하는 근거 마커.
         probe_type_used = "NO_YIELD_ULTIMATUM"
+    elif _is_warning:
+        # 최후 의향 확인(Warning) 턴 — 다음 턴에 '이미 경고함'을 판별해
+        # 재경고 루프를 막고 곧바로 종료로 승격시키는 근거 마커.
+        probe_type_used = "ABORT_WARNING"
+    elif _is_name_reconfirm:
+        # 이름 재확인 턴 — 다음 턴에 '이미 되물음'을 판별해 재질문을 막는 마커.
+        probe_type_used = "NAME_RECONFIRM"
 
     # 진단 전 단계는 사건 생명주기 스킵
     is_pre_diagnosis = (instruction_used in PRE_DIAGNOSIS_INSTRUCTIONS)
