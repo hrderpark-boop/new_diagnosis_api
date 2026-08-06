@@ -20,15 +20,18 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func, or_
+from sqlalchemy import delete as sa_delete, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from diag_project.database import get_db
 from diag_project.models.admin_user import AdminUser, UserRole
 from diag_project.models.company import Company
+from diag_project.models.coach import Coach
 from diag_project.models.diagnosis_report import DiagnosisReport
+from diag_project.models.diagnosis_result import DiagnosisResult
 from diag_project.models.diagnosis_session import DiagnosisSession, ChatMessage
+from diag_project.models.event import Event
 from diag_project.models.participant import Participant
 from diag_project.services.auth import (
     AdminContext,
@@ -486,6 +489,151 @@ async def list_participants(
         page=page,
         page_size=page_size,
         total_pages=max(1, (total + page_size - 1) // page_size),
+    )
+
+
+# ===========================================================================
+# 2-b. 대상자 일괄 삭제 (Hard Delete + 연쇄 삭제)
+# ===========================================================================
+class BulkDeleteRequest(BaseModel):
+    participant_ids: List[UUID]
+
+
+class BulkDeleteResponse(BaseModel):
+    deleted_participants: int
+    deleted_sessions: int
+    deleted_messages: int
+    deleted_events: int
+    deleted_reports: int
+    skipped_protected: int          # 코치로 등록돼 보호된 대상자 수
+    skipped_out_of_scope: int       # 타사 소속 등 권한 밖 대상자 수
+
+
+@router.post("/participants/bulk-delete", response_model=BulkDeleteResponse)
+async def bulk_delete_participants(
+    body: BulkDeleteRequest,
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """선택된 대상자들을 연관 데이터와 함께 물리적으로 완전 삭제한다.
+
+    FK 제약이 모두 NO ACTION(무 cascade)이므로, 자식→부모 순서로 직접
+    삭제해야 위반이 나지 않는다. 삭제 순서:
+      chat_messages · events · diagnosis_results(세션)  (세션의 자식)
+      → diagnosis_reports (세션/유저)                    (FK 없음, 고아 방지)
+      → diagnosis_sessions                               (참가자의 자식)
+      → participants                                     (부모)
+    전체를 단일 트랜잭션으로 처리해 중간 실패 시 원자적으로 롤백한다.
+
+    [보안] client_admin 은 자사 소속 대상자만 삭제 가능(scope_query).
+    [안전] 코치(coaches.user_id)로 등록된 대상자는 삭제 시 진단 세션이
+           깨지므로 보호(skip)한다.
+    """
+    requested = list(dict.fromkeys(body.participant_ids))  # 중복 제거·순서 유지
+    if not requested:
+        raise HTTPException(status_code=400, detail="삭제할 대상자가 없습니다.")
+
+    # 1) 권한 스코프 검증 — 관리자가 접근 가능한 대상자만 남긴다.
+    scoped_q = ctx.scope_query(select(Participant.id), Participant.company_id)
+    scoped_q = scoped_q.where(Participant.id.in_(requested))
+    allowed = set((await db.execute(scoped_q)).scalars().all())
+    skipped_out_of_scope = len(requested) - len(allowed)
+
+    # 2) 코치로 등록된 대상자 보호 — 삭제하면 세션의 coach_id 가 깨진다.
+    protected: set[UUID] = set()
+    if allowed:
+        coach_rows = await db.execute(
+            select(Coach.user_id).where(Coach.user_id.in_(allowed))
+        )
+        protected = set(coach_rows.scalars().all())
+    target_ids = [pid for pid in allowed if pid not in protected]
+
+    if not target_ids:
+        return BulkDeleteResponse(
+            deleted_participants=0, deleted_sessions=0, deleted_messages=0,
+            deleted_events=0, deleted_reports=0,
+            skipped_protected=len(protected),
+            skipped_out_of_scope=skipped_out_of_scope,
+        )
+
+    # 3) 대상자들의 세션 id 수집
+    session_ids = (await db.execute(
+        select(DiagnosisSession.id)
+        .where(DiagnosisSession.user_id.in_(target_ids))
+    )).scalars().all()
+
+    del_messages = del_events = del_reports = del_sessions = 0
+
+    # 4) 자식 → 부모 순서로 하드 삭제 (단일 트랜잭션)
+    if session_ids:
+        r = await db.execute(
+            sa_delete(ChatMessage)
+            .where(ChatMessage.session_id.in_(session_ids))
+        )
+        del_messages = r.rowcount or 0
+
+        r = await db.execute(
+            sa_delete(Event).where(Event.session_id.in_(session_ids))
+        )
+        del_events = r.rowcount or 0
+
+        await db.execute(
+            sa_delete(DiagnosisResult)
+            .where(DiagnosisResult.session_id.in_(session_ids))
+        )
+
+        r = await db.execute(
+            sa_delete(DiagnosisReport).where(
+                or_(
+                    DiagnosisReport.session_id.in_(session_ids),
+                    DiagnosisReport.user_id.in_(target_ids),
+                )
+            )
+        )
+        del_reports = r.rowcount or 0
+
+        r = await db.execute(
+            sa_delete(DiagnosisSession)
+            .where(DiagnosisSession.id.in_(session_ids))
+        )
+        del_sessions = r.rowcount or 0
+    else:
+        # 세션이 없어도 유저 id 기준 리포트가 남아있을 수 있어 정리.
+        r = await db.execute(
+            sa_delete(DiagnosisReport)
+            .where(DiagnosisReport.user_id.in_(target_ids))
+        )
+        del_reports = r.rowcount or 0
+
+    # participant_id 를 직접 참조하는 잔여 결과(있다면)도 정리.
+    await db.execute(
+        sa_delete(DiagnosisResult)
+        .where(DiagnosisResult.participant_id.in_(target_ids))
+    )
+
+    # 5) 부모(대상자) 삭제
+    r = await db.execute(
+        sa_delete(Participant).where(Participant.id.in_(target_ids))
+    )
+    del_participants = r.rowcount or 0
+
+    await db.commit()
+
+    logger.info(
+        "🗑️ 대상자 일괄 삭제: 대상자 %d · 세션 %d · 메시지 %d · 이벤트 %d "
+        "· 리포트 %d (보호 %d · 권한밖 %d) by admin=%s",
+        del_participants, del_sessions, del_messages, del_events,
+        del_reports, len(protected), skipped_out_of_scope, ctx.admin.id,
+    )
+
+    return BulkDeleteResponse(
+        deleted_participants=del_participants,
+        deleted_sessions=del_sessions,
+        deleted_messages=del_messages,
+        deleted_events=del_events,
+        deleted_reports=del_reports,
+        skipped_protected=len(protected),
+        skipped_out_of_scope=skipped_out_of_scope,
     )
 
 
