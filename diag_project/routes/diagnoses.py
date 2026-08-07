@@ -413,6 +413,29 @@ async def _submit_message_phase3a(
             "_phase3a_metadata": {"guard": "SESSION_ALREADY_COMPLETED"},
         }
 
+    # 1-a2. 🛡️ [무한 루프 차단] 강제 종료(aborted)된 세션도 상태 머신 재진입 금지.
+    #   가드가 없으면 후속 입력마다 상태 머신을 다시 돌아 종료 멘트를 반복
+    #   생성한다(프론트가 is_terminated 로 입력을 잠그지만 API 레벨 2차 방어).
+    if session.status == "aborted":
+        return {
+            "coach_response_message": (
+                "저는 현재 리더님께서 진단을 진행하실 준비가 필요하다고 "
+                "생각됩니다. 진단 준비가 되셨을 때 다시 접속해 주시기 바랍니다. "
+                "그럼 진단은 여기서 종료하겠습니다."
+            ),
+            "is_topic_completed": False,
+            "is_session_starting": False,
+            "is_session_completed": False,
+            "is_session_paused": False,
+            "is_awaiting_continue": False,
+            "has_next_chapter": False,
+            "next_topic": None,
+            "reward": None,
+            "is_terminated": True,
+            "session_status": "aborted",
+            "_phase3a_metadata": {"guard": "SESSION_ALREADY_ABORTED"},
+        }
+
     # 1-b. 일시중지 세션 재개: 사용자가 다시 말을 걸면 paused → in_progress 복원.
     #   (이번 턴이 다시 pause 로 끝나면 11-b 블록이 다시 paused 로 되돌린다.)
     if session.status == "paused":
