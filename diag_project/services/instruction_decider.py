@@ -18,6 +18,8 @@ from diag_project.services.avoidance_detector import (
     check_avoidance,
     is_unproductive_response,
     detect_deflection,
+    detect_rush,
+    detect_session_abort_signal,
     detect_pause_request,
     detect_meta_question,
     detect_prompt_injection,
@@ -25,6 +27,31 @@ from diag_project.services.avoidance_detector import (
     detect_closing_intent,
     is_invalid_input,
 )
+
+
+# 이름으로 오추출되기 쉬운 부사·감탄사·일반명사·인사·역할어 블랙리스트.
+#  자기소개 어미에 우연히 걸려도(예: "영광입니다"→"영광", "과정입니다"→"과정",
+#  "아니라고요"→"아니") 이름이 아니므로 폐기한다.
+_NAME_BLACKLIST = {
+    "아니", "아니요", "아니오", "과정", "영광", "글쎄", "글쎄요", "환영",
+    "안녕", "반갑", "감사", "고맙", "리더", "코치", "진단", "생각", "질문",
+    "답변", "여기", "저기", "그냥", "당연", "물론", "사실", "정말", "진짜",
+    "그거", "이거", "저거", "우리", "저희", "당신", "본인", "자신", "무슨",
+    "네네", "예예", "그래", "맞아", "맞습", "몰라", "모름",
+    # 직책·역할어(직책 앞의 이름만 뽑고, 직책 자체는 이름이 아님)
+    "팀장", "과장", "부장", "차장", "대리", "사원", "주임", "이사", "부장님",
+    "본부장", "실장", "센터장", "파트장", "상무", "전무", "대표", "선생",
+}
+
+
+def _is_blacklisted_name(cand: str | None) -> bool:
+    """추출 후보가 이름이 아닌 일반어(블랙리스트)인지 판정."""
+    if not cand:
+        return True
+    c = cand.strip()
+    if not c:
+        return True
+    return any(bad in c for bad in _NAME_BLACKLIST)
 
 
 def _extract_user_name(text: str) -> str | None:
@@ -53,8 +80,28 @@ def _extract_user_name(text: str) -> str | None:
     if detect_deflection(text):
         return None
 
-    # 명확한 '자기소개 어미' 패턴만 신뢰한다. (fallback 명사 추출은 폐기 —
-    # 그게 '환영은' 같은 무의미 명사를 이름으로 뽑던 근본 원인이었다.)
+    # 🚫 이름으로 절대 추출하면 안 되는 부사·감탄사·일반명사·인사·역할어는
+    #   자기소개 어미("영광입니다", "과정입니다", "아니라고요")에 우연히
+    #   걸려도 폐기한다(_is_blacklisted_name).
+    def _clean(cand: str | None) -> str | None:
+        if not cand:
+            return None
+        cand = cand.strip()
+        return None if _is_blacklisted_name(cand) else cand
+
+    # (1) 맥락 키워드(직책) 기반: '홍길동 팀장', '박영희 과장이라고 합니다' 등
+    #     → 직책 앞의 2~4자 한글을 이름으로 신뢰.
+    role_match = re.search(
+        r'([가-힣]{2,4})\s*'
+        r'(?:팀장|과장|부장|차장|대리|사원|주임|이사|본부장|실장|센터장|'
+        r'파트장|상무|전무|대표|리더)',
+        text,
+    )
+    if role_match and (nm := _clean(role_match.group(1))):
+        return nm
+
+    # (2) 명확한 '자기소개 어미' 패턴만 신뢰한다. (fallback 명사 추출은 폐기 —
+    #     그게 '환영은' 같은 무의미 명사를 이름으로 뽑던 근본 원인이었다.)
     #  - 이름 그룹은 lazy 매칭: 탐욕적이면 '김민준이라고'가 '김민준이'로 잘림.
     #  - 어미 대안은 긴 것 우선 (이라고 합니다 > 이라고 > 라고 …).
     match = re.search(
@@ -64,11 +111,8 @@ def _extract_user_name(text: str) -> str | None:
         r'|입니다|이에요|예요|이야|이고|이며|이라)',
         text,
     )
-    if match:
-        name = match.group(1)
-        # 인사말/역할어가 이름으로 잡히는 것 방지
-        if not any(exc in name for exc in ("안녕", "반갑", "감사", "고맙", "리더", "코치")):
-            return name
+    if match and (nm := _clean(match.group(1))):
+        return nm
 
     # 명확한 자기소개가 없음 → 억지로 뽑지 않고 None.
     return None
@@ -553,8 +597,11 @@ async def build_turn_state(
         .order_by(ChatMessage.created_at.asc())
     )
     all_user_msgs = list(all_user_result.scalars().all())
+    # 세션 강제 종료 누적 카운트: 남탓·비아냥·도발(deflection) + 재촉·시간불평
+    #   (rush) 을 함께 센다. 성실한 단답형의 단순 짧은 답변은 제외(챕터
+    #   Fail-Fast 가 처리). → "빨리 합시다"류 재촉도 종료 카운트에 포함.
     session_deflection_count = sum(
-        1 for m in all_user_msgs if detect_deflection(m.content)
+        1 for m in all_user_msgs if detect_session_abort_signal(m.content)
     )
 
     # 3. 마지막 user 메시지

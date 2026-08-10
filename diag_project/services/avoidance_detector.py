@@ -174,13 +174,60 @@ def detect_deflection(text: str | None) -> bool:
     return len(hits) >= LONG_DEFLECTION_MIN_HITS
 
 
+# 진단을 회피한 채 '빨리 진행/재촉·시간 불평'만 하는 발화 표지(코치에게 향한
+#  명령·불평 형태만; 서술문 오탐 방지 위해 길이 게이트 병행).
+RUSH_KEYWORDS = [
+    "빨리 합시다", "빨리 하죠", "빨리 하자", "빨리 좀", "빨리 진행합시다",
+    "빨리 진행하죠", "빨리 진행해", "빨리 끝냅시다", "빨리 끝내죠",
+    "빨리빨리", "빨리 넘어가", "빨리 다음", "그냥 빨리",
+    "언제 끝나", "언제 끝", "언제까지 해", "얼마나 남았", "얼마나 더 해",
+    "얼마나 걸려", "얼마나 오래", "몇 개나 남", "몇 개 남", "몇 개나 더",
+    "지루하네", "지루해", "지루하다", "재미없",
+    "대충 합시다", "대충 하죠", "대충 넘어", "그냥 넘어갑시다", "그냥 넘어가죠",
+    "그냥 다음", "다음 거 합시다", "다음 질문", "시간 없으니", "시간 없어요",
+    "바쁘니까 빨리", "그만 좀 물어", "질문 그만", "그만 물어봐",
+]
+RUSH_MAX_LEN = 60
+
+
+def detect_rush(text: str | None) -> bool:
+    """유효 답변 없이 '빨리 진행/재촉·시간 불평'만 하는 발화 감지.
+
+    "빨리 합시다", "언제 끝나요", "그냥 넘어가죠" 처럼 진단 자체를 회피하며
+    진행만 재촉하는 경우 True. 긴 서술 속 우연한 조각 매칭을 막기 위해 짧은
+    발화(RUSH_MAX_LEN 이하)에서만 인정한다.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    if len(stripped) > RUSH_MAX_LEN:
+        return False
+    return any(kw in stripped for kw in RUSH_KEYWORDS)
+
+
 def is_unproductive_response(text: str | None) -> bool:
     """이번 발화가 '유효 데이터 없는 비생산적 응답'인지 종합 판정.
 
-    단순 회피(check_avoidance) + 남탓/비아냥/도발(detect_deflection)을
-    합쳐, Fail-Fast(회피/남탓/비아냥 3회 반복) 카운팅의 단일 기준으로 쓴다.
+    단순 회피(check_avoidance) + 남탓/비아냥/도발(detect_deflection) +
+    재촉·시간불평(detect_rush)을 합쳐, Fail-Fast·경고 후 즉시 종료 판정의
+    단일 기준으로 쓴다. (무의미한 단답, "빨리 합시다"류 재촉 포함.)
     """
-    return check_avoidance(text) or detect_deflection(text)
+    return (
+        check_avoidance(text)
+        or detect_deflection(text)
+        or detect_rush(text)
+    )
+
+
+def detect_session_abort_signal(text: str | None) -> bool:
+    """세션 강제 종료(3-Strike) 누적 카운트 대상 판정.
+
+    적대적·비협조 신호(남탓·비아냥·도발 detect_deflection + 재촉·시간불평
+    detect_rush)만 센다. '노력하는 단답형'의 단순 짧은 답변(check_avoidance)은
+    제외 — 이는 챕터 Fail-Fast(강제 전환)가 따로 처리하므로, 성실한 단답형이
+    세션째 강제 종료되는 오작동을 막는다.
+    """
+    return detect_deflection(text) or detect_rush(text)
 
 
 # 진짜 pause 요청은 짧고 직접적이다(실측 <50자). 장문 속 pause 표지는 대개

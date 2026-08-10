@@ -25,7 +25,10 @@ from diag_project.services.chapter_translator import (
     get_next_chapter,
 )
 from diag_project.services.instruction_decider import build_turn_state
-from diag_project.services.avoidance_detector import detect_deflection
+from diag_project.services.avoidance_detector import (
+    detect_deflection,
+    detect_rush,
+)
 from diag_project.services.conversation_compressor import compress_conversation_history
 from diag_project.services.event_service import (
     create_event, update_event_star, complete_event,
@@ -41,11 +44,10 @@ from diag_project.services.time_greeting import (
 )
 from diag_project.services.intro_messages import (
     build_intro_anchor_section,
-    build_align_framework_section,
     build_chapter_opening_with_user_def,
-    build_chapter_transition_question,
     build_chapter_thought_question,
 )
+from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
 
@@ -96,6 +98,23 @@ COACH_UUID_TO_KEY = {
     f"10000000-0000-0000-0000-0000000000{int(k) + 10:02d}": k
     for k in COACHES_PERSONA
 }
+
+
+def _session_coach_key(session_id) -> str:
+    """세션마다 코치 페르소나(이름·성향)를 결정적으로 랜덤 배정한다.
+
+    세션 UUID 로부터 1~6 을 유도하므로 저장 없이도 모든 턴에서 동일한 코치가
+    유지된다(인사·시스템 프롬프트 일관성). 모든 세션이 'Ella' 로 고정되던
+    문제를 해소 — 세션별로 6인(Ella/Jessica/Olivia/Daniel/Michael/Lucas)의
+    다채로운 톤앤매너가 적용된다.
+    """
+    keys = sorted(COACHES_PERSONA.keys(), key=int)
+    try:
+        idx = int(getattr(session_id, "int", None)
+                  or int(str(session_id).replace("-", ""), 16))
+    except (ValueError, TypeError):
+        idx = 0
+    return keys[idx % len(keys)]
 
 
 def _resolve_persona(coach_id: uuid.UUID, user_name: str, visit_count: int):
@@ -198,7 +217,11 @@ async def start_diagnosis(
 
     if use_phase3a:
         # Phase 3-A: 라포 단계로 시작 (챕터 스크립트는 라포 완료 후)
-        first_msg_content = build_rapport_greeting(persona.name)
+        # 🎭 세션별 랜덤 코치 배정 — 인사말의 코치 이름도 세션 코치로 통일.
+        _coach_name = COACHES_PERSONA[
+            _session_coach_key(new_session.id)
+        ]["name"]
+        first_msg_content = build_rapport_greeting(_coach_name)
         first_message = ChatMessage(
             session_id=new_session.id,
             role="model",
@@ -503,8 +526,8 @@ async def _submit_message_phase3a(
         chapter_context = chapter_context.split("## 챕터 시작 스크립트")[0].rstrip()
     turn_state_text = format_turn_state_for_llm(state)
 
-    # 페르소나 통합 system prompt (코치별 톤 반영)
-    coach_key = COACH_UUID_TO_KEY.get(str(session.coach_id), "1")
+    # 페르소나 통합 system prompt (세션별 랜덤 배정 코치의 톤 반영)
+    coach_key = _session_coach_key(session.id)
     user_name = state.get("user_name", "리더")
     system_prompt = build_layer1_with_persona(
         coach_id=coach_key,
@@ -534,12 +557,20 @@ async def _submit_message_phase3a(
     _is_warning = (not _is_aborted
                    and instruction_used == "SESSION_ABORT_WARNING")
     if _is_warning:
-        system_override_text = (
-            "리더님, 현재 진단에 온전히 집중하시기 어려운 상황인 것 같습니다. "
-            "계속 진행을 원하신다면 앞서 드린 질문에 대한 구체적인 경험을 "
-            "나누어 주시고, 그렇지 않다면 오늘은 여기서 마무리하는 것이 "
-            "좋겠습니다."
-        )
+        # 재촉·시간불평("빨리 합시다")으로 촉발된 경고면 과제6 지정 문구로,
+        # 그 외(남탓·비아냥)는 기본 경고 문구로 분기.
+        if detect_rush(request.content):
+            system_override_text = (
+                "빠른 진행을 위해서는 구체적인 경험 말씀이 반드시 필요합니다. "
+                "계속 회피하시면 진단을 강제 종료할 수밖에 없습니다."
+            )
+        else:
+            system_override_text = (
+                "리더님, 현재 진단에 온전히 집중하시기 어려운 상황인 것 "
+                "같습니다. 계속 진행을 원하신다면 앞서 드린 질문에 대한 "
+                "구체적인 경험을 나누어 주시고, 그렇지 않다면 오늘은 여기서 "
+                "마무리하는 것이 좋겠습니다."
+            )
 
     # 🙋 이름 재확인(Fallback) — 명확한 성함을 못 뽑았을 때 1회. 억지 호칭 금지.
     _is_name_reconfirm = (not _is_aborted and not _is_warning
@@ -768,13 +799,18 @@ async def _submit_message_phase3a(
         anchor_section = build_intro_anchor_section()
         clean_reply = f"{llm_acknowledgment}\n\n{anchor_section}"
 
-    # 8-b. COMPETENCY_ALIGN 하이브리드: LLM 호응 + 시스템 framework 합치기
+    # 8-b. COMPETENCY_ALIGN — 과제2: 하드코딩 'framework 목록' 강제 병합 폐지.
+    #   정의·하위역량을 프롬프트 변수로 주입(layer3)하고 LLM 이 대화체로
+    #   전체 응답을 생성하므로, 시스템이 목록을 뒤에 붙이지 않는다.
+    #   (LLM 이 빈 응답/사과만 낸 극단적 경우에만 최소 폴백.)
     if instruction_used == "COMPETENCY_ALIGN" and not _suppress_mechanical_text:
-        llm_acknowledgment = clean_reply
-        if not llm_acknowledgment or "죄송합니다" in llm_acknowledgment:
-            llm_acknowledgment = "네, 리더님 말씀 잘 들었습니다."
-        framework_section = build_align_framework_section(chapter)
-        clean_reply = f"{llm_acknowledgment}\n\n{framework_section}"
+        if not clean_reply or "죄송합니다" in clean_reply:
+            _fw = COMPETENCY_FRAMEWORK.get(chapter, {})
+            _nm = _fw.get("name", "이 영역")
+            clean_reply = (
+                f"네, 리더님 말씀 잘 들었습니다. 그 결을 이어서 '{_nm}' "
+                f"경험을 조금 더 구체적으로 들여다볼게요."
+            )
 
     # 8-c. CHAPTER_OPENING 은 Step 7 에서 시스템이 전체 출력 (하이브리드 폐지).
     # build_chapter_opening_with_user_def 가 정의 + 첫 BEI 질문까지 포함하므로
