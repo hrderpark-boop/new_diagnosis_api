@@ -1300,5 +1300,22 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             "details": competency_results,
         }
 
+        # 🎯 맞춤형 교육과정 추천 — 27개 하위 점수 중 최저(약점)·최고(강점)를
+        #    뽑아 course_matrix 에서 부합하는 과정/VOD/AI스파링을 불러온다.
+        try:
+            from diag_project.services.course_recommender import (
+                build_course_recommendation,
+            )
+            recommendation = build_course_recommendation(competency_results)
+            if recommendation:
+                final_result["course_recommendation"] = recommendation
+                logger.info(
+                    "🎯 교육과정 추천: 약점 '%s' / 강점 '%s'",
+                    recommendation["weakness"]["sub_competency"],
+                    recommendation["strength"]["sub_competency"],
+                )
+        except Exception as e:  # noqa: BLE001 — 추천 실패가 리포트를 막지 않게
+            logger.error(f"교육과정 추천 생성 실패(무시): {e}")
+
         logger.info(f"✅ [{user_name}] 분석 완료 — 총점: {summary.get('total_score')}")
         return final_result
