@@ -1300,18 +1300,25 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             "details": competency_results,
         }
 
-        # 🎯 맞춤형 교육과정 추천 — 27개 하위 점수 중 최저(약점)·최고(강점)를
-        #    뽑아 course_matrix 에서 부합하는 과정/VOD/AI스파링을 불러온다.
+        # 🎯 Level-Up 교육 추천 — 26개 하위 점수를 레벨화하고, BEI 언급빈도
+        #    정규화 산식으로 성장 과제 3(A~C) + 강점 활용 1(D) 을 도출한다.
+        #    transcript 는 BEI 언급빈도(classification_keywords) 계산에 사용.
         try:
             from diag_project.services.course_recommender import (
                 build_course_recommendation,
             )
-            recommendation = build_course_recommendation(competency_results)
+            _transcript = "\n".join(
+                f"{m.get('role', '')}: {m.get('parts', m.get('content', ''))}"
+                for m in (history or [])
+            )
+            recommendation = build_course_recommendation(
+                competency_results, transcript=_transcript,
+            )
             if recommendation:
                 final_result["course_recommendation"] = recommendation
                 logger.info(
-                    "🎯 교육과정 추천: 약점 '%s' / 강점 '%s'",
-                    recommendation["weakness"]["sub_competency"],
+                    "🎯 Level-Up 추천: 성장 %d개 + 강점 '%s'",
+                    len(recommendation.get("growth", [])),
                     recommendation["strength"]["sub_competency"],
                 )
         except Exception as e:  # noqa: BLE001 — 추천 실패가 리포트를 막지 않게
