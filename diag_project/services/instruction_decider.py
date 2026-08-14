@@ -182,16 +182,25 @@ InstructionType = Literal[
 
 
 # 챕터별 최소 사건 수
-# P0-2: 대역량당 최소 STAR 사건 수 = min(3, 하위역량 수). 서로 다른 사건이
-#   서로 다른 하위역량을 다룰 확률이 높아 커버리지 하한 역할을 한다.
-#   (mapped_subcompetency 태깅 신호가 불안정해, 이를 신뢰 가능한 대체 지표로 사용)
+# T2: 두 축을 분리한다.
+#  · MIN_EVENTS = 한 하위역량에서 확보할 STAR 사례의 '깊이'(사건 수)
+#  · MIN_EXPLORED = 한 대역량에서 앵커를 발화할 하위역량의 '개수'(넓이)
+#    = max(3, ceil(n*0.6)) — 큰 대역량일수록 더 많이 탐색(사람관리 편중 방지)
+import math as _math  # noqa: E402
 MIN_EVENTS: dict[str, int] = {
-    "organization_management": 3,   # 하위 4
-    "performance_management": 3,    # 하위 5
-    "people_management": 3,         # 하위 9
-    "work_management": 3,           # 하위 5
-    "self_management": 3,           # 하위 3 (=min(3,3))
+    "organization_management": 3,
+    "performance_management": 3,
+    "people_management": 3,
+    "work_management": 3,
+    "self_management": 3,
 }
+_SUB_COUNTS = {
+    "organization_management": 4, "performance_management": 5,
+    "people_management": 9, "work_management": 5, "self_management": 3,
+}
+MIN_EXPLORED: dict[str, int] = {
+    k: max(3, _math.ceil(n * 0.6)) for k, n in _SUB_COUNTS.items()
+}  # → 조직 3 / 성과 3 / 사람 6 / 일 3 / 자기 3 (합 18)
 
 # 챕터별 최대 턴 수 (user 메시지 기준)
 MAX_TURNS: dict[str, int] = {
@@ -494,13 +503,16 @@ def decide_instruction(state: dict) -> InstructionType:
     if state["turn_count"] >= chapter_max:
         return "MAX_TURNS_REACHED"
 
-    # 9. 종료 가능 체크 (반례 있고, 사건 충분, '최소 턴 수' 바닥 충족)
-    #   P0-2: min_events=3(=대역량당 최소 STAR 사건 3개)이 커버리지 하한 역할.
-    #   서로 다른 사건이 서로 다른 하위역량을 다뤄 조기 종료(1~2개만 커버)를 막는다.
-    #   (mapped_subcompetency 태깅이 불안정해 사건 수를 신뢰 지표로 사용)
+    # 9. 종료 가능 체크 — T2: 두 축(깊이·넓이)을 모두 만족해야 챕터 종료.
+    #   · 깊이: STAR 사건 min_events(3) 이상
+    #   · 넓이: 앵커 발화된 하위역량 asked_in_chapter >= MIN_EXPLORED(비례 하한)
+    #   둘 다 못 채워도 MAX_TURNS(위 8번)가 최종 안전장치로 종료를 보장한다.
     min_events = MIN_EVENTS.get(state["chapter"], 3)
     min_turns = MIN_TURNS_BEFORE_END.get(state["chapter"], 8)
+    min_explored = MIN_EXPLORED.get(state["chapter"], 3)
+    _asked_ct = len(state.get("asked_in_chapter") or [])
     if (state["events_with_star_70"] >= min_events
+            and _asked_ct >= min_explored
             and state["has_contrary_probe"]
             and state["turn_count"] >= min_turns):
         return "CHAPTER_READY_TO_END"
@@ -850,8 +862,29 @@ async def build_turn_state(
     explored_subcompetencies = [
         n for n in all_subcompetencies if n in _explored_set
     ]
+
+    # 🔒 T2: 실시간 asked 추적 — 이 챕터 코치 발화에 하위역량명이 등장하면
+    #   '탐색됨(asked)'. evidence 와 독립된 '넓이' 지표(챕터 종료 조건에 사용).
+    #   event 태깅(불안정) 합집합으로 보완.
+    _coach_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.chapter == chapter)
+        .where(ChatMessage.role == "model")
+    )
+    _coach_text = " ".join(
+        m.content for m in _coach_result.scalars().all() if m.content
+    )
+    asked_in_chapter = [
+        n for n in all_subcompetencies
+        if (n.split("(")[0].strip() in _coach_text) or (n in _coach_text)
+    ]
+    for n in explored_subcompetencies:
+        if n not in asked_in_chapter:
+            asked_in_chapter.append(n)
+    # 아직 앵커가 발화되지 않은(asked=False) 하위역량 — 순회 대상 큐
     unexplored_subcompetencies = [
-        n for n in all_subcompetencies if n not in _explored_set
+        n for n in all_subcompetencies if n not in asked_in_chapter
     ]
 
     # COMPETENCY_ALIGN 가이드용: 정의 + 세부역량 이름 목록
@@ -951,6 +984,7 @@ async def build_turn_state(
         "all_subcompetencies": all_subcompetencies,
         "explored_subcompetencies": explored_subcompetencies,
         "unexplored_subcompetencies": unexplored_subcompetencies,
+        "asked_in_chapter": asked_in_chapter,  # T2: 실시간 탐색(넓이) 지표
         "user_name": user_name,
         "chapter_framework": chapter_framework_state,
     }
