@@ -114,3 +114,14 @@ def competency_is_reference(measured_subs: int, total_subs: int) -> bool:
     if total_subs <= 0:
         return True
     return (measured_subs / total_subs) < 0.50
+
+
+def score_shutdown(none_competencies: int, measured_total: int,
+                   subs_total: int = 26) -> bool:
+    """T4: 종합 점수 셧다운 — 둘 중 하나라도 걸리면 종합점수 미렌더.
+      ① 대역량 3개 이상 미측정(None)  ② 전체 측정률 40% 미만(measured<11/26)
+    """
+    if none_competencies >= 3:
+        return True
+    threshold = subs_total * 0.40  # 26*0.4 = 10.4 → measured<11
+    return measured_total < threshold

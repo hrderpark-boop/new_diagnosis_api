@@ -1415,6 +1415,15 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         _cov = _coverage(_measured_total, _subs_total)
         _cov["asked"] = _asked_total  # 탐색률(내부 지표) — UI 미노출
         _cov["asked_ratio"] = round(_asked_total / _subs_total, 3) if _subs_total else 0.0
+        # 🔒 T4: 종합 점수 셧다운 (순수 함수) — 대역량 3+ None 또는 측정 <11/26.
+        from diag_project.services.scoring import score_shutdown as _shutdown
+        _none_comps = sum(
+            1 for v in competency_results.values() if v.get("score") is None
+        )
+        _cov["score_suppressed"] = _shutdown(
+            _none_comps, _measured_total, _subs_total
+        )
+        _cov["none_competencies"] = _none_comps
         logger.info(
             "🧭 커버리지: 측정률 %d/%d · 탐색률 %d/%d",
             _measured_total, _subs_total, _asked_total, _subs_total,

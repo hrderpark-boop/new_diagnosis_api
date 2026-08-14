@@ -230,6 +230,13 @@ async def build_course_recommendation(
         "통과" if strength_entry else "미생성",
     )
 
+    # T5 #4: 추천 카드 본문이 완전히 동일한 쌍이 있으면 경고 로깅.
+    _cards = growth + ([strength_entry] if strength_entry else [])
+    _bodies = [(c["course"], c["subtitle"], c["reason_overview"]) for c in _cards]
+    if len(_bodies) != len(set(_bodies)):
+        logger.warning("⚠️ 추천 카드 본문 중복 발견 — 콘텐츠 다양화 필요: %s",
+                       [c["sub_competency"] for c in _cards])
+
     result = {"intro": SECTION_INTRO, "growth": growth}
     if strength_entry:
         result["strength"] = strength_entry
