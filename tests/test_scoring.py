@@ -11,12 +11,29 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from diag_project.services.scoring import (  # noqa: E402
     SubLedger,
     clamp,
+    is_measured,
     competency_behavior_score,
     competency_final_score,
     overall_score,
     coverage,
     competency_is_reference,
 )
+
+
+def test_is_measured_ghost_prevention():
+    # T1 재발 방지: asked 와 evidence 는 독립. AND 게이트 강제.
+    assert is_measured(asked=False, evidence_count=3) is False  # 유령 차단
+    assert is_measured(asked=True, evidence_count=0) is False   # 근거 미확보
+    assert is_measured(asked=True, evidence_count=1) is True    # 정상 측정
+    # LLM 이 measured=true 로 응답해도 asked=False 면 코드가 False 로 덮어씀
+    llm_said_measured = True  # noqa: F841 (의미 명시용)
+    assert is_measured(asked=False, evidence_count=2) is False
+
+
+def test_sub_ledger_uses_is_measured():
+    # asked=False, evidence 3 → 유령 차단
+    s = SubLedger("x", asked=False, evidence_utterances=["a", "b", "c"], level=3)
+    assert s.measured is False and s.score is None
 
 
 def test_sub_ledger_measured_and_clamp():

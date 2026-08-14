@@ -33,6 +33,17 @@ def clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
+def is_measured(asked: bool, evidence_count: int) -> bool:
+    """측정 판정 — 단일 진실 함수 (T1 유령 측정 방지).
+
+    measured = asked(앵커가 실제 발화됨) AND evidence_count >= 1.
+    🚨 asked 와 evidence 는 '서로 독립'이어야 한다. asked 를 evidence 에서
+    파생시키면(예: asked = ... or evidence>=1) AND 게이트가 붕괴해 유령 측정이
+    발생한다. LLM 의 measured 응답은 신뢰하지 않고, 코드가 asked 를 확인한다.
+    """
+    return bool(asked) and int(evidence_count or 0) >= 1
+
+
 @dataclass
 class SubLedger:
     """하위역량 증거 원장 (P0-1)."""
@@ -43,7 +54,7 @@ class SubLedger:
 
     @property
     def measured(self) -> bool:
-        return bool(self.asked) and len(self.evidence_utterances) >= 1
+        return is_measured(self.asked, len(self.evidence_utterances))
 
     @property
     def score(self) -> float | None:

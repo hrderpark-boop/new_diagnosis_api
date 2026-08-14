@@ -894,6 +894,7 @@ class GeminiService:
         competency_key: str,
         relevant_utterances: str,
         full_transcript: str,
+        asked_subs: set | None = None,
     ) -> Dict[str, Any]:
         """
         STEP 2: 단일 역량에 대한 심층 분석
@@ -1094,6 +1095,10 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 SubLedger, competency_behavior_score, competency_final_score,
                 competency_is_reference,
             )
+            #  🔒 T1: asked 는 '실제 앵커 발화'(코드가 준 asked_subs)로만 결정.
+            #    LLM 의 measured 응답과 evidence 존재는 asked 결정에 쓰지 않는다.
+            #    → measured = asked AND evidence>=1 (is_measured). 유령 측정 차단.
+            _asked_set = asked_subs or set()
             _assess = result.get("sub_assessments") or {}
             ledgers = []
             for _sub in sub_indicators:
@@ -1106,7 +1111,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 lvl = int(lvl) if isinstance(lvl, (int, float)) else None
                 ledgers.append(SubLedger(
                     name=_sub,
-                    asked=bool(a.get("measured")) or len(ev) >= 1,
+                    asked=(_sub in _asked_set),  # 독립 신호(코드) — evidence 무관
                     evidence_utterances=ev,
                     level=lvl,
                 ))
@@ -1115,13 +1120,15 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             result["sub_scores"] = {lg.name: lg.score for lg in ledgers}
             result["sub_ledger"] = {
                 lg.name: {
-                    "measured": lg.measured, "level": lg.level,
-                    "score": lg.score, "evidence": lg.evidence_utterances,
+                    "asked": lg.asked, "measured": lg.measured,
+                    "level": lg.level, "score": lg.score,
+                    "evidence": lg.evidence_utterances,
                 }
                 for lg in ledgers
             }
             _measured = [lg for lg in ledgers if lg.measured]
             result["measured_count"] = len(_measured)
+            result["asked_count"] = sum(1 for lg in ledgers if lg.asked)
             result["sub_total"] = len(ledgers)
             result["is_reference"] = competency_is_reference(
                 len(_measured), len(ledgers)
@@ -1315,6 +1322,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         history: List[Dict],
         user_name: str,
         chapter_transcripts: Dict[str, str] | None = None,
+        asked_subcompetencies: Dict[str, set] | None = None,
     ) -> Dict[str, Any]:
         """
         Map-Reduce 채점:
@@ -1345,11 +1353,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 for m in history
             )
 
+            _asked = asked_subcompetencies or {}
             tasks = [
                 self._analyze_single_competency(
                     competency_key=key,
                     relevant_utterances=_chapter_data(key),
                     full_transcript=_full,
+                    asked_subs=_asked.get(key) or set(),
                 )
                 for key in competency_keys
             ]
@@ -1360,11 +1370,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             ])
             logger.info("📋 STEP 1: 역량별 발화 분류 중 (LLM)...")
             utterances_by_competency = await self._extract_utterances_by_competency(chat_transcript)
+            _asked = asked_subcompetencies or {}
             tasks = [
                 self._analyze_single_competency(
                     competency_key=key,
                     relevant_utterances=utterances_by_competency.get(key, "관련 발언 없음"),
                     full_transcript=chat_transcript,
+                    asked_subs=_asked.get(key) or set(),
                 )
                 for key in competency_keys
             ]
@@ -1388,19 +1400,30 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         logger.info("📊 STEP 3: 종합 리더십 프로파일 생성 중...")
         summary = await self._generate_comprehensive_summary(user_name, competency_results)
 
-        # 🔒 P0-1: 측정 커버리지 (분모 26 = 창의적 사고 통합 후 하위역량 총수)
+        # 🔒 P0-1/T1: 측정 커버리지 (분모 26). 측정률(measured)은 화면 노출,
+        #   탐색률(asked)은 내부 지표(로그·관리자 뷰)로만 산출한다.
         from diag_project.services.scoring import coverage as _coverage
         _measured_total = sum(
             v.get("measured_count", 0) for v in competency_results.values()
         )
+        _asked_total = sum(
+            v.get("asked_count", 0) for v in competency_results.values()
+        )
         _subs_total = sum(
             v.get("sub_total", 0) for v in competency_results.values()
+        )
+        _cov = _coverage(_measured_total, _subs_total)
+        _cov["asked"] = _asked_total  # 탐색률(내부 지표) — UI 미노출
+        _cov["asked_ratio"] = round(_asked_total / _subs_total, 3) if _subs_total else 0.0
+        logger.info(
+            "🧭 커버리지: 측정률 %d/%d · 탐색률 %d/%d",
+            _measured_total, _subs_total, _asked_total, _subs_total,
         )
 
         final_result = {
             **summary,
             "details": competency_results,
-            "coverage": _coverage(_measured_total, _subs_total),
+            "coverage": _cov,
         }
 
         # 🎯 Level-Up 교육 추천 — 26개 하위 점수를 레벨화하고, BEI 언급빈도

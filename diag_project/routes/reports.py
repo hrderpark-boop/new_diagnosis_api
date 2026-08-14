@@ -23,6 +23,38 @@ from diag_project.services.auth import AdminContext, get_current_admin
 logger = logging.getLogger(__name__)
 
 
+def _build_asked_subcompetencies(messages: list, events: list) -> Dict[str, set]:
+    """T1/T2: 각 대역량에서 '실제로 앵커가 발화된(asked)' 하위역량 집합을 구축한다.
+
+    asked 는 evidence 와 독립된 신호여야 유령 측정을 막는다(is_measured AND 게이트).
+    신호 원천(둘의 합집합):
+      1) 코치 발화에 하위역량명(괄호 앞 기본명)이 등장 → 그 하위역량을 물었음
+      2) 수집된 Event 의 mapped_subcompetency (스토리가 태깅된 하위역량)
+    """
+    asked: Dict[str, set] = {}
+    for ck, cv in COMPETENCY_FRAMEWORK.items():
+        if ck == "supplementary":
+            continue
+        subs = {ind["name"] for ind in cv.get("indicators", {}).values()}
+        coach_text = " ".join(
+            m.content for m in messages
+            if getattr(m, "chapter", None) == ck
+            and m.role == "model" and m.content
+        )
+        hit = set()
+        for name in subs:
+            base = name.split("(")[0].strip()
+            if base and (base in coach_text or name in coach_text):
+                hit.add(name)
+        # Event 태깅(스토리 기반) 합집합
+        for e in events:
+            if getattr(e, "chapter", None) == ck and e.mapped_subcompetency:
+                if e.mapped_subcompetency in subs:
+                    hit.add(e.mapped_subcompetency)
+        asked[ck] = hit
+    return asked
+
+
 def _build_chapter_transcripts(
     messages: list, events: list
 ) -> Dict[str, str]:
@@ -366,11 +398,20 @@ async def analyze_session(
     #  - 통짜 컨텍스트 주입(절단/날조) 방지, 라포 사담(chapter=None) 제외.
     chapter_transcripts = _build_chapter_transcripts(messages, events)
 
+    # 🔒 T1: asked 원장(실제 앵커 발화된 하위역량) 구축 — measured 게이트용.
+    asked_subs = _build_asked_subcompetencies(messages, events)
+    _asked_total = sum(len(v) for v in asked_subs.values())
+    logger.info(
+        "🧭 asked 원장(탐색률): %d / 26 | 대역량별 %s",
+        _asked_total, {k: len(v) for k, v in asked_subs.items()},
+    )
+
     # AI 분석 실행 (chapter_transcripts 제공 시 챕터별 Map 호출 → Reduce)
     analysis_result = await llm.generate_diagnosis_result(
         history=formatted_history,
         user_name=user_name,
         chapter_transcripts=chapter_transcripts,
+        asked_subcompetencies=asked_subs,
     )
     if not analysis_result:
         raise HTTPException(status_code=500, detail="AI 분석 결과를 생성하지 못했습니다.")
