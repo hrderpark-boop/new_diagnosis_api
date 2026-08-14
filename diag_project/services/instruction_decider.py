@@ -503,16 +503,15 @@ def decide_instruction(state: dict) -> InstructionType:
     if state["turn_count"] >= chapter_max:
         return "MAX_TURNS_REACHED"
 
-    # 9. 종료 가능 체크 — T2: 두 축(깊이·넓이)을 모두 만족해야 챕터 종료.
-    #   · 깊이: STAR 사건 min_events(3) 이상
-    #   · 넓이: 앵커 발화된 하위역량 asked_in_chapter >= MIN_EXPLORED(비례 하한)
-    #   둘 다 못 채워도 MAX_TURNS(위 8번)가 최종 안전장치로 종료를 보장한다.
+    # 9. 종료 가능 체크 — 깊이 축(STAR 사건)으로 종료.
+    #   ⚠️ T2 넓이 축(asked_in_chapter >= MIN_EXPLORED)은 현재 asked 신호가
+    #   텍스트 기반(코치의 하위역량 호명 의존)이라 신뢰 불가 → 게이트로 쓰면
+    #   챕터가 MAX_TURNS 까지 헛돌아 세션만 길어진다(실측 235턴, 커버리지 미상승).
+    #   신뢰 가능한 넓이 게이트는 '백엔드 probe 타겟의 결정론적 기록'(후속)이
+    #   구축된 뒤 재도입한다. MIN_EXPLORED 값은 그때 사용하도록 보존.
     min_events = MIN_EVENTS.get(state["chapter"], 3)
     min_turns = MIN_TURNS_BEFORE_END.get(state["chapter"], 8)
-    min_explored = MIN_EXPLORED.get(state["chapter"], 3)
-    _asked_ct = len(state.get("asked_in_chapter") or [])
     if (state["events_with_star_70"] >= min_events
-            and _asked_ct >= min_explored
             and state["has_contrary_probe"]
             and state["turn_count"] >= min_turns):
         return "CHAPTER_READY_TO_END"
