@@ -182,12 +182,15 @@ InstructionType = Literal[
 
 
 # 챕터별 최소 사건 수
+# P0-2: 대역량당 최소 STAR 사건 수 = min(3, 하위역량 수). 서로 다른 사건이
+#   서로 다른 하위역량을 다룰 확률이 높아 커버리지 하한 역할을 한다.
+#   (mapped_subcompetency 태깅 신호가 불안정해, 이를 신뢰 가능한 대체 지표로 사용)
 MIN_EVENTS: dict[str, int] = {
-    "organization_management": 2,
-    "performance_management": 2,
-    "people_management": 3,
-    "work_management": 2,
-    "self_management": 2,
+    "organization_management": 3,   # 하위 4
+    "performance_management": 3,    # 하위 5
+    "people_management": 3,         # 하위 9
+    "work_management": 3,           # 하위 5
+    "self_management": 3,           # 하위 3 (=min(3,3))
 }
 
 # 챕터별 최대 턴 수 (user 메시지 기준)
@@ -492,18 +495,14 @@ def decide_instruction(state: dict) -> InstructionType:
         return "MAX_TURNS_REACHED"
 
     # 9. 종료 가능 체크 (반례 있고, 사건 충분, '최소 턴 수' 바닥 충족)
-    #   P0-2: '하위역량 커버리지 바닥'을 추가한다 — 대역량당 최소 min(3, 하위수)
-    #   개의 서로 다른 하위역량이 탐색되기 전에는 챕터를 조기 종료하지 않는다.
-    #   (단, MAX_TURNS 상한은 위 8번에서 이미 안전장치로 작동)
-    min_events = MIN_EVENTS.get(state["chapter"], 2)
+    #   P0-2: min_events=3(=대역량당 최소 STAR 사건 3개)이 커버리지 하한 역할.
+    #   서로 다른 사건이 서로 다른 하위역량을 다뤄 조기 종료(1~2개만 커버)를 막는다.
+    #   (mapped_subcompetency 태깅이 불안정해 사건 수를 신뢰 지표로 사용)
+    min_events = MIN_EVENTS.get(state["chapter"], 3)
     min_turns = MIN_TURNS_BEFORE_END.get(state["chapter"], 8)
-    _sub_total = len(state.get("all_subcompetencies") or [])
-    _explored = len(state.get("explored_subcompetencies") or [])
-    _min_sub_coverage = min(3, _sub_total) if _sub_total else 0
     if (state["events_with_star_70"] >= min_events
             and state["has_contrary_probe"]
-            and state["turn_count"] >= min_turns
-            and _explored >= _min_sub_coverage):
+            and state["turn_count"] >= min_turns):
         return "CHAPTER_READY_TO_END"
 
     # 10. 반례 탐침 필요
