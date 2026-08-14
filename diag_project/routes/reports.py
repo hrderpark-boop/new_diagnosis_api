@@ -167,6 +167,8 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db)):
         "top_keywords": saved_scores.get("top_keywords", []),
         # 🎯 맞춤형 교육과정 추천(성장 처방전) — 프론트 최하단 섹션 렌더용.
         "course_recommendation": saved_scores.get("course_recommendation"),
+        # 🔒 P0-1: 측정 커버리지 (측정 n / 26) — 상단 노출용.
+        "coverage": saved_scores.get("coverage"),
         "created_at": report.created_at.strftime("%Y-%m-%d") if report.created_at else datetime.now().strftime("%Y-%m-%d")
     }
 

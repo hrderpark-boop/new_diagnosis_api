@@ -27,27 +27,36 @@ CATEGORY_LABELS = {
     "self_management": "자기관리",
 }
 
-# 전환 트랙 메타데이터 — 권장 학습 형식 + 레벨 전환 정보.
+# 전환 트랙 메타데이터 — 권장 학습 형식 + 레벨 전환 정보 (전부 온라인/비동기).
+#   P2-1: 행동 전이(transfer)를 위해 A·B 트랙에 AI 롤플레이 스파링 재도입.
 TRACK_META = {
     "A": {
         "track": "A", "diagnosed_level": 1, "target_level": 2,
-        "format": "마이크로러닝",
-        "format_desc": "짧은 영상·카드 학습으로 리더의 역할 인식과 기본기를 빠르게 습득",
+        "format": "마이크로러닝 + AI 롤플레이 스파링",
+        "format_desc": "영상·카드로 역할을 인식하고, AI 롤플레이 스파링 1회로 "
+                       "체득한다",
+        "has_sparring": True,
     },
     "B": {
         "track": "B", "diagnosed_level": 2, "target_level": 3,
-        "format": "실습형 워크숍",
-        "format_desc": "사례 실습·롤플레이로 핵심 스킬을 체화",
+        "format": "AI 롤플레이 스파링 + 현업 적용 과제",
+        "format_desc": "AI 롤플레이 스파링을 중심으로 반복 연습하고, 현업 적용 "
+                       "과제를 제출한다",
+        "has_sparring": True,
     },
     "C": {
         "track": "C", "diagnosed_level": 3, "target_level": 4,
-        "format": "액션러닝/현업 과제",
-        "format_desc": "현업 과제에 직접 적용하며 성과와 시스템으로 전환",
+        "format": "비동기 액션러닝 + 온라인 피어 리뷰",
+        "format_desc": "현업 과제에 적용하고 온라인 피어 리뷰로 성과·시스템으로 "
+                       "전환한다",
+        "has_sparring": False,
     },
     "D": {
         "track": "D", "diagnosed_level": 4, "target_level": "전수·확산",
-        "format": "1:1 코칭/멘토 인증",
-        "format_desc": "사내 강사·멘토로서 역량을 조직에 전수하고 확산",
+        "format": "사내 사례 아카이브 기고 · 비동기 멘토링",
+        "format_desc": "사내 사례 아카이브에 기고하고 후배 리더의 리뷰어·멘토로 "
+                       "역량을 확산한다",
+        "has_sparring": False,
     },
 }
 
@@ -247,17 +256,138 @@ COURSE_CATALOG = {
 }
 
 
+# AI 롤플레이 스파링 메타 (26개 하위역량) — A·B 트랙 연계용 백엔드 메타데이터.
+#   진단 코치 인프라를 재사용: AI 가 상대역을 맡고 리더가 대화를 연습 → 대화 후
+#   행동지표(rubric) 기준 자동 피드백. (프론트 리포트 UI 에는 렌더링하지 않음)
+def _sp(context: str, rubric: str) -> dict:
+    return {"ai_sparring_context": context, "ai_sparring_rubric": rubric}
+
+
+SUB_SPARRING = {
+    ("organization_management", "비전 제시 및 공유"): _sp(
+        "AI 가 비전에 회의적인 고참 팀원 역을 맡는다. 리더는 새 방향성을 그의 "
+        "언어로 번역해 공감을 끌어낸다.",
+        "비전을 팀원 관점으로 재해석했는가 · '왜'에 대한 설득이 있었는가"),
+    ("organization_management", "전략적 사고"): _sp(
+        "AI 가 5개 요구를 동시에 던지는 상황을 연출한다. 리더는 '하지 않을 일'을 "
+        "정하고 핵심에 베팅한다.",
+        "우선순위 기준을 명시했는가 · 배제 결정을 내렸는가"),
+    ("organization_management", "변화관리(변화지향)"): _sp(
+        "AI 가 '예전이 나았다'며 반발하는 팀원 역을 맡는다. 리더는 저항을 지지로 "
+        "전환한다.",
+        "저항 원인을 진단했는가 · 조기 지지 세력을 확보했는가"),
+    ("organization_management", "혁신적 사고"): _sp(
+        "AI 가 보수적인 윗선 역을 맡는다. 리더는 검증되지 않은 아이디어를 설득한다.",
+        "관성에 근본 질문을 던졌는가 · 실험/검증 계획을 제시했는가"),
+    ("performance_management", "목표설정 및 공유"): _sp(
+        "AI 가 목표의 배경을 모른 채 수행하는 팀원 역을 맡는다. 리더는 상위 전략과 "
+        "정렬해 '우리 목표'로 만든다.",
+        "상위 전략과 연결했는가 · 목표의 '왜'를 공유했는가"),
+    ("performance_management", "성과지표 관리(KPI)"): _sp(
+        "AI 가 지표에 거부감을 가진 팀원 역을 맡는다. 리더는 합의된 선행지표를 "
+        "설계한다.",
+        "선행지표를 제시했는가 · 지표를 합의로 이끌었는가"),
+    ("performance_management", "성과평가 및 피드백"): _sp(
+        "AI 가 태도가 문제인 고성과 팀원 역을 맡는다. 리더는 방어를 부르지 않는 "
+        "정면 피드백을 전한다.",
+        "행동 기반(SBI)으로 전달했는가 · 개선 합의를 도출했는가"),
+    ("performance_management", "문제해결"): _sp(
+        "AI 가 반복 장애의 담당자 역을 맡는다. 리더는 책임 추궁 대신 근본 원인을 "
+        "파고든다.",
+        "증상/원인을 구분했는가 · 재발 방지책을 설계했는가"),
+    ("performance_management", "실행력"): _sp(
+        "AI 가 '검토만 3주째'인 정체 프로젝트 팀원 역을 맡는다. 리더는 24시간 내 "
+        "실행 단위로 쪼갠다.",
+        "최소 실행 단위로 분해했는가 · 첫 행동을 촉발했는가"),
+    ("people_management", "갈등관리"): _sp(
+        "AI 가 감정이 격해진 두 팀원 중 한 명 역을 맡는다. 리더는 중립적으로 문제 "
+        "본질로 대화를 되돌린다.",
+        "어느 편도 들지 않았는가 · 문제 본질로 초점을 옮겼는가"),
+    ("people_management", "신뢰형성"): _sp(
+        "AI 가 리더의 실언으로 신뢰가 흔들린 팀원 역을 맡는다. 리더는 행동으로 "
+        "신뢰를 복구한다.",
+        "일관된 행동을 약속했는가 · 예측 가능성을 회복했는가"),
+    ("people_management", "팀워크 촉진(협업)"): _sp(
+        "AI 가 책임을 미루는 옆 파트 리더 역을 맡는다. 리더는 공동 목표로 협업을 "
+        "끌어낸다.",
+        "정보/자원 공유를 설계했는가 · 공동 목표로 정렬했는가"),
+    ("people_management", "코칭 및 피드백"): _sp(
+        "AI 가 '어떻게 할까요?'라고 묻는 팀원 역을 맡는다. 리더는 답 대신 질문으로 "
+        "사고를 연다.",
+        "즉답을 참았는가 · 질문으로 스스로 답에 이르게 했는가"),
+    ("people_management", "권한위임"): _sp(
+        "AI 가 불안해서 못 맡기던 핵심 업무의 팀원 역을 맡는다. 리더는 권한과 책임을 "
+        "함께 이양한다.",
+        "권한과 책임을 함께 넘겼는가 · 과잉 개입을 자제했는가"),
+    ("people_management", "동기부여"): _sp(
+        "AI 가 번아웃 직전의 무기력한 팀원 역을 맡는다. 리더는 의미·자율로 동기를 "
+        "되살린다.",
+        "내적 동기 요인을 짚었는가 · 자율성을 부여했는가"),
+    ("people_management", "공감(감성지능)"): _sp(
+        "AI 가 오판으로 일정이 꼬인 회의의 팀원 역을 맡는다. 리더는 변명 없이 실수를 "
+        "인정하고 도움을 청한다.",
+        "감정 신호를 읽었는가 · 취약성을 신뢰로 전환했는가"),
+    ("people_management", "의사소통"): _sp(
+        "AI 가 지시를 오해한 팀원 역을 맡는다. 리더는 되물음 루프로 정확히 정렬한다.",
+        "이해를 확인했는가 · 경청 후 명료히 전달했는가"),
+    ("people_management", "인재육성"): _sp(
+        "AI 가 정체된 고잠재 팀원 역을 맡는다. 리더는 3년 성장 지도를 함께 그린다.",
+        "중장기 로드맵을 제시했는가 · 도전 과제를 설계했는가"),
+    ("work_management", "업무계획 및 조직력"): _sp(
+        "AI 가 신규 과제에 멘붕에 빠진 팀원 역을 맡는다. 리더는 4주 WBS 로 가시화한다.",
+        "세부 작업으로 분해했는가 · 마일스톤을 공유했는가"),
+    ("work_management", "자원 및 시간관리"): _sp(
+        "AI 가 잡무로 리더의 하루를 채우려는 요청자 역을 맡는다. 리더는 중요·긴급을 "
+        "구분해 배분한다.",
+        "우선순위 기준을 적용했는가 · 핵심 업무 시간을 지켰는가"),
+    ("work_management", "업무분장"): _sp(
+        "AI 가 일이 몰려 번아웃 온 핵심 팀원 역을 맡는다. 리더는 역량 기반으로 "
+        "재분배한다.",
+        "쏠림을 진단했는가 · R&R 을 명확히 했는가"),
+    ("work_management", "업무 개선 관리(표준화)"): _sp(
+        "AI 가 '나만 아는' 암묵지 업무 담당자 역을 맡는다. 리더는 표준 매뉴얼로 "
+        "형식지화한다.",
+        "재현 가능한 표준을 만들었는가 · 확산 방법을 설계했는가"),
+    ("work_management", "디지털 활용 능력"): _sp(
+        "AI 가 수작업 반복 보고를 고수하는 팀원 역을 맡는다. 리더는 자동화 워크플로로 "
+        "재설계한다.",
+        "자동화 대상을 식별했는가 · 워크플로를 재설계했는가"),
+    ("self_management", "자기인식"): _sp(
+        "AI 가 리더의 사각지대를 지적하는 동료 역을 맡는다. 리더는 방어 없이 피드백을 "
+        "수용한다.",
+        "편향/약점을 인정했는가 · 피드백과 대조해 점검했는가"),
+    ("self_management", "회복탄력성"): _sp(
+        "AI 가 엎어진 프로젝트 직후의 팀 역을 맡는다. 리더는 자책 대신 교훈을 추출해 "
+        "재도전으로 전환한다.",
+        "감정을 조절했는가 · 교훈을 재도전으로 연결했는가"),
+    ("self_management", "중심성"): _sp(
+        "AI 가 상반된 압력을 넣는 위/아래 이해관계자 역을 맡는다. 리더는 원칙에 따라 "
+        "일관되게 결정한다.",
+        "원칙 기준을 지켰는가 · 일관된 결정을 내렸는가"),
+}
+
+
 def get_catalog(competency_key: str, sub_name: str) -> dict | None:
     """(역량, 하위역량) 에 해당하는 4개 트랙 카탈로그 반환. 없으면 None."""
     return COURSE_CATALOG.get((competency_key, sub_name))
 
 
 def get_track_course(competency_key: str, sub_name: str, track: str) -> dict | None:
-    """(역량, 하위역량, 트랙) → 단일 과정 정보(course·subtitle·slug·vod_url·트랙메타)."""
+    """(역량, 하위역량, 트랙) → 단일 과정 정보(course·subtitle·slug·vod_url·트랙메타).
+
+    A·B 트랙(has_sparring)에는 AI 롤플레이 스파링 메타(context·rubric)를
+    백엔드 메타데이터로만 첨부한다(프론트 UI 미노출 — 향후 LMS 연동용).
+    """
     entry = COURSE_CATALOG.get((competency_key, sub_name))
     if not entry or track not in entry:
         return None
+    meta = TRACK_META.get(track, {})
     course = dict(entry[track])
     course["vod_url"] = f"{VOD_BASE}/{entry['slug']}-{track.lower()}"
-    course.update(TRACK_META.get(track, {}))
+    course.update(meta)
+    if meta.get("has_sparring"):
+        sp = SUB_SPARRING.get((competency_key, sub_name))
+        if sp:
+            course["ai_sparring_context"] = sp["ai_sparring_context"]
+            course["ai_sparring_rubric"] = sp["ai_sparring_rubric"]
     return course

@@ -38,6 +38,9 @@ _NAME_BLACKLIST = {
     "답변", "여기", "저기", "그냥", "당연", "물론", "사실", "정말", "진짜",
     "그거", "이거", "저거", "우리", "저희", "당신", "본인", "자신", "무슨",
     "네네", "예예", "그래", "맞아", "맞습", "몰라", "모름",
+    # P1-2: 이름으로 오추출되던 부사·감탄사 추가 ("조금이라도"→"조금" 등)
+    "조금", "지금", "아무", "혹시", "다시", "잠깐", "잠시", "약간", "부디",
+    "제발", "정도", "이제", "이번", "오늘", "요즘", "한번", "일단",
     # 직책·역할어(직책 앞의 이름만 뽑고, 직책 자체는 이름이 아님)
     "팀장", "과장", "부장", "차장", "대리", "사원", "주임", "이사", "부장님",
     "본부장", "실장", "센터장", "파트장", "상무", "전무", "대표", "선생",
@@ -489,11 +492,18 @@ def decide_instruction(state: dict) -> InstructionType:
         return "MAX_TURNS_REACHED"
 
     # 9. 종료 가능 체크 (반례 있고, 사건 충분, '최소 턴 수' 바닥 충족)
+    #   P0-2: '하위역량 커버리지 바닥'을 추가한다 — 대역량당 최소 min(3, 하위수)
+    #   개의 서로 다른 하위역량이 탐색되기 전에는 챕터를 조기 종료하지 않는다.
+    #   (단, MAX_TURNS 상한은 위 8번에서 이미 안전장치로 작동)
     min_events = MIN_EVENTS.get(state["chapter"], 2)
     min_turns = MIN_TURNS_BEFORE_END.get(state["chapter"], 8)
+    _sub_total = len(state.get("all_subcompetencies") or [])
+    _explored = len(state.get("explored_subcompetencies") or [])
+    _min_sub_coverage = min(3, _sub_total) if _sub_total else 0
     if (state["events_with_star_70"] >= min_events
             and state["has_contrary_probe"]
-            and state["turn_count"] >= min_turns):
+            and state["turn_count"] >= min_turns
+            and _explored >= _min_sub_coverage):
         return "CHAPTER_READY_TO_END"
 
     # 10. 반례 탐침 필요
@@ -857,28 +867,42 @@ async def build_turn_state(
     else:
         chapter_framework_state = None
 
-    # 8-f. user_name 추출 (세션 첫 user 메시지에서 이름 파싱)
-    first_user_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "user")
-        .order_by(ChatMessage.created_at.asc())
-        .limit(1)
-    )
-    first_user_msg = first_user_result.scalars().first()
-    # 이름을 못 뽑으면(None) 기본 호칭 '리더'로 폴백 → 코치가 '리더님'으로 부름.
-    #   단, 첫 발화에서 실패해도 이후 발화(재확인 답변)에서 다시 시도한다.
-    #   name_extraction_failed: 발화는 있는데 어디서도 명확한 성함을 못 뽑음.
+    # 8-f. 호칭 확정 (P1-2) — HR 마스터(참가자명, 리포트 헤더와 동일 소스)를
+    #   1순위로 사용한다. 대화 추출은 마스터가 없을 때만 폴백으로 쓴다.
+    #   추출 실패 시 재질문 1회만 하고, 그래도 실패하면 조용히 '리더'로 폴백.
     user_name = "리더"
     name_extraction_failed = False
-    _named = next(
-        (n for n in (_extract_user_name(m.content) for m in all_user_msgs) if n),
-        None,
-    )
-    if _named:
-        user_name = _named
-    elif all_user_msgs and (all_user_msgs[0].content or "").strip():
-        name_extraction_failed = True
+
+    # (1) HR 마스터 데이터 1순위
+    _hr_name = None
+    try:
+        from diag_project.models.diagnosis_session import DiagnosisSession
+        from diag_project.models.participant import Participant
+        _sess = await db.get(DiagnosisSession, session_id)
+        if _sess is not None:
+            _p = await db.get(Participant, _sess.user_id)
+            if _p is not None and getattr(_p, "name", None):
+                _cand = str(_p.name).strip()
+                # 마스터 값도 불용어/역할어면 폴백 (예: 'User', 'Leader')
+                if _cand and not _is_blacklisted_name(_cand) \
+                        and _cand.lower() not in ("user", "leader", "test"):
+                    _hr_name = _cand
+    except Exception:  # noqa: BLE001 — 마스터 조회 실패는 추출 폴백으로 흡수
+        _hr_name = None
+
+    if _hr_name:
+        user_name = _hr_name
+    else:
+        # (2) 대화 추출 폴백 (불용어 필터 적용된 _extract_user_name)
+        _named = next(
+            (n for n in (_extract_user_name(m.content) for m in all_user_msgs)
+             if n),
+            None,
+        )
+        if _named:
+            user_name = _named
+        elif all_user_msgs and (all_user_msgs[0].content or "").strip():
+            name_extraction_failed = True
 
     # 9. state 조립
     state = {

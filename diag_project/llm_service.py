@@ -982,8 +982,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
     "confidence_adj": <float, -0.5~0.5, 소수점 1자리>,
     "final": <float, 세 값의 합산, 소수점 1자리>
   }},
-  "sub_scores": {{
-    {self._build_sub_scores_json_template(sub_indicators)}
+  "sub_assessments": {{
+{self._build_sub_scores_json_template(sub_indicators)}
   }},
   "strength_point": "이 역량에서 확인된 핵심적인 강점 1가지 — '구체적 행동 + 그것이 조직에 미치는 가치'를 연결해 단문 1문장으로 서술",
   "growth_point": "현재 수준을 한 단계 올리기 위한 가장 시급한 개선 필요점 — '~해보세요' 수준이 아닌 구체적 전략 방향으로 단문 1문장",
@@ -995,15 +995,23 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 }}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[🚨 sub_scores 차등 채점 원칙 — 반드시 준수]
+[🚨 하위역량 측정(sub_assessments) 원칙 — 반드시 준수 (P0-1)]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 평가 대상 하위 지표: {sub_indicators_str}
 
-규칙 1. 각 하위 지표를 인터뷰 발언에서 독립적으로 근거를 찾아 개별 채점할 것
-규칙 2. 모든 지표에 전체 점수를 그대로 복사하는 것은 엄격히 금지 (반드시 지표별 편차 존재)
-규칙 3. 발언이 풍부한 지표 → 전체 점수 +0.3~0.7 범위 내 높게 부여
-규칙 4. 발언이 없거나 약한 지표 → 전체 점수 -0.3~0.7 범위 내 낮게 부여
-규칙 5. 지표 간 최소 0.3점 이상의 편차가 반드시 존재해야 함
+규칙 1. 각 하위 지표를 '독립적으로' 판정한다. 대화에서 그 지표에 대한 리더의
+        실제 근거 발화를 찾을 것.
+규칙 2. 🚨 [측정 여부가 최우선] 그 하위 지표에 대해 질문·답변된 근거 발화가
+        '대화에 실제로 존재'할 때만 measured=true. 근거 발화가 없으면
+        (질문되지 않았거나 답을 회피) 절대 점수를 지어내지 말고
+        measured=false, level=null, evidence=[] 로 둘 것.
+        → 측정하지 않은 지표에 점수를 부여하는 것은 리포트 신뢰를 무너뜨린다.
+규칙 3. measured=true 인 지표만 level(1~4)을 부여한다. level 은
+        [평가 방법론] STEP A 루브릭(Lv1 증거 없음~Lv4 시스템화)을 그대로 적용.
+규칙 4. evidence 는 그 판정의 근거가 된 '원문 그대로(verbatim)' 발췌만.
+        요약·창작 금지. 최소 1건. (measured=false 면 빈 배열)
+규칙 5. 점수의 평균·클램프·가점은 시스템(코드)이 계산한다. 당신은 지표별
+        measured/level/evidence 판정만 정확히 하면 된다.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [🚨 S/A/R evidence 발췌 원칙 — 반드시 준수 (리포트 신뢰도의 핵심)]
@@ -1080,14 +1088,63 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             if result.get("evidence_list"):
                 result["evidence"] = result["evidence_list"][0]
 
-            # sub_scores 방어: 비어있으면 하위 지표 기반 기본값 생성
-            if "sub_scores" not in result or not result["sub_scores"]:
-                base = result.get("score", 3.0)
-                result["sub_scores"] = self._generate_fallback_sub_scores(sub_indicators, base)
+            # 🔒 P0-1/P0-3: 하위역량 증거 원장 → 코드 산식으로 점수 결정론 계산.
+            #   LLM 은 measured/level/evidence 판정만. 평균·클램프·가점은 코드.
+            from diag_project.services.scoring import (
+                SubLedger, competency_behavior_score, competency_final_score,
+                competency_is_reference,
+            )
+            _assess = result.get("sub_assessments") or {}
+            ledgers = []
+            for _sub in sub_indicators:
+                a = _assess.get(_sub) or {}
+                ev = [
+                    e for e in (a.get("evidence") or [])
+                    if e and isinstance(e, str)
+                ]
+                lvl = a.get("level")
+                lvl = int(lvl) if isinstance(lvl, (int, float)) else None
+                ledgers.append(SubLedger(
+                    name=_sub,
+                    asked=bool(a.get("measured")) or len(ev) >= 1,
+                    evidence_utterances=ev,
+                    level=lvl,
+                ))
 
-            # score와 score_breakdown.final 동기화
-            if "score_breakdown" in result and "final" in result["score_breakdown"]:
-                result["score"] = result["score_breakdown"]["final"]
+            # 하위역량 점수 맵 (measured → [1,4] 점수 / 미측정 → None)
+            result["sub_scores"] = {lg.name: lg.score for lg in ledgers}
+            result["sub_ledger"] = {
+                lg.name: {
+                    "measured": lg.measured, "level": lg.level,
+                    "score": lg.score, "evidence": lg.evidence_utterances,
+                }
+                for lg in ledgers
+            }
+            _measured = [lg for lg in ledgers if lg.measured]
+            result["measured_count"] = len(_measured)
+            result["sub_total"] = len(ledgers)
+            result["is_reference"] = competency_is_reference(
+                len(_measured), len(ledgers)
+            )
+
+            # 대역량 점수 = mean(measured 하위) + STAR/확신도 가점 (코드 계산)
+            _behavior = competency_behavior_score(
+                [lg.score for lg in ledgers]
+            )
+            _sb = result.get("score_breakdown") or {}
+            _final = competency_final_score(
+                _behavior,
+                star_bonus=_sb.get("star_depth_bonus", 0.0),
+                confidence_adj=_sb.get("confidence_adj", 0.0),
+            )
+            result["behavior_score"] = _behavior
+            result["score"] = _final  # None 이면 대역량 미측정
+            result["score_breakdown"] = {
+                "rubric_base": _behavior,
+                "star_depth_bonus": _sb.get("star_depth_bonus", 0.0),
+                "confidence_adj": _sb.get("confidence_adj", 0.0),
+                "final": _final,
+            }
 
             return result
 
@@ -1096,13 +1153,21 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             return self._build_error_fallback(sub_indicators)
 
     def _build_sub_scores_json_template(self, sub_indicators: list) -> str:
-        """sub_scores JSON 템플릿을 동적으로 생성 (프롬프트 가독성 향상)"""
-        if not sub_indicators:
-            return '"핵심지표1": <float 1.0~5.0>, "핵심지표2": <float 1.0~5.0>'
+        """sub_assessments JSON 템플릿 — 하위역량별 measured/level/evidence.
+
+        점수(평균·클램프)는 코드가 계산한다. LLM 은 하위역량별로
+        '측정 여부 + 레벨(1~4) + 근거 발화'만 판정한다 (P0-1/P0-3).
+        """
+        names = sub_indicators or ["핵심지표1", "핵심지표2"]
         lines = []
-        for name in sub_indicators:
-            lines.append(f'    "{name}": <float 1.0~5.0, 인터뷰 발언 기반 독립 채점>')
-        return "\n".join(lines)
+        for name in names:
+            lines.append(
+                f'    "{name}": {{"measured": <true|false — 이 하위역량에 대한 '
+                f'리더의 실제 근거 발화가 대화에 존재하는가>, "level": '
+                f'<measured=true 면 1~4 정수, false 면 null>, "evidence": '
+                f'[<measured=true 면 근거 발화 원문 1건 이상, false 면 빈 배열>]}}'
+            )
+        return ",\n".join(lines)
 
     def _generate_fallback_sub_scores(self, sub_indicators: list, base_score: float) -> dict:
         """sub_scores 생성 실패 시 기본값 — 단순 복사가 아닌 소폭 편차 적용"""
@@ -1118,16 +1183,24 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         return scores
 
     def _build_error_fallback(self, sub_indicators: list) -> dict:
-        """분석 실패 시 기본 반환값"""
-        fallback_subs = {name: 2.0 for name in sub_indicators} if sub_indicators else {}
+        """분석 실패 시 기본 반환값 — 점수를 지어내지 않고 '미측정'(None)."""
+        subs = sub_indicators or []
         return {
             "reasoning_process": {
                 "1_situation": {"description": "분석 데이터 부족", "evidence": []},
                 "2_action": {"description": "분석 데이터 부족", "evidence": []},
                 "3_result": {"description": "분석 데이터 부족", "evidence": []},
             },
-            "score_breakdown": {"rubric_base": 2.0, "star_depth_bonus": 0.0, "confidence_adj": 0.0, "final": 2.0},
-            "sub_scores": fallback_subs,
+            "score_breakdown": {"rubric_base": None, "star_depth_bonus": 0.0, "confidence_adj": 0.0, "final": None},
+            "sub_scores": {name: None for name in subs},
+            "sub_ledger": {
+                name: {"measured": False, "level": None, "score": None, "evidence": []}
+                for name in subs
+            },
+            "measured_count": 0,
+            "sub_total": len(subs),
+            "is_reference": True,
+            "behavior_score": None,
             "evidence_list": [],
             "evidence": "",
             "strength_point": "분석 실패",
@@ -1135,9 +1208,19 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             "gap_analysis": "분석 중 오류가 발생했습니다.",
             "situational_pattern": "-",
             "behavior_frequency": "낮음",
-            "score": 2.0,
+            "score": None,
             "comment": "분석 중 오류가 발생했습니다.",
         }
+
+    def _build_competency_definitions(self) -> str:
+        """P2-2: 종합 피드백 프롬프트용 5대 역량 정의 + 하위역량 목록 (SSOT)."""
+        lines = []
+        for cv in COMPETENCY_FRAMEWORK.values():
+            subs = ", ".join(
+                ind["name"] for ind in cv.get("indicators", {}).values()
+            )
+            lines.append(f"- {cv['name']}: {cv.get('description', '')} (하위역량: {subs})")
+        return "\n".join(lines)
 
     async def _generate_comprehensive_summary(
         self,
@@ -1150,8 +1233,11 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             for k, v in competency_results.items()
         ])
 
-        radar = {k: v.get("score", 0.0) for k, v in competency_results.items()}
-        total = round(sum(radar.values()) / len(radar), 1) if radar else 0.0
+        # 🔒 P0-1/P0-3: 미측정(None) 대역량은 종합·레이더에서 제외. radar 는
+        #   미측정 축을 None 으로 보존(프론트가 '미측정' 표시). 종합은 measured 만 평균.
+        from diag_project.services.scoring import overall_score as _overall
+        radar = {k: v.get("score") for k, v in competency_results.items()}
+        total = _overall(list(radar.values())) or 0.0
 
         prompt = f"""
 [Role] Senior HR Consultant & Executive Coach (조직심리학 기반 리더십 진단 전문가)
@@ -1167,6 +1253,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
   반드시 이 리더의 실제 발언·행동이 문장에 배어 있어야 한다.)
 - 🚨 NEVER: '사람의 성장'이라는 인위적 표현을 절대(NEVER) 쓰지 마시오.
   → 반드시 '구성원의 성장'으로 대체하여 작성한다.
+
+[🚨 역량 정의 — 반드시 이 범위 안에서만 역량명을 사용할 것 (P2-2)]
+{self._build_competency_definitions()}
+※ 역량명(예: 자기관리, 성과관리)을 언급할 때, 위 정의·하위역량과 무관한
+  일상어 의미로 쓰지 마시오. (❌ "책임감(자기관리)" — 자기관리는 자기인식·
+  회복탄력성·중심성이지 책임감이 아님 / ❌ "성과 지향성(성과관리)" — 성과관리는
+  목표·KPI·평가·문제해결·실행력의 관리 체계이지 태도 개념이 아님)
 
 [역량별 평가 요약]
 {scores_summary}
@@ -1295,9 +1388,19 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         logger.info("📊 STEP 3: 종합 리더십 프로파일 생성 중...")
         summary = await self._generate_comprehensive_summary(user_name, competency_results)
 
+        # 🔒 P0-1: 측정 커버리지 (분모 26 = 창의적 사고 통합 후 하위역량 총수)
+        from diag_project.services.scoring import coverage as _coverage
+        _measured_total = sum(
+            v.get("measured_count", 0) for v in competency_results.values()
+        )
+        _subs_total = sum(
+            v.get("sub_total", 0) for v in competency_results.values()
+        )
+
         final_result = {
             **summary,
             "details": competency_results,
+            "coverage": _coverage(_measured_total, _subs_total),
         }
 
         # 🎯 Level-Up 교육 추천 — 26개 하위 점수를 레벨화하고, BEI 언급빈도
@@ -1311,15 +1414,16 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 f"{m.get('role', '')}: {m.get('parts', m.get('content', ''))}"
                 for m in (history or [])
             )
-            recommendation = build_course_recommendation(
-                competency_results, transcript=_transcript,
+            recommendation = await build_course_recommendation(
+                competency_results, transcript=_transcript, llm=self,
             )
             if recommendation:
                 final_result["course_recommendation"] = recommendation
+                _st = recommendation.get("strength")
                 logger.info(
-                    "🎯 Level-Up 추천: 성장 %d개 + 강점 '%s'",
+                    "🎯 Level-Up 추천: 성장 %d개 + 강점 %s",
                     len(recommendation.get("growth", [])),
-                    recommendation["strength"]["sub_competency"],
+                    _st["sub_competency"] if _st else "(D게이트 미통과)",
                 )
         except Exception as e:  # noqa: BLE001 — 추천 실패가 리포트를 막지 않게
             logger.error(f"교육과정 추천 생성 실패(무시): {e}")
