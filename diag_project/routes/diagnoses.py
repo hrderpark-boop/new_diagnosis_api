@@ -496,6 +496,50 @@ async def _submit_message_phase3a(
         "SESSION_ABORT_WARNING",
         "SESSION_ABORT_3STRIKE",
     }
+
+    # 🔒 T2 제어 역전(§0/§1-1): LLM 호출 '이전'에 다음 타겟 하위역량을 결정하고
+    #   asked 원장(session.self_assessment_data)에 기록한다. 이 기록이 asked 의
+    #   유일 소스이며, LLM 응답이 무엇이든 되돌리지 않는다. 그 타겟의 앵커를
+    #   프롬프트에 주입(state["current_target_sub"]) → LLM 은 표현만.
+    from diag_project.services.traversal import (
+        select_next_target, should_advance_target, record_asked,
+        asked_for_chapter,
+    )
+    _PROBE_INSTR = {
+        "CHAPTER_OPENING", "CONTINUE_NORMAL", "STAR_INCOMPLETE",
+        "STAR_COMPLETE_NEW_EVENT", "CONTRARY_NEEDED", "ABSTRACT_AVOIDANCE",
+        "AVOIDANCE_DETECTED",
+    }
+    current_target_sub = None
+    if chapter and instruction_used in _PROBE_INSTR:
+        _store = dict(session.self_assessment_data or {})
+        _all_subs = state.get("all_subcompetencies") or []
+        _asked = asked_for_chapter(_store, chapter)
+        _cur = (_store.get("current_target") or {}).get(chapter)
+        _turns = (_store.get("turns_on_target") or {}).get(chapter, 0)
+        _event_done = instruction_used == "STAR_COMPLETE_NEW_EVENT"
+        if _cur is None or should_advance_target(_turns, _event_done):
+            _target = select_next_target(_asked, _all_subs, priority=[])
+            if _target:
+                _store = record_asked(_store, chapter, _target)
+                _store.setdefault("current_target", {})[chapter] = _target
+                _store.setdefault("turns_on_target", {})[chapter] = 0
+                _cur = _target
+            # 미탐색 소진: _cur 유지(마지막 타겟), 새 기록 없음(정직하게 남김)
+        else:
+            _store.setdefault("turns_on_target", {})[chapter] = _turns + 1
+        current_target_sub = _cur
+        session.self_assessment_data = _store
+        from sqlalchemy.orm.attributes import flag_modified as _flag_mod
+        _flag_mod(session, "self_assessment_data")
+        await db.commit()
+        logger.info(
+            "🧭 T2 타겟: [%s] target=%s asked=%d turns=%d",
+            chapter, current_target_sub,
+            len(asked_for_chapter(session.self_assessment_data, chapter)),
+            (session.self_assessment_data.get("turns_on_target") or {}).get(chapter, 0),
+        )
+    state["current_target_sub"] = current_target_sub
     _turn_index = (
         state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
     )

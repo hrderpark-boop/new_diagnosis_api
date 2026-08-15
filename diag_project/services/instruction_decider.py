@@ -503,17 +503,23 @@ def decide_instruction(state: dict) -> InstructionType:
     if state["turn_count"] >= chapter_max:
         return "MAX_TURNS_REACHED"
 
-    # 9. 종료 가능 체크 — 깊이 축(STAR 사건)으로 종료.
-    #   ⚠️ T2 넓이 축(asked_in_chapter >= MIN_EXPLORED)은 현재 asked 신호가
-    #   텍스트 기반(코치의 하위역량 호명 의존)이라 신뢰 불가 → 게이트로 쓰면
-    #   챕터가 MAX_TURNS 까지 헛돌아 세션만 길어진다(실측 235턴, 커버리지 미상승).
-    #   신뢰 가능한 넓이 게이트는 '백엔드 probe 타겟의 결정론적 기록'(후속)이
-    #   구축된 뒤 재도입한다. MIN_EXPLORED 값은 그때 사용하도록 보존.
+    # 9. 종료 가능 체크 — T2(재도입): 깊이·넓이 두 축 + 서킷브레이커.
+    #   asked 가 결정론적 원장(store)에서 오므로 넓이 게이트를 안전하게 재도입.
+    from diag_project.services.traversal import (
+        breadth_satisfied, chapter_over_budget,
+    )
     min_events = MIN_EVENTS.get(state["chapter"], 3)
     min_turns = MIN_TURNS_BEFORE_END.get(state["chapter"], 8)
-    if (state["events_with_star_70"] >= min_events
-            and state["has_contrary_probe"]
-            and state["turn_count"] >= min_turns):
+    min_explored = MIN_EXPLORED.get(state["chapter"], 3)
+    _asked_ct = len(state.get("asked_in_chapter") or [])
+    _depth_ok = (state["events_with_star_70"] >= min_events
+                 and state["has_contrary_probe"]
+                 and state["turn_count"] >= min_turns)
+    _breadth_ok = breadth_satisfied(_asked_ct, min_explored)
+    if _depth_ok and _breadth_ok:
+        return "CHAPTER_READY_TO_END"
+    # 🛡️ 서킷브레이커: 챕터 턴 상한 초과 → 미탐색은 남긴 채 강제 종료(235턴 방지)
+    if chapter_over_budget(state["turn_count"], min_explored):
         return "CHAPTER_READY_TO_END"
 
     # 10. 반례 탐침 필요
@@ -862,26 +868,18 @@ async def build_turn_state(
         n for n in all_subcompetencies if n in _explored_set
     ]
 
-    # 🔒 T2: 실시간 asked 추적 — 이 챕터 코치 발화에 하위역량명이 등장하면
-    #   '탐색됨(asked)'. evidence 와 독립된 '넓이' 지표(챕터 종료 조건에 사용).
-    #   event 태깅(불안정) 합집합으로 보완.
-    _coach_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == "model")
+    # 🔒 T2(제어 역전): asked 는 '영속 원장'(session.self_assessment_data
+    #   ["asked_subs"][chapter])에서만 읽는다. 백엔드가 LLM 호출 이전에 기록한
+    #   결정론적 신호 — 텍스트 스캔/LLM 판정 의존 폐기(§1-1). 넓이 지표.
+    from diag_project.services.traversal import asked_for_chapter
+    from diag_project.models.diagnosis_session import (
+        DiagnosisSession as _DS,
     )
-    _coach_text = " ".join(
-        m.content for m in _coach_result.scalars().all() if m.content
-    )
-    asked_in_chapter = [
-        n for n in all_subcompetencies
-        if (n.split("(")[0].strip() in _coach_text) or (n in _coach_text)
-    ]
-    for n in explored_subcompetencies:
-        if n not in asked_in_chapter:
-            asked_in_chapter.append(n)
-    # 아직 앵커가 발화되지 않은(asked=False) 하위역량 — 순회 대상 큐
+    _sess_asked = await db.get(_DS, session_id)
+    _store = (getattr(_sess_asked, "self_assessment_data", None) or {}) \
+        if _sess_asked else {}
+    asked_in_chapter = asked_for_chapter(_store, chapter)
+    # 아직 타겟팅되지 않은(asked=False) 하위역량 — 순회 대상 큐
     unexplored_subcompetencies = [
         n for n in all_subcompetencies if n not in asked_in_chapter
     ]

@@ -527,7 +527,13 @@ def _get_instruction_guide(
     _explored = (state or {}).get("explored_subcompetencies") or []
     _unexplored_str = ", ".join(f"'{n}'" for n in _unexplored)
     _explored_str = ", ".join(f"'{n}'" for n in _explored) or "(아직 없음)"
-    _first_unexplored = f"'{_unexplored[0]}'" if _unexplored else "다른 하위 역량"
+    # 🔒 T2: 백엔드가 지정한 '현재 타겟'(current_target_sub)을 우선 겨냥한다.
+    #   (제어 역전 — 타겟은 코드가 정하고 LLM 은 표현만). 없으면 미탐색 첫 항목.
+    _target_sub = (state or {}).get("current_target_sub")
+    _first_unexplored = (
+        f"'{_target_sub}'" if _target_sub
+        else (f"'{_unexplored[0]}'" if _unexplored else "다른 하위 역량")
+    )
 
     _no_yield_forced = (state or {}).get("no_yield_forced", False)
 

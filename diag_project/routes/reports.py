@@ -23,35 +23,21 @@ from diag_project.services.auth import AdminContext, get_current_admin
 logger = logging.getLogger(__name__)
 
 
-def _build_asked_subcompetencies(messages: list, events: list) -> Dict[str, set]:
-    """T1/T2: 각 대역량에서 '실제로 앵커가 발화된(asked)' 하위역량 집합을 구축한다.
+def _build_asked_subcompetencies(store: dict) -> Dict[str, set]:
+    """T1/T2(§1-2): asked 원장을 '영속 store'(session.self_assessment_data
+    ["asked_subs"])에서만 읽는다 — 대화 제어와 분석이 동일 소스를 본다.
 
-    asked 는 evidence 와 독립된 신호여야 유령 측정을 막는다(is_measured AND 게이트).
-    신호 원천(둘의 합집합):
-      1) 코치 발화에 하위역량명(괄호 앞 기본명)이 등장 → 그 하위역량을 물었음
-      2) 수집된 Event 의 mapped_subcompetency (스토리가 태깅된 하위역량)
+    백엔드가 LLM 호출 이전에 결정론적으로 기록한 타겟이 유일 기준.
+    텍스트 스캔/Event 태깅에 의존하지 않는다(유령·불일치 방지).
     """
+    asked_map = ((store or {}).get("asked_subs") or {})
     asked: Dict[str, set] = {}
     for ck, cv in COMPETENCY_FRAMEWORK.items():
         if ck == "supplementary":
             continue
         subs = {ind["name"] for ind in cv.get("indicators", {}).values()}
-        coach_text = " ".join(
-            m.content for m in messages
-            if getattr(m, "chapter", None) == ck
-            and m.role == "model" and m.content
-        )
-        hit = set()
-        for name in subs:
-            base = name.split("(")[0].strip()
-            if base and (base in coach_text or name in coach_text):
-                hit.add(name)
-        # Event 태깅(스토리 기반) 합집합
-        for e in events:
-            if getattr(e, "chapter", None) == ck and e.mapped_subcompetency:
-                if e.mapped_subcompetency in subs:
-                    hit.add(e.mapped_subcompetency)
-        asked[ck] = hit
+        recorded = set(asked_map.get(ck) or [])
+        asked[ck] = {s for s in recorded if s in subs}
     return asked
 
 
@@ -398,8 +384,8 @@ async def analyze_session(
     #  - 통짜 컨텍스트 주입(절단/날조) 방지, 라포 사담(chapter=None) 제외.
     chapter_transcripts = _build_chapter_transcripts(messages, events)
 
-    # 🔒 T1: asked 원장(실제 앵커 발화된 하위역량) 구축 — measured 게이트용.
-    asked_subs = _build_asked_subcompetencies(messages, events)
+    # 🔒 T1/T2: asked 원장을 영속 store(대화 제어와 동일 소스)에서 읽는다.
+    asked_subs = _build_asked_subcompetencies(session.self_assessment_data or {})
     _asked_total = sum(len(v) for v in asked_subs.values())
     logger.info(
         "🧭 asked 원장(탐색률): %d / 26 | 대역량별 %s",
