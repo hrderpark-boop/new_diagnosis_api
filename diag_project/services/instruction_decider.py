@@ -228,6 +228,28 @@ MIN_TURNS_BEFORE_END: dict[str, int] = {
 NO_YIELD_TURNS = 5
 
 
+def _chapter_can_close(state: dict) -> bool:
+    """T2 넓이 게이트(선결 필요조건): 챕터를 닫아도 되는가?
+
+    챕터 종료의 '필요조건' = 넓이 충족(asked ≥ MIN_EXPLORED) OR 서킷브레이커
+    (chapter_over_budget). no-yield·마무리 등 조기 종료 경로가 MIN_EXPLORED
+    미달 상태에서 챕터를 끝내는 것을 막는다. 스톤월러는 미탐색 하위역량으로
+    타겟을 계속 전진(measured=0=근거 미확보)하다가 챕터 상한에서만 종료 →
+    235턴 재발은 상한(min_explored*3+4)이 막는다.
+    """
+    from diag_project.services.traversal import (
+        breadth_satisfied, chapter_over_budget,
+    )
+    chapter = state.get("chapter")
+    if not chapter:
+        return True
+    min_explored = MIN_EXPLORED.get(chapter, 3)
+    asked_ct = len(state.get("asked_in_chapter") or [])
+    turn_count = state.get("turn_count", 0)
+    return (breadth_satisfied(asked_ct, min_explored)
+            or chapter_over_budget(turn_count, min_explored))
+
+
 def _force_rapport_category(rapport_turn_count: int) -> str:
     """라포 user 메시지 수 기반으로 이번 AI 턴의 카테고리를 강제 결정.
 
@@ -373,7 +395,12 @@ def decide_instruction(state: dict) -> InstructionType:
                     state.get("turn_count", 0) >= 3
                     or state.get("events_collected", 0) >= 1
                 )
-                if _closing == "explicit" or _progressed:
+                # 명시적 종료 = 사용자 자율성 우선(즉시 종료). soft/progressed
+                # 종료는 🧭 T2 넓이 게이트 통과(또는 서킷브레이커) 후에만 허용 —
+                # 마지막 챕터도 MIN_EXPLORED 미달로 조기 종료되지 않도록.
+                if _closing == "explicit":
+                    return "CHAPTER_READY_TO_END"
+                if _progressed and _chapter_can_close(state):
                     return "CHAPTER_READY_TO_END"
             elif _closing == "explicit":
                 return "USER_REQUESTS_PAUSE"
@@ -469,7 +496,11 @@ def decide_instruction(state: dict) -> InstructionType:
     _bei_turns = state.get("chapter_message_count", 0)
     _no_strong = state.get("events_with_star_70", 0) == 0
     _avoid_count = state.get("avoidance_count_in_chapter", 0)
-    if _no_strong and _avoid_count >= 3 and _bei_turns >= 3:
+    # 🧭 T2: no-yield 종료는 넓이(MIN_EXPLORED) 충족 또는 서킷브레이커
+    #   이후에만 허용. 미달 시엔 챕터를 끝내지 않고(아래 회피 프로브로
+    #   낙하) 미탐색 하위역량으로 타겟을 계속 전진시킨다.
+    _can_close = _chapter_can_close(state)
+    if _no_strong and _avoid_count >= 3 and _bei_turns >= 3 and _can_close:
         return "CHAPTER_READY_TO_END"  # no_yield_forced 로 무수확 강제 전환
 
     # 4-b. 🛡️ N턴 무수확 방어 (무한 개념화 루프 탈출):
@@ -478,8 +509,10 @@ def decide_instruction(state: dict) -> InstructionType:
     if _bei_turns >= NO_YIELD_TURNS and _no_strong:
         if not state.get("no_yield_ultimatum_given"):
             return "CHAPTER_NO_YIELD_ULTIMATUM"      # 최후통첩 (1회)
-        # 최후통첩 후에도 무수확 → 이 역량 미달 기록하고 강제 전환.
-        return "CHAPTER_READY_TO_END"
+        # 최후통첩 후에도 무수확 → 넓이 충족/서킷브레이커면 강제 전환,
+        # 아니면 종료 보류하고 미탐색 하위역량 계속 탐색.
+        if _can_close:
+            return "CHAPTER_READY_TO_END"
 
     # 5. 첫 턴 회피 (라포 회복)
     if state["turn_count"] <= 2 and state["contains_avoidance_keywords"]:
