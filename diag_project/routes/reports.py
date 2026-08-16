@@ -439,8 +439,18 @@ async def analyze_session(
         _completed_count = 0  # General/라포 등 첫 역량 진입 전
 
     if _completed_count >= 5:
-        session.status = "completed"
+        # B: 완주했으나 근거가 임계 미만이면 completed_insufficient(부분 발행).
+        #   중단(aborted_disengaged)과 달리 리포트는 낸다 — 완주이기 때문.
+        _cov = (analysis_result or {}).get("coverage") or {}
+        _insufficient = bool(_cov.get("score_suppressed"))
+        session.status = (
+            "completed_insufficient" if _insufficient else "completed")
         session.current_topic = "Completed"
+        logger.info(
+            "🧭 완주 세션 상태: %s (측정 %s/%s, 셧다운=%s)",
+            session.status, _cov.get("measured"), _cov.get("total"),
+            _insufficient,
+        )
     else:
         # 5역량 미완주 → 'incomplete'. current_topic(진행 위치)은 그대로 두어
         # 진행률(progress_pct) 이 실제 위치를 반영하게 한다. 리포트 자체는

@@ -180,6 +180,17 @@ async def build_course_recommendation(
         logger.warning("교육 추천: measured 하위역량 없음 → 추천 생략")
         return None
 
+    # C-3: 후보(measured)가 2개 이하면 우선순위 산정이 무의미 → 카드 미발행
+    #   (정성 분석까지만). measured 3~5 이면 추천 개수를 후보 수로 상한한다.
+    #   대역량 max2 로 후보가 부족해도 제약을 완화하지 않고 개수를 줄인다.
+    n_measured = len(measured)
+    if n_measured < 3:
+        logger.info(
+            "교육 추천: measured %d < 3 → 추천 카드 생략(정성 분석만)",
+            n_measured)
+        return None
+    _total_cap = min(4, n_measured)  # 최대 measured 수(억지로 채우지 않음)
+
     weights = job_weights or {}
     for m in measured:
         jw = float(weights.get(m["comp_key"], DEFAULT_JOB_WEIGHT))
@@ -209,7 +220,8 @@ async def build_course_recommendation(
 
     # ── 성장(A~C): measured & level<4, 추천점수 상위, 대역량 max2 ──
     growth: list[dict] = []
-    growth_target = 3 if strength_entry else 4  # D 없으면 성장 4로 채움
+    # C-3: 총 카드 수를 measured 후보 수로 상한(_total_cap). D 슬롯을 뺀 나머지.
+    growth_target = _total_cap - (1 if strength_entry else 0)
     growth_pool = sorted(
         [m for m in measured
          if m["level"] < 4 and (m["comp_key"], m["sub_name"]) not in picks],

@@ -168,6 +168,8 @@ InstructionType = Literal[
     "CONTRARY_NEEDED",
     "AVOIDANCE_DETECTED",
     "ABSENCE_PROBE",
+    "ABORT_CONFIRM",
+    "ABORT_DISENGAGED",
     "ABSTRACT_AVOIDANCE",
     "CHAPTER_NO_YIELD_ULTIMATUM",
     "DUPLICATE_SUSPECTED",
@@ -358,6 +360,22 @@ def decide_instruction(state: dict) -> InstructionType:
         return "SESSION_ABORT_3STRIKE"
     if _defl >= 2 and not _warned:
         return "SESSION_ABORT_WARNING"
+
+    # === 🚦 A: 참여 이탈(disengagement) 중단 흐름 (BEI 컨텍스트에서만) ===
+    #   중단 트리거는 '근거 부족'이 아니라 '참여 이탈'(A-0). 카운터/판정은
+    #   diagnoses.py 가 store 에 영속하고 여기서 읽는다(pending_abort/streak).
+    if state.get("chapter"):
+        # A-3: 직전 ABORT_CONFIRM 에 대한 답변으로 중단 확정된 경우.
+        if state.get("pending_abort"):
+            return "ABORT_DISENGAGED"
+        # A-2: 중단 확인 진입 — 명시적 거부(즉시) OR 연속 3회 이탈 & 최소 5사이클.
+        #   (계속 선택 시 diagnoses.py 가 streak 리셋 → 여기 재진입 안 함)
+        if not state.get("awaiting_abort_decision"):
+            _refuse = state.get("last_refusal", False)
+            _stk = state.get("disengagement_streak", 0)
+            _cyc = state.get("probe_cycles", 0)
+            if _refuse or (_stk >= 3 and _cyc >= 5):
+                return "ABORT_CONFIRM"
 
     # === 최우선: 챕터 종료 후 '계속/휴식' 의사 대기 중이면 사용자 답변으로 분기 ===
     #   직전 AI 턴(CHAPTER_READY_TO_END)이 "계속할까요, 쉴까요?"를 물었고
@@ -923,6 +941,13 @@ async def build_turn_state(
     _store = (getattr(_sess_asked, "self_assessment_data", None) or {}) \
         if _sess_asked else {}
     asked_in_chapter = asked_for_chapter(_store, chapter)
+    # 🚦 A: 참여 이탈 상태(diagnoses.py 가 매 턴 갱신·영속). 중단 확인 판정용.
+    disengagement_streak = int(_store.get("disengagement_streak", 0))
+    probe_cycles = int(_store.get("probe_cycles", 0))
+    last_refusal = bool(_store.get("last_refusal", False))
+    awaiting_abort_decision = bool(_store.get("awaiting_abort_decision", False))
+    abort_confirm_count = int(_store.get("abort_confirm_count", 0))
+    pending_abort = bool(_store.get("pending_abort", False))
     # 아직 타겟팅되지 않은(asked=False) 하위역량 — 순회 대상 큐
     unexplored_subcompetencies = [
         n for n in all_subcompetencies if n not in asked_in_chapter
@@ -1037,6 +1062,12 @@ async def build_turn_state(
         "unexplored_subcompetencies": unexplored_subcompetencies,
         "asked_in_chapter": asked_in_chapter,  # T2: 실시간 탐색(넓이) 지표
         "last_instruction": last_instruction,  # 2단 폴백 1회 제한용
+        "disengagement_streak": disengagement_streak,  # 🚦 A 연속 이탈
+        "probe_cycles": probe_cycles,
+        "last_refusal": last_refusal,
+        "awaiting_abort_decision": awaiting_abort_decision,
+        "abort_confirm_count": abort_confirm_count,
+        "pending_abort": pending_abort,
         "user_name": user_name,
         "chapter_framework": chapter_framework_state,
     }

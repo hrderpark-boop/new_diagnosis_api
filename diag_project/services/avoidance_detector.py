@@ -120,6 +120,75 @@ ABSENCE_KEYWORDS = [
 ]
 
 
+# ── A-1: 참여 이탈(disengagement) 신호 판정 ──
+#   중단 트리거는 '근거 부족'이 아니라 '참여 이탈'이다(A-0). 성실히 답했으나
+#   사례가 없는 경우(부재 진술)는 이탈이 아니라 유효한 Lv.1 신호다.
+#   이탈 = ① 실질 내용 없는 단답 반복 ② 명시적 거부·중단 ③ 무응답.
+
+# 명시적 거부·중단 의사(1회로도 즉시 중단 절차 진입).
+_REFUSAL_KEYWORDS = [
+    "나중에 하", "나중에 다시", "나중에 할", "다음에 하", "다음에 할",
+    "오늘은 그만", "오늘은 여기", "오늘은 이만", "그만하", "그만할", "그만두",
+    "지금은 어렵", "지금은 좀", "지금은 힘들", "시간이 없", "시간이 부족",
+    "바빠서", "이만 하", "이만 마치", "그만하죠", "그만할래",
+]
+
+# 실질 내용이 없는 '단답/필러' 토큰 — 이것만으로 이루어진 응답은 이탈 신호.
+#   부재 진술("위임 경험은 많지 않습니다")은 '경험/위임/직접' 등 유의미 토큰이
+#   남으므로 이탈로 잡히지 않는다.
+_FILLER_TOKENS = {
+    "네", "넵", "예", "아니요", "아니오", "아뇨", "응", "음", "뭐", "그",
+    "저", "글쎄", "글쎄요", "없어요", "없습니다", "없음", "없는데요", "없네요",
+    "모르겠어요", "모르겠습니다", "모르겠네요", "모르겠는데요", "모르겠",
+    "기억안나요", "딱히", "딱히요", "그냥", "그냥요", "잘", "안", "뭐랄까",
+    "패스", "스킵", "글쎄다",
+}
+
+
+def detect_disengagement_refusal(text: str | None) -> bool:
+    """명시적 거부·중단 의사 감지(휴식 요청 포함)."""
+    if not text:
+        return False
+    stripped = text.strip()
+    return (any(kw in stripped for kw in _REFUSAL_KEYWORDS)
+            or detect_pause_request(text))
+
+
+def _has_substance(text: str) -> bool:
+    """필러를 걷어낸 뒤 유의미한 토큰(2자 이상, 필러 아님)이 남는가."""
+    import re
+    toks = re.split(r"\s+", text.strip())
+    for t in toks:
+        w = re.sub(r"[^가-힣a-zA-Z0-9]", "", t)
+        if len(w) >= 2 and w not in _FILLER_TOKENS:
+            return True
+    return False
+
+
+def classify_engagement(text: str | None) -> tuple[str, dict]:
+    """참여 상태 분류 → ('engaged' | 'empty' | 'refusal', 근거 dict).
+
+    구조화 로깅용 근거(길이 / 실질 내용 유무 / 거부 매칭)를 함께 반환한다.
+    - 'refusal': 명시적 거부·중단 의사 → 즉시 중단 절차(A-2)
+    - 'empty'  : 무응답이거나 실질 내용 없는 단답(필러만) → 이탈 신호
+    - 'engaged': 그 외(부재 진술처럼 성실히 설명한 경우 포함) → 이탈 아님
+    """
+    raw = (text or "").strip()
+    length = len(raw.replace(" ", ""))
+    if not raw:
+        return "empty", {"length": 0, "has_substance": False,
+                         "refusal": False, "reason": "무응답"}
+    if detect_disengagement_refusal(raw):
+        return "refusal", {"length": length, "has_substance": _has_substance(raw),
+                           "refusal": True, "reason": "명시적 거부·중단"}
+    substance = _has_substance(raw)
+    if not substance:
+        return "empty", {"length": length, "has_substance": False,
+                         "refusal": False, "reason": "실질 내용 없는 단답(필러)"}
+    return "engaged", {"length": length, "has_substance": True,
+                       "refusal": False, "reason": "실질 응답"}
+
+
 def detect_absence_statement(text: str | None) -> bool:
     """부재 진술 감지 — 근거가 아니라 '사건을 캐물어야 할' 신호.
 

@@ -480,6 +480,52 @@ async def _submit_message_phase3a(
     db.add(user_msg)
     await db.commit()
 
+    # 🚦 A: 참여 이탈(disengagement) 추적. 중단 트리거는 '근거 부족'이 아니라
+    #   '참여 이탈'(A-0) — 부재 진술처럼 성실히 설명한 경우(engaged)는 카운트
+    #   하지 않는다. build_turn_state 가 이 store 를 읽어 ABORT_CONFIRM/
+    #   ABORT_DISENGAGED 를 결정한다.
+    if chapter:
+        from diag_project.services.avoidance_detector import (
+            classify_engagement, detect_disengagement_refusal,
+        )
+        from diag_project.services.instruction_decider import is_user_consent
+        from sqlalchemy.orm.attributes import flag_modified as _fm_eng
+        _dstore = dict(session.self_assessment_data or {})
+        _eng, _det = classify_engagement(request.content)
+        if _dstore.get("awaiting_abort_decision"):
+            # A-3: 직전 ABORT_CONFIRM 에 대한 답변으로 분기.
+            _cont = (is_user_consent(request.content)
+                     or (_eng == "engaged"
+                         and not detect_disengagement_refusal(request.content)))
+            _dstore["awaiting_abort_decision"] = False
+            if _cont:                                  # 계속 → 카운터 리셋
+                _dstore["disengagement_streak"] = 0
+                _dstore["pending_abort"] = False
+                _dstore["abort_confirm_count"] = int(
+                    _dstore.get("abort_confirm_count", 0)) + 1
+            else:                                      # 중단/무응답/거부 → 확정
+                _dstore["pending_abort"] = True
+        else:
+            _cyc = int(_dstore.get("probe_cycles", 0)) + 1
+            _stk = (0 if _eng == "engaged"
+                    else int(_dstore.get("disengagement_streak", 0)) + 1)
+            _dstore["probe_cycles"] = _cyc
+            _dstore["disengagement_streak"] = _stk
+            _dstore["last_refusal"] = (_eng == "refusal")
+        _dstore["last_engagement"] = _eng
+        session.self_assessment_data = _dstore
+        _fm_eng(session, "self_assessment_data")
+        await db.commit()
+        logger.info(
+            "🚦 참여상태 [%s] streak=%d cycles=%d awaiting=%s pending_abort=%s "
+            "(%s len=%d sub=%s)", _eng,
+            _dstore.get("disengagement_streak", 0),
+            _dstore.get("probe_cycles", 0),
+            _dstore.get("awaiting_abort_decision"),
+            _dstore.get("pending_abort"), _det["reason"],
+            _det["length"], _det["has_substance"],
+        )
+
     # 4. Turn State 빌드
     state = await build_turn_state(db, session.id, chapter)
 
@@ -613,6 +659,45 @@ async def _submit_message_phase3a(
             "제가 성함을 정확히 파악하지 못했습니다. 본격적으로 시작하기 전에, "
             "편하게 부를 호칭을 다시 한번 알려주시겠어요?"
         )
+
+    # 🚦 A-3: 참여 이탈 중단 '확인' — 곧바로 끊지 않고 선택권을 준다.
+    #   평가·판단 표현 절대 금지("사례를 못 하셨다"/"참여도" 등) — 대상자가
+    #   자신이 부족해 끊긴 것으로 느끼면 재개율이 떨어진다. 고정 문구.
+    _is_abort_confirm = (not _is_aborted and not _is_warning
+                         and not _is_name_reconfirm
+                         and instruction_used == "ABORT_CONFIRM")
+    if _is_abort_confirm:
+        system_override_text = (
+            "오늘은 시간을 내기 어려우신 것 같네요. 여기서 저장해두고 편하실 때 "
+            "이어서 진행하실까요? 아니면 조금 더 해보시겠어요? 편하신 쪽으로 "
+            "말씀해 주세요."
+        )
+        _store_ac = dict(session.self_assessment_data or {})
+        _store_ac["awaiting_abort_decision"] = True
+        session.self_assessment_data = _store_ac
+        from sqlalchemy.orm.attributes import flag_modified as _fm_ac
+        _fm_ac(session, "self_assessment_data")
+        await db.commit()
+
+    # 🚦 A-4: 참여 이탈 중단 '확정' — 리포트 파이프라인을 아예 호출하지 않는다.
+    #   원장(asked/evidence/measured/current_target/turns)은 전부 보존(일시정지).
+    _is_abort_disengaged = (not _is_aborted and not _is_warning
+                            and not _is_name_reconfirm and not _is_abort_confirm
+                            and instruction_used == "ABORT_DISENGAGED")
+    if _is_abort_disengaged:
+        system_override_text = (
+            "네, 오늘은 여기까지 하고 편하실 때 이어서 진행하겠습니다. 지금까지 "
+            "나눠주신 내용은 안전하게 저장해두었으니 다음에 이어서 계속하실 수 "
+            "있습니다. 시간 내주셔서 감사합니다."
+        )
+        session.status = "aborted_disengaged"
+        _store_ad = dict(session.self_assessment_data or {})
+        _store_ad["pending_abort"] = False
+        _store_ad["awaiting_abort_decision"] = False
+        session.self_assessment_data = _store_ad
+        from sqlalchemy.orm.attributes import flag_modified as _fm_ad
+        _fm_ad(session, "self_assessment_data")
+        await db.commit()
 
     if (not _is_aborted and not _is_warning and not _is_name_reconfirm
             and instruction_used == "RAPPORT_BUILDING"
@@ -1067,6 +1152,9 @@ async def _submit_message_phase3a(
         "is_session_paused": is_session_paused,
         # 🚨 3-Strike 강제 종료 — 프론트가 입력창을 영구 잠금해야 하는 신호.
         "is_terminated": _is_aborted,
+        # 🚦 A: 참여 이탈 중단(재개 가능) — 리포트 미발행, 이어하기 안내.
+        "is_aborted_disengaged": _is_abort_disengaged,
+        "is_awaiting_abort_decision": _is_abort_confirm,
         "session_status": session.status,
         # 챕터 경계에서 '계속/휴식' 답변을 기다리는 중 — 프론트가 선택 버튼 노출
         "is_awaiting_continue": probe_type_used == "AWAIT_CONTINUE",
