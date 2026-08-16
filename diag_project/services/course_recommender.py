@@ -156,17 +156,33 @@ async def _strength_gate_pass(item: dict, llm) -> bool:
         raw = await llm._generate_with_retry(
             prompt, max_tokens=4096, json_mode=True,  # thinking 모델: 300 소진 방지
         )
+    except Exception as e:  # noqa: BLE001
+        # 🚨 V-1#4: '빈 응답/오류로 미검증'(fail-closed) 과 '판단에 의한 차단'을
+        #   로그에서 구분한다. 이건 판단이 아니라 게이트가 못 돈 것이다.
+        logger.warning(
+            "🚧 D트랙 게이트 미검증(빈응답/오류 → fail-closed 미생성, '판단 아님') "
+            "[%s]: %s", item["sub_name"], str(e)[:100],
+        )
+        return False
+    try:
         import json as _json
-        raw = raw.replace("```json", "").replace("```", "").strip()
+        raw = (raw or "").replace("```json", "").replace("```", "").strip()
+        if not raw:
+            logger.warning(
+                "🚧 D트랙 게이트 빈 응답 → fail-closed 미생성('판단 아님') [%s]",
+                item["sub_name"])
+            return False
         res = _json.loads(raw)
         match = bool(res.get("match"))
         logger.info(
-            "🔎 D트랙 게이트 [%s] match=%s · %s",
+            "🔎 D트랙 게이트 판단 [%s] match=%s · %s",
             item["sub_name"], match, str(res.get("reason"))[:80],
         )
         return match
     except Exception as e:  # noqa: BLE001
-        logger.error(f"D트랙 게이트 검증 실패(카드 생략): {e}")
+        logger.warning(
+            "🚧 D트랙 게이트 파싱 실패 → fail-closed 미생성('판단 아님') [%s]: %s",
+            item["sub_name"], str(e)[:80])
         return False
 
 
