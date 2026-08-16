@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from diag_project.models.event import Event
-from diag_project.models.diagnosis_session import ChatMessage
+from diag_project.models.diagnosis_session import ChatMessage, MessageRole
 from diag_project.services.avoidance_detector import (
     check_avoidance,
     is_unproductive_response,
@@ -670,7 +670,7 @@ async def build_turn_state(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == "user")
+        .where(ChatMessage.role == MessageRole.USER)
     )
     user_messages = msg_result.scalars().all()
     turn_count = len(user_messages)
@@ -681,7 +681,7 @@ async def build_turn_state(
     all_user_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "user")
+        .where(ChatMessage.role == MessageRole.USER)
         .order_by(ChatMessage.created_at.asc())
     )
     all_user_msgs = list(all_user_result.scalars().all())
@@ -753,7 +753,7 @@ async def build_turn_state(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.probe_type_used == "CONTRARY")
     )
     has_contrary = contrary_result.scalars().first() is not None
@@ -763,7 +763,7 @@ async def build_turn_state(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.probe_type_used == "NO_YIELD_ULTIMATUM")
     )
     no_yield_ultimatum_given = ultimatum_result.scalars().first() is not None
@@ -773,7 +773,7 @@ async def build_turn_state(
     warning_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.probe_type_used == "ABORT_WARNING")
     )
     session_already_warned = warning_result.scalars().first() is not None
@@ -783,7 +783,7 @@ async def build_turn_state(
     reconfirm_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.probe_type_used == "NAME_RECONFIRM")
     )
     name_reconfirm_asked = reconfirm_result.scalars().first() is not None
@@ -792,7 +792,7 @@ async def build_turn_state(
     rapport_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.probe_type_used.in_(["READY_FOR_INTRO", "RAPPORT_COMPLETE"]))
     )
     rapport_complete = rapport_result.scalars().first() is not None
@@ -801,7 +801,7 @@ async def build_turn_state(
     intro_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.instruction_used == "DIAGNOSIS_INTRO")
     )
     intro_done = intro_result.scalars().first() is not None
@@ -811,7 +811,7 @@ async def build_turn_state(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.probe_type_used == "START_CHAPTER")
     )
     chapter_started = chapter_started_result.scalars().first() is not None
@@ -822,7 +822,7 @@ async def build_turn_state(
     latest_model_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .order_by(ChatMessage.created_at.desc())
         .limit(1)
     )
@@ -838,7 +838,7 @@ async def build_turn_state(
     suggest_pause_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.probe_type_used == "SUGGEST_PAUSE")
     )
     suggest_pause_count = len(list(suggest_pause_result.scalars().all()))
@@ -847,7 +847,7 @@ async def build_turn_state(
     confirm_msg_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.instruction_used == "DIAGNOSIS_CONFIRM")
     )
     confirm_turn_count = len(list(confirm_msg_result.scalars().all()))
@@ -856,7 +856,7 @@ async def build_turn_state(
     rapport_turn_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "user")
+        .where(ChatMessage.role == MessageRole.USER)
         .where(ChatMessage.chapter == None)  # noqa: E711
     )
     rapport_messages = rapport_turn_result.scalars().all()
@@ -870,7 +870,7 @@ async def build_turn_state(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.instruction_used.not_in([
             "COMPETENCY_INTRO",
             "COMPETENCY_ALIGN",
@@ -890,7 +890,7 @@ async def build_turn_state(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.instruction_used == "COMPETENCY_INTRO")
     )
     competency_intro_done = competency_intro_result.scalars().first() is not None
@@ -899,7 +899,7 @@ async def build_turn_state(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
         .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == "model")
+        .where(ChatMessage.role == MessageRole.MODEL)
         .where(ChatMessage.instruction_used == "COMPETENCY_ALIGN")
     )
     competency_aligned = competency_align_result.scalars().first() is not None
@@ -957,7 +957,7 @@ async def build_turn_state(
     _last_instr_res = await db.execute(
         select(ChatMessage.instruction_used)
         .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "model")  # 코치 메시지 role=model
+        .where(ChatMessage.role == MessageRole.MODEL)  # 코치 메시지 role=model
         .order_by(ChatMessage.created_at.desc())
         .limit(1)
     )

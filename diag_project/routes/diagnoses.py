@@ -14,7 +14,7 @@ from sqlalchemy import func, delete, desc
 from pydantic import BaseModel
 
 from diag_project.database import get_db
-from diag_project.models.diagnosis_session import DiagnosisSession, ChatMessage
+from diag_project.models.diagnosis_session import DiagnosisSession, ChatMessage, MessageRole
 from diag_project.models.coach_persona import CoachPersona
 from diag_project.models.participant import Participant
 from diag_project.llm_service import GeminiService
@@ -171,7 +171,7 @@ async def start_diagnosis(
         # 마지막 AI 메시지 가져오기 (문맥 유지용)
         last_msg_query = select(ChatMessage).where(
             ChatMessage.session_id == existing_session.id,
-            ChatMessage.role == "model"
+            ChatMessage.role == MessageRole.MODEL
         ).order_by(desc(ChatMessage.created_at))
         last_msg_res = await db.execute(last_msg_query)
         last_message = last_msg_res.scalars().first()
@@ -497,10 +497,23 @@ async def _submit_message_phase3a(
         _lp = await db.execute(
             select(ChatMessage.instruction_used)
             .where(ChatMessage.session_id == session.id)
-            .where(ChatMessage.role == "model")  # 코치 메시지 role=model
+            .where(ChatMessage.role == MessageRole.MODEL)  # 코치 메시지 role=model
             .order_by(ChatMessage.created_at.desc()).limit(1)
         )
         _last_probe = _lp.scalars().first()
+        # 🚨 V-7: 코치 메시지가 있어야 정상인 지점에서 None 이면 role 조회 오류
+        #   가능성(예: role 문자열 오타)을 조용히 넘기지 않고 경고한다.
+        if _last_probe is None:
+            _mc = await db.execute(
+                select(func.count()).select_from(ChatMessage)
+                .where(ChatMessage.session_id == session.id)
+                .where(ChatMessage.role == MessageRole.MODEL)
+            )
+            if (_mc.scalar() or 0) > 0:
+                logger.warning(
+                    "⚠️ 직전 코치 instruction 조회가 None 인데 코치 메시지는 "
+                    "존재 — role 조회 경로 점검 필요(세션 %s).", session.id,
+                )
     if chapter and _last_probe in _BEI_PROBE_INSTR:
         from diag_project.services.avoidance_detector import (
             classify_engagement, detect_disengagement_refusal,
@@ -999,7 +1012,7 @@ async def _submit_message_phase3a(
         _last_model_q = await db.execute(
             select(ChatMessage)
             .where(ChatMessage.session_id == session.id)
-            .where(ChatMessage.role == "model")
+            .where(ChatMessage.role == MessageRole.MODEL)
             .order_by(ChatMessage.created_at.desc())
             .limit(1)
         )
