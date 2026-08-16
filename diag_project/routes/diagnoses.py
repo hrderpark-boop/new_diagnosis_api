@@ -508,7 +508,7 @@ async def _submit_message_phase3a(
     _PROBE_INSTR = {
         "CHAPTER_OPENING", "CONTINUE_NORMAL", "STAR_INCOMPLETE",
         "STAR_COMPLETE_NEW_EVENT", "CONTRARY_NEEDED", "ABSTRACT_AVOIDANCE",
-        "AVOIDANCE_DETECTED",
+        "AVOIDANCE_DETECTED", "ABSENCE_PROBE",
     }
     current_target_sub = None
     if chapter and instruction_used in _PROBE_INSTR:

@@ -25,6 +25,7 @@ from diag_project.services.avoidance_detector import (
     detect_prompt_injection,
     detect_abstract_avoidance,
     detect_closing_intent,
+    detect_absence_statement,
     is_invalid_input,
 )
 
@@ -166,6 +167,7 @@ InstructionType = Literal[
     "STAR_COMPLETE_NEW_EVENT",
     "CONTRARY_NEEDED",
     "AVOIDANCE_DETECTED",
+    "ABSENCE_PROBE",
     "ABSTRACT_AVOIDANCE",
     "CHAPTER_NO_YIELD_ULTIMATUM",
     "DUPLICATE_SUSPECTED",
@@ -487,6 +489,15 @@ def decide_instruction(state: dict) -> InstructionType:
     # 4. 메타 질문
     if detect_meta_question(last_response):
         return "META_QUESTION_FROM_USER"
+
+    # 4-0. 🧭 T-A 부재 진술 2단 폴백:
+    #   "그런 경험은 없다 / 직접 챙기는 편이다" 처럼 유창하지만 채점 가능한
+    #   행동 사건이 없는 응답. 곧바로 measured 로 통과시키지 말고, "직접
+    #   챙기셨던 최근 사례 하나"를 청해 구체 사건(→ Lv.1 정당 근거)을 끌어낸다.
+    #   2단 폴백이므로 '한 번만' 발동(직전 코치 턴이 ABSENCE_PROBE 면 재발동 금지).
+    if (state.get("chapter") and detect_absence_statement(last_response)
+            and state.get("last_instruction") != "ABSENCE_PROBE"):
+        return "ABSENCE_PROBE"
 
     # 4-a. 🛡️ Fail-Fast: 회피/남탓/비아냥 3회 반복 → 즉시 강제 전환
     #   유효 데이터(강한 STAR) 없이 회피성 응답이 한 챕터에서 3회 이상이면,
@@ -917,6 +928,16 @@ async def build_turn_state(
         n for n in all_subcompetencies if n not in asked_in_chapter
     ]
 
+    # 직전 코치(assistant) 턴의 instruction — 2단 폴백이 '한 번만' 발동하도록.
+    _last_instr_res = await db.execute(
+        select(ChatMessage.instruction_used)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == "assistant")
+        .order_by(ChatMessage.created_at.desc())
+        .limit(1)
+    )
+    last_instruction = _last_instr_res.scalars().first()
+
     # COMPETENCY_ALIGN 가이드용: 정의 + 세부역량 이름 목록
     if chapter_competency:
         chapter_framework_state = {
@@ -1015,6 +1036,7 @@ async def build_turn_state(
         "explored_subcompetencies": explored_subcompetencies,
         "unexplored_subcompetencies": unexplored_subcompetencies,
         "asked_in_chapter": asked_in_chapter,  # T2: 실시간 탐색(넓이) 지표
+        "last_instruction": last_instruction,  # 2단 폴백 1회 제한용
         "user_name": user_name,
         "chapter_framework": chapter_framework_state,
     }

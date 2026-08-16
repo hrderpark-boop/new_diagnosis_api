@@ -1007,8 +1007,19 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         (질문되지 않았거나 답을 회피) 절대 점수를 지어내지 말고
         measured=false, level=null, evidence=[] 로 둘 것.
         → 측정하지 않은 지표에 점수를 부여하는 것은 리포트 신뢰를 무너뜨린다.
+규칙 2-B. 🚨 [BEI 근거 자격 — 구체 행동 사례만 채택] evidence 로 채택할 수
+        있는 것은 '구체 행동 사례'뿐이다. 자격 요건 = ① 시점(언제) + ② 상황
+        (어떤 맥락) + ③ 리더가 '실제로 한 행동'. 아래 셋은 근거가 아니므로
+        evidence 에 넣지 말고, 그것뿐이면 measured=false 로 둘 것:
+          · 태도·신념 진술: "~가 중요하다고 생각합니다"
+          · 일반화 서술: "보통 제가 직접 처리하는 편입니다", "가끔 ~하는 정도"
+          · 부재 진술: "그런 경험은 없습니다" (오히려 낮은 수준의 신호일 뿐)
+        BEI 의 원칙은 '행동 사례'다. 태도·일반화는 아무리 명확해도 근거가 아니다.
 규칙 3. measured=true 인 지표만 level(1~4)을 부여한다. level 은
         [평가 방법론] STEP A 루브릭(Lv1 증거 없음~Lv4 시스템화)을 그대로 적용.
+        🚨 서술의 유창함이 아니라 '행동이 실제로 도달한 수준'으로 레벨을 매긴다.
+        예: "제가 직접 떠안아 처리했다"는 위임·팀워크에서는 낮은 수준(Lv.1~2)
+        신호다 — 문장이 구체적이라고 레벨을 올리지 말 것.
 규칙 4. evidence 는 그 판정의 근거가 된 '원문 그대로(verbatim)' 발췌만.
         요약·창작 금지. 최소 1건. (measured=false 면 빈 배열)
 규칙 5. 점수의 평균·클램프·가점은 시스템(코드)이 계산한다. 당신은 지표별
@@ -1100,7 +1111,9 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             #    → measured = asked AND evidence>=1 (is_measured). 유령 측정 차단.
             _asked_set = asked_subs or set()
             _assess = result.get("sub_assessments") or {}
-            ledgers = []
+
+            # 1차 파싱: 하위역량별 evidence(원문만) + 판정기 주장 레벨
+            _parsed: Dict[str, Dict[str, Any]] = {}
             for _sub in sub_indicators:
                 a = _assess.get(_sub) or {}
                 ev = [
@@ -1109,6 +1122,50 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 ]
                 lvl = a.get("level")
                 lvl = int(lvl) if isinstance(lvl, (int, float)) else None
+                _parsed[_sub] = {"evidence": ev, "level": lvl}
+
+            # 🚧 T-A: 레벨 서술 매칭 게이트 — asked & 근거 있는 후보만 배치 검증.
+            #   competencies.py levels[N] 서술과 대조해 강등/탈락(measured=False).
+            #   유창함이 아니라 '행동 수준' 일치로 레벨 확정. LLM 없으면 유지.
+            _candidates = {
+                s: {"evidence": p["evidence"], "claimed_level": p["level"] or 1}
+                for s, p in _parsed.items()
+                if (s in _asked_set) and p["evidence"]
+            }
+            _gate: Dict[str, Dict[str, Any]] = {}
+            if _candidates:
+                try:
+                    from diag_project.services.level_gate import (
+                        gate_verify_levels,
+                    )
+
+                    async def _gate_llm(_p):
+                        return await self._generate_with_retry(
+                            _p, max_tokens=2048, json_mode=True,
+                            model=ANALYSIS_MODEL,
+                        )
+
+                    _gate = await gate_verify_levels(
+                        competency_key, _candidates, _gate_llm
+                    )
+                except Exception as _ge:  # noqa: BLE001
+                    logger.warning("레벨 게이트 스킵(%s)", _ge)
+                    _gate = {}
+            result["level_gate"] = _gate  # 감사용(강등/탈락 내역)
+
+            ledgers = []
+            for _sub in sub_indicators:
+                p = _parsed[_sub]
+                ev = p["evidence"]
+                lvl = p["level"]
+                g = _gate.get(_sub)
+                if g is not None:
+                    if g.get("dropped"):
+                        # 근거 자격 미달 → 근거 무효화(measured=False, asked 유지)
+                        ev = []
+                        lvl = None
+                    elif g.get("verified_level") is not None:
+                        lvl = g["verified_level"]  # 강등 반영
                 ledgers.append(SubLedger(
                     name=_sub,
                     asked=(_sub in _asked_set),  # 독립 신호(코드) — evidence 무관

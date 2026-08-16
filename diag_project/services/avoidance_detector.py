@@ -107,6 +107,32 @@ def check_avoidance(text: str | None) -> bool:
     return any(kw in stripped for kw in AVOIDANCE_KEYWORDS)
 
 
+# 부재 진술(absence statement) 표지 — "그런 경험은 없다 / 만들어두지 못했다 /
+# (위임 등을) 하지 않고 직접 챙긴다". 회피 키워드('모르겠')는 없지만
+# 채점 가능한 '구체 행동 사건'이 아니다. 곧바로 measured 로 통과시키면 안 되고,
+# "직접 챙기셨던 최근 사례 하나"를 청하는 2단 폴백을 발동시켜야 한다(T-A).
+ABSENCE_KEYWORDS = [
+    "경험은 없", "경험이 없", "경험은 많지 않", "경험이 많지 않",
+    "해본 적이 없", "해 본 적이 없", "한 적이 없", "해본 적은 없",
+    "만들어두지", "만들어 두지", "만들어놓지", "따로 없", "딱히 없",
+    "특별히 없", "그런 건 없", "그런건 없", "별로 없", "잘 없",
+    "위임하지", "위임한 적", "맡기지", "맡긴 적",
+]
+
+
+def detect_absence_statement(text: str | None) -> bool:
+    """부재 진술 감지 — 근거가 아니라 '사건을 캐물어야 할' 신호.
+
+    회피(check_avoidance)와 별개: 문장은 유창하지만 채점 가능한 행동 사건이
+    없는 '경험 부재' 서술을 잡는다. 감지되면 2단 폴백(구체 사례 요청)을
+    발동시켜, 거기서 나온 실제 사건이 Lv.1 의 정당한 근거가 되게 한다.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    return any(kw in stripped for kw in ABSENCE_KEYWORDS)
+
+
 # 남탓(외부 귀인) · 비아냥 · 진단 자체를 무시하는 도발 패턴.
 # 유효 데이터(STAR) 없이 이런 반응만 반복되면 '유의미한 진단 불가'로 보고
 # Fail-Fast 강제 전환의 근거로 쓴다. (check_avoidance 의 단순 회피어와 별개)
