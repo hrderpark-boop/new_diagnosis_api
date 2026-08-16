@@ -957,7 +957,7 @@ async def build_turn_state(
     _last_instr_res = await db.execute(
         select(ChatMessage.instruction_used)
         .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == "assistant")
+        .where(ChatMessage.role == "model")  # 코치 메시지 role=model
         .order_by(ChatMessage.created_at.desc())
         .limit(1)
     )

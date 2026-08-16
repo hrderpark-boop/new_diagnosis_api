@@ -484,7 +484,24 @@ async def _submit_message_phase3a(
     #   '참여 이탈'(A-0) — 부재 진술처럼 성실히 설명한 경우(engaged)는 카운트
     #   하지 않는다. build_turn_state 가 이 store 를 읽어 ABORT_CONFIRM/
     #   ABORT_DISENGAGED 를 결정한다.
+    # 직전 코치 턴이 '실제 BEI 프로브'였을 때만 이탈 카운팅한다. 라포·인트로·
+    #   컨펌·역량합의 등 온보딩 턴은 프로브가 아니므로 제외(조기 중단 방지).
+    _BEI_PROBE_INSTR = {
+        "CHAPTER_OPENING", "CONTINUE_NORMAL", "STAR_INCOMPLETE",
+        "STAR_COMPLETE_NEW_EVENT", "CONTRARY_NEEDED", "ABSTRACT_AVOIDANCE",
+        "AVOIDANCE_DETECTED", "ABSENCE_PROBE", "ABORT_CONFIRM",
+        "CHAPTER_NO_YIELD_ULTIMATUM",
+    }
+    _last_probe = None
     if chapter:
+        _lp = await db.execute(
+            select(ChatMessage.instruction_used)
+            .where(ChatMessage.session_id == session.id)
+            .where(ChatMessage.role == "model")  # 코치 메시지 role=model
+            .order_by(ChatMessage.created_at.desc()).limit(1)
+        )
+        _last_probe = _lp.scalars().first()
+    if chapter and _last_probe in _BEI_PROBE_INSTR:
         from diag_project.services.avoidance_detector import (
             classify_engagement, detect_disengagement_refusal,
         )
