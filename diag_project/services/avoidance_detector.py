@@ -126,12 +126,20 @@ ABSENCE_KEYWORDS = [
 #   이탈 = ① 실질 내용 없는 단답 반복 ② 명시적 거부·중단 ③ 무응답.
 
 # 명시적 거부·중단 의사(1회로도 즉시 중단 절차 진입).
+#   🚨 어간(그만두/그만하)만 넣으면 "그만두'면' 아쉬울까 걱정"(=중단하기 싫다)
+#   같은 긴 성실한 답변까지 오탐한다. 의도-'종결형'만 등재하고, 아래
+#   classify_engagement 에서 길이 게이트(짧은 응답만 refusal)를 함께 건다.
 _REFUSAL_KEYWORDS = [
-    "나중에 하", "나중에 다시", "나중에 할", "다음에 하", "다음에 할",
-    "오늘은 그만", "오늘은 여기", "오늘은 이만", "그만하", "그만할", "그만두",
-    "지금은 어렵", "지금은 좀", "지금은 힘들", "시간이 없", "시간이 부족",
-    "바빠서", "이만 하", "이만 마치", "그만하죠", "그만할래",
+    "나중에 하겠", "나중에 할게", "나중에 할래", "다음에 하겠", "다음에 할게",
+    "오늘은 그만", "오늘은 여기까지", "오늘은 이만", "여기까지 하겠",
+    "그만하겠", "그만할래", "그만하죠", "그만할게", "그만하고 싶",
+    "그만둘래", "그만두겠", "그만두고 싶", "그만둡시다",
+    "지금은 어렵", "지금은 힘들", "그만두는 게",
+    "이만 하겠", "이만 마치", "이만 줄이",
 ]
+# refusal 로 볼 수 있는 응답의 최대 길이(공백 제외). 이보다 길고 실질적이면
+# 단어가 우연히 포함돼도 '중단 의도'가 아니라 '성실한 서술'로 본다.
+_REFUSAL_MAX_LEN = 60
 
 # 실질 내용이 없는 '단답/필러' 토큰 — 이것만으로 이루어진 응답은 이탈 신호.
 #   부재 진술("위임 경험은 많지 않습니다")은 '경험/위임/직접' 등 유의미 토큰이
@@ -175,13 +183,15 @@ def classify_engagement(text: str | None) -> tuple[str, dict]:
     """
     raw = (text or "").strip()
     length = len(raw.replace(" ", ""))
+    substance = _has_substance(raw)
     if not raw:
         return "empty", {"length": 0, "has_substance": False,
                          "refusal": False, "reason": "무응답"}
-    if detect_disengagement_refusal(raw):
-        return "refusal", {"length": length, "has_substance": _has_substance(raw),
+    # 🚨 refusal 은 '짧은 중단 의도'일 때만. 긴 성실한 서술(≥ _REFUSAL_MAX_LEN)이
+    #   우연히 키워드를 포함해도 중단으로 보지 않는다(부분 문자열 오탐 방지).
+    if length < _REFUSAL_MAX_LEN and detect_disengagement_refusal(raw):
+        return "refusal", {"length": length, "has_substance": substance,
                            "refusal": True, "reason": "명시적 거부·중단"}
-    substance = _has_substance(raw)
     if not substance:
         return "empty", {"length": length, "has_substance": False,
                          "refusal": False, "reason": "실질 내용 없는 단답(필러)"}

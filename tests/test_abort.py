@@ -38,10 +38,19 @@ def test_short_filler_is_empty():
 
 
 def test_refusal_detected():
-    for t in ["나중에 하겠습니다", "지금은 좀 어렵네요", "그만하죠"]:
+    for t in ["나중에 하겠습니다", "오늘은 그만할게요", "그만하죠"]:
         c, _ = classify_engagement(t)
-        ck(f"명시적 거부 → refusal ({t!r})", c == "refusal"
-           and detect_disengagement_refusal(t))
+        ck(f"명시적 거부(짧음) → refusal ({t!r})", c == "refusal")
+
+
+def test_long_substantive_mentioning_quit_is_engaged():
+    """🚨 회귀: 긴 성실한 답변이 '그만두' 등 키워드를 우연히 포함해도
+    (부분 문자열) refusal 로 오판하지 않는다 — 김보통 오중단의 원인이었다."""
+    t = ("제가 혹시라도 중간에 그만두면 오늘 나눴던 귀한 이야기들이 "
+         "흐지부지될까 걱정도 됩니다. 괜찮으시다면 조금 더 진행해볼 수 "
+         "있었으면 좋겠습니다. 계속 잘 부탁드립니다.")
+    c, _ = classify_engagement(t)
+    ck("긴 서술 속 '그만두면' → engaged(중단 아님)", c == "engaged")
 
 
 def test_short_but_substantive_is_engaged():
