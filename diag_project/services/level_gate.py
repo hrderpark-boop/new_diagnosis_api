@@ -12,13 +12,19 @@
 판정)한다. LLM 이 없으면(단위 테스트 등) 게이트를 건너뛰고 claimed_level 을
 그대로 둔다(보수적: 판사 없이 강등하지 않음).
 """
+import asyncio
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 
 logger = logging.getLogger(__name__)
+
+# 게이트 호출을 전역 직렬화 — 대역량 분석 5건이 병렬(gather)로 도는 동안
+# 게이트 LLM 호출까지 겹쳐 일부 키가 LLM_EMPTY_RESPONSE 를 반환하는 것을 막는다.
+# 한 번에 하나의 게이트 호출만 나가게 해 동시성 스파이크를 제거한다.
+_GATE_SEMAPHORE = asyncio.Semaphore(1)
 
 
 def level_reference(competency_key: str, sub_name: str) -> Dict[int, str]:
@@ -112,8 +118,24 @@ async def gate_verify_levels(
         return out
 
     prompt = _build_gate_prompt(items)
+
+    async def _call_gate():
+        # 직렬화 + 빈 응답/오류 시 1회 재시도(동시성 스파이크 해소용 지연).
+        async with _GATE_SEMAPHORE:
+            last = None
+            for attempt in range(2):
+                try:
+                    raw = await llm(prompt)
+                    if raw and raw.strip():
+                        return raw
+                    last = "빈 응답"
+                except Exception as e:  # noqa: BLE001
+                    last = str(e)
+                await asyncio.sleep(2.0 * (attempt + 1))
+            raise RuntimeError(last or "게이트 응답 없음")
+
     try:
-        raw = await llm(prompt)
+        raw = await _call_gate()
         raw = (raw or "").replace("```json", "").replace("```", "").strip()
         res = json.loads(raw)
         by_idx = {int(r.get("idx")): r for r in (res.get("results") or [])}
