@@ -1264,8 +1264,10 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         from diag_project.services.level_gate import gate_verify_levels
 
         async def _gate_llm(_p):
+            # gemini-2.5-pro 는 thinking 모델 — 토큰 예산이 작으면 사고 토큰이
+            # 이를 소진해 출력이 비어(→ pending) 버린다. 넉넉히 8192.
             return await self._generate_with_retry(
-                _p, max_tokens=2048, json_mode=True, model=ANALYSIS_MODEL,
+                _p, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL,
             )
 
         for ckey, result in competency_results.items():
