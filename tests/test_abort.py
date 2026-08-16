@@ -117,13 +117,25 @@ def test_recommendation_gating():
         return await build_course_recommendation(
             _details(n), transcript="", job_weights={}, llm=_no_llm_gate)
 
-    r2 = asyncio.get_event_loop().run_until_complete(run(2))
+    def _ncards(r):
+        if not r:
+            return 0
+        return len(r.get("growth", [])) + (1 if r.get("strength") else 0)
+
+    loop = asyncio.get_event_loop()
+    r0 = loop.run_until_complete(run(0))
+    ck("measured 0 → 추천 없음(None)", r0 is None)
+    r2 = loop.run_until_complete(run(2))
     ck("measured 2 → 추천 없음(None)", r2 is None)
-    r4 = asyncio.get_event_loop().run_until_complete(run(4))
-    _cards = (r4 or {}).get("growth", []) + (
-        [r4["strength"]] if r4 and r4.get("strength") else [])
-    ck("measured 4 → 카드 ≤4(후보 상한)", r4 is not None and len(_cards) <= 4,
-       f"(={len(_cards)})")
+    r3 = loop.run_until_complete(run(3))
+    ck("measured 3 → 카드 발행 & ≤3", r3 is not None and _ncards(r3) <= 3,
+       f"(={_ncards(r3)})")
+    r6 = loop.run_until_complete(run(6))
+    ck("measured 6 → 카드 ≤4(전역 상한)", r6 is not None and _ncards(r6) <= 4,
+       f"(={_ncards(r6)})")
+    r12 = loop.run_until_complete(run(12))
+    ck("measured 12 → 카드 ≤4(전역 상한)", r12 is not None and _ncards(r12) <= 4,
+       f"(={_ncards(r12)})")
 
 
 def _run():
