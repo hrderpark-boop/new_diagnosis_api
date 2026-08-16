@@ -114,3 +114,34 @@ def asked_for_chapter(store: dict, chapter: str) -> list[str]:
 
 def asked_all(store: dict) -> dict[str, list[str]]:
     return dict((store or {}).get("asked_subs") or {})
+
+
+def apply_probe_turn(
+    store: dict, chapter: str, all_subs: list[str],
+    event_done: bool, priority: list[str] | None = None,
+) -> tuple[dict, str | None]:
+    """프로브 턴 1회의 결정론적 순회 스텝 (제어 역전의 핵심).
+
+    현재 타겟이 없거나 전진 시점이면 다음 미탐색 하위역량을 타겟으로 정해
+    asked 로 '기록'(LLM 호출 이전)하고 turns 를 0 으로. 아니면 turns 를 +1.
+    반환: (갱신된 store, 현재 타겟 sub_key).
+
+    diagnoses.py 프로브 스텝과 재개 테스트(T-E)가 '동일 로직'을 쓰도록 순수
+    함수로 뽑았다. store 는 그대로 self_assessment_data 에 영속화된다.
+    """
+    store = dict(store or {})
+    asked = asked_for_chapter(store, chapter)
+    cur = (store.get("current_target") or {}).get(chapter)
+    turns = (store.get("turns_on_target") or {}).get(chapter, 0)
+
+    if cur is None or should_advance_target(turns, event_done):
+        target = select_next_target(asked, all_subs, priority or [])
+        if target:
+            store = record_asked(store, chapter, target)
+            store.setdefault("current_target", {})[chapter] = target
+            store.setdefault("turns_on_target", {})[chapter] = 0
+            cur = target
+        # target 이 None(전량 탐색)이면 현재 타겟 유지
+    else:
+        store.setdefault("turns_on_target", {})[chapter] = turns + 1
+    return store, cur

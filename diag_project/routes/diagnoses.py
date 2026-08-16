@@ -502,8 +502,7 @@ async def _submit_message_phase3a(
     #   유일 소스이며, LLM 응답이 무엇이든 되돌리지 않는다. 그 타겟의 앵커를
     #   프롬프트에 주입(state["current_target_sub"]) → LLM 은 표현만.
     from diag_project.services.traversal import (
-        select_next_target, should_advance_target, record_asked,
-        asked_for_chapter,
+        apply_probe_turn, asked_for_chapter,
     )
     _PROBE_INSTR = {
         "CHAPTER_OPENING", "CONTINUE_NORMAL", "STAR_INCOMPLETE",
@@ -512,23 +511,13 @@ async def _submit_message_phase3a(
     }
     current_target_sub = None
     if chapter and instruction_used in _PROBE_INSTR:
+        # 재개 테스트(T-E)와 동일한 순수 스텝을 공유한다 — 원장이 유일 소스.
         _store = dict(session.self_assessment_data or {})
         _all_subs = state.get("all_subcompetencies") or []
-        _asked = asked_for_chapter(_store, chapter)
-        _cur = (_store.get("current_target") or {}).get(chapter)
-        _turns = (_store.get("turns_on_target") or {}).get(chapter, 0)
         _event_done = instruction_used == "STAR_COMPLETE_NEW_EVENT"
-        if _cur is None or should_advance_target(_turns, _event_done):
-            _target = select_next_target(_asked, _all_subs, priority=[])
-            if _target:
-                _store = record_asked(_store, chapter, _target)
-                _store.setdefault("current_target", {})[chapter] = _target
-                _store.setdefault("turns_on_target", {})[chapter] = 0
-                _cur = _target
-            # 미탐색 소진: _cur 유지(마지막 타겟), 새 기록 없음(정직하게 남김)
-        else:
-            _store.setdefault("turns_on_target", {})[chapter] = _turns + 1
-        current_target_sub = _cur
+        _store, current_target_sub = apply_probe_turn(
+            _store, chapter, _all_subs, _event_done, priority=[]
+        )
         session.self_assessment_data = _store
         from sqlalchemy.orm.attributes import flag_modified as _flag_mod
         _flag_mod(session, "self_assessment_data")

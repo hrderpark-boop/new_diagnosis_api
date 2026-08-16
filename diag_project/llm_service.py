@@ -1180,6 +1180,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                     "asked": lg.asked, "measured": lg.measured,
                     "level": lg.level, "score": lg.score,
                     "evidence": lg.evidence_utterances,
+                    # 🧭 T3 2-tier 상태: 측정 / 근거미확보(asked&!measured) /
+                    #   미탐색(!asked). 프론트 렌더링·정성 활용의 단일 기준.
+                    "status": (
+                        "measured" if lg.measured
+                        else "evidence_missing" if lg.asked
+                        else "unexplored"
+                    ),
                 }
                 for lg in ledgers
             }
@@ -1374,6 +1381,45 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 "top_keywords": [],
             }
 
+    def _audit_multi_mapping(self, competency_results: Dict[str, Dict]) -> None:
+        """감사 신호(로그 전용): 동일 STAR 사건이 3+ 하위역량에 매핑되고
+        레벨 방향이 엇갈리는지 감시. 근거 발화의 단어 집합 유사도(Jaccard≥0.5)로
+        같은 사건을 근사 군집화한다. dedup 은 하지 않는다."""
+        rows = []  # (comp, sub, level, wordset)
+        for ckey, cval in competency_results.items():
+            for sub, row in (cval.get("sub_ledger") or {}).items():
+                if not row.get("measured"):
+                    continue
+                ev = " ".join(row.get("evidence") or [])
+                words = {w for w in ev.replace(",", " ").split() if len(w) >= 2}
+                if words and row.get("level"):
+                    rows.append((ckey, sub, int(row["level"]), words))
+
+        used = [False] * len(rows)
+        for i in range(len(rows)):
+            if used[i]:
+                continue
+            cluster = [i]
+            for j in range(i + 1, len(rows)):
+                if used[j]:
+                    continue
+                a, b = rows[i][3], rows[j][3]
+                inter = len(a & b)
+                union = len(a | b) or 1
+                if inter / union >= 0.5:
+                    cluster.append(j)
+                    used[j] = True
+            used[i] = True
+            if len(cluster) >= 3:
+                levels = [rows[k][2] for k in cluster]
+                if max(levels) - min(levels) >= 2:  # 방향 엇갈림
+                    subs = [f"{rows[k][1]}(Lv.{rows[k][2]})" for k in cluster]
+                    logger.warning(
+                        "⚠️ 다중매핑 감사: 유사 사건이 %d개 하위역량에 매핑되고 "
+                        "레벨 방향이 엇갈림 → %s (레벨 인플레이션 의심, dedup 아님)",
+                        len(cluster), ", ".join(subs),
+                    )
+
     async def generate_diagnosis_result(
         self,
         history: List[Dict],
@@ -1453,6 +1499,14 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             else:
                 competency_results[key] = result
 
+        # 🔎 T-A 감사 신호(로그 전용): 동일 STAR 사건이 3+ 하위역량에 매핑되고
+        #   레벨 방향이 엇갈리면 경고. dedup 은 하지 않는다(풍부한 사건이 여러
+        #   역량 근거가 되는 건 정상) — 레벨 인플레이션 재발 감시용 신호만 남긴다.
+        try:
+            self._audit_multi_mapping(competency_results)
+        except Exception as _ae:  # noqa: BLE001
+            logger.debug("다중매핑 감사 스킵: %s", _ae)
+
         # STEP 3: 종합 요약
         logger.info("📊 STEP 3: 종합 리더십 프로파일 생성 중...")
         summary = await self._generate_comprehensive_summary(user_name, competency_results)
@@ -1470,8 +1524,14 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             v.get("sub_total", 0) for v in competency_results.values()
         )
         _cov = _coverage(_measured_total, _subs_total)
-        _cov["asked"] = _asked_total  # 탐색률(내부 지표) — UI 미노출
+        _cov["asked"] = _asked_total  # 탐색률 — T3 활성화로 UI 2단 지표 노출
         _cov["asked_ratio"] = round(_asked_total / _subs_total, 3) if _subs_total else 0.0
+        # 🧭 T3 경계: '근거 미확보'(asked & !measured) = 탐색 − 측정.
+        #   이 항목은 점수에 '절대' 반영하지 않는다(SubLedger.score=None,
+        #   competency_behavior_score 는 measured 평균만). 정성 서술(종합
+        #   피드백·GAP)에는 '질문했으나 사례 미확인' 관찰로 활용 가능하다.
+        #   여기서는 카운트만 노출하고, 점수 경로는 위 순수 함수가 봉인한다.
+        _cov["evidence_missing"] = max(0, _asked_total - _measured_total)
         # 🔒 T4: 종합 점수 셧다운 (순수 함수) — 대역량 3+ None 또는 측정 <11/26.
         from diag_project.services.scoring import score_shutdown as _shutdown
         _none_comps = sum(
