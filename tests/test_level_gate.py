@@ -14,9 +14,20 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from diag_project.services import level_gate as LG  # noqa: E402
 from diag_project.services.level_gate import (  # noqa: E402
     gate_verify_levels, level_reference,
 )
+
+# 재시도 백오프 sleep 은 테스트에서 즉시 반환(고속화).
+_orig_sleep = asyncio.sleep
+
+
+async def _fast_sleep(_s):
+    return await _orig_sleep(0)
+
+
+asyncio.sleep = _fast_sleep  # type: ignore
 
 P = [0, 0]
 
@@ -76,11 +87,35 @@ def test_gate_never_upgrades():
        r["갈등관리"]["verified_level"] == 2)
 
 
-def test_no_llm_keeps_claimed():
+def test_no_llm_failclosed_pending():
+    LG._GATE_CACHE.clear()
     m = {"갈등관리": {"evidence": ["직접 통합 처리"], "claimed_level": 3}}
     r = _run_async(gate_verify_levels("people_management", m, None))
-    ck("LLM 없으면 claimed 유지", r["갈등관리"]["verified_level"] == 3
-       and not r["갈등관리"]["dropped"])
+    ck("LLM 없으면 pending(fail-closed, 통과 금지)",
+       r["갈등관리"]["pending"] is True
+       and r["갈등관리"]["verified_level"] is None)
+
+
+def test_failclosed_on_empty_timeout_exception():
+    """🚨 fail-open 방지: LLM 이 빈응답/타임아웃/예외를 내도 measured 로
+    통과(verified_level 유지)하지 않고 pending 이어야 한다."""
+    async def empty(_p):
+        return ""
+
+    async def timeout(_p):
+        raise asyncio.TimeoutError("timeout")
+
+    async def exc(_p):
+        raise RuntimeError("API 오류")
+
+    for name, fn in [("빈응답", empty), ("타임아웃", timeout), ("예외", exc)]:
+        LG._GATE_CACHE.clear()
+        m = {"갈등관리": {"evidence": ["직접 통합 처리"], "claimed_level": 3}}
+        r = _run_async(gate_verify_levels("people_management", m, fn))
+        g = r["갈등관리"]
+        ck(f"{name} → pending(통과 안 함)",
+           g["pending"] is True and g["verified_level"] is None
+           and g["dropped"] is False, f"(={g})")
 
 
 def _main():

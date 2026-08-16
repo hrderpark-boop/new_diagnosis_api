@@ -139,7 +139,12 @@ def apply_probe_turn(
         if target:
             store = record_asked(store, chapter, target)
             store.setdefault("current_target", {})[chapter] = target
-            store.setdefault("turns_on_target", {})[chapter] = 0
+            # 🧭 앵커(기록) 턴 자체가 이 하위역량의 '1번째 턴'이다. turns=1 로
+            #   시작해야 하위역량당 정확히 MAX_TURNS_PER_SUB(3) 프로브 턴을
+            #   소비하고 전진한다(0 으로 시작하면 4턴 소비 → 넓이 부족).
+            #   → 넓이 우선: 깊이(STAR)가 연속 실패해도 3턴이면 다음 하위역량으로
+            #     전진해 커버리지를 확보한다(커버리지 > 깊이).
+            store.setdefault("turns_on_target", {})[chapter] = 1
             cur = target
         # target 이 None(전량 탐색)이면 현재 타겟 유지
     else:

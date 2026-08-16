@@ -79,51 +79,72 @@ def _build_gate_prompt(items: list) -> str:
     )
 
 
+# (evidence, sub_key, claimed_level) → 게이트 판정 캐시 (중복 호출 제거).
+_GATE_CACHE: Dict[tuple, Dict[str, Any]] = {}
+GATE_MAX_RETRIES = 3  # 지수 백오프 재시도 횟수
+
+
+def _cache_key(competency_key: str, sub: str, evidence, claimed: int) -> tuple:
+    return (competency_key, sub, "|".join(evidence or []), int(claimed or 1))
+
+
+def _pending(reason: str) -> Dict[str, Any]:
+    """게이트가 판정을 '내리지 못한' 상태 — fail-closed 표식.
+
+    measured 를 유지하지 않는다. 점수 산출 보류(gate_status=pending) 후
+    리포트에 '검증 미완료'로 표기해 조용한 fail-open 을 막는다.
+    """
+    return {"verified_level": None, "category": "검증불가",
+            "reason": reason, "downgraded": False, "dropped": False,
+            "pending": True}
+
+
 async def gate_verify_levels(
     competency_key: str,
     measured: Dict[str, Dict[str, Any]],
     llm,
 ) -> Dict[str, Dict[str, Any]]:
-    """측정된 하위역량들의 레벨을 배치 검증.
+    """측정 후보 하위역량들의 레벨을 배치 검증 (fail-closed).
 
     measured: {sub_name: {"evidence": [str...], "claimed_level": int}}
-    반환: {sub_name: {"verified_level": int|None, "category": str, "reason": str,
-                      "downgraded": bool, "dropped": bool}}
-      · verified_level=None → measured=False (근거 자격 미달)
-      · verified_level < claimed → 강등
-    LLM 이 없거나 실패하면 claimed_level 을 그대로 통과(보수적).
+    반환: {sub_name: {"verified_level": int|None, "category", "reason",
+                      "downgraded", "dropped", "pending"}}
+      · pending=True  → 게이트가 판정 불가(응답 실패/미가동). measured 유지 금지,
+                        점수 보류(gate_status=pending). 🚨 fail-open 하지 않는다.
+      · dropped=True  → 게이트 실행됨, 근거 자격 미달 → measured=False(근거미확보).
+      · verified_level<claimed → 강등. =claimed → 유지(통과).
     """
     out: Dict[str, Dict[str, Any]] = {}
     items = []
     for sub, info in measured.items():
         ref = level_reference(competency_key, sub)
         claimed = info.get("claimed_level") or 1
+        ck = _cache_key(competency_key, sub, info.get("evidence"), claimed)
+        if ck in _GATE_CACHE:                       # 캐시 적중
+            out[sub] = dict(_GATE_CACHE[ck])
+            continue
         if not ref or not info.get("evidence"):
-            # 기준 서술이 없으면 게이트 불가 → 유지(보수적)
-            out[sub] = {"verified_level": claimed, "category": "미검증",
-                        "reason": "레벨 기준 서술 없음", "downgraded": False,
-                        "dropped": False}
+            # 기준 서술이 없으면 판정 불가 → fail-closed(pending)
+            out[sub] = _pending("레벨 기준 서술 없음")
             continue
         items.append({"sub_name": sub, "evidence": info["evidence"],
-                      "claimed_level": claimed, "ref": ref})
+                      "claimed_level": claimed, "ref": ref, "ck": ck})
 
     if not items:
         return out
     if llm is None:
+        # 🚨 fail-closed: 게이트 미가동 시 통과시키지 않고 pending 처리.
         for it in items:
-            out[it["sub_name"]] = {
-                "verified_level": it["claimed_level"], "category": "미검증",
-                "reason": "LLM 게이트 미가동", "downgraded": False,
-                "dropped": False}
+            out[it["sub_name"]] = _pending("LLM 게이트 미가동")
         return out
 
     prompt = _build_gate_prompt(items)
 
     async def _call_gate():
-        # 직렬화 + 빈 응답/오류 시 1회 재시도(동시성 스파이크 해소용 지연).
+        # 전역 직렬화 + 지수 백오프 재시도(빈 응답/오류에 견딤).
         async with _GATE_SEMAPHORE:
             last = None
-            for attempt in range(2):
+            for attempt in range(GATE_MAX_RETRIES):
                 try:
                     raw = await llm(prompt)
                     if raw and raw.strip():
@@ -131,7 +152,7 @@ async def gate_verify_levels(
                     last = "빈 응답"
                 except Exception as e:  # noqa: BLE001
                     last = str(e)
-                await asyncio.sleep(2.0 * (attempt + 1))
+                await asyncio.sleep(2.0 * (2 ** attempt))  # 2,4,8s
             raise RuntimeError(last or "게이트 응답 없음")
 
     try:
@@ -140,34 +161,38 @@ async def gate_verify_levels(
         res = json.loads(raw)
         by_idx = {int(r.get("idx")): r for r in (res.get("results") or [])}
     except Exception as e:  # noqa: BLE001
-        logger.warning("레벨 게이트 판정 실패(%s) → claimed 유지", e)
+        # 🚨 fail-closed: 응답 실패 시 measured 유지 금지 → 전 항목 pending.
+        logger.warning("레벨 게이트 판정 실패(%s) → pending(fail-closed)", e)
         for it in items:
-            out[it["sub_name"]] = {
-                "verified_level": it["claimed_level"], "category": "미검증",
-                "reason": f"게이트 오류: {e}", "downgraded": False,
-                "dropped": False}
+            out[it["sub_name"]] = _pending(f"게이트 응답 실패: {e}")
         return out
 
     for i, it in enumerate(items, 1):
-        r = by_idx.get(i) or {}
+        r = by_idx.get(i)
         claimed = it["claimed_level"]
+        if not r:  # 판정 항목 누락 → pending
+            out[it["sub_name"]] = _pending("게이트 판정 항목 누락")
+            continue
         sup = r.get("supported_level")
         sup = int(sup) if isinstance(sup, (int, float)) else claimed
         sup = max(0, min(sup, claimed))  # 강등/유지만, 상향 금지
         verified = None if sup <= 0 else sup
-        out[it["sub_name"]] = {
+        verdict = {
             "verified_level": verified,
-            "category": r.get("category", "미검증"),
+            "category": r.get("category", "구체행동"),
             "reason": str(r.get("reason", ""))[:120],
             "downgraded": verified is not None and verified < claimed,
             "dropped": verified is None,
+            "pending": False,
         }
+        out[it["sub_name"]] = verdict
+        _GATE_CACHE[it["ck"]] = dict(verdict)        # 캐시에 저장
         if verified is None:
             logger.info("🚧 레벨게이트 탈락 [%s/%s] claimed=Lv.%s → 근거미달(%s)",
                         competency_key, it["sub_name"], claimed,
-                        out[it["sub_name"]]["category"])
+                        verdict["category"])
         elif verified < claimed:
             logger.info("🔽 레벨게이트 강등 [%s/%s] Lv.%s→Lv.%s (%s)",
                         competency_key, it["sub_name"], claimed, verified,
-                        out[it["sub_name"]]["reason"])
+                        verdict["reason"])
     return out

@@ -1124,99 +1124,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 lvl = int(lvl) if isinstance(lvl, (int, float)) else None
                 _parsed[_sub] = {"evidence": ev, "level": lvl}
 
-            # 🚧 T-A: 레벨 서술 매칭 게이트 — asked & 근거 있는 후보만 배치 검증.
-            #   competencies.py levels[N] 서술과 대조해 강등/탈락(measured=False).
-            #   유창함이 아니라 '행동 수준' 일치로 레벨 확정. LLM 없으면 유지.
-            _candidates = {
-                s: {"evidence": p["evidence"], "claimed_level": p["level"] or 1}
-                for s, p in _parsed.items()
-                if (s in _asked_set) and p["evidence"]
-            }
-            _gate: Dict[str, Dict[str, Any]] = {}
-            if _candidates:
-                try:
-                    from diag_project.services.level_gate import (
-                        gate_verify_levels,
-                    )
-
-                    async def _gate_llm(_p):
-                        return await self._generate_with_retry(
-                            _p, max_tokens=2048, json_mode=True,
-                            model=ANALYSIS_MODEL,
-                        )
-
-                    _gate = await gate_verify_levels(
-                        competency_key, _candidates, _gate_llm
-                    )
-                except Exception as _ge:  # noqa: BLE001
-                    logger.warning("레벨 게이트 스킵(%s)", _ge)
-                    _gate = {}
-            result["level_gate"] = _gate  # 감사용(강등/탈락 내역)
-
-            ledgers = []
-            for _sub in sub_indicators:
-                p = _parsed[_sub]
-                ev = p["evidence"]
-                lvl = p["level"]
-                g = _gate.get(_sub)
-                if g is not None:
-                    if g.get("dropped"):
-                        # 근거 자격 미달 → 근거 무효화(measured=False, asked 유지)
-                        ev = []
-                        lvl = None
-                    elif g.get("verified_level") is not None:
-                        lvl = g["verified_level"]  # 강등 반영
-                ledgers.append(SubLedger(
-                    name=_sub,
-                    asked=(_sub in _asked_set),  # 독립 신호(코드) — evidence 무관
-                    evidence_utterances=ev,
-                    level=lvl,
-                ))
-
-            # 하위역량 점수 맵 (measured → [1,4] 점수 / 미측정 → None)
-            result["sub_scores"] = {lg.name: lg.score for lg in ledgers}
-            result["sub_ledger"] = {
-                lg.name: {
-                    "asked": lg.asked, "measured": lg.measured,
-                    "level": lg.level, "score": lg.score,
-                    "evidence": lg.evidence_utterances,
-                    # 🧭 T3 2-tier 상태: 측정 / 근거미확보(asked&!measured) /
-                    #   미탐색(!asked). 프론트 렌더링·정성 활용의 단일 기준.
-                    "status": (
-                        "measured" if lg.measured
-                        else "evidence_missing" if lg.asked
-                        else "unexplored"
-                    ),
-                }
-                for lg in ledgers
-            }
-            _measured = [lg for lg in ledgers if lg.measured]
-            result["measured_count"] = len(_measured)
-            result["asked_count"] = sum(1 for lg in ledgers if lg.asked)
-            result["sub_total"] = len(ledgers)
-            result["is_reference"] = competency_is_reference(
-                len(_measured), len(ledgers)
-            )
-
-            # 대역량 점수 = mean(measured 하위) + STAR/확신도 가점 (코드 계산)
-            _behavior = competency_behavior_score(
-                [lg.score for lg in ledgers]
-            )
-            _sb = result.get("score_breakdown") or {}
-            _final = competency_final_score(
-                _behavior,
-                star_bonus=_sb.get("star_depth_bonus", 0.0),
-                confidence_adj=_sb.get("confidence_adj", 0.0),
-            )
-            result["behavior_score"] = _behavior
-            result["score"] = _final  # None 이면 대역량 미측정
-            result["score_breakdown"] = {
-                "rubric_base": _behavior,
-                "star_depth_bonus": _sb.get("star_depth_bonus", 0.0),
-                "confidence_adj": _sb.get("confidence_adj", 0.0),
-                "final": _final,
-            }
-
+            # 🚧 T-A: 레벨 게이트는 '병렬 분석'에서 분리해 분석 완료 후 순차
+            #   후처리(_run_level_gate)에서 돌린다. 여기서는 파싱 결과만 보관하고
+            #   예비로 fail-closed(gate=None → 후보는 pending) 원장을 만든다.
+            result["_parsed"] = _parsed
+            result["_asked_list"] = list(_asked_set)
+            result["_sub_indicators"] = list(sub_indicators)
+            self._finalize_ledger(result, competency_key, gate=None)
             return result
 
         except Exception as e:
@@ -1239,6 +1153,140 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 f'[<measured=true 면 근거 발화 원문 1건 이상, false 면 빈 배열>]}}'
             )
         return ",\n".join(lines)
+
+    def _finalize_ledger(self, result: Dict[str, Any], competency_key: str,
+                         gate: Dict[str, Dict[str, Any]] | None) -> None:
+        """파싱 결과 + 레벨 게이트 판정으로 sub_ledger·점수·gate_status 확정.
+
+        gate=None(예비): 모든 측정 후보를 pending 으로(fail-closed). 점수 보류.
+        gate=dict(후처리): 판정 반영 — passed(측정/강등), dropped(근거미확보),
+        pending(검증 미완료).
+
+        🚨 fail-closed 핵심: gate_status != 'passed'(또는 dropped) 이면 절대
+        measured 로 세지 않는다. 게이트 응답 실패(pending)는 '검증 미완료'로
+        점수를 보류하되, T3 '근거 미확보'(대상자 응답 상태)와는 구분한다.
+        """
+        from diag_project.services.scoring import (
+            competency_behavior_score, competency_final_score,
+            competency_is_reference,
+        )
+        parsed = result.get("_parsed") or {}
+        asked_set = set(result.get("_asked_list") or [])
+        sub_indicators = result.get("_sub_indicators") or list(parsed.keys())
+        gate = gate or {}
+
+        sub_ledger: Dict[str, Any] = {}
+        gate_counts = {"passed": 0, "pending": 0, "n/a": 0}
+        measured_count = 0
+        for sub in sub_indicators:
+            p = parsed.get(sub) or {}
+            ev = p.get("evidence") or []
+            claimed = p.get("level")
+            asked = sub in asked_set
+            candidate = asked and bool(ev)
+
+            eff_measured = False
+            gate_status = "n/a"
+            level = None
+            score = None
+            disp_ev: list = []
+            if not candidate:
+                status = "evidence_missing" if asked else "unexplored"
+            else:
+                g = gate.get(sub)
+                if g is None or g.get("pending"):
+                    # fail-closed: 검증 미완료 → 점수 보류(측정 카운트 제외)
+                    gate_status = "pending"
+                    status = "measured"   # 대상자 응답은 존재(도구 상태와 구분)
+                    level = claimed        # 표시용(점수 아님)
+                    disp_ev = ev
+                elif g.get("dropped"):
+                    # 게이트 실행됨 + 근거 자격 미달 → 근거미확보
+                    gate_status = "passed"
+                    status = "evidence_missing"
+                else:
+                    gate_status = "passed"
+                    _lv = g.get("verified_level") or claimed or 1
+                    level = int(min(4, max(1, _lv)))
+                    score = float(level)
+                    eff_measured = True
+                    status = "measured"
+                    disp_ev = ev
+
+            if eff_measured:
+                measured_count += 1
+            gate_counts[gate_status] = gate_counts.get(gate_status, 0) + 1
+            sub_ledger[sub] = {
+                "asked": asked, "measured": eff_measured,
+                "level": level, "score": score, "evidence": disp_ev,
+                "status": status, "gate_status": gate_status,
+            }
+
+        result["sub_ledger"] = sub_ledger
+        result["sub_scores"] = {s: v["score"] for s, v in sub_ledger.items()}
+        result["measured_count"] = measured_count
+        result["asked_count"] = sum(1 for v in sub_ledger.values() if v["asked"])
+        result["sub_total"] = len(sub_ledger)
+        result["gate_status_counts"] = gate_counts
+        result["gate_pending"] = gate_counts.get("pending", 0) > 0
+        result["is_reference"] = competency_is_reference(
+            measured_count, len(sub_ledger)
+        )
+
+        _behavior = competency_behavior_score(
+            list(result["sub_scores"].values())
+        )
+        _sb = result.get("score_breakdown") or {}
+        _final = competency_final_score(
+            _behavior,
+            star_bonus=_sb.get("star_depth_bonus", 0.0),
+            confidence_adj=_sb.get("confidence_adj", 0.0),
+        )
+        result["behavior_score"] = _behavior
+        result["score"] = _final  # None 이면 대역량 미측정
+        result["score_breakdown"] = {
+            "rubric_base": _behavior,
+            "star_depth_bonus": _sb.get("star_depth_bonus", 0.0),
+            "confidence_adj": _sb.get("confidence_adj", 0.0),
+            "final": _final,
+        }
+
+    async def _run_level_gate(
+        self, competency_results: Dict[str, Dict]
+    ) -> None:
+        """레벨 게이트 순차 후처리 (병렬 분석에서 분리).
+
+        분석 5건이 모두 끝난 뒤, 대역량별로 순차 실행한다. 게이트 호출은
+        level_gate 의 전역 Semaphore 로 동시성 1 로 직렬화되고, (evidence,
+        sub_key, level) 캐시로 중복을 없앤다. 실패는 pending 으로 흡수해
+        sim/리포트를 중단시키지 않는다(fail-closed).
+        """
+        from diag_project.services.level_gate import gate_verify_levels
+
+        async def _gate_llm(_p):
+            return await self._generate_with_retry(
+                _p, max_tokens=2048, json_mode=True, model=ANALYSIS_MODEL,
+            )
+
+        for ckey, result in competency_results.items():
+            parsed = result.get("_parsed")
+            if not parsed:
+                continue  # error fallback 등 — 게이트 대상 아님
+            asked_set = set(result.get("_asked_list") or [])
+            candidates = {
+                s: {"evidence": p.get("evidence") or [],
+                    "claimed_level": (p.get("level") or 1)}
+                for s, p in parsed.items()
+                if s in asked_set and p.get("evidence")
+            }
+            gate = {}
+            if candidates:
+                gate = await gate_verify_levels(ckey, candidates, _gate_llm)
+            result["level_gate"] = gate
+            self._finalize_ledger(result, ckey, gate=gate)
+            # 내부 파싱 캐시는 저장 payload 에서 제거(원문은 sub_ledger 에 있음)
+            for _k in ("_parsed", "_asked_list", "_sub_indicators"):
+                result.pop(_k, None)
 
     def _generate_fallback_sub_scores(self, sub_indicators: list, base_score: float) -> dict:
         """sub_scores 생성 실패 시 기본값 — 단순 복사가 아닌 소폭 편차 적용"""
@@ -1499,6 +1547,11 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             else:
                 competency_results[key] = result
 
+        # 🚧 T-A: 레벨 게이트 순차 후처리 (병렬 분석에서 분리, fail-closed).
+        #   여기서 gate_status(passed/pending/n/a) 와 최종 measured 가 확정된다.
+        logger.info("🚧 레벨 게이트 후처리(순차) 시작...")
+        await self._run_level_gate(competency_results)
+
         # 🔎 T-A 감사 신호(로그 전용): 동일 STAR 사건이 3+ 하위역량에 매핑되고
         #   레벨 방향이 엇갈리면 경고. dedup 은 하지 않는다(풍부한 사건이 여러
         #   역량 근거가 되는 건 정상) — 레벨 인플레이션 재발 감시용 신호만 남긴다.
@@ -1541,9 +1594,24 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             _none_comps, _measured_total, _subs_total
         )
         _cov["none_competencies"] = _none_comps
+        # 🚧 T-A fail-closed: 게이트 검증 미완료(pending) 집계 — 1건이라도 있으면
+        #   리포트 상단 경고 + 로그. 조용한 fail-open 을 막는 도구 상태 신호.
+        _gate_pending = sum(
+            v.get("gate_status_counts", {}).get("pending", 0)
+            for v in competency_results.values()
+        )
+        _cov["gate_pending"] = _gate_pending
+        _cov["gate_incomplete"] = _gate_pending > 0
+        if _gate_pending:
+            logger.warning(
+                "🚧 레벨 게이트 검증 미완료 %d건 — 리포트 '검증 미완료' 표기 "
+                "(점수 보류, fail-closed). API 용량 회복 후 재생성 권장.",
+                _gate_pending,
+            )
         logger.info(
-            "🧭 커버리지: 측정률 %d/%d · 탐색률 %d/%d",
+            "🧭 커버리지: 측정률 %d/%d · 탐색률 %d/%d · 게이트 pending %d",
             _measured_total, _subs_total, _asked_total, _subs_total,
+            _gate_pending,
         )
 
         final_result = {
