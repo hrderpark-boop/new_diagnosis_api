@@ -520,6 +520,20 @@ class GeminiService:
 
                 response = await _call_with_retry(_do_call, max_retries=3)
 
+                # 🚨 D-1: 잘린 응답 감지 — thinking 모델이 max_tokens 를 소진하면
+                #   finish_reason=MAX_TOKENS 로 출력이 잘린다(빈 응답보다 위험:
+                #   깨진 JSON·중간 절단). 경고 로그로 상향 필요 신호를 남긴다.
+                try:
+                    _cand = (getattr(response, "candidates", None) or [None])[0]
+                    _fr = str(getattr(_cand, "finish_reason", "") or "")
+                    if "MAX_TOKENS" in _fr.upper():
+                        logger.warning(
+                            "⚠️ 잘린 응답(finish_reason=MAX_TOKENS, max_tokens=%d, "
+                            "model=%s) — 토큰 상향 필요.", max_tokens, model_name,
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
                 text = response.text if hasattr(response, "text") else ""
                 if not text or not text.strip():
                     raise ValueError(
@@ -882,7 +896,7 @@ class GeminiService:
 """
         try:
             raw = await self._generate_with_retry(
-                prompt, max_tokens=4096, json_mode=True, model=ANALYSIS_MODEL
+                prompt, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL
             )
             return _safe_parse_json(raw)
         except Exception as e:
@@ -1162,9 +1176,10 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         gate=dict(후처리): 판정 반영 — passed(측정/강등), dropped(근거미확보),
         pending(검증 미완료).
 
-        🚨 fail-closed 핵심: gate_status != 'passed'(또는 dropped) 이면 절대
-        measured 로 세지 않는다. 게이트 응답 실패(pending)는 '검증 미완료'로
-        점수를 보류하되, T3 '근거 미확보'(대상자 응답 상태)와는 구분한다.
+        🚨 fail-closed 핵심: measured 로 세는 것은 gate_status='passed'(게이트
+        실행 + 근거 통과) 인 경우뿐이다. failed(탈락)·pending(검증 미완료)·
+        n_a 는 점수를 산출하지 않는다. pending(게이트 응답 실패)은 '검증
+        미완료'(도구 상태)로, T3 '근거 미확보'(대상자 응답 상태)와 구분한다.
         """
         from diag_project.services.scoring import (
             competency_behavior_score, competency_final_score,
@@ -1176,7 +1191,12 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         gate = gate or {}
 
         sub_ledger: Dict[str, Any] = {}
-        gate_counts = {"passed": 0, "pending": 0, "n/a": 0}
+        # D-2: gate_status 의미 명확화 —
+        #   passed  = 게이트 실행 + 근거 '통과'(measured)
+        #   failed  = 게이트 실행 + 근거 '탈락'(자격 미달 → 근거미확보)
+        #   pending = 게이트 실행 못함(응답 실패) → 점수 보류(fail-closed)
+        #   n_a     = 게이트 대상 아님(미탐색 / 근거 없음)
+        gate_counts = {"passed": 0, "failed": 0, "pending": 0, "n_a": 0}
         measured_count = 0
         for sub in sub_indicators:
             p = parsed.get(sub) or {}
@@ -1186,7 +1206,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             candidate = asked and bool(ev)
 
             eff_measured = False
-            gate_status = "n/a"
+            gate_status = "n_a"
             level = None
             score = None
             disp_ev: list = []
@@ -1201,8 +1221,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                     level = claimed        # 표시용(점수 아님)
                     disp_ev = ev
                 elif g.get("dropped"):
-                    # 게이트 실행됨 + 근거 자격 미달 → 근거미확보
-                    gate_status = "passed"
+                    # 게이트 실행됨 + 근거 자격 미달 → 탈락(근거미확보)
+                    gate_status = "failed"
                     status = "evidence_missing"
                 else:
                     gate_status = "passed"
@@ -1409,7 +1429,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 """
         try:
             raw = await self._generate_with_retry(
-                prompt, max_tokens=4096, json_mode=True, model=ANALYSIS_MODEL
+                prompt, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL
             )
             raw = raw.replace("```json", "").replace("```", "").strip()
 

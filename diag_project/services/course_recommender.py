@@ -154,7 +154,7 @@ async def _strength_gate_pass(item: dict, llm) -> bool:
     )
     try:
         raw = await llm._generate_with_retry(
-            prompt, max_tokens=300, json_mode=True,
+            prompt, max_tokens=4096, json_mode=True,  # thinking 모델: 300 소진 방지
         )
         import json as _json
         raw = raw.replace("```json", "").replace("```", "").strip()
