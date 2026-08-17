@@ -40,20 +40,43 @@ def _has_keys() -> bool:
     return bool(os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY"))
 
 
+# V-3: 투머치토커 evidence 정밀도 — 앵커와 '무관한' 장황 발화는 measured 안 됨.
+OFFTOPIC = {
+    "갈등관리": {"evidence": ["아 그러고 보니 제가 신입 때 읽었던 리더십 "
+                          "책에서도 비슷한 얘기가 나왔는데요, 옆 팀 김부장님은 "
+                          "또 완전히 다른 스타일이셨거든요. 주말에 등산을 가면 "
+                          "늘 그런 생각을 합니다"], "claimed_level": 2},
+    "신뢰형성": {"evidence": ["제가 예전에 프로젝트를 참 많이 했었죠. 그때는 "
+                          "야근도 많고 힘들었지만 보람도 있었습니다. 요즘 젊은 "
+                          "친구들은 좀 다른 것 같아요"], "claimed_level": 2},
+}
+
+
 async def _run():
     from diag_project.llm_service import GeminiService
     from diag_project.services.course_recommender import _strength_gate_pass
+    from diag_project.services.level_gate import gate_verify_levels
     svc = GeminiService()
     blocked = await _strength_gate_pass(BLOCK, svc)
     passed = await _strength_gate_pass(PASS, svc)
-    return blocked, passed
+
+    async def _gl(p):
+        return await svc._generate_with_retry(
+            p, max_tokens=8192, json_mode=True,
+            model=__import__("diag_project.llm_service",
+                             fromlist=["ANALYSIS_MODEL"]).ANALYSIS_MODEL)
+    off = await gate_verify_levels("people_management", OFFTOPIC, _gl)
+    off_rejected = all(
+        v.get("verified_level") is None for v in off.values())
+    return blocked, passed, off_rejected
 
 
 def main():
     if not _has_keys():
         print("  [SKIP] GEMINI_API_KEYS 없음 — D트랙 게이트 실측 생략(정상)")
         return 0
-    blocked, passed = asyncio.get_event_loop().run_until_complete(_run())
+    blocked, passed, off_rejected = (
+        asyncio.get_event_loop().run_until_complete(_run()))
     p = [0, 0]
 
     def ck(label, ok):
@@ -63,7 +86,8 @@ def main():
 
     ck("(a) 실무자 직접개입 → 차단(match=False)", blocked is False)
     ck("(b) 조직 시스템 설계 → 통과(match=True)", passed is True)
-    print(f"\n=== V-1 D트랙 게이트 양방향: {p[0]} PASS / {p[1]} FAIL ===")
+    ck("(V-3) 앵커 무관 장황 발화 → measured 안 됨", off_rejected is True)
+    print(f"\n=== V-1/V-3 게이트 정밀도: {p[0]} PASS / {p[1]} FAIL ===")
     return p[1]
 
 
