@@ -1607,13 +1607,21 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         #   피드백·GAP)에는 '질문했으나 사례 미확인' 관찰로 활용 가능하다.
         #   여기서는 카운트만 노출하고, 점수 경로는 위 순수 함수가 봉인한다.
         _cov["evidence_missing"] = max(0, _asked_total - _measured_total)
-        # 🔒 T4: 종합 점수 셧다운 (순수 함수) — 대역량 3+ None 또는 측정 <11/26.
-        from diag_project.services.scoring import score_shutdown as _shutdown
+        # 🔒 V-6: 종합 점수 셧다운 — 구조적 기준(대역량 3개+ 각 2건+ measured).
+        #   절대 측정 수(measured<11)는 경계에서 불안정(반복 진단 5~14 변동)해
+        #   정식/부분 리포트가 오락가락 → 구조 기준으로 교체(깊이+분산 요구).
+        from diag_project.services.scoring import (
+            score_suppressed_structural as _suppressed,
+        )
         _none_comps = sum(
             1 for v in competency_results.values() if v.get("score") is None
         )
-        _cov["score_suppressed"] = _shutdown(
-            _none_comps, _measured_total, _subs_total
+        _comp_measured = [
+            v.get("measured_count", 0) for v in competency_results.values()
+        ]
+        _cov["score_suppressed"] = _suppressed(_comp_measured)
+        _cov["qualifying_competencies"] = sum(
+            1 for c in _comp_measured if c >= 2
         )
         _cov["none_competencies"] = _none_comps
         # 🚧 T-A fail-closed: 게이트 검증 미완료(pending) 집계 — 1건이라도 있으면

@@ -118,10 +118,37 @@ def competency_is_reference(measured_subs: int, total_subs: int) -> bool:
 
 def score_shutdown(none_competencies: int, measured_total: int,
                    subs_total: int = 26) -> bool:
-    """T4: 종합 점수 셧다운 — 둘 중 하나라도 걸리면 종합점수 미렌더.
+    """T4(레거시): 종합 점수 셧다운 — 절대 측정 수 기준.
       ① 대역량 3개 이상 미측정(None)  ② 전체 측정률 40% 미만(measured<11/26)
+
+    ⚠️ V-6: 절대값(measured<11) 기준은 경계에서 불안정하다 — 동일 대상자
+    반복 진단에서 measured 5~14 로 흔들려 정식/부분 리포트가 오락가락한다.
+    신규 경로는 score_suppressed_structural 을 쓴다(이 함수는 회귀 보존용).
     """
     if none_competencies >= 3:
         return True
     threshold = subs_total * 0.40  # 26*0.4 = 10.4 → measured<11
     return measured_total < threshold
+
+
+# V-6: 구조적 셧다운 기준 — 절대 측정 수가 아니라 '깊이+분산'으로 판정.
+#   정식 발행(종합점수 산출)은 '대역량 MIN_QUAL_COMPS 개 이상에서 각
+#   MIN_PER_COMP 건 이상 measured' 일 때만. 개별 하위역량의 drop↔Lv.1 변동
+#   (±1~2건)에 흔들리지 않는다. 김보통 3회 실측: 자격 대역량 1·2·5 →
+#   경계(3)에서 넓은 간격 → 반복 진단 간 안정.
+#   🚨 임계를 '낮춰' 정식 발행을 늘리는 방향이 아니다 — 산발적 measured
+#   (대역량당 1건)로는 정식 발행되지 않도록 오히려 구조를 요구한다.
+MIN_QUAL_COMPS = 3   # 정식 발행에 필요한 '자격 대역량' 최소 수
+MIN_PER_COMP = 2     # 자격 대역량이 되려면 대역량당 measured 최소 건수
+
+
+def score_suppressed_structural(comp_measured_counts: list[int],
+                                min_qual_comps: int = MIN_QUAL_COMPS,
+                                min_per_comp: int = MIN_PER_COMP) -> bool:
+    """구조적 셧다운: 자격 대역량(measured ≥ min_per_comp) 이 min_qual_comps
+    개 미만이면 종합점수 보류(completed_insufficient).
+
+    comp_measured_counts: 대역량별 measured 하위역량 수 리스트.
+    """
+    qualifying = sum(1 for c in (comp_measured_counts or []) if c >= min_per_comp)
+    return qualifying < min_qual_comps
