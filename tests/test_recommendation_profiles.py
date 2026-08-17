@@ -26,7 +26,8 @@ class MockLLM:
     def __init__(self, match=True):
         self.match = match
 
-    async def _generate_with_retry(self, prompt, max_tokens=300, json_mode=True):
+    async def _generate_with_retry(self, prompt, max_tokens=300,
+                                   json_mode=True, **kwargs):
         import json
         return json.dumps({"match": self.match, "reason": "mock"})
 

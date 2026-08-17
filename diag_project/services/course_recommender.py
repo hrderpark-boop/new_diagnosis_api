@@ -154,7 +154,8 @@ async def _strength_gate_pass(item: dict, llm) -> bool:
     )
     try:
         raw = await llm._generate_with_retry(
-            prompt, max_tokens=4096, json_mode=True,  # thinking 모델: 300 소진 방지
+            prompt, max_tokens=4096, json_mode=True,
+            thinking_budget=0, call_type="dtrack_gate",
         )
     except Exception as e:  # noqa: BLE001
         # 🚨 V-1#4: '빈 응답/오류로 미검증'(fail-closed) 과 '판단에 의한 차단'을

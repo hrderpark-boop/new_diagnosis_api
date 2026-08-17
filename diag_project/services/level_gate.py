@@ -80,12 +80,21 @@ def _build_gate_prompt(items: list) -> str:
 
 
 # (evidence, sub_key, claimed_level) → 게이트 판정 캐시 (중복 호출 제거).
+#   §3: 프로세스 내 in-mem(_GATE_CACHE) + 파일 영속(analysis_cache)의 2단.
+#   프롬프트를 바꾸면 GATE_PROMPT_VERSION 을 올려 캐시를 무효화한다.
 _GATE_CACHE: Dict[tuple, Dict[str, Any]] = {}
 GATE_MAX_RETRIES = 3  # 지수 백오프 재시도 횟수
+GATE_PROMPT_VERSION = "2026-08-17.v1"
 
 
 def _cache_key(competency_key: str, sub: str, evidence, claimed: int) -> tuple:
     return (competency_key, sub, "|".join(evidence or []), int(claimed or 1))
+
+
+def _persist_key(competency_key: str, sub: str, evidence, claimed: int) -> str:
+    from diag_project.services import analysis_cache as _ac
+    return _ac.make_key(GATE_PROMPT_VERSION, competency_key, sub,
+                        "|".join(evidence or []), int(claimed or 1))
 
 
 def _pending(reason: str) -> Dict[str, Any]:
@@ -120,8 +129,15 @@ async def gate_verify_levels(
         ref = level_reference(competency_key, sub)
         claimed = info.get("claimed_level") or 1
         ck = _cache_key(competency_key, sub, info.get("evidence"), claimed)
-        if ck in _GATE_CACHE:                       # 캐시 적중
+        if ck in _GATE_CACHE:                       # in-mem 적중
             out[sub] = dict(_GATE_CACHE[ck])
+            continue
+        from diag_project.services import analysis_cache as _ac
+        _pk = _persist_key(competency_key, sub, info.get("evidence"), claimed)
+        _persisted = _ac.get("level_gate", _pk)
+        if _persisted is not None:                  # 파일 캐시 적중
+            _GATE_CACHE[ck] = dict(_persisted)
+            out[sub] = dict(_persisted)
             continue
         if not ref or not info.get("evidence"):
             # 기준 서술이 없으면 판정 불가 → fail-closed(pending)
@@ -186,7 +202,11 @@ async def gate_verify_levels(
             "pending": False,
         }
         out[it["sub_name"]] = verdict
-        _GATE_CACHE[it["ck"]] = dict(verdict)        # 캐시에 저장
+        _GATE_CACHE[it["ck"]] = dict(verdict)        # in-mem 저장
+        from diag_project.services import analysis_cache as _ac
+        _ac.set("level_gate", _persist_key(
+            competency_key, it["sub_name"], it["evidence"],
+            it["claimed_level"]), dict(verdict))     # 파일 영속
         if verified is None:
             logger.info("🚧 레벨게이트 탈락 [%s/%s] claimed=Lv.%s → 근거미달(%s)",
                         competency_key, it["sub_name"], claimed,

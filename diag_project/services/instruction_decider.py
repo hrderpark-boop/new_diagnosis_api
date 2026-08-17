@@ -455,6 +455,15 @@ def decide_instruction(state: dict) -> InstructionType:
     if not intro_done:
         return "DIAGNOSIS_INTRO"
 
+    # §7-1: 온보딩 하드 캡 — 온보딩(라포+인트로+컨펌)이 상한을 넘으면 미확보
+    #   정보(호칭 등)는 기본값으로 두고 즉시 역량 합의(→ BEI)로 전환한다.
+    #   같은 온보딩 질문(DIAGNOSIS_CONFIRM)이 무한 반복되던 경로를 차단한다
+    #   (투머치토커 라포 71턴·asked 0 사고 재발 방지). 이 검사가 아래 CONFIRM
+    #   루프보다 먼저 와야 캡이 실제로 작동한다.
+    ONBOARDING_HARD_CAP = 6
+    if not chapter_started and turn_count_total >= ONBOARDING_HARD_CAP:
+        return "COMPETENCY_ALIGN"
+
     # Step 5: 해당 역량 평소 생각/정의 묻기 (챕터별)
     # 챕터 2+ 는 직전 영역과 브리지하며 진입 (CONFIRM 가이드가 분기).
     if not chapter_started:

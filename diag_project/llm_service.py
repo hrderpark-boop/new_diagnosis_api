@@ -29,6 +29,58 @@ ANALYSIS_MODEL = "models/gemini-2.5-pro"
 # 하위 호환: 기존 BEST_MODEL 참조는 채점용(고품질) 모델로 유지
 BEST_MODEL = ANALYSIS_MODEL
 
+# §3 캐시 무효화용 프롬프트 버전 — 심층분석/evidence 추출 프롬프트를 바꾸면
+#   이 값을 올려 캐시를 자동 무효화한다(버전 미변경 호출만 캐시 반환).
+_ANALYSIS_PROMPT_VERSION = "2026-08-17.v1"
+
+# ── §8 계측: 호출 종류별 토큰/횟수 집계 (비용 baseline·A/B·재분석 비용 산출) ──
+#   thinking(사고) 토큰은 output 으로 과금되므로 별도로 집계한다.
+#   가격(추정, USD/1M 토큰) — 실제 청구서로 보정 필요.
+_PRICE = {
+    "models/gemini-2.5-pro": {"in": 1.25, "out": 10.0},   # 사고 포함 out
+    "models/gemini-2.5-flash": {"in": 0.30, "out": 2.50},
+}
+
+
+class _UsageMeter:
+    """호출 종류별 토큰·호출 수 누적. reset→작업→report 로 스냅샷."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.by_type: dict = {}
+
+    def record(self, call_type: str, model: str, inp: int, out: int,
+               thoughts: int):
+        d = self.by_type.setdefault(
+            (call_type, model),
+            {"calls": 0, "input": 0, "output": 0, "thoughts": 0})
+        d["calls"] += 1
+        d["input"] += int(inp or 0)
+        d["output"] += int(out or 0)      # candidates(보이는 답변) 토큰
+        d["thoughts"] += int(thoughts or 0)
+
+    def cost_usd(self) -> float:
+        total = 0.0
+        for (_ct, model), d in self.by_type.items():
+            pr = _PRICE.get(model, {"in": 0.0, "out": 0.0})
+            billed_out = d["output"] + d["thoughts"]  # 사고=출력 과금
+            total += (d["input"] * pr["in"] + billed_out * pr["out"]) / 1e6
+        return round(total, 5)
+
+    def summary(self) -> dict:
+        rows = {}
+        for (ct, model), d in sorted(self.by_type.items()):
+            rows[f"{ct}[{model.split('/')[-1]}]"] = {
+                **d, "billed_out": d["output"] + d["thoughts"]}
+        return {"by_type": rows,
+                "total_calls": sum(d["calls"] for d in self.by_type.values()),
+                "est_cost_usd": self.cost_usd()}
+
+
+USAGE_METER = _UsageMeter()
+
 # Phase 3-A 대화 토큰 한도 (light/heavy 분리).
 #  - HEAVY(BEI 본진단): reply + state + event_metadata JSON Envelope 가 커서
 #    절대 잘리면 안 됨 → 넉넉하게.
@@ -447,6 +499,7 @@ class GeminiService:
         json_mode: bool = False,
         model: str | None = None,
         thinking_budget: int | None = None,
+        call_type: str = "unknown",
     ) -> str:
         if not self.available_keys:
             raise Exception("사용 가능한 API 키가 없습니다.")
@@ -534,6 +587,19 @@ class GeminiService:
                 except Exception:  # noqa: BLE001
                     pass
 
+                # §8 계측: usage_metadata 캡처(호출 종류별 토큰 집계).
+                try:
+                    _um = getattr(response, "usage_metadata", None)
+                    if _um is not None:
+                        USAGE_METER.record(
+                            call_type, model_name,
+                            getattr(_um, "prompt_token_count", 0) or 0,
+                            getattr(_um, "candidates_token_count", 0) or 0,
+                            getattr(_um, "thoughts_token_count", 0) or 0,
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
                 text = response.text if hasattr(response, "text") else ""
                 if not text or not text.strip():
                     raise ValueError(
@@ -586,7 +652,8 @@ class GeminiService:
 3. **[가장 중요] 질문을 던진 후 절대 스스로 대답을 작성하지 마세요. 문장을 끝까지 완벽하게 마무리하세요.**
 """
         try:
-            text = await self._generate_with_retry(prompt)
+            text = await self._generate_with_retry(
+                prompt, thinking_budget=0, call_type="coach_light")
             return {
                 "coach_response_message": text,
                 "next_action": "onboarding",
@@ -745,7 +812,8 @@ class GeminiService:
 """
 
         try:
-            text = await self._generate_with_retry(prompt)
+            text = await self._generate_with_retry(
+                prompt, thinking_budget=0, call_type="coach_light")
             is_topic_completed = "[TOPIC_COMPLETED]" in text
             is_session_starting = "[START_SESSION]" in text
             reward_data = _extract_reward_json(text)
@@ -833,10 +901,10 @@ class GeminiService:
                     PHASE3A_MAX_TOKENS_LIGHT if light_mode
                     else PHASE3A_MAX_TOKENS_HEAVY
                 ),
-                # light 턴(짧은 호응/브릿지)은 thinking 불필요 — 비활성해
-                # 한도 전체를 답변에 쓰고(중간 잘림 방지) 지연도 줄인다.
-                # heavy 턴은 기본 thinking 유지 (8192 로 충분).
-                thinking_budget=0 if light_mode else None,
+                # §1: light 턴은 thinking 0(중간 잘림·지연 방지), heavy 턴은
+                #   512 로 상한(기존 dynamic → 사고 과금 통제). 모델은 flash 유지.
+                thinking_budget=0 if light_mode else 512,
+                call_type=("coach_light" if light_mode else "coach_heavy"),
             )
 
             # 강화된 파서로 reply / state 추출 (평문·JSON 모두 견고하게 처리)
@@ -896,7 +964,8 @@ class GeminiService:
 """
         try:
             raw = await self._generate_with_retry(
-                prompt, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL
+                prompt, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL,
+                thinking_budget=512, call_type="evidence_extract",
             )
             return _safe_parse_json(raw)
         except Exception as e:
@@ -1080,9 +1149,20 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
   쓰세요. 없는 발화를 지어내면 응답 전체가 폐기됩니다.
 """
         try:
-            raw = await self._generate_with_retry(
-                prompt, max_tokens=16384, json_mode=True, model=ANALYSIS_MODEL
-            )
+            # §3 캐시: 프롬프트(=버전) 와 입력(발화)이 동일하면 LLM 호출 생략.
+            #   추천·리포트 로직만 고쳤을 때 재분석이 0콜이 되게 한다.
+            from diag_project.services import analysis_cache as _ac
+            _ck = _ac.make_key(
+                _ANALYSIS_PROMPT_VERSION, competency_key,
+                relevant_utterances, full_transcript[:16000])
+            raw = _ac.get("deep_analysis", _ck)
+            if raw is None:
+                raw = await self._generate_with_retry(
+                    prompt, max_tokens=16384, json_mode=True,
+                    model=ANALYSIS_MODEL, thinking_budget=2048,
+                    call_type="deep_analysis",
+                )
+                _ac.set("deep_analysis", _ck, raw)
             raw = raw.replace("```json", "").replace("```", "").strip()
 
             result = json.loads(raw)
@@ -1288,6 +1368,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             # 이를 소진해 출력이 비어(→ pending) 버린다. 넉넉히 8192.
             return await self._generate_with_retry(
                 _p, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL,
+                thinking_budget=128, call_type="level_gate",
             )
 
         for ckey, result in competency_results.items():
@@ -1429,7 +1510,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 """
         try:
             raw = await self._generate_with_retry(
-                prompt, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL
+                prompt, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL,
+                thinking_budget=1024, call_type="summary",
             )
             raw = raw.replace("```json", "").replace("```", "").strip()
 
@@ -1508,6 +1590,10 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         없으면 하위호환으로 기존 STEP 1(LLM 분류) 사용.
         """
         logger.info(f"🧠 [{user_name}] Map-Reduce 분석 시작")
+        # §8 계측: 이 분석(재분석 1회)의 호출·토큰·비용을 스냅샷한다.
+        #   (단일 세션 분석 기준. 동시 분석 시엔 합산되므로 fixture 재분석은
+        #    순차로 측정한다.)
+        USAGE_METER.reset()
         competency_keys = _get_competency_keys()
 
         if chapter_transcripts is not None:
@@ -1675,5 +1761,14 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         except Exception as e:  # noqa: BLE001 — 추천 실패가 리포트를 막지 않게
             logger.error(f"교육과정 추천 생성 실패(무시): {e}")
 
+        # §8 계측: 이 재분석의 호출/토큰/추정비용 요약을 리포트에 부착 + 로그.
+        _usage = USAGE_METER.summary()
+        final_result["usage_metering"] = _usage
+        logger.info(
+            "💰 재분석 계측: 총 %d콜 · 추정 $%.4f · 종류별 %s",
+            _usage["total_calls"], _usage["est_cost_usd"],
+            {k: (v["calls"], v["input"], v["output"], v["thoughts"])
+             for k, v in _usage["by_type"].items()},
+        )
         logger.info(f"✅ [{user_name}] 분석 완료 — 총점: {summary.get('total_score')}")
         return final_result
