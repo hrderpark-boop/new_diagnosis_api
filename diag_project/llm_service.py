@@ -701,7 +701,7 @@ class GeminiService:
 """
         try:
             text = await self._generate_with_retry(
-                prompt, thinking_budget=0, call_type="coach_light")
+                prompt, call_type="coach_light")
             return {
                 "coach_response_message": text,
                 "next_action": "onboarding",
@@ -861,7 +861,7 @@ class GeminiService:
 
         try:
             text = await self._generate_with_retry(
-                prompt, thinking_budget=0, call_type="coach_light")
+                prompt, call_type="coach_light")
             is_topic_completed = "[TOPIC_COMPLETED]" in text
             is_session_starting = "[START_SESSION]" in text
             reward_data = _extract_reward_json(text)
@@ -951,7 +951,7 @@ class GeminiService:
                 ),
                 # §1: light 턴은 thinking 0(중간 잘림·지연 방지), heavy 턴은
                 #   512 로 상한(기존 dynamic → 사고 과금 통제). 모델은 flash 유지.
-                thinking_budget=0 if light_mode else 512,
+                thinking_budget=(0 if light_mode else None),
                 call_type=("coach_light" if light_mode else "coach_heavy"),
             )
 
@@ -1013,7 +1013,7 @@ class GeminiService:
         try:
             raw = await self._generate_with_retry(
                 prompt, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL,
-                thinking_budget=512, call_type="evidence_extract",
+                call_type="evidence_extract",
             )
             return _safe_parse_json(raw)
         except Exception as e:
@@ -1207,7 +1207,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             if raw is None:
                 raw = await self._generate_with_retry(
                     prompt, max_tokens=16384, json_mode=True,
-                    model=ANALYSIS_MODEL, thinking_budget=2048,
+                    model=ANALYSIS_MODEL,
                     call_type="deep_analysis",
                 )
                 _ac.set("deep_analysis", _ck, raw)
@@ -1416,7 +1416,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             # 이를 소진해 출력이 비어(→ pending) 버린다. 넉넉히 8192.
             return await self._generate_with_retry(
                 _p, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL,
-                thinking_budget=128, call_type="level_gate",
+                call_type="level_gate",
             )
 
         for ckey, result in competency_results.items():
@@ -1566,7 +1566,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             if raw is None:
                 raw = await self._generate_with_retry(
                     prompt, max_tokens=8192, json_mode=True,
-                    model=ANALYSIS_MODEL, thinking_budget=1024,
+                    model=ANALYSIS_MODEL,
                     call_type="summary",
                 )
                 _ac.set("summary", _sk, raw)
