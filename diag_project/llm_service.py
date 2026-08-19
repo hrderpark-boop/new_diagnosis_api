@@ -1480,6 +1480,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             "behavior_frequency": "낮음",
             "score": None,
             "comment": "분석 중 오류가 발생했습니다.",
+            "_error_fallback": True,  # item4: '진짜 미측정'과 '분석 실패' 구분용
         }
 
     def _build_competency_definitions(self) -> str:
@@ -1780,6 +1781,21 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         )
         _cov["gate_pending"] = _gate_pending
         _cov["gate_incomplete"] = _gate_pending > 0
+        # item4: 분석 광범위 실패(크레딧 소진 등) 감지 — '진짜 미측정'과 구분.
+        #   3개 이상 대역량이 error-fallback 이면 분석 자체가 오염된 것이므로
+        #   호출부(analyze_session)가 리포트를 저장하지 않고 세션을 재개 가능
+        #   상태로 남겨야 한다(garbage 전량0 리포트 저장 방지).
+        _err_comps = sum(
+            1 for v in competency_results.values()
+            if v.get("_error_fallback")
+        )
+        _cov["analysis_degraded"] = _err_comps >= 3
+        _cov["error_competencies"] = _err_comps
+        if _cov["analysis_degraded"]:
+            logger.error(
+                "🚨 분석 광범위 실패(error-fallback %d/5) — 크레딧 소진/장애 "
+                "의심. 호출부는 리포트를 저장하지 말고 재개 가능 상태로 남길 것.",
+                _err_comps)
         if _gate_pending:
             logger.warning(
                 "🚧 레벨 게이트 검증 미완료 %d건 — 리포트 '검증 미완료' 표기 "

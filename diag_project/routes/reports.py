@@ -402,6 +402,19 @@ async def analyze_session(
     if not analysis_result:
         raise HTTPException(status_code=500, detail="AI 분석 결과를 생성하지 못했습니다.")
 
+    # item4: 분석이 광범위 실패(크레딧 소진/장애)로 오염됐으면 garbage 전량0
+    #   리포트를 저장하지 않는다. 세션 status·원장은 건드리지 않아 재개 가능하게
+    #   남긴다(부분 실행 결과가 정상 리포트로 굳는 것 방지).
+    if (analysis_result.get("coverage") or {}).get("analysis_degraded"):
+        _errc = analysis_result["coverage"].get("error_competencies")
+        logger.error(
+            "🚨 분석 오염(error-fallback %s/5) → 리포트 미저장, 세션 재개 가능 "
+            "유지: %s", _errc, session_id)
+        raise HTTPException(
+            status_code=503,
+            detail=("AI 분석이 일시적으로 실패했습니다(크레딧/장애 의심). "
+                    "리포트를 저장하지 않았으며 이어서 재분석할 수 있습니다."))
+
     # 🚨 [수정] 새로운 LLM JSON 구조에 맞춰 안전하게 점수 파싱
     total_score = analysis_result.get("total_score", 0.0)
     radar_chart = analysis_result.get("radar_chart", {})

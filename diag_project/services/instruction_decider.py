@@ -207,6 +207,11 @@ MIN_EXPLORED: dict[str, int] = {
 }  # → 조직 3 / 성과 3 / 사람 6 / 일 3 / 자기 3 (합 18)
 
 # 챕터별 최대 턴 수 (user 메시지 기준)
+#   🚨 §6: MAX_TURNS_REACHED 는 '도달 불가한 backstop' 이다. 챕터 종료는 항상
+#   chapter_over_budget 서킷브레이커(cap = MIN_EXPLORED*3+4 = 13~22)가 먼저
+#   발동해 닫으므로, 아래 값(35~50)에는 결코 도달하지 않는다(항상 cap 보다 큼).
+#   서킷브레이커 로직이 깨졌을 때만 작동하는 안전망으로만 남긴다. 두 값이
+#   어긋날 수 없도록 test_guard_ordering 이 cap < MAX_TURNS 를 회귀로 고정한다.
 MAX_TURNS: dict[str, int] = {
     "organization_management": 40,
     "performance_management": 40,
