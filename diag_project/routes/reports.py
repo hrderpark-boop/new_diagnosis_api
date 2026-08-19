@@ -159,7 +159,23 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db)):
     report = result.scalars().first()
 
     if not report:
-        raise HTTPException(status_code=404, detail="Report not ready (Analyzing...)")
+        # B: 리포트 부재의 두 상황을 구분한다.
+        #   · 분석 중  → 기다리면 나옴 (프론트: 계속 폴링)
+        #   · degraded → 기다려도 안 나옴 (프론트: 폴링 중단, 재시도 필요)
+        #   세션의 last_analysis 마커를 404 body 에 실어 프론트가 분기하게 한다.
+        _sess = await db.get(DiagnosisSession, target_uuid)
+        _la = ((getattr(_sess, "self_assessment_data", None) or {})
+               .get("last_analysis") or {}) if _sess else {}
+        _status = _la.get("status")  # "degraded" | None(분석 중)
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "Report not ready",
+                "analysis_status": _status or "analyzing",
+                "reason": _la.get("error_competencies"),
+                # 원장 보존 → 재시도 실패해도 이어하기 가능
+                "resumable": True,
+            })
 
     coach_name = "AI Coach"
     user_name = "Leader"
@@ -406,10 +422,24 @@ async def analyze_session(
     #   리포트를 저장하지 않는다. 세션 status·원장은 건드리지 않아 재개 가능하게
     #   남긴다(부분 실행 결과가 정상 리포트로 굳는 것 방지).
     if (analysis_result.get("coverage") or {}).get("analysis_degraded"):
-        _errc = analysis_result["coverage"].get("error_competencies")
+        _cov_d = analysis_result["coverage"]
+        _errc = _cov_d.get("error_competencies")
         logger.error(
             "🚨 분석 오염(error-fallback %s/5) → 리포트 미저장, 세션 재개 가능 "
             "유지: %s", _errc, session_id)
+        # B: 세션에 분석 상태 마커를 남긴다(마이그레이션 없이 JSONB) — 프론트가
+        #   '분석 중(계속 대기)'과 '오염(재시도 필요)'을 구분할 수 있게.
+        from sqlalchemy.orm.attributes import flag_modified as _fm_deg
+        _sd = dict(session.self_assessment_data or {})
+        _sd["last_analysis"] = {
+            "status": "degraded",
+            "error_competencies": _errc,
+            "at": datetime.now().isoformat(),
+        }
+        session.self_assessment_data = _sd
+        _fm_deg(session, "self_assessment_data")
+        db.add(session)
+        await db.commit()
         raise HTTPException(
             status_code=503,
             detail=("AI 분석이 일시적으로 실패했습니다(크레딧/장애 의심). "
@@ -438,6 +468,15 @@ async def analyze_session(
     )
     
     db.add(new_report)
+
+    # B: 리포트 정상 저장 → 이전 degraded 마커가 있으면 정리(stale 방지).
+    _sd_ok = dict(session.self_assessment_data or {})
+    if _sd_ok.get("last_analysis", {}).get("status") == "degraded":
+        _sd_ok["last_analysis"] = {"status": "ok",
+                                   "at": datetime.now().isoformat()}
+        session.self_assessment_data = _sd_ok
+        from sqlalchemy.orm.attributes import flag_modified as _fm_ok
+        _fm_ok(session, "self_assessment_data")
 
     # 🚨 [버그 수정] 미완료 세션을 'completed' 로 덮어쓰는 데이터 오염 방지.
     #   기존엔 analyze 만 호출하면 5역량 미완주라도 무조건 completed 가 되어
