@@ -35,15 +35,22 @@ _ANALYSIS_PROMPT_VERSION = "2026-08-17.v1"
 
 # ── §8 계측: 호출 종류별 토큰/횟수 집계 (비용 baseline·A/B·재분석 비용 산출) ──
 #   thinking(사고) 토큰은 output 으로 과금되므로 별도로 집계한다.
-#   가격(추정, USD/1M 토큰) — 실제 청구서로 보정 필요.
+#   §7 가격(추정, USD/1M 토큰) — 실제 청구서로 보정 필요.
+#   ⚠️ gemini-2.5-pro 는 입력 컨텍스트 >200k 에서 '상위 요율 구간'으로 전환된다
+#   (in $1.25→$2.50, out $10→$15). 세션 후반 호출이 이 구간에 드는지 판별하려고
+#   콜별 input 이 경계를 넘으면 상위 요율을 적용하고 hi_tier_calls 로 집계한다.
+#   (flash 는 단일 구간.)
+_HI_TIER_TOKENS = 200_000
 _PRICE = {
-    "models/gemini-2.5-pro": {"in": 1.25, "out": 10.0},   # 사고 포함 out
-    "models/gemini-2.5-flash": {"in": 0.30, "out": 2.50},
+    "models/gemini-2.5-pro": {
+        "in": 1.25, "out": 10.0, "in_hi": 2.50, "out_hi": 15.0},
+    "models/gemini-2.5-flash": {
+        "in": 0.30, "out": 2.50, "in_hi": 0.30, "out_hi": 2.50},
 }
 
 
 class _UsageMeter:
-    """호출 종류별 토큰·호출 수 누적. reset→작업→report 로 스냅샷."""
+    """호출 종류별 토큰·호출 수·비용 누적. reset→작업→report 로 스냅샷."""
 
     def __init__(self):
         self.reset()
@@ -53,29 +60,42 @@ class _UsageMeter:
 
     def record(self, call_type: str, model: str, inp: int, out: int,
                thoughts: int):
+        inp = int(inp or 0)
+        out = int(out or 0)
+        thoughts = int(thoughts or 0)
         d = self.by_type.setdefault(
             (call_type, model),
-            {"calls": 0, "input": 0, "output": 0, "thoughts": 0})
+            {"calls": 0, "input": 0, "output": 0, "thoughts": 0,
+             "hi_tier_calls": 0, "cost": 0.0})
         d["calls"] += 1
-        d["input"] += int(inp or 0)
-        d["output"] += int(out or 0)      # candidates(보이는 답변) 토큰
-        d["thoughts"] += int(thoughts or 0)
+        d["input"] += inp
+        d["output"] += out          # candidates(보이는 답변) 토큰
+        d["thoughts"] += thoughts
+        pr = _PRICE.get(model, {"in": 0.0, "out": 0.0, "in_hi": 0.0,
+                                "out_hi": 0.0})
+        hi = inp > _HI_TIER_TOKENS  # 상위 요율 구간 진입 여부(콜 단위)
+        if hi:
+            d["hi_tier_calls"] += 1
+            logger.warning(
+                "💸 pro 상위 요율 구간 진입(input %d > %d, model=%s, %s) — "
+                "요율 2배.", inp, _HI_TIER_TOKENS, model, call_type)
+        rate_in = pr["in_hi"] if hi else pr["in"]
+        rate_out = pr["out_hi"] if hi else pr["out"]
+        d["cost"] += (inp * rate_in + (out + thoughts) * rate_out) / 1e6
 
     def cost_usd(self) -> float:
-        total = 0.0
-        for (_ct, model), d in self.by_type.items():
-            pr = _PRICE.get(model, {"in": 0.0, "out": 0.0})
-            billed_out = d["output"] + d["thoughts"]  # 사고=출력 과금
-            total += (d["input"] * pr["in"] + billed_out * pr["out"]) / 1e6
-        return round(total, 5)
+        return round(sum(d["cost"] for d in self.by_type.values()), 5)
 
     def summary(self) -> dict:
         rows = {}
         for (ct, model), d in sorted(self.by_type.items()):
             rows[f"{ct}[{model.split('/')[-1]}]"] = {
-                **d, "billed_out": d["output"] + d["thoughts"]}
+                **d, "billed_out": d["output"] + d["thoughts"],
+                "cost": round(d["cost"], 5)}
         return {"by_type": rows,
                 "total_calls": sum(d["calls"] for d in self.by_type.values()),
+                "hi_tier_calls": sum(d["hi_tier_calls"]
+                                     for d in self.by_type.values()),
                 "est_cost_usd": self.cost_usd()}
 
 
@@ -428,6 +448,28 @@ async def _call_with_retry(
                 or "RESOURCE_EXHAUSTED" in error_str
                 or "rate limit" in error_str.lower()
             )
+            # §8: 429 를 '크레딧 소진(과금)' vs 'RPM(분당 한도)' 로 구분한다.
+            #   대응이 정반대: 크레딧 소진은 대기해도 안 풀리므로 즉시 실패(재시도
+            #   60초 낭비 제거), RPM 은 분당 윈도우가 풀리므로 대기 후 재시도.
+            _low = error_str.lower()
+            _is_credit = ("prepayment credit" in _low
+                          or "credits are depleted" in _low
+                          or ("billing" in _low and "429" in error_str))
+            _is_rpm = ("per minute" in _low or "perminute" in _low
+                       or "requests_per_minute" in _low
+                       or "per_minute" in _low)
+            if is_rate_limited:
+                logger.warning(
+                    "⚠️ 429 종류=%s | quota: %s",
+                    ("크레딧소진(과금필요)" if _is_credit
+                     else "RPM(분당한도)" if _is_rpm else "불명"),
+                    error_str[:200],
+                )
+                if _is_credit:
+                    # 크레딧 소진: 재시도 무의미 → 즉시 실패(명확한 메시지).
+                    raise RuntimeError(
+                        "GEMINI_CREDIT_DEPLETED: 선불 크레딧 소진 — 재시도 "
+                        "생략(과금 충전 필요). " + error_str[:120])
             if (is_rate_limited
                     or "503" in error_str
                     or "UNAVAILABLE" in error_str
@@ -591,12 +633,18 @@ class GeminiService:
                 try:
                     _um = getattr(response, "usage_metadata", None)
                     if _um is not None:
+                        _in = getattr(_um, "prompt_token_count", 0) or 0
                         USAGE_METER.record(
-                            call_type, model_name,
-                            getattr(_um, "prompt_token_count", 0) or 0,
+                            call_type, model_name, _in,
                             getattr(_um, "candidates_token_count", 0) or 0,
                             getattr(_um, "thoughts_token_count", 0) or 0,
                         )
+                        # §4(a): 코치 턴의 '턴별 입력 토큰'을 로깅해 세션 내
+                        #   누적 곡선을 관측 가능하게 한다(히스토리 누적 확인).
+                        if call_type.startswith("coach"):
+                            logger.info(
+                                "📥 입력토큰[%s] %d (model=%s)",
+                                call_type, _in, model_name.split("/")[-1])
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -1631,11 +1679,17 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 for key in competency_keys
             ]
         else:
-            # 하위호환: 기존 LLM 분류 경로
+            # 🚨 §5 레거시 폴백: chapter_transcripts 미제공 경로. 프로덕션
+            #   (analyze_session)은 '항상' chapter_transcripts 를 전달하므로 여기는
+            #   '도달하면 안 되는' 경로다. STEP 1(evidence_extract, LLM) 이 여기서만
+            #   돌므로, 조용히 도는 일이 없도록 경고를 남긴다(죽은 경로 오해 방지).
+            logger.warning(
+                "🚨 레거시 STEP 1(LLM 분류/evidence_extract) 진입 — "
+                "chapter_transcripts 미제공. 프로덕션에선 발생하지 않아야 함. "
+                "호출 경로를 점검하라.")
             chat_transcript = "\n".join([
                 f"{msg['role']}: {msg['parts']}" for msg in history
             ])
-            logger.info("📋 STEP 1: 역량별 발화 분류 중 (LLM)...")
             utterances_by_competency = await self._extract_utterances_by_competency(chat_transcript)
             _asked = asked_subcompetencies or {}
             tasks = [
