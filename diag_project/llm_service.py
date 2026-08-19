@@ -1509,10 +1509,18 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 }}
 """
         try:
-            raw = await self._generate_with_retry(
-                prompt, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL,
-                thinking_budget=1024, call_type="summary",
-            )
+            # §3 캐시: 요약 프롬프트(= competency_results 로 결정)가 같으면 생략.
+            #   → 추천/렌더링만 고친 재분석이 요약까지 0콜이 되게 한다.
+            from diag_project.services import analysis_cache as _ac
+            _sk = _ac.make_key(_ANALYSIS_PROMPT_VERSION, "summary", prompt)
+            raw = _ac.get("summary", _sk)
+            if raw is None:
+                raw = await self._generate_with_retry(
+                    prompt, max_tokens=8192, json_mode=True,
+                    model=ANALYSIS_MODEL, thinking_budget=1024,
+                    call_type="summary",
+                )
+                _ac.set("summary", _sk, raw)
             raw = raw.replace("```json", "").replace("```", "").strip()
 
             summary = json.loads(raw)
