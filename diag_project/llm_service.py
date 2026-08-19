@@ -1276,8 +1276,22 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             return result
 
         except Exception as e:
-            logger.error(f"{competency_key} 분석 실패: {e}")
-            return self._build_error_fallback(sub_indicators)
+            # item4: 원인 분류(크레딧/RPM/타임아웃/파싱/빈응답)를 태깅해 로그·집계.
+            _es = str(e).lower()
+            if "credit_depleted" in _es or "prepayment credit" in _es:
+                _reason = "크레딧소진"
+            elif "per minute" in _es or "per_minute" in _es:
+                _reason = "429_RPM"
+            elif "timeout" in _es or "timed out" in _es:
+                _reason = "타임아웃"
+            elif "empty_response" in _es or "빈 응답" in _es:
+                _reason = "빈응답"
+            elif isinstance(e, (json.JSONDecodeError, ValueError)):
+                _reason = "파싱실패"
+            else:
+                _reason = type(e).__name__
+            logger.error("%s 분석 실패(원인=%s): %s", competency_key, _reason, e)
+            return self._build_error_fallback(sub_indicators, reason=_reason)
 
     def _build_sub_scores_json_template(self, sub_indicators: list) -> str:
         """sub_assessments JSON 템플릿 — 하위역량별 measured/level/evidence.
@@ -1452,7 +1466,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             scores[name] = score
         return scores
 
-    def _build_error_fallback(self, sub_indicators: list) -> dict:
+    def _build_error_fallback(self, sub_indicators: list,
+                              reason: str = "불명") -> dict:
         """분석 실패 시 기본 반환값 — 점수를 지어내지 않고 '미측정'(None)."""
         subs = sub_indicators or []
         return {
@@ -1481,6 +1496,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             "score": None,
             "comment": "분석 중 오류가 발생했습니다.",
             "_error_fallback": True,  # item4: '진짜 미측정'과 '분석 실패' 구분용
+            "_error_reason": reason,  # 크레딧/RPM/타임아웃/파싱/빈응답
         }
 
     def _build_competency_definitions(self) -> str:
@@ -1710,11 +1726,18 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         competency_results = {}
         for key, result in zip(competency_keys, results):
             if isinstance(result, Exception):
-                logger.error(f"{key} 분석 예외: {result}")
+                _es = str(result).lower()
+                _rsn = ("크레딧소진" if ("credit_depleted" in _es
+                        or "prepayment credit" in _es)
+                        else "429_RPM" if "per minute" in _es
+                        else "타임아웃" if "timeout" in _es
+                        else type(result).__name__)
+                logger.error("%s 분석 예외(원인=%s): %s", key, _rsn, result)
                 sub_names = []
                 if key in COMPETENCY_FRAMEWORK:
                     sub_names = [ind["name"] for ind in COMPETENCY_FRAMEWORK[key]["indicators"].values()]
-                competency_results[key] = self._build_error_fallback(sub_names)
+                competency_results[key] = self._build_error_fallback(
+                    sub_names, reason=_rsn)
             else:
                 competency_results[key] = result
 
@@ -1781,21 +1804,28 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         )
         _cov["gate_pending"] = _gate_pending
         _cov["gate_incomplete"] = _gate_pending > 0
-        # item4: 분석 광범위 실패(크레딧 소진 등) 감지 — '진짜 미측정'과 구분.
-        #   3개 이상 대역량이 error-fallback 이면 분석 자체가 오염된 것이므로
-        #   호출부(analyze_session)가 리포트를 저장하지 않고 세션을 재개 가능
-        #   상태로 남겨야 한다(garbage 전량0 리포트 저장 방지).
+        # item4: 분석 오염(AI 호출 실패) 감지 — '진짜 미측정'과 반드시 구분.
+        #   error-fallback 은 '측정 안 됨'이 아니라 'AI 호출 실패'다(failed vs
+        #   pending 을 구분한 것과 같은 이유). 1건이라도 있으면 부분 오염이므로
+        #   리포트를 저장하지 않는다 — 캐싱 덕에 재실행 시 정상 대역량은 0콜이라
+        #   재실행 비용이 거의 없다.
         _err_comps = sum(
             1 for v in competency_results.values()
             if v.get("_error_fallback")
         )
-        _cov["analysis_degraded"] = _err_comps >= 3
+        _cov["analysis_degraded"] = _err_comps >= 1
         _cov["error_competencies"] = _err_comps
         if _cov["analysis_degraded"]:
+            # 원인별 집계(크레딧/RPM/타임아웃/파싱)를 로그로 구분.
+            _reasons: dict = {}
+            for v in competency_results.values():
+                if v.get("_error_fallback"):
+                    _r = v.get("_error_reason", "불명")
+                    _reasons[_r] = _reasons.get(_r, 0) + 1
             logger.error(
-                "🚨 분석 광범위 실패(error-fallback %d/5) — 크레딧 소진/장애 "
-                "의심. 호출부는 리포트를 저장하지 말고 재개 가능 상태로 남길 것.",
-                _err_comps)
+                "🚨 분석 오염(error-fallback %d/5, 원인별 %s) — 리포트 미저장 "
+                "권고(재개 가능 유지). 캐싱으로 재실행 시 정상 대역량은 0콜.",
+                _err_comps, _reasons)
         if _gate_pending:
             logger.warning(
                 "🚧 레벨 게이트 검증 미완료 %d건 — 리포트 '검증 미완료' 표기 "

@@ -31,15 +31,22 @@ def test_error_fallback_marked():
 
 
 def test_degraded_threshold():
-    # analysis_degraded = (error-fallback 대역량 수 >= 3)
+    # item4(강화): analysis_degraded = (error-fallback 대역량 수 >= 1).
+    #   부분 오염(1~2건)도 '측정 안 됨'으로 오인되면 안 되므로 미저장.
     def degraded(results):
-        return sum(1 for v in results if v.get("_error_fallback")) >= 3
+        return sum(1 for v in results if v.get("_error_fallback")) >= 1
     ok = {"measured_count": 2}
     err = GeminiService._build_error_fallback(None, ["a"])
     ck("정상5 → degraded False", degraded([ok] * 5) is False)
-    ck("오류2/정상3 → degraded False", degraded([err, err, ok, ok, ok]) is False)
-    ck("오류3/정상2 → degraded True", degraded([err, err, err, ok, ok]) is True)
+    ck("오류1/정상4 → degraded True(부분오염도 미저장)",
+       degraded([err, ok, ok, ok, ok]) is True)
+    ck("오류2/정상3 → degraded True", degraded([err, err, ok, ok, ok]) is True)
     ck("오류5 → degraded True", degraded([err] * 5) is True)
+
+
+def test_error_reason_tagged():
+    fb = GeminiService._build_error_fallback(None, ["a"], reason="크레딧소진")
+    ck("원인 태깅(_error_reason)", fb.get("_error_reason") == "크레딧소진")
 
 
 def _run():
