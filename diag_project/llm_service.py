@@ -38,6 +38,24 @@ _ANALYSIS_PROMPT_VERSION = "2026-08-17.v1"
 _JUDGMENT_TEMPERATURE = float(os.getenv("ANALYSIS_TEMPERATURE", "0"))
 _TEMP_KEY = f"temp{_JUDGMENT_TEMPERATURE}"  # 캐시 키에 반영(파라미터 갈림)
 
+
+# E-1: 판정 호출별 thinkingBudget — env 로 제어(결정론 실험). 기본 dynamic(None).
+#   조건 B: DEEP_TB=2048 GATE_TB=128 SUMMARY_TB=1024
+#   조건 C: DEEP_TB=512  GATE_TB=128 SUMMARY_TB=512
+def _tb_env(name: str):
+    v = os.getenv(name)
+    if v in (None, "", "dyn", "dynamic"):
+        return None
+    return int(v)
+
+
+_DEEP_TB = _tb_env("DEEP_TB")
+_SUMMARY_TB = _tb_env("SUMMARY_TB")
+# GATE_TB 는 level_gate.py 도 캐시 키에 참조하므로 문자열 마커를 함께 둔다.
+_GATE_TB = _tb_env("GATE_TB")
+_DEEP_TB_KEY = f"tb{os.getenv('DEEP_TB', 'dyn')}"
+_SUMMARY_TB_KEY = f"tb{os.getenv('SUMMARY_TB', 'dyn')}"
+
 # ── §8 계측: 호출 종류별 토큰/횟수 집계 (비용 baseline·A/B·재분석 비용 산출) ──
 #   thinking(사고) 토큰은 output 으로 과금되므로 별도로 집계한다.
 #   §7 가격(추정, USD/1M 토큰) — 실제 청구서로 보정 필요.
@@ -1209,13 +1227,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             _ck = _ac.make_key(
                 _ANALYSIS_PROMPT_VERSION, competency_key,
                 relevant_utterances, full_transcript[:16000],
-                _TEMP_KEY, "tb_dyn")  # T-1: 파라미터가 다르면 캐시 갈림
+                _TEMP_KEY, _DEEP_TB_KEY)  # T-1/E-1: 파라미터 갈림
             raw = _ac.get("deep_analysis", _ck)
             if raw is None:
                 raw = await self._generate_with_retry(
                     prompt, max_tokens=16384, json_mode=True,
                     model=ANALYSIS_MODEL, temperature=_JUDGMENT_TEMPERATURE,
-                    call_type="deep_analysis",
+                    thinking_budget=_DEEP_TB, call_type="deep_analysis",
                 )
                 _ac.set("deep_analysis", _ck, raw)
             raw = raw.replace("```json", "").replace("```", "").strip()
@@ -1437,7 +1455,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             # 이를 소진해 출력이 비어(→ pending) 버린다. 넉넉히 8192.
             return await self._generate_with_retry(
                 _p, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL,
-                temperature=_JUDGMENT_TEMPERATURE, call_type="level_gate",
+                temperature=_JUDGMENT_TEMPERATURE, thinking_budget=_GATE_TB,
+                call_type="level_gate",
             )
 
         for ckey, result in competency_results.items():
@@ -1585,13 +1604,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             #   → 추천/렌더링만 고친 재분석이 요약까지 0콜이 되게 한다.
             from diag_project.services import analysis_cache as _ac
             _sk = _ac.make_key(_ANALYSIS_PROMPT_VERSION, "summary", prompt,
-                               _TEMP_KEY, "tb_dyn")
+                               _TEMP_KEY, _SUMMARY_TB_KEY)
             raw = _ac.get("summary", _sk)
             if raw is None:
                 raw = await self._generate_with_retry(
                     prompt, max_tokens=8192, json_mode=True,
                     model=ANALYSIS_MODEL, temperature=_JUDGMENT_TEMPERATURE,
-                    call_type="summary",
+                    thinking_budget=_SUMMARY_TB, call_type="summary",
                 )
                 _ac.set("summary", _sk, raw)
             raw = raw.replace("```json", "").replace("```", "").strip()

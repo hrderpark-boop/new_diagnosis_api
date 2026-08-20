@@ -15,6 +15,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import Any, Dict
 
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
@@ -97,7 +98,8 @@ def _persist_key(competency_key: str, sub: str, evidence, claimed: int) -> str:
     #   현재 게이트는 temp=0·thinking=dynamic.
     return _ac.make_key(GATE_PROMPT_VERSION, competency_key, sub,
                         "|".join(evidence or []), int(claimed or 1),
-                        "temp0", "tb_dyn")
+                        os.getenv("ANALYSIS_TEMPERATURE", "temp0"),
+                        f"tb{os.getenv('GATE_TB', 'dyn')}")
 
 
 def _pending(reason: str) -> Dict[str, Any]:
