@@ -10,13 +10,32 @@ simulate_personas.py 가 이 모듈을 import 해 쓴다. sim 전용(진단 경�
 """
 from typing import List, Optional
 
+# 턴 경계 = 역할 접두사로 시작하는 줄. 메시지 내부 개행(멀티라인 서술)은
+# 그 메시지에 속한 연속 줄로 묶는다. 🚨 '줄 단위'로 자르면 verbose 메시지의
+# 내부 개행 때문에 의도한 턴 수보다 훨씬 적게 남아(맥락 손실) 버린다.
+_ROLE_PREFIXES = ("AI 코치:", "사용자:")
 
-def truncate_history(chat_history: str, n_turns: int) -> str:
-    """직전 n_turns 턴(=2*n_turns 줄)만 유지. n_turns<=0 이면 전체."""
+
+def truncate_history(chat_history: str, n_turns: int,
+                     role_prefixes=_ROLE_PREFIXES) -> str:
+    """직전 n_turns 턴(=2*n_turns '메시지')만 유지. n_turns<=0 이면 전체.
+
+    메시지는 역할 접두사로 시작하는 줄에서 시작하며, 내부 개행을 포함할 수
+    있다. 줄이 아니라 '메시지(턴)' 단위로 자른다.
+    """
     if n_turns <= 0 or not chat_history:
         return chat_history
     lines = chat_history.rstrip("\n").split("\n")
-    return "\n".join(lines[-(n_turns * 2):])
+    turns: List[List[str]] = []
+    for ln in lines:
+        if any(ln.startswith(p) for p in role_prefixes):
+            turns.append([ln])            # 새 메시지 시작
+        elif turns:
+            turns[-1].append(ln)          # 이전 메시지의 연속(내부 개행) 줄
+        else:
+            turns.append([ln])            # 접두사 없는 선두 줄
+    kept = turns[-(n_turns * 2):]         # 코치+사용자 = 2*n 메시지
+    return "\n".join("\n".join(t) for t in kept)
 
 
 def summary_block(known_events: Optional[List[str]]) -> str:

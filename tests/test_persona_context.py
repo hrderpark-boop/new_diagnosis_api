@@ -52,6 +52,27 @@ def test_n10_keeps_exactly_10_turns():
     ck("조립 프롬프트도 답변0 제거", "답변0" not in p and "답변29" in p)
 
 
+def test_multiline_messages_keep_turns_not_lines():
+    """🚨 회귀: 메시지 내부 개행(verbose 서술)이 있어도 '줄'이 아니라
+    '턴(메시지)' 단위로 잘라야 한다. 줄 단위로 자르면 10턴을 원했는데 실제로는
+    몇 턴만 남아 맥락이 손실된다(91k vs 226k 토큰 불일치의 원인이던 버그)."""
+    # 20턴, 각 메시지가 내부 개행 포함(멀티라인)
+    lines = []
+    for i in range(20):
+        if i % 2 == 0:
+            lines.append(f"AI 코치: 질문{i}\n(부연 설명 줄)")
+        else:
+            lines.append(f"사용자: 답변{i}\n(장황한 회고)\n(또 다른 줄)")
+    h = "\n".join(lines)
+    t = truncate_history(h, 10)
+    kept = sum(1 for ln in t.split("\n")
+               if ln.startswith(("AI 코치:", "사용자:")))
+    ck("멀티라인 → 정확히 20메시지(10턴) 유지", kept == 20, f"(kept={kept})")
+    ck("최근 턴 유지(답변19)", "답변19" in t)
+    ck("멀티라인 내부 줄도 보존('또 다른 줄')", "또 다른 줄" in t)
+    ck("오래된 턴 절삭(답변0)", "답변0" not in t)
+
+
 def test_summary_block_injected_when_on():
     p = assemble_persona_prompt("P", _hist(30), "Q", n_turns=10,
                                 known_events=["팀원 갈등 중재", "마감 자료취합"])
