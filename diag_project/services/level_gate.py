@@ -93,8 +93,11 @@ def _cache_key(competency_key: str, sub: str, evidence, claimed: int) -> tuple:
 
 def _persist_key(competency_key: str, sub: str, evidence, claimed: int) -> str:
     from diag_project.services import analysis_cache as _ac
+    # T-1: temperature·thinkingBudget 을 키에 포함(파라미터 다르면 캐시 갈림).
+    #   현재 게이트는 temp=0·thinking=dynamic.
     return _ac.make_key(GATE_PROMPT_VERSION, competency_key, sub,
-                        "|".join(evidence or []), int(claimed or 1))
+                        "|".join(evidence or []), int(claimed or 1),
+                        "temp0", "tb_dyn")
 
 
 def _pending(reason: str) -> Dict[str, Any]:

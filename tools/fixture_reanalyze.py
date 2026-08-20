@@ -99,6 +99,16 @@ def _digest(res: dict) -> dict:
     cards = [c.get("sub_competency") for c in (cr.get("growth") or [])]
     if cr.get("strength"):
         cards.append("D:" + cr["strength"].get("sub_competency", ""))
+    # T-3: 서술 품질 비교용 샘플(사람관리 대역량의 S-A-R·GAP·코치 피드백).
+    _pm = details.get("people_management", {})
+    _rp = _pm.get("reasoning_process") or {}
+    narrative = {
+        "S": ((_rp.get("1_situation") or {}).get("description") or "")[:400],
+        "A": ((_rp.get("2_action") or {}).get("description") or "")[:400],
+        "R": ((_rp.get("3_result") or {}).get("description") or "")[:400],
+        "gap": (_pm.get("gap_analysis") or "")[:300],
+        "comment": (_pm.get("comment") or "")[:300],
+    }
     return {
         "measured": measured, "gate": gate,
         "cards": sorted(cards),
@@ -106,6 +116,7 @@ def _digest(res: dict) -> dict:
                      ("measured", "asked", "score_suppressed",
                       "qualifying_competencies")},
         "usage": res.get("usage_metering"),
+        "narrative": narrative,
     }
 
 

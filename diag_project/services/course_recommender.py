@@ -155,7 +155,7 @@ async def _strength_gate_pass(item: dict, llm) -> bool:
     try:
         raw = await llm._generate_with_retry(
             prompt, max_tokens=4096, json_mode=True,
-            call_type="dtrack_gate",  # thinkingBudget 은 동일성 검증 전까지 dynamic
+            temperature=0, call_type="dtrack_gate",  # T-1: 판정 결정론
         )
     except Exception as e:  # noqa: BLE001
         # 🚨 V-1#4: '빈 응답/오류로 미검증'(fail-closed) 과 '판단에 의한 차단'을

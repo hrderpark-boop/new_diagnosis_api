@@ -33,6 +33,11 @@ BEST_MODEL = ANALYSIS_MODEL
 #   이 값을 올려 캐시를 자동 무효화한다(버전 미변경 호출만 캐시 반환).
 _ANALYSIS_PROMPT_VERSION = "2026-08-17.v1"
 
+# T-1: 판정 호출(deep_analysis·level_gate·summary·dtrack_gate)의 temperature.
+#   기본 0(결정론). T-3 비교용으로 ANALYSIS_TEMPERATURE=0.7 오버라이드 가능.
+_JUDGMENT_TEMPERATURE = float(os.getenv("ANALYSIS_TEMPERATURE", "0"))
+_TEMP_KEY = f"temp{_JUDGMENT_TEMPERATURE}"  # 캐시 키에 반영(파라미터 갈림)
+
 # ── §8 계측: 호출 종류별 토큰/횟수 집계 (비용 baseline·A/B·재분석 비용 산출) ──
 #   thinking(사고) 토큰은 output 으로 과금되므로 별도로 집계한다.
 #   §7 가격(추정, USD/1M 토큰) — 실제 청구서로 보정 필요.
@@ -542,6 +547,7 @@ class GeminiService:
         model: str | None = None,
         thinking_budget: int | None = None,
         call_type: str = "unknown",
+        temperature: float = 0.7,
     ) -> str:
         if not self.available_keys:
             raise Exception("사용 가능한 API 키가 없습니다.")
@@ -574,7 +580,7 @@ class GeminiService:
         _config_kwargs: dict = {
             "stop_sequences": [],
             "max_output_tokens": max_tokens,
-            "temperature": 0.7,
+            "temperature": temperature,  # T-1: 판정 호출은 0(결정론)
             "safety_settings": _safety_settings,
         }
         if system_instruction:
@@ -1202,12 +1208,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             from diag_project.services import analysis_cache as _ac
             _ck = _ac.make_key(
                 _ANALYSIS_PROMPT_VERSION, competency_key,
-                relevant_utterances, full_transcript[:16000])
+                relevant_utterances, full_transcript[:16000],
+                _TEMP_KEY, "tb_dyn")  # T-1: 파라미터가 다르면 캐시 갈림
             raw = _ac.get("deep_analysis", _ck)
             if raw is None:
                 raw = await self._generate_with_retry(
                     prompt, max_tokens=16384, json_mode=True,
-                    model=ANALYSIS_MODEL,
+                    model=ANALYSIS_MODEL, temperature=_JUDGMENT_TEMPERATURE,
                     call_type="deep_analysis",
                 )
                 _ac.set("deep_analysis", _ck, raw)
@@ -1430,7 +1437,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             # 이를 소진해 출력이 비어(→ pending) 버린다. 넉넉히 8192.
             return await self._generate_with_retry(
                 _p, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL,
-                call_type="level_gate",
+                temperature=_JUDGMENT_TEMPERATURE, call_type="level_gate",
             )
 
         for ckey, result in competency_results.items():
@@ -1577,12 +1584,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             # §3 캐시: 요약 프롬프트(= competency_results 로 결정)가 같으면 생략.
             #   → 추천/렌더링만 고친 재분석이 요약까지 0콜이 되게 한다.
             from diag_project.services import analysis_cache as _ac
-            _sk = _ac.make_key(_ANALYSIS_PROMPT_VERSION, "summary", prompt)
+            _sk = _ac.make_key(_ANALYSIS_PROMPT_VERSION, "summary", prompt,
+                               _TEMP_KEY, "tb_dyn")
             raw = _ac.get("summary", _sk)
             if raw is None:
                 raw = await self._generate_with_retry(
                     prompt, max_tokens=8192, json_mode=True,
-                    model=ANALYSIS_MODEL,
+                    model=ANALYSIS_MODEL, temperature=_JUDGMENT_TEMPERATURE,
                     call_type="summary",
                 )
                 _ac.set("summary", _sk, raw)
