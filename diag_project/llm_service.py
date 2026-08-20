@@ -31,7 +31,7 @@ BEST_MODEL = ANALYSIS_MODEL
 
 # §3 캐시 무효화용 프롬프트 버전 — 심층분석/evidence 추출 프롬프트를 바꾸면
 #   이 값을 올려 캐시를 자동 무효화한다(버전 미변경 호출만 캐시 반환).
-_ANALYSIS_PROMPT_VERSION = "2026-08-17.v1"
+_ANALYSIS_PROMPT_VERSION = "2026-08-20.v2-e2a"  # E-2a: asked_subs 탐색집중 주입
 
 # T-1: 판정 호출(deep_analysis·level_gate·summary·dtrack_gate)의 temperature.
 #   기본 0(결정론). T-3 비교용으로 ANALYSIS_TEMPERATURE=0.7 오버라이드 가능.
@@ -1066,6 +1066,26 @@ class GeminiService:
             sub_indicators = [ind["name"] for ind in COMPETENCY_FRAMEWORK[competency_key]["indicators"].values()]
         sub_indicators_str = ", ".join(sub_indicators) if sub_indicators else "핵심 행동 지표 1, 핵심 행동 지표 2, 핵심 행동 지표 3"
 
+        # E-2a: 원장(asked_subs)에 기록된 '실제 질문된 하위역량'만 탐색 집중 대상으로
+        #   명시 주입한다. measured = asked AND evidence>=1 은 코드가 강제하므로,
+        #   목록 밖 하위역량은 어차피 measured 불가 → 탐색에서 빼도 결과가 나빠질 수
+        #   없고, 열린 탐색(9개 훑기)의 '실행마다 놓치는 대상이 다른' 탐지 실패를
+        #   줄인다. asked 원장이 비면(단위테스트 등) 기존 열린 탐색으로 폴백.
+        _asked_focus = sorted(asked_subs or [])
+        if _asked_focus:
+            _focus_block = (
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "[🎯 탐색 집중 대상 — 이 챕터에서 '실제로 질문·응답된' 하위역량 (원장 기준)]\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "아래 하위역량만 실제로 질문·응답되었다. 근거 발화 탐색을 이 목록에\n"
+                "'집중'하라 — 대화 전체를 이 하위역량들의 근거를 찾는 눈으로 훑을 것.\n"
+                "목록에 '없는' 하위역량은 질문되지 않았으므로 measured=false·level=null·\n"
+                "evidence=[] 로 두고, 근거를 지어내지 말 것(탐색 불필요).\n"
+                f"  · 질문된 하위역량: {', '.join(_asked_focus)}\n\n"
+            )
+        else:
+            _focus_block = ""
+
         prompt = f"""
 [Role] Senior HR Assessment Expert & Executive Coach (C-Level 컨설팅 경력 15년 이상)
 [Task] 아래 리더의 BEI(행동사건면접) 발언을 분석하여 '{korean_name}' 역량을 심층 평가하세요.
@@ -1200,7 +1220,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 - 반드시 포함: ① 그 행동/상황의 '비즈니스적 임팩트' ② 리더의 '내적
   딜레마와 극복 논리' — 전문 HR 컨설턴트의 밀도로 서술하되 단문 유지.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{_focus_block}━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [분석 대상 발언 — {korean_name} 관련 (챕터 태그로 1차 분리)]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {relevant_utterances}
@@ -1227,7 +1247,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             _ck = _ac.make_key(
                 _ANALYSIS_PROMPT_VERSION, competency_key,
                 relevant_utterances, full_transcript[:16000],
-                _TEMP_KEY, _DEEP_TB_KEY)  # T-1/E-1: 파라미터 갈림
+                _TEMP_KEY, _DEEP_TB_KEY,
+                "|".join(_asked_focus))  # T-1/E-1/E-2a: 파라미터·탐색범위 갈림
             raw = _ac.get("deep_analysis", _ck)
             if raw is None:
                 raw = await self._generate_with_retry(
