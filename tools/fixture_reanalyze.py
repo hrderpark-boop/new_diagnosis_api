@@ -99,6 +99,12 @@ def _digest(res: dict) -> dict:
     cards = [c.get("sub_competency") for c in (cr.get("growth") or [])]
     if cr.get("strength"):
         cards.append("D:" + cr["strength"].get("sub_competency", ""))
+    # R-2: '근거 제한적' 배지가 붙은 카드(evidence_limited).
+    _all_cards = list(cr.get("growth") or [])
+    if cr.get("strength"):
+        _all_cards.append(cr["strength"])
+    limited_cards = sorted(
+        c.get("sub_competency") for c in _all_cards if c.get("evidence_limited"))
     # T-3: 서술 품질 비교용 샘플(사람관리 대역량의 S-A-R·GAP·코치 피드백).
     _pm = details.get("people_management", {})
     _rp = _pm.get("reasoning_process") or {}
@@ -114,9 +120,14 @@ def _digest(res: dict) -> dict:
     borderline = sorted(
         f"{b.get('sub')}{b.get('flags')}{b.get('level_range') or ''}"
         for b in (_cov.get("borderline") or []))
+    # 발행 모드: score_suppressed(구조적 셧다운) → 부분 리포트.
+    report_mode = ("completed_insufficient" if _cov.get("score_suppressed")
+                   else "completed")
     return {
         "measured": measured, "gate": gate,
         "cards": sorted(cards),
+        "limited_cards": limited_cards,   # R-2: '근거 제한적' 배지 카드
+        "report_mode": report_mode,       # R-4: 발행 모드
         "coverage": {k: _cov.get(k) for k in
                      ("measured", "asked", "score_suppressed",
                       "qualifying_competencies", "borderline_count")},
