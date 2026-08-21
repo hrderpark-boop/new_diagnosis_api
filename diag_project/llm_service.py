@@ -53,6 +53,18 @@ def _samples_env() -> int:
 _ANALYSIS_SAMPLES = _samples_env()
 _SAMPLES_KEY = f"n{_ANALYSIS_SAMPLES}"  # 캐시 키에 반영(취합 결과가 표본수에 의존)
 
+# S-1/I-1: outer run 수 — '완결된 분석 파이프라인'을 독립 N회 돌려 교집합으로
+#   stable/semi/weak 를 판정한다(E-2a×3 + 교집합). 기본 3. 실사용 경로.
+#   inner union(_ANALYSIS_SAMPLES>1)은 I-2 로 비활성 — 켜져 있으면 경고.
+def _outer_env() -> int:
+    try:
+        return max(1, int(os.getenv("ANALYSIS_OUTER_RUNS", "3")))
+    except (TypeError, ValueError):
+        return 3
+
+
+_ANALYSIS_OUTER_RUNS = _outer_env()
+
 
 def _aggregate_sub_samples(per_sample: list, sub_indicators: list,
                            n_samples: int) -> Dict[str, Dict[str, Any]]:
@@ -1128,6 +1140,7 @@ class GeminiService:
         relevant_utterances: str,
         full_transcript: str,
         asked_subs: set | None = None,
+        outer_idx: int = 0,
     ) -> Dict[str, Any]:
         """
         STEP 2: 단일 역량에 대한 심층 분석
@@ -1332,8 +1345,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             _base_key = (
                 _ANALYSIS_PROMPT_VERSION, competency_key,
                 relevant_utterances, full_transcript[:16000],
-                _TEMP_KEY, _DEEP_TB_KEY, _SAMPLES_KEY,
-                "|".join(_asked_focus))  # T-1/E-1/E-2a/E-2b: 파라미터·범위·표본 갈림
+                _TEMP_KEY, _DEEP_TB_KEY, _SAMPLES_KEY, f"o{outer_idx}",
+                "|".join(_asked_focus))  # …/S-1: outer_idx 로 outer run 캐시 분리
             _samples: list = []
             _last_err = None
             for _i in range(_ANALYSIS_SAMPLES):
@@ -1783,6 +1796,69 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                         len(cluster), ", ".join(subs),
                     )
 
+    async def _analyze_all_once(
+        self, history, chapter_transcripts, asked_subcompetencies,
+        competency_keys, outer_idx: int = 0,
+    ) -> Dict[str, Dict]:
+        """분석 파이프라인 1회(outer run): Map(역량별 심층분석 5) + 레벨 게이트.
+
+        outer_idx 로 deep 캐시가 분리돼 독립 실행이 된다. 반환은 게이트까지
+        확정된 competency_results(대역량→sub_ledger). S-1 교집합의 단위 입력.
+        """
+        _asked = asked_subcompetencies or {}
+        if chapter_transcripts is not None:
+            def _chapter_data(key: str) -> str:
+                return chapter_transcripts.get(key) or "이 영역에 대한 대화 기록이 없습니다."
+            _full = "\n".join(
+                f"{m.get('role', '')}: {m.get('parts', m.get('content', ''))}"
+                for m in history)
+            tasks = [
+                self._analyze_single_competency(
+                    competency_key=key, relevant_utterances=_chapter_data(key),
+                    full_transcript=_full, asked_subs=_asked.get(key) or set(),
+                    outer_idx=outer_idx)
+                for key in competency_keys]
+        else:
+            # 🚨 §5 레거시 폴백: 프로덕션(analyze_session)은 항상
+            #   chapter_transcripts 를 준다. 여기 도달하면 경로 점검 대상.
+            logger.warning(
+                "🚨 레거시 STEP 1(LLM 분류/evidence_extract) 진입 — "
+                "chapter_transcripts 미제공. 프로덕션에선 발생하지 않아야 함.")
+            chat_transcript = "\n".join(
+                f"{msg['role']}: {msg['parts']}" for msg in history)
+            utt = await self._extract_utterances_by_competency(chat_transcript)
+            tasks = [
+                self._analyze_single_competency(
+                    competency_key=key,
+                    relevant_utterances=utt.get(key, "관련 발언 없음"),
+                    full_transcript=chat_transcript,
+                    asked_subs=_asked.get(key) or set(), outer_idx=outer_idx)
+                for key in competency_keys]
+
+        logger.info("🔍 STEP 2(Map): 역량별 심층 분석 중 (병렬 5회)...")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        cr: Dict[str, Dict] = {}
+        for key, result in zip(competency_keys, results):
+            if isinstance(result, Exception):
+                _es = str(result).lower()
+                _rsn = ("크레딧소진" if ("credit_depleted" in _es
+                        or "prepayment credit" in _es)
+                        else "429_RPM" if "per minute" in _es
+                        else "타임아웃" if "timeout" in _es
+                        else type(result).__name__)
+                logger.error("%s 분석 예외(원인=%s): %s", key, _rsn, result)
+                sub_names = ([ind["name"] for ind in
+                             COMPETENCY_FRAMEWORK[key]["indicators"].values()]
+                             if key in COMPETENCY_FRAMEWORK else [])
+                cr[key] = self._build_error_fallback(sub_names, reason=_rsn)
+            else:
+                cr[key] = result
+
+        # 🚧 T-A: 레벨 게이트 순차 후처리 (fail-closed). gate_status·measured 확정.
+        logger.info("🚧 레벨 게이트 후처리(순차) 시작...")
+        await self._run_level_gate(cr)
+        return cr
+
     async def generate_diagnosis_result(
         self,
         history: List[Dict],
@@ -1807,86 +1883,33 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         USAGE_METER.reset()
         competency_keys = _get_competency_keys()
 
-        if chapter_transcripts is not None:
-            # ✅ 결정론적 챕터별 필터링 — 통짜 주입/절단 없음
-            logger.info("📋 STEP 1 생략: DB chapter 태그 기반 결정론적 분리 사용")
-
-            def _chapter_data(key: str) -> str:
-                return chapter_transcripts.get(key) or "이 영역에 대한 대화 기록이 없습니다."
-
-            # 🔑 전체 대화 맥락 (chapter=None 라포/경계 발화 포함).
-            #   각 역량 분석에 '그 역량 대화(집중)' + '전체 대화(맥락)'를 함께
-            #   주어, 챕터 태그가 특정 발화에서 누락돼도 LLM 이 전체에서 근거를
-            #   찾을 수 있게 한다 → 데이터 유실로 점수가 1.0 으로 붕괴하는 것 방지.
-            _full = "\n".join(
-                f"{m.get('role', '')}: {m.get('parts', m.get('content', ''))}"
-                for m in history
-            )
-
-            _asked = asked_subcompetencies or {}
-            tasks = [
-                self._analyze_single_competency(
-                    competency_key=key,
-                    relevant_utterances=_chapter_data(key),
-                    full_transcript=_full,
-                    asked_subs=_asked.get(key) or set(),
-                )
-                for key in competency_keys
-            ]
-        else:
-            # 🚨 §5 레거시 폴백: chapter_transcripts 미제공 경로. 프로덕션
-            #   (analyze_session)은 '항상' chapter_transcripts 를 전달하므로 여기는
-            #   '도달하면 안 되는' 경로다. STEP 1(evidence_extract, LLM) 이 여기서만
-            #   돌므로, 조용히 도는 일이 없도록 경고를 남긴다(죽은 경로 오해 방지).
+        # S-1/I-1: outer run 을 독립 N회 실행 → 교집합 병합.
+        #   각 outer run 은 '완결된 분석 파이프라인'(Map 5 + 레벨 게이트)이며
+        #   outer_idx 로 캐시가 분리돼 서로 독립이다. inner union(E-2b)은 기각.
+        if _ANALYSIS_SAMPLES > 1:  # I-2: inner union 은 비활성 권장 — 켜지면 경고
             logger.warning(
-                "🚨 레거시 STEP 1(LLM 분류/evidence_extract) 진입 — "
-                "chapter_transcripts 미제공. 프로덕션에선 발생하지 않아야 함. "
-                "호출 경로를 점검하라.")
-            chat_transcript = "\n".join([
-                f"{msg['role']}: {msg['parts']}" for msg in history
-            ])
-            utterances_by_competency = await self._extract_utterances_by_competency(chat_transcript)
-            _asked = asked_subcompetencies or {}
-            tasks = [
-                self._analyze_single_competency(
-                    competency_key=key,
-                    relevant_utterances=utterances_by_competency.get(key, "관련 발언 없음"),
-                    full_transcript=chat_transcript,
-                    asked_subs=_asked.get(key) or set(),
-                )
-                for key in competency_keys
-            ]
+                "⚠️ inner union(ANALYSIS_SAMPLES=%d) 활성 — I-2 로 비활성 권장. "
+                "outer 교집합과 이중으로 표본을 늘리지 말 것.", _ANALYSIS_SAMPLES)
+        _n_outer = _ANALYSIS_OUTER_RUNS
+        if _n_outer > 1:
+            # 순차 실행: 각 run 은 5-wide(기존과 동일). 병렬(3×5=15-wide)은
+            #   구조상 가능하나 pro RPM 스파이크 위험이 커 순차로 둔다(검증된 설정).
+            logger.info("🔁 outer run %d회 독립 실행 → 교집합 병합", _n_outer)
+            _outer_results = []
+            for _o in range(_n_outer):
+                logger.info("🔁 outer run %d/%d", _o + 1, _n_outer)
+                _outer_results.append(await self._analyze_all_once(
+                    history, chapter_transcripts, asked_subcompetencies,
+                    competency_keys, outer_idx=_o))
+            from diag_project.services.outer_merge import merge_outer_runs
+            competency_results = merge_outer_runs(_outer_results, _n_outer)
+        else:
+            competency_results = await self._analyze_all_once(
+                history, chapter_transcripts, asked_subcompetencies,
+                competency_keys, outer_idx=0)
 
-        # STEP 2(Map): 역량별 병렬 심층 분석
-        logger.info("🔍 STEP 2(Map): 역량별 심층 분석 중 (병렬 5회)...")
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        competency_results = {}
-        for key, result in zip(competency_keys, results):
-            if isinstance(result, Exception):
-                _es = str(result).lower()
-                _rsn = ("크레딧소진" if ("credit_depleted" in _es
-                        or "prepayment credit" in _es)
-                        else "429_RPM" if "per minute" in _es
-                        else "타임아웃" if "timeout" in _es
-                        else type(result).__name__)
-                logger.error("%s 분석 예외(원인=%s): %s", key, _rsn, result)
-                sub_names = []
-                if key in COMPETENCY_FRAMEWORK:
-                    sub_names = [ind["name"] for ind in COMPETENCY_FRAMEWORK[key]["indicators"].values()]
-                competency_results[key] = self._build_error_fallback(
-                    sub_names, reason=_rsn)
-            else:
-                competency_results[key] = result
-
-        # 🚧 T-A: 레벨 게이트 순차 후처리 (병렬 분석에서 분리, fail-closed).
-        #   여기서 gate_status(passed/pending/n/a) 와 최종 measured 가 확정된다.
-        logger.info("🚧 레벨 게이트 후처리(순차) 시작...")
-        await self._run_level_gate(competency_results)
-
-        # 🔎 T-A 감사 신호(로그 전용): 동일 STAR 사건이 3+ 하위역량에 매핑되고
-        #   레벨 방향이 엇갈리면 경고. dedup 은 하지 않는다(풍부한 사건이 여러
-        #   역량 근거가 되는 건 정상) — 레벨 인플레이션 재발 감시용 신호만 남긴다.
+        # 🔎 T-A 감사 신호(로그 전용): 병합 결과 기준. 동일 STAR 사건이 3+
+        #   하위역량에 매핑되고 레벨 방향이 엇갈리면 경고(레벨 인플레 감시).
         try:
             self._audit_multi_mapping(competency_results)
         except Exception as _ae:  # noqa: BLE001
@@ -1926,13 +1949,20 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         _none_comps = sum(
             1 for v in competency_results.values() if v.get("score") is None
         )
-        _comp_measured = [
-            v.get("measured_count", 0) for v in competency_results.values()
+        # I-1(5)/I-5: 셧다운·qualifying 은 'stable' 기준으로 산출한다. semi/weak
+        #   (재현 불충분)로 발행 모드를 부풀리지 않는다. outer 병합 결과는
+        #   stability_counts 를 갖는다. 단일 경로(레거시/테스트)는 measured_count
+        #   로 폴백(그 경로엔 stable 개념이 없다).
+        def _stable_or_measured(v: Dict) -> int:
+            sc = v.get("stability_counts")
+            if sc is not None:
+                return int(sc.get("stable", 0))
+            return int(v.get("measured_count", 0))
+        _comp_stable = [
+            _stable_or_measured(v) for v in competency_results.values()
         ]
-        _cov["score_suppressed"] = _suppressed(_comp_measured)
-        _cov["qualifying_competencies"] = sum(
-            1 for c in _comp_measured if c >= 2
-        )
+        _cov["score_suppressed"] = _suppressed(_comp_stable)
+        _cov["qualifying_competencies"] = sum(1 for c in _comp_stable if c >= 2)
         _cov["none_competencies"] = _none_comps
         # 🚧 T-A fail-closed: 게이트 검증 미완료(pending) 집계 — 1건이라도 있으면
         #   리포트 상단 경고 + 로그. 조용한 fail-open 을 막는 도구 상태 신호.

@@ -64,13 +64,22 @@ def _tie_break_tail(item: dict) -> tuple:
     )
 
 
-def deterministic_candidate_key(item: dict) -> tuple:
-    """R-1: 성장 후보 완전 결정론 정렬 키 (순수 함수).
+def _stability_tier(item: dict) -> int:
+    """I-1(4): stable(0) < semi(1). weak 는 measured 가 아니라 후보에 안 옴.
 
-    rec_score 내림차 우선, 동점이면 _tie_break_tail 로 확정. 랜덤·해시·
-    dict 순서에 의존하지 않으므로 입력 순서를 섞어도 출력이 같다.
+    outer 교집합 병합에서 semi 는 borderline 을 갖고, stable 은 None 이다.
     """
-    return (-float(item.get("rec_score") or 0.0),) + _tie_break_tail(item)
+    return 1 if item.get("borderline") else 0
+
+
+def deterministic_candidate_key(item: dict) -> tuple:
+    """S-1/I-1(4): 성장 후보 완전 결정론 정렬 키 (순수 함수).
+
+    ① 안정성 계층(stable 먼저) — '확신하는 것만 추천'. 이어서 ② rec_score
+    내림차, ③ R-1 동점 꼬리키. 랜덤·해시·dict 순서 비의존(shuffle 불변).
+    """
+    return (_stability_tier(item),
+            -float(item.get("rec_score") or 0.0)) + _tie_break_tail(item)
 
 
 def _strength_candidate_key(item: dict) -> tuple:

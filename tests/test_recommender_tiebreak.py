@@ -67,13 +67,22 @@ def test_more_evidence_wins_tie():
     assert (ordered[0]["comp_key"], ordered[0]["sub_name"]) == (ck2, s2)
 
 
-def test_higher_rec_score_wins_first():
-    """rec_score 는 최우선 — 동점 꼬리키보다 앞선다."""
+def test_stable_beats_semi_regardless_of_rec():
+    """I-1(4): stable 은 하드 계층 — semi 가 rec 더 높아도 stable 이 먼저."""
+    (ck1, s1), (ck2, s2) = _first_subs(2)
+    stable_low = _cand(ck1, s1, rec=2.0)  # stable, rec 낮음
+    semi_high = _cand(ck2, s2, rec=3.5, borderline={"flags": ["detection"]})
+    ordered = sorted([semi_high, stable_low], key=deterministic_candidate_key)
+    assert not ordered[0].get("borderline")  # stable 이 먼저
+
+
+def test_higher_rec_score_wins_within_tier():
+    """같은 안정성 계층(둘 다 stable)에서는 rec_score 높은 쪽이 먼저."""
     (ck1, s1), (ck2, s2) = _first_subs(2)
     low = _cand(ck1, s1, rec=2.0)
-    high = _cand(ck2, s2, rec=3.5, borderline={"flags": ["detection"]})
+    high = _cand(ck2, s2, rec=3.5)
     ordered = sorted([low, high], key=deterministic_candidate_key)
-    assert ordered[0]["rec_score"] == 3.5  # borderline 이어도 rec 높으면 먼저
+    assert ordered[0]["rec_score"] == 3.5
 
 
 def test_shuffle_invariant():
