@@ -24,6 +24,60 @@ logger = logging.getLogger(__name__)
 DEFAULT_JOB_WEIGHT = 1.0
 _LEVEL_TO_TRACK = {1: "A", 2: "B", 3: "C"}
 
+
+def _framework_order() -> dict:
+    """(comp_key, sub_name) → 프레임워크 정의 순서 인덱스.
+
+    R-1: tie-break 최종 단계의 '고정 순서'. dict 순서·해시에 의존하지 않고
+    competencies.py 정의 순서를 결정론적 키로 못박는다.
+    """
+    order: dict = {}
+    i = 0
+    for ck, cv in COMPETENCY_FRAMEWORK.items():
+        if ck == "supplementary":
+            continue
+        for ind in (cv.get("indicators") or {}).values():
+            order[(ck, ind.get("name"))] = i
+            i += 1
+    return order
+
+
+_FRAMEWORK_ORDER = _framework_order()
+
+
+def _tie_break_tail(item: dict) -> tuple:
+    """R-1 동점 처리 꼬리키(2~4단계). 작을수록 우선.
+
+    ① 안정 탐지 우선(borderline detection 없는 후보 먼저)
+    ② 레벨 확정 우선(borderline level 없는 후보 먼저)
+    ③ 근거 수 많은 순
+    ④ 프레임워크 고정 순서
+    """
+    bl = item.get("borderline") or {}
+    flags = set(bl.get("flags") or [])
+    return (
+        1 if "detection" in flags else 0,
+        1 if "level" in flags else 0,
+        -len(item.get("evidence") or []),
+        _FRAMEWORK_ORDER.get(
+            (item.get("comp_key"), item.get("sub_name")), 1_000_000),
+    )
+
+
+def deterministic_candidate_key(item: dict) -> tuple:
+    """R-1: 성장 후보 완전 결정론 정렬 키 (순수 함수).
+
+    rec_score 내림차 우선, 동점이면 _tie_break_tail 로 확정. 랜덤·해시·
+    dict 순서에 의존하지 않으므로 입력 순서를 섞어도 출력이 같다.
+    """
+    return (-float(item.get("rec_score") or 0.0),) + _tie_break_tail(item)
+
+
+def _strength_candidate_key(item: dict) -> tuple:
+    """강점(D) 후보 결정론 키: 점수 내림차 우선, 동점은 _tie_break_tail."""
+    return (-float(item.get("score") or 0.0),) + _tie_break_tail(item)
+
+
 SECTION_INTRO = (
     "리더님의 진단 데이터를 심층 분석하여, 지금보다 한 단계 더 도약할 수 있는 "
     "성장 과제와, 이미 강점인 역량을 조직 전체로 확산할 기회를 도출하였습니다. "
@@ -61,6 +115,8 @@ def _flatten_measured(details: dict) -> list[dict]:
                 "score": float(score),
                 "level": _sub_level(score) or 1,
                 "evidence": [q for q in (e.get("evidence") or []) if q],
+                # E-2c/R-1: 확신도(1/N 탐지·레벨갈림) — tie-break·배지에 사용.
+                "borderline": e.get("borderline"),
             })
     return out
 
@@ -103,6 +159,9 @@ def _build_entry(item: dict, track: str, used_citations: set[str], *,
             f"학습 형식: {meta.get('format', '')} — {meta.get('format_desc', '')}",
         ]
 
+    # R-2: borderline(1/N 탐지·레벨갈림) 후보가 카드에 오르면 '근거 제한적'
+    #   배지 데이터를 실어 보낸다(E-2c 원칙 — 확신도를 숨기지 않고 노출).
+    _bl = item.get("borderline") or None
     return {
         "type": "강점 활용" if is_strength else "성장 과제",
         "track": track,
@@ -119,6 +178,8 @@ def _build_entry(item: dict, track: str, used_citations: set[str], *,
         "reason_bullets": bullets,
         "bei_citation": citation,
         "is_strength": is_strength,
+        "evidence_limited": bool(_bl),  # R-2: 프론트 '근거 제한적' 배지 트리거
+        "borderline": _bl,
     }
 
 
@@ -225,7 +286,7 @@ async def build_course_recommendation(
         [m for m in measured
          if m["score"] >= STRENGTH_MIN_SCORE
          and len(m["evidence"]) >= STRENGTH_MIN_EVIDENCE],
-        key=lambda x: -x["score"],
+        key=_strength_candidate_key,  # R-1: 점수 동점도 완전 결정론
     )
     for cand in d_cands:
         if await _strength_gate_pass(cand, llm):
@@ -242,7 +303,7 @@ async def build_course_recommendation(
     growth_pool = sorted(
         [m for m in measured
          if m["level"] < 4 and (m["comp_key"], m["sub_name"]) not in picks],
-        key=lambda x: (-x["rec_score"], -(4 - x["score"])),
+        key=deterministic_candidate_key,  # R-1: rec_score 동점 → 완전 결정론
     )
     for m in growth_pool:
         if len(growth) >= growth_target:

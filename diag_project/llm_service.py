@@ -38,6 +38,84 @@ _ANALYSIS_PROMPT_VERSION = "2026-08-20.v2-e2a"  # E-2a: asked_subs 탐색집중 
 _JUDGMENT_TEMPERATURE = float(os.getenv("ANALYSIS_TEMPERATURE", "0"))
 _TEMP_KEY = f"temp{_JUDGMENT_TEMPERATURE}"  # 캐시 키에 반영(파라미터 갈림)
 
+# E-2b: deep_analysis 반복 표본 수 — 탐지=합집합·레벨=다수결로 취합해
+#   '탐지 실패(실행마다 놓치는 대상이 다름)'를 줄인다. 실사용 3, fixture 검증 1.
+#   각 표본은 캐시 키에 표본 인덱스가 들어가 독립 저장·재현된다(값도 키에 포함).
+def _samples_env() -> int:
+    # 기본값 1(=E-2a). R-3 공정 재비교 결과 전까지 기본 경로는 단일 표본으로 둔다
+    #   — 기본값 3이면 의도치 않게 E-2b(2.3배 비용) 경로가 돈다. 실사용 3은 env 로.
+    try:
+        return max(1, int(os.getenv("ANALYSIS_SAMPLES", "1")))
+    except (TypeError, ValueError):
+        return 1
+
+
+_ANALYSIS_SAMPLES = _samples_env()
+_SAMPLES_KEY = f"n{_ANALYSIS_SAMPLES}"  # 캐시 키에 반영(취합 결과가 표본수에 의존)
+
+
+def _aggregate_sub_samples(per_sample: list, sub_indicators: list,
+                           n_samples: int) -> Dict[str, Dict[str, Any]]:
+    """E-2b: 표본별 하위역량 판정을 취합한다.
+
+    탐지=합집합: 한 표본이라도 evidence 가 나오면 후보로 채택하고, 인용은
+      중복제거한 합집합으로 모아 전부 게이트에 넘긴다(탐지 실패가 지배적
+      실패 유형이므로 recall 을 최대화).
+    레벨=다수결: 표본 레벨의 최빈값. 동률이고 3표본이 전부 다르면 중앙값,
+      그 외 동률(2표본 갈림 등)은 보수적으로 최솟값(레벨은 판정 축).
+    borderline(E-2c): 1회만 탐지(detection) 또는 레벨 갈림(level)을 표식하고
+      관측 레벨 범위를 남긴다 — 숨기지 않고 확신도를 함께 노출.
+    """
+    from collections import Counter
+    out: Dict[str, Dict[str, Any]] = {}
+    for sub in sub_indicators:
+        ev_union: list = []
+        seen: set = set()
+        levels: list = []
+        detect = 0
+        for s in per_sample:
+            p = s.get(sub) or {}
+            ev = p.get("evidence") or []
+            if ev:
+                detect += 1
+                for e in ev:
+                    k = (e or "").strip()
+                    if k and k not in seen:
+                        seen.add(k)
+                        ev_union.append(e)
+                lv = p.get("level")
+                if isinstance(lv, int):
+                    levels.append(lv)
+        agg_level = None
+        lvl_range = None
+        if levels:
+            c = Counter(levels)
+            top = max(c.values())
+            modes = [v for v, ct in c.items() if ct == top]
+            if len(modes) == 1:
+                agg_level = modes[0]
+            elif len(levels) == 3 and len(set(levels)) == 3:
+                agg_level = sorted(levels)[1]     # 전부 다르면 중앙값
+            else:
+                agg_level = min(levels)           # 2표본 갈림 등 → 보수적 최소
+            if len(set(levels)) > 1:
+                lvl_range = [min(levels), max(levels)]
+        borderline = None
+        if detect > 0:
+            flags = []
+            if n_samples > 1 and detect == 1:     # 1/N 만 탐지
+                flags.append("detection")
+            if lvl_range is not None:             # 레벨 갈림
+                flags.append("level")
+            if flags:
+                borderline = {
+                    "flags": flags, "detection_count": detect,
+                    "of": n_samples, "level_range": lvl_range,
+                }
+        out[sub] = {"evidence": ev_union, "level": agg_level,
+                    "borderline": borderline}
+    return out
+
 
 # E-1: 판정 호출별 thinkingBudget — env 로 제어(결정론 실험). 기본 dynamic(None).
 #   조건 B: DEEP_TB=2048 GATE_TB=128 SUMMARY_TB=1024
@@ -1241,36 +1319,53 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
   쓰세요. 없는 발화를 지어내면 응답 전체가 폐기됩니다.
 """
         try:
-            # §3 캐시: 프롬프트(=버전) 와 입력(발화)이 동일하면 LLM 호출 생략.
-            #   추천·리포트 로직만 고쳤을 때 재분석이 0콜이 되게 한다.
             from diag_project.services import analysis_cache as _ac
-            _ck = _ac.make_key(
+            #  🔒 T1: asked 는 '실제 앵커 발화'(코드가 준 asked_subs)로만 결정.
+            #    LLM 의 measured 응답과 evidence 존재는 asked 결정에 쓰지 않는다.
+            #    → measured = asked AND evidence>=1 (is_measured). 유령 측정 차단.
+            _asked_set = asked_subs or set()
+
+            # §3 캐시 + E-2b: 표본별 캐시 키(표본 인덱스 포함)로 deep_analysis 를
+            #   _ANALYSIS_SAMPLES 회 실행한다. temp=0 이어도 dynamic thinking 으로
+            #   표본 간 편차가 생겨 '탐지 합집합'이 의미를 갖는다. 표본 인덱스가
+            #   키에 있어 각 표본은 독립 저장·재현되고, 로직만 고친 재분석은 0콜.
+            _base_key = (
                 _ANALYSIS_PROMPT_VERSION, competency_key,
                 relevant_utterances, full_transcript[:16000],
-                _TEMP_KEY, _DEEP_TB_KEY,
-                "|".join(_asked_focus))  # T-1/E-1/E-2a: 파라미터·탐색범위 갈림
-            raw = _ac.get("deep_analysis", _ck)
-            if raw is None:
-                raw = await self._generate_with_retry(
-                    prompt, max_tokens=16384, json_mode=True,
-                    model=ANALYSIS_MODEL, temperature=_JUDGMENT_TEMPERATURE,
-                    thinking_budget=_DEEP_TB, call_type="deep_analysis",
-                )
-                _ac.set("deep_analysis", _ck, raw)
-            raw = raw.replace("```json", "").replace("```", "").strip()
+                _TEMP_KEY, _DEEP_TB_KEY, _SAMPLES_KEY,
+                "|".join(_asked_focus))  # T-1/E-1/E-2a/E-2b: 파라미터·범위·표본 갈림
+            _samples: list = []
+            _last_err = None
+            for _i in range(_ANALYSIS_SAMPLES):
+                _ck = _ac.make_key(*_base_key, f"s{_i}")
+                raw = _ac.get("deep_analysis", _ck)
+                if raw is None:
+                    raw = await self._generate_with_retry(
+                        prompt, max_tokens=16384, json_mode=True,
+                        model=ANALYSIS_MODEL, temperature=_JUDGMENT_TEMPERATURE,
+                        thinking_budget=_DEEP_TB, call_type="deep_analysis",
+                    )
+                    _ac.set("deep_analysis", _ck, raw)
+                try:
+                    _samples.append(json.loads(
+                        raw.replace("```json", "").replace("```", "").strip()))
+                except (json.JSONDecodeError, ValueError) as _pe:
+                    _last_err = _pe
+                    logger.warning("%s 표본%d 파싱 실패 → 제외: %s",
+                                   competency_key, _i, _pe)
+            if not _samples:
+                raise _last_err or ValueError("모든 표본 파싱 실패")
 
-            result = json.loads(raw)
+            # 기준 표본(표본0)의 서술(S/A/R·comment·score_breakdown)을 리포트 본문에 사용.
+            result = _samples[0]
 
-            # 🛡️ Gap Analysis 강제 정제 — LLM 이 프롬프트를 무시하고
-            # '5.0 만점' 류 표현을 내보내도 백엔드가 결정론적으로 덮어쓴다.
+            # 🛡️ Gap Analysis 강제 정제 — '5.0 만점' 류 표현을 결정론적으로 덮어쓴다.
             if result.get("gap_analysis"):
                 result["gap_analysis"] = _sanitize_gap_analysis(
                     result["gap_analysis"]
                 )
 
             # S/A/R 단계별 evidence → quotes 별칭 + evidence_list/evidence 평탄화.
-            #  - 요구 스키마: 각 단계에 quotes[] (실제 대화 원문 발췌).
-            #    프롬프트는 evidence 로 생성하므로 quotes 로 복사(하위호환 유지).
             _rp = result.get("reasoning_process") or {}
             _flat_ev = []
             for _step_key in ("1_situation", "2_action", "3_result"):
@@ -1280,7 +1375,6 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                         _q for _q in (_step.get("evidence") or [])
                         if _q and isinstance(_q, str)
                     ]
-                    # quotes 별칭 세팅 (프론트 발췌 박스가 읽는 필드)
                     _step["quotes"] = _ev
                     _flat_ev.extend(_ev)
             if _flat_ev:
@@ -1288,36 +1382,28 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             if result.get("evidence_list"):
                 result["evidence"] = result["evidence_list"][0]
 
-            # 🔒 P0-1/P0-3: 하위역량 증거 원장 → 코드 산식으로 점수 결정론 계산.
-            #   LLM 은 measured/level/evidence 판정만. 평균·클램프·가점은 코드.
-            from diag_project.services.scoring import (
-                SubLedger, competency_behavior_score, competency_final_score,
-                competency_is_reference,
-            )
-            #  🔒 T1: asked 는 '실제 앵커 발화'(코드가 준 asked_subs)로만 결정.
-            #    LLM 의 measured 응답과 evidence 존재는 asked 결정에 쓰지 않는다.
-            #    → measured = asked AND evidence>=1 (is_measured). 유령 측정 차단.
-            _asked_set = asked_subs or set()
-            _assess = result.get("sub_assessments") or {}
+            # E-2b 취합: 표본별 sub_assessments 파싱 → 탐지=합집합·레벨=다수결.
+            _per_sample: list = []
+            for _s in _samples:
+                _assess = _s.get("sub_assessments") or {}
+                _one: Dict[str, Dict[str, Any]] = {}
+                for _sub in sub_indicators:
+                    a = _assess.get(_sub) or {}
+                    ev = [e for e in (a.get("evidence") or [])
+                          if e and isinstance(e, str)]
+                    lvl = a.get("level")
+                    lvl = int(lvl) if isinstance(lvl, (int, float)) else None
+                    _one[_sub] = {"evidence": ev, "level": lvl}
+                _per_sample.append(_one)
+            _parsed = _aggregate_sub_samples(
+                _per_sample, sub_indicators, len(_samples))
 
-            # 1차 파싱: 하위역량별 evidence(원문만) + 판정기 주장 레벨
-            _parsed: Dict[str, Dict[str, Any]] = {}
-            for _sub in sub_indicators:
-                a = _assess.get(_sub) or {}
-                ev = [
-                    e for e in (a.get("evidence") or [])
-                    if e and isinstance(e, str)
-                ]
-                lvl = a.get("level")
-                lvl = int(lvl) if isinstance(lvl, (int, float)) else None
-                _parsed[_sub] = {"evidence": ev, "level": lvl}
-
-            # 🚧 T-A: 레벨 게이트는 '병렬 분석'에서 분리해 분석 완료 후 순차
-            #   후처리(_run_level_gate)에서 돌린다. 여기서는 파싱 결과만 보관하고
-            #   예비로 fail-closed(gate=None → 후보는 pending) 원장을 만든다.
+            # 🚧 T-A: 레벨 게이트는 분석 완료 후 순차 후처리(_run_level_gate)에서
+            #   돈다. 여기서는 취합 결과만 보관하고 예비 fail-closed 원장을 만든다.
             result["_parsed"] = _parsed
             result["_asked_list"] = list(_asked_set)
             result["_sub_indicators"] = list(sub_indicators)
+            result["_n_samples"] = len(_samples)
             self._finalize_ledger(result, competency_key, gate=None)
             return result
 
@@ -1424,10 +1510,14 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             if eff_measured:
                 measured_count += 1
             gate_counts[gate_status] = gate_counts.get(gate_status, 0) + 1
+            # E-2c: borderline 은 gate_status 와 '다른 축'(탐지·표본 신뢰도).
+            #   후보(asked AND ev)일 때만 의미 — 확신도를 숨기지 않고 함께 노출.
+            bl = p.get("borderline") if candidate else None
             sub_ledger[sub] = {
                 "asked": asked, "measured": eff_measured,
                 "level": level, "score": score, "evidence": disp_ev,
                 "status": status, "gate_status": gate_status,
+                "borderline": bl,
             }
 
         result["sub_ledger"] = sub_ledger
@@ -1852,6 +1942,23 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         )
         _cov["gate_pending"] = _gate_pending
         _cov["gate_incomplete"] = _gate_pending > 0
+        # E-2c: borderline 집계 — 확신도가 낮은(1/N 탐지·레벨 갈림) 측정 항목을
+        #   리포트가 '근거 제한적'으로 표기할 수 있도록 목록으로 노출.
+        #   gate_status 와 별도 축(도구 상태 아님, 표본 신뢰도).
+        _bl_list = []
+        for _ck, _v in competency_results.items():
+            for _sub, _row in (_v.get("sub_ledger") or {}).items():
+                _bl = _row.get("borderline")
+                if _bl and _row.get("measured"):
+                    _bl_list.append({
+                        "competency": _ck, "sub": _sub,
+                        "flags": _bl.get("flags"),
+                        "detection_count": _bl.get("detection_count"),
+                        "of": _bl.get("of"),
+                        "level_range": _bl.get("level_range"),
+                    })
+        _cov["borderline"] = _bl_list
+        _cov["borderline_count"] = len(_bl_list)
         # item4: 분석 오염(AI 호출 실패) 감지 — '진짜 미측정'과 반드시 구분.
         #   error-fallback 은 '측정 안 됨'이 아니라 'AI 호출 실패'다(failed vs
         #   pending 을 구분한 것과 같은 이유). 1건이라도 있으면 부분 오염이므로

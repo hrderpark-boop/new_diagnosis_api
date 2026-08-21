@@ -109,12 +109,18 @@ def _digest(res: dict) -> dict:
         "gap": (_pm.get("gap_analysis") or "")[:300],
         "comment": (_pm.get("comment") or "")[:300],
     }
+    _cov = res.get("coverage", {})
+    # E-2c: borderline 하위역량 목록(측정됐으나 확신도 제한적).
+    borderline = sorted(
+        f"{b.get('sub')}{b.get('flags')}{b.get('level_range') or ''}"
+        for b in (_cov.get("borderline") or []))
     return {
         "measured": measured, "gate": gate,
         "cards": sorted(cards),
-        "coverage": {k: res.get("coverage", {}).get(k) for k in
+        "coverage": {k: _cov.get(k) for k in
                      ("measured", "asked", "score_suppressed",
-                      "qualifying_competencies")},
+                      "qualifying_competencies", "borderline_count")},
+        "borderline": borderline,
         "usage": res.get("usage_metering"),
         "narrative": narrative,
     }
