@@ -17,8 +17,6 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), ".env"))
 
-from diag_project.data.competencies import COMPETENCY_FRAMEWORK  # noqa: E402
-
 _COMP_KO = {"organization_management": "조직관리",
             "performance_management": "성과관리",
             "people_management": "사람관리", "work_management": "일관리",
@@ -70,14 +68,21 @@ def _packet(d: dict) -> dict:
     cov = scores.get("coverage") or {}
     details = scores.get("details") or {}
 
-    # P-3: 대역량별 measured/asked/total 분포
+    # P-3: 대역량별 measured/asked/total 분포 + '탐색됐으나 0 측정' 경고.
+    #   자기관리(하위 3개)는 하한이 3이라 전부 탐색되는데도 0 이면 앵커/판정
+    #   문제 후보. 실제로 사례를 준 리더에서 이 경고가 반복되면 도구 문제.
     per_comp = {}
+    zero_warn = []
     for ck, cv in details.items():
         led = cv.get("sub_ledger") or {}
         total = len(led)
         asked = sum(1 for v in led.values() if v.get("asked"))
         meas = sum(1 for v in led.values() if v.get("measured"))
         per_comp[_COMP_KO.get(ck, ck)] = f"측정 {meas}/탐색 {asked}/{total}"
+        if asked >= 2 and meas == 0:
+            zero_warn.append(
+                f"⚠️ {_COMP_KO.get(ck, ck)}: 탐색 {asked}인데 측정 0 — "
+                "부재진술이면 정당, 사례를 줬는데도 0이면 앵커/판정 점검")
 
     # P-2: 카드 + 인용문(사람 검토용)
     cr = scores.get("course_recommendation") or {}
@@ -94,6 +99,7 @@ def _packet(d: dict) -> dict:
     return {
         "참가자": d["name"], "세션상태": d["status"],
         "리포트존재": d["has_report"],
+        "── ⚠️ 경고 (P-4/자기관리 감시) ──": zero_warn or "없음",
         "── P-3 참여 ──": {
             "사용자_턴수": len(user_turns), "전체_턴수": len(msgs),
             "소요_분": dur_min, "current_topic": d["current_topic"],
