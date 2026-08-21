@@ -120,16 +120,16 @@ def _digest(res: dict) -> dict:
     borderline = sorted(
         f"{b.get('sub')}{b.get('flags')}{b.get('level_range') or ''}"
         for b in (_cov.get("borderline") or []))
-    # 발행 모드: score_suppressed(구조적 셧다운) → 부분 리포트.
-    report_mode = ("completed_insufficient" if _cov.get("score_suppressed")
-                   else "completed")
     return {
         "measured": measured, "gate": gate,
         "cards": sorted(cards),
         "limited_cards": limited_cards,   # R-2: '근거 제한적' 배지 카드
-        "report_mode": report_mode,       # R-4: 발행 모드
+        # V-6(1): 발행은 단일 포맷 — 상태는 항상 completed. 종합 섹션 표시 여부는
+        #   composite_shown(measured_total ≥ 임계)로 결정.
+        "composite_shown": _cov.get("composite_shown"),
+        "measured_total": _cov.get("measured_total"),
         "coverage": {k: _cov.get(k) for k in
-                     ("measured", "asked", "score_suppressed",
+                     ("measured", "asked", "composite_shown", "measured_total",
                       "qualifying_competencies", "borderline_count")},
         "borderline": borderline,
         "usage": res.get("usage_metering"),

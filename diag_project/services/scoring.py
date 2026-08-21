@@ -145,10 +145,33 @@ MIN_PER_COMP = 2     # 자격 대역량이 되려면 대역량당 measured 최�
 def score_suppressed_structural(comp_measured_counts: list[int],
                                 min_qual_comps: int = MIN_QUAL_COMPS,
                                 min_per_comp: int = MIN_PER_COMP) -> bool:
-    """구조적 셧다운: 자격 대역량(measured ≥ min_per_comp) 이 min_qual_comps
-    개 미만이면 종합점수 보류(completed_insufficient).
+    """[레거시/회귀 보존] 자격 대역량(measured ≥ min_per_comp) 이 min_qual_comps
+    개 미만이면 True. V-6(1) 로 발행 게이트에서 물러남 — qualifying 임계(3)가
+    실측 분포(2~3) 한복판이라 경계에서 진동. 신규 경로는 measured_total 기반
+    composite_shown 을 쓴다. 이 함수는 단위 테스트 회귀 보존용으로만 남긴다.
 
     comp_measured_counts: 대역량별 measured 하위역량 수 리스트.
     """
     qualifying = sum(1 for c in (comp_measured_counts or []) if c >= min_per_comp)
     return qualifying < min_qual_comps
+
+
+# V-6(1): 종합 섹션(종합점수·레이더·상대비교) 표시 게이트.
+#   qualifying 임계(0~5, 경계 2~3에서 진동) 대신 measured_total(0~26, 전형
+#   분포 8~12에서 임계 18까지 넉넉)로 판정 → 전형 세션은 임계 근처에 없어
+#   경계 뒤집힘이 구조적으로 소멸. 종합점수는 '넓은 커버리지'에서만 유효하다는
+#   측정 무결성과도 부합(측정 10/26로 낸 평균을 26 종합처럼 오해시키지 않는다).
+#   🚨 임계 18 은 김보통 flat 프로파일 하나로 정한 '잠정값' — 파일럿의 measured
+#      분포로 확정한다. env(COMPOSITE_MIN_MEASURED)로 오버라이드.
+import os as _os  # noqa: E402
+
+COMPOSITE_MIN_MEASURED = int(_os.getenv("COMPOSITE_MIN_MEASURED", "18"))
+
+
+def composite_shown(measured_total: int,
+                    threshold: int = COMPOSITE_MIN_MEASURED) -> bool:
+    """종합 섹션을 표시할지 — measured_total ≥ threshold 일 때만 True.
+
+    False 여도 '실패/미달'이 아니라 '확인된 근거 중심 리포트'가 기본 출력이다.
+    """
+    return int(measured_total or 0) >= threshold

@@ -1944,7 +1944,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         #   절대 측정 수(measured<11)는 경계에서 불안정(반복 진단 5~14 변동)해
         #   정식/부분 리포트가 오락가락 → 구조 기준으로 교체(깊이+분산 요구).
         from diag_project.services.scoring import (
-            score_suppressed_structural as _suppressed,
+            composite_shown as _composite_shown, COMPOSITE_MIN_MEASURED,
         )
         _none_comps = sum(
             1 for v in competency_results.values() if v.get("score") is None
@@ -1961,7 +1961,12 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         _comp_stable = [
             _stable_or_measured(v) for v in competency_results.values()
         ]
-        _cov["score_suppressed"] = _suppressed(_comp_stable)
+        # V-6(1): 종합 섹션 게이트 = measured_total ≥ COMPOSITE_MIN_MEASURED.
+        #   measured_total 은 파일럿 분포 수집을 위해 '항상' 메타에 기록한다.
+        _cov["measured_total"] = _measured_total
+        _cov["composite_min_measured"] = COMPOSITE_MIN_MEASURED
+        _cov["composite_shown"] = _composite_shown(_measured_total)
+        # qualifying 은 정보용으로만 남긴다(발행 게이트 아님 — V-6 로 물러남).
         _cov["qualifying_competencies"] = sum(1 for c in _comp_stable if c >= 2)
         _cov["none_competencies"] = _none_comps
         # 🚧 T-A fail-closed: 게이트 검증 미완료(pending) 집계 — 1건이라도 있으면

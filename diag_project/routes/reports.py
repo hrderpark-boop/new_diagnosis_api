@@ -41,6 +41,14 @@ def _build_asked_subcompetencies(store: dict) -> Dict[str, set]:
     return asked
 
 
+def resolve_completion_status(completed_count: int) -> str:
+    """V-6/조정3: analyze 시 세션 상태 — 3종만. 완주(5)면 'completed', 미완주면
+    'in_progress'(재개 대상). 'completed_insufficient'·'incomplete' 는 만들지
+    않는다. 'aborted_disengaged' 는 이탈 경로에서만 설정된다(여기 아님).
+    """
+    return "completed" if completed_count >= 5 else "in_progress"
+
+
 def _build_chapter_transcripts(
     messages: list, events: list
 ) -> Dict[str, str]:
@@ -490,27 +498,26 @@ async def analyze_session(
     else:
         _completed_count = 0  # General/라포 등 첫 역량 진입 전
 
+    _cov = (analysis_result or {}).get("coverage") or {}
+    session.status = resolve_completion_status(_completed_count)
     if _completed_count >= 5:
-        # B: 완주했으나 근거가 임계 미만이면 completed_insufficient(부분 발행).
-        #   중단(aborted_disengaged)과 달리 리포트는 낸다 — 완주이기 때문.
-        _cov = (analysis_result or {}).get("coverage") or {}
-        _insufficient = bool(_cov.get("score_suppressed"))
-        session.status = (
-            "completed_insufficient" if _insufficient else "completed")
+        # V-6(1): 완주 세션은 전부 'completed'. '종합 섹션 유무'는 상태가 아니라
+        #   커버리지 플래그(composite_shown = measured_total ≥ 임계)로 내린다.
+        #   completed_insufficient(이분 모드) 제거 — 경계 뒤집힘 소멸.
         session.current_topic = "Completed"
         logger.info(
-            "🧭 완주 세션 상태: %s (측정 %s/%s, 셧다운=%s)",
-            session.status, _cov.get("measured"), _cov.get("total"),
-            _insufficient,
+            "🧭 완주 세션 상태: completed (측정 %s/%s, composite_shown=%s)",
+            _cov.get("measured_total", _cov.get("measured")),
+            _cov.get("total"), _cov.get("composite_shown"),
         )
     else:
-        # 5역량 미완주 → 'incomplete'. current_topic(진행 위치)은 그대로 두어
-        # 진행률(progress_pct) 이 실제 위치를 반영하게 한다. 리포트 자체는
-        # 수집된 만큼의 데이터로 생성되지만, 세션은 완주로 위장하지 않는다.
-        session.status = "incomplete"
+        # V-6/조정3: 미완주는 'incomplete'(신규 상태)를 만들지 않는다 — 이탈
+        #   신호가 없으면 '아직 진행 중'인 재개 대상이므로 in_progress 로 남긴다.
+        #   current_topic(진행 위치)은 그대로 둬 진행률이 실제 위치를 반영한다.
+        session.status = "in_progress"
         logger.warning(
-            "⚠️ 미완주 세션 analyze: %d/5 역량만 완료 → status=incomplete "
-            "(current_topic=%s 유지)", _completed_count, _ct,
+            "⚠️ 미완주 세션 analyze: %d/5 역량만 완료 → status=in_progress "
+            "(재개 대상, current_topic=%s 유지)", _completed_count, _ct,
         )
 
     db.add(session)
