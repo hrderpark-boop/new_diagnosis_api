@@ -24,6 +24,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sessions", tags=["Self Assessment"])
 
+
+def merge_self_assessment(existing: Optional[Dict[str, Any]],
+                          payload: Dict[str, Any]) -> Dict[str, Any]:
+    """자가진단 payload 를 기존 self_assessment_data 에 '병합'한다.
+
+    같은 컬럼에 있는 asked_subs 등 진단 원장을 덮어쓰지 않도록, payload 의
+    키만 갱신하고 나머지는 보존한다(순수 함수, 테스트 고정용).
+    """
+    store = dict(existing or {})
+    store.update(payload)
+    return store
+
+
 # 자가진단 대상 역량 = AI 채점 대상 역량과 동일한 키 집합.
 # (supplementary 는 보조 항목이라 자가진단에서 제외)
 SELF_EVAL_KEYS = [k for k in COMPETENCY_FRAMEWORK.keys() if k != "supplementary"]
@@ -112,8 +125,13 @@ async def submit_self_evaluation(
         "submitted_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    # JSON 컬럼은 통째로 재할당해야 변경이 감지된다.
-    session.self_assessment_data = payload
+    # 🐛 fix: self_assessment_data 는 asked_subs 원장(진단 무결성의 핵심)과 같은
+    #   컬럼이다. 통째로 재할당하면 재개 후 자가진단 재제출 시 asked_subs 가
+    #   지워진다. chat 경로와 동일하게 '병합'으로 갱신한다(자가진단 키만 덮어씀).
+    session.self_assessment_data = merge_self_assessment(
+        session.self_assessment_data, payload)  # 새 dict → 변경 감지
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(session, "self_assessment_data")
     db.add(session)
     await db.commit()
 
