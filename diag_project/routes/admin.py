@@ -1190,15 +1190,20 @@ async def create_company(
     ctx: AdminContext = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    # 결정2: 코드는 저장 시 정규화(strip+upper) — 로그인 입력도 동일 정규화하므로
+    #   대소문자·공백 편차로 매칭이 갈리지 않게 한다.
+    _code = (body.code or "").strip().upper()
+    if not _code:
+        raise HTTPException(status_code=400, detail="고객사 코드는 비울 수 없습니다.")
     exists = (
-        await db.execute(select(Company).where(Company.code == body.code.strip()))
+        await db.execute(select(Company).where(Company.code == _code))
     ).scalars().first()
     if exists:
         raise HTTPException(status_code=409, detail="이미 존재하는 고객사 코드입니다.")
 
     company = Company(
         name=body.name.strip(),
-        code=body.code.strip(),
+        code=_code,
         contact_email=body.contact_email,
     )
     db.add(company)
