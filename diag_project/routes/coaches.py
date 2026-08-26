@@ -15,8 +15,12 @@ class CoachResponse(BaseModel):
     avatar_url: str
     character_tags: List[str]
 
-# 백엔드 서버 주소 (이미지 서빙용)
-BASE_URL = "http://127.0.0.1:8000"
+# 🐛 fix: 코치 이미지는 프론트엔드 public/images/ 에서 /images/파일명 으로 서빙된다.
+#   백엔드 호스트(127.0.0.1)를 절대 URL 로 박으면 참가자 브라우저가 자기 PC 를
+#   가리켜 이미지가 안 뜬다. 호스트 무관 '상대경로'로 반환한다.
+#   (프론트 start 페이지는 파일명만 추출, select-coach 는 이 값을 직접 src 로 쓰므로
+#    /images/... 형태면 두 경로 모두 동작한다.)
+IMG_BASE = "/images"
 
 @router.get("", response_model=List[CoachResponse])
 async def get_coaches():
@@ -28,42 +32,42 @@ async def get_coaches():
             "id": "10000000-0000-0000-0000-000000000011",
             "name": "Ella (엘라)",
             "description": "당신의 이야기를 깊이 있게 들어주는\n따뜻한 멘토입니다.",
-            "avatar_url": f"{BASE_URL}/coaches/female1.png",
+            "avatar_url": f"{IMG_BASE}/female1.png",
             "character_tags": ["#따뜻함", "#공감", "#경청", "#힐링"]
         },
         {
             "id": "10000000-0000-0000-0000-000000000012",
             "name": "Jessica (제시카)",
             "description": "데이터와 논리로 당신의 성장을 돕는\n냉철한 전략가입니다.",
-            "avatar_url": f"{BASE_URL}/coaches/female2.png",
+            "avatar_url": f"{IMG_BASE}/female2.png",
             "character_tags": ["#냉철함", "#분석적", "#직설적", "#성장"]
         },
         {
             "id": "10000000-0000-0000-0000-000000000013",
             "name": "Olivia (올리비아)",
             "description": "틀에 박히지 않은 시각으로\n당신의 잠재력을 깨워줍니다.",
-            "avatar_url": f"{BASE_URL}/coaches/female3.png",
+            "avatar_url": f"{IMG_BASE}/female3.png",
             "character_tags": ["#창의적", "#자유로움", "#영감", "#비전"]
         },
         {
             "id": "10000000-0000-0000-0000-000000000014",
             "name": "Daniel (다니엘)",
             "description": "풍부한 경험을 바탕으로 든든하게 이끌어주는\n선배 같은 코치입니다.",
-            "avatar_url": f"{BASE_URL}/coaches/male1.png",
+            "avatar_url": f"{IMG_BASE}/male1.png",
             "character_tags": ["#신뢰", "#든든함", "#경험", "#리더십"]
         },
         {
             "id": "10000000-0000-0000-0000-000000000015",
             "name": "Michael (마이클)",
             "description": "지치지 않는 열정으로\n당신에게 에너지를 불어넣습니다.",
-            "avatar_url": f"{BASE_URL}/coaches/male2.png",
+            "avatar_url": f"{IMG_BASE}/male2.png",
             "character_tags": ["#열정", "#동기부여", "#에너지", "#파이팅"]
         },
         {
             "id": "10000000-0000-0000-0000-000000000016",
             "name": "Lucas (루카스)",
             "description": "군더더기 없이 핵심을 찌르는\n스마트한 솔루션 메이커입니다.",
-            "avatar_url": f"{BASE_URL}/coaches/male3.png",
+            "avatar_url": f"{IMG_BASE}/male3.png",
             "character_tags": ["#스마트", "#효율", "#핵심", "#솔루션"]
         }
     ]
