@@ -59,6 +59,14 @@ async def on_startup():
     logger.info("🚀 Application startup: Initializing database...")
     await init_db()
     logger.info("✅ Database initialized.")
+    # 🧭 재발 방지: 어느 대화 흐름으로 뜨는지 기동 시 명시 출력.
+    #   (박기진 사고: USE_PHASE3A 오파싱/오설정이 조용히 레거시로 새는 것을 막는다.)
+    import os as _os
+    from diag_project.config import phase3a_enabled as _p3a
+    _raw = _os.getenv("USE_PHASE3A", "(unset)")
+    _flow = "phase3a (제어역전·넓이게이트 ON)" if _p3a() else "LEGACY (품질 시스템 OFF!)"
+    _emoji = "✅" if _p3a() else "🚨"
+    logger.info("%s 대화 흐름: %s | USE_PHASE3A raw=%r", _emoji, _flow, _raw)
 
 @app.on_event("shutdown")
 async def on_shutdown():

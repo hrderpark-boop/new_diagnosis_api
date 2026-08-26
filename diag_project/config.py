@@ -46,3 +46,13 @@ class Settings(BaseSettings):
     )
 
 settings = Settings()
+
+
+def phase3a_enabled() -> bool:
+    """USE_PHASE3A 를 '느슨하게' 파싱한다(공백·따옴표·1/yes/on 허용).
+
+    기존 `.lower()=="true"` 는 " true "·'"true"'·"1" 에서 조용히 false 로 떨어져
+    레거시 흐름으로 새는 함정이 있었다(품질 시스템 통째 OFF). 이 함수로 통일한다.
+    """
+    raw = os.getenv("USE_PHASE3A", "false")
+    return raw.strip().strip('"').strip("'").lower() in {"true", "1", "yes", "on"}

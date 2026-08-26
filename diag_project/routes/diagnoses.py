@@ -13,6 +13,7 @@ from sqlalchemy.future import select
 from sqlalchemy import func, delete, desc
 from pydantic import BaseModel
 
+from diag_project.config import phase3a_enabled
 from diag_project.database import get_db
 from diag_project.models.diagnosis_session import DiagnosisSession, ChatMessage, MessageRole
 from diag_project.models.coach_persona import CoachPersona
@@ -213,7 +214,7 @@ async def start_diagnosis(
     await db.commit()
     await db.refresh(new_session)
 
-    use_phase3a = os.getenv("USE_PHASE3A", "false").lower() == "true"
+    use_phase3a = phase3a_enabled()
 
     if use_phase3a:
         # Phase 3-A: 라포 단계로 시작 (챕터 스크립트는 라포 완료 후)
@@ -267,7 +268,7 @@ async def submit_message(
     db: AsyncSession = Depends(get_db),
     llm: GeminiService = Depends(GeminiService),
 ):
-    use_phase3a = os.getenv("USE_PHASE3A", "false").lower() == "true"
+    use_phase3a = phase3a_enabled()
     if use_phase3a:
         return await _submit_message_phase3a(request, db, llm)
     return await _submit_message_legacy(request, db, llm)
@@ -278,7 +279,15 @@ async def _submit_message_legacy(
     db: AsyncSession,
     llm: GeminiService,
 ):
-    """기존 흐름. USE_PHASE3A=false 시 사용. 본문 변경 금지."""
+    """기존 흐름. USE_PHASE3A=false 시 사용. 본문 변경 금지.
+
+    🚨 이 경로는 제어역전·넓이게이트·정의합의가 없는 '죽은 경로'다. 프로덕션은
+    반드시 phase3a 여야 한다. 여기 진입했다는 것은 USE_PHASE3A 설정 실수 신호.
+    """
+    logger.warning(
+        "🚨 레거시 흐름 진입 — USE_PHASE3A 가 꺼져 있다(품질 시스템 OFF). "
+        "프로덕션이라면 즉시 USE_PHASE3A=true 로 설정할 것. session=%s",
+        request.session_id)
     session = await db.get(DiagnosisSession, request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
