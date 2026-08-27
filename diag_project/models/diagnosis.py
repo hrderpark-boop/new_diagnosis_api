@@ -24,6 +24,9 @@ class DiagnosisBase(SQLModel):
     coach_persona_id: str = Field(max_length=36) 
 
 class Diagnosis(DiagnosisBase, table=True):
+    # ⚠️ [비활성/병렬] 진단 대화 세션이 아니다. 활성 모델은
+    #   models/diagnosis_session.py 의 DiagnosisSession(diagnosis_sessions).
+    #   (파일럿 이후 정리 대상.)
     __tablename__ = "diagnosis" 
     id: UUID = Field(  
         default_factory=uuid4,

@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 # 진단 세션 모델 (채팅방)
 # -----------------------------------------------------------------------------
 class DiagnosisSession(SQLModel, table=True):
+    # ✅ [활성 모델] 진단 대화 흐름(로그인→코치대화→리포트)의 세션은 '이것'이다.
+    #   routes/diagnoses·reports·self_eval·admin 이 모두 DiagnosisSession 을 쓴다.
+    #   ⚠️ models/session.py(Session, table="sessions")·models/diagnosis.py
+    #      (Diagnosis, table="diagnosis")는 테이블이 다른 '병렬/레거시' 모델이다.
+    #      진단 세션을 고칠 땐 반드시 여기(diagnosis_sessions)를 수정할 것.
+    #      (모델 중복 정리는 파일럿 이후 과제 — groups/companies 중복과 동류.)
     __tablename__ = "diagnosis_sessions"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)

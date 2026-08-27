@@ -21,6 +21,10 @@ class SessionBase(SQLModel):
     status: SessionStatus = Field(default=SessionStatus.IN_PROGRESS)
 
 class Session(SessionBase, table=True):
+    # ⚠️ [비활성/병렬] 진단 대화 흐름의 세션이 아니다. 그건
+    #   models/diagnosis_session.py 의 DiagnosisSession(diagnosis_sessions).
+    #   이 Session(table="sessions")은 별도 서비스용 — 진단 세션을 여기서
+    #   고치지 말 것. (파일럿 이후 정리 대상.)
     __tablename__ = "sessions"
     id: UUID = Field(
         default_factory=uuid4,
