@@ -750,23 +750,13 @@ async def _submit_message_phase3a(
             current_ampm_phrase=state.get("current_ampm_phrase", "오늘"),
             is_hostile=_hostile,
         )
-    elif instruction_used == "CHAPTER_OPENING":
-        # 챕터 도입 — '목차 노출형'(역량명 호명) 대신, 리더의 직전 답변에서
-        # 추출된 키워드(직전 챕터 마지막 사건의 summary)를 브릿지로 삼아
-        # 대화가 이전 답변에서 파생되는 느낌을 준다. (첫 챕터엔 키워드 없음)
-        _collected = state.get("all_collected_events") or []
-        _bridge_ctx = None
-        for _ev in reversed(_collected):
-            _kw = (_ev.get("summary") or "").strip()
-            if _kw:
-                _bridge_ctx = _kw
-                break
-        system_override_text = build_chapter_opening_with_user_def(
-            chapter=chapter,
-            user_definition=state.get("last_user_response", "") or "",
-            first_subcompetency_name=state.get("first_subcompetency_name", ""),
-            bridge_context=_bridge_ctx,
-        )
+    # 🐛 fix(4): CHAPTER_OPENING 은 더 이상 시스템 하드코딩 템플릿으로 고정하지
+    #   않는다(앵커 첫 질문 "…에너지를 쏟으셨거나 고민이 깊으셨던…"이 매 챕터
+    #   글자 그대로 반복되던 문제). LLM 가이드(_build_chapter_opening_guide)로
+    #   표현을 변주한다. 제어 역전은 유지 — asked_subs 기록·타겟(current_target_sub)
+    #   결정은 LLM 호출 '이전'에 확정되고, 가이드에 '시점+인물+행동·은유금지·질문
+    #   1개' 제약을 못박았다. system_override_text 를 None 으로 둬 아래 else(LLM
+    #   생성) 경로로 보낸다.
 
     if system_override_text is not None:
         reply = system_override_text

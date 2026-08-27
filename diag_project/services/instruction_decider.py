@@ -161,6 +161,7 @@ InstructionType = Literal[
     "DIAGNOSIS_INTRO",
     "DIAGNOSIS_CONFIRM",
     "COMPETENCY_INTRO",
+    "COMPETENCY_ASK",
     "COMPETENCY_ALIGN",
     "CONTINUE_NORMAL",
     "STAR_INCOMPLETE",
@@ -500,7 +501,13 @@ def decide_instruction(state: dict) -> InstructionType:
         competency_aligned = state.get("competency_aligned", False)
         chapter_msg_count = state.get("chapter_message_count", 0)
 
-        # 4-1: 역량 합의 (LLM 호응 + 시스템 framework)
+        # 4-0: 정의 '질문'(Step 5) — 챕터마다 1회. 브릿지의 조기 START_CHAPTER
+        #   태깅으로 chapter_started 가 미리 True 여도, 이 챕터에서 아직 정의를
+        #   묻지 않았으면 먼저 묻는다(①질문). 다음 턴 사용자 답변 후 ②COMPETENCY_ALIGN.
+        if not state.get("definition_asked", False) and not competency_aligned:
+            return "COMPETENCY_ASK"
+
+        # 4-1: 역량 합의 (사용자 답변 반영 + 공식 정의 + 하위역량 목록)
         if not competency_aligned:
             return "COMPETENCY_ALIGN"
 
@@ -918,6 +925,21 @@ async def build_turn_state(
     )
     competency_aligned = competency_align_result.scalars().first() is not None
 
+    # 🐛 fix(1·5): 정의 '질문' 스텝은 챕터마다 1회여야 한다. 기존엔 첫 챕터의
+    #   DIAGNOSIS_CONFIRM 에만 융합돼 있고, 2번째 챕터부터는 전환 브릿지의 조기
+    #   START_CHAPTER 태깅 때문에 chapter_started 가 미리 True 가 되어 질문 스텝
+    #   (474)이 도달 불가였다. → 챕터별 게이트: 이 챕터에 정의 질문(COMPETENCY_ASK)
+    #   또는 (첫 챕터의) DIAGNOSIS_CONFIRM 이 이미 있었는지로 판정한다.
+    definition_asked_result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.chapter == chapter)
+        .where(ChatMessage.role == MessageRole.MODEL)
+        .where(ChatMessage.instruction_used.in_(
+            ["COMPETENCY_ASK", "DIAGNOSIS_CONFIRM"]))
+    )
+    definition_asked = definition_asked_result.scalars().first() is not None
+
     # 8-e. 첫 세부 역량 이름 (CHAPTER_OPENING 가이드용) + 역량 framework
     from diag_project.data.competencies import COMPETENCY_FRAMEWORK
     chapter_competency = COMPETENCY_FRAMEWORK.get(chapter, {})
@@ -1063,6 +1085,7 @@ async def build_turn_state(
         "chapter_message_count": chapter_message_count,
         "competency_intro_done": competency_intro_done,
         "competency_aligned": competency_aligned,
+        "definition_asked": definition_asked,
         "awaiting_continue_decision": awaiting_continue_decision,
         "suggest_pause_count": suggest_pause_count,
         "session_deflection_count": session_deflection_count,
