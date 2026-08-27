@@ -101,21 +101,24 @@ COACH_UUID_TO_KEY = {
 }
 
 
-def _session_coach_key(session_id) -> str:
-    """세션마다 코치 페르소나(이름·성향)를 결정적으로 랜덤 배정한다.
+def _coach_key_from_id(coach_id) -> str:
+    """🐛 fix: 사용자가 '선택한' coach_id → COACHES_PERSONA 키("1"~"6").
 
-    세션 UUID 로부터 1~6 을 유도하므로 저장 없이도 모든 턴에서 동일한 코치가
-    유지된다(인사·시스템 프롬프트 일관성). 모든 세션이 'Ella' 로 고정되던
-    문제를 해소 — 세션별로 6인(Ella/Jessica/Olivia/Daniel/Michael/Lucas)의
-    다채로운 톤앤매너가 적용된다.
+    (구 _session_coach_key 는 세션 UUID 로 코치를 '랜덤 배정'해 사용자 선택을
+    무력화했다 — 선택한 Ella/Jessica 를 골라도 인사·페르소나가 세션-랜덤 코치로
+    나오던 버그. 이제 저장된 선택 coach_id 를 그대로 읽는다.)
+
+    매핑 실패(미존재/None)면 기본 "1" 로 폴백하되, '조용한 오배정' 재발을 막기
+    위해 반드시 경고 로그를 남긴다.
     """
-    keys = sorted(COACHES_PERSONA.keys(), key=int)
-    try:
-        idx = int(getattr(session_id, "int", None)
-                  or int(str(session_id).replace("-", ""), 16))
-    except (ValueError, TypeError):
-        idx = 0
-    return keys[idx % len(keys)]
+    key = COACH_UUID_TO_KEY.get(str(coach_id))
+    if not key:
+        logger.warning(
+            "🚨 코치 매핑 실패 — coach_id=%r 를 COACHES_PERSONA 키로 해석 못함. "
+            "기본 '1'(Ella)로 폴백. 선택이 무시되고 있으니 즉시 점검할 것.",
+            coach_id)
+        return "1"
+    return key
 
 
 def _resolve_persona(coach_id: uuid.UUID, user_name: str, visit_count: int):
@@ -220,7 +223,7 @@ async def start_diagnosis(
         # Phase 3-A: 라포 단계로 시작 (챕터 스크립트는 라포 완료 후)
         # 🎭 세션별 랜덤 코치 배정 — 인사말의 코치 이름도 세션 코치로 통일.
         _coach_name = COACHES_PERSONA[
-            _session_coach_key(new_session.id)
+            _coach_key_from_id(new_session.coach_id)
         ]["name"]
         first_msg_content = build_rapport_greeting(_coach_name)
         first_message = ChatMessage(
@@ -644,8 +647,8 @@ async def _submit_message_phase3a(
         chapter_context = chapter_context.split("## 챕터 시작 스크립트")[0].rstrip()
     turn_state_text = format_turn_state_for_llm(state)
 
-    # 페르소나 통합 system prompt (세션별 랜덤 배정 코치의 톤 반영)
-    coach_key = _session_coach_key(session.id)
+    # 페르소나 통합 system prompt — 사용자가 '선택한' 코치(session.coach_id) 기준.
+    coach_key = _coach_key_from_id(session.coach_id)
     user_name = state.get("user_name", "리더")
     system_prompt = build_layer1_with_persona(
         coach_id=coach_key,
