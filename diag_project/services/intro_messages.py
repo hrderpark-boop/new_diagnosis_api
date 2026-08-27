@@ -253,6 +253,43 @@ def build_chapter_thought_question(chapter: str) -> str:
     return random.choice(variations)
 
 
+# item4: 첫 BEI 앵커 질문 '문장 틀' 풀 — LLM 대신 백엔드 결정론 변주.
+#   챕터 순서로 프레임을 골라 5개 챕터가 모두 다른 틀을 쓴다(무반복). 모든 틀은
+#   'BEI 앵커 제약'을 구조적으로 보장한다: 시점(최근/근래) + 리더가 '직접 한 행동'
+#   + 구체 경험/사례/장면 요구, 은유·비유 없음. {sub}=첫 하위역량(백엔드 주입).
+_ANCHOR_FRAMES = [
+    "먼저 '{sub}'에 대해 여쭤볼게요. 최근 이와 관련해서 리더님이 직접 겪으신 "
+    "경험이 하나 있으실까요?",
+    "'{sub}' 쪽으로 먼저 들어가 볼게요. 최근에 그런 상황을 실제로 다루셨던 "
+    "장면이 떠오르시나요?",
+    "'{sub}'부터 여쭤볼게요. 근래에 이와 관련해 리더님이 직접 나서서 처리하셨던 "
+    "일이 있으셨어요?",
+    "먼저 '{sub}' 이야기를 해볼게요. 최근 몇 달 사이 이런 상황을 마주해 직접 "
+    "대응하셨던 경험이 있으실까요?",
+    "'{sub}'에 대해 먼저 묻고 싶어요. 최근에 리더님이 구체적으로 행동하셨던 "
+    "사례가 하나 있으신가요?",
+    "'{sub}'부터 시작해 볼게요. 최근 이와 관련해 특별히 신경 써서 처리하셨던 "
+    "일이 떠오르시나요?",
+    "먼저 '{sub}' 관련 경험을 들어볼게요. 근래에 이 부분에서 리더님이 직접 "
+    "판단하고 움직이셨던 순간이 있으셨어요?",
+    "'{sub}' 이야기로 먼저 들어가 볼게요. 최근에 리더님이 직접 관여해 풀어가셨던 "
+    "구체적인 상황이 있으실까요?",
+]
+# 브릿지(직전 답변 이어받기) 리드도 챕터 순서로 순환.
+_BRIDGE_LEADS = [
+    "방금 '{ctx}' 이야기를 들으면서, 리더님이 그런 순간들을 어떻게 "
+    "마주해오셨는지가 더 궁금해졌어요.",
+    "'{ctx}' 하시던 그 결이 마음에 남네요. 그 이야기에서 한 걸음 더 들어가 볼게요.",
+    "조금 전 '{ctx}' 말씀이 계속 맴도네요. 그 흐름을 그대로 이어서 여쭤볼게요.",
+    "'{ctx}' 이야기, 잘 들었어요. 자연스럽게 다음 이야기로 이어가 볼게요.",
+    "방금 들려주신 '{ctx}' 경험이 인상적이었어요. 이어서 하나 더 여쭤볼게요.",
+]
+
+_OPEN_CHAPTER_ORDER = [
+    k for k in COMPETENCY_FRAMEWORK.keys() if k != "supplementary"
+]
+
+
 def build_chapter_opening_with_user_def(
     chapter: str,
     user_definition: str,
@@ -284,46 +321,29 @@ def build_chapter_opening_with_user_def(
         indicators[first_key].get("name", "") if first_key else ""
     ) or first_subcompetency_name or chapter_name
 
-    # 첫 하위역량의 맞춤 앵커 무작위 1개 (주제를 '이름 없이' 유도하는 데 사용)
+    # item4: 문장 틀·앵커 예시를 챕터 순서로 결정론 선택 → 5개 챕터 모두 다르게
+    #   (무반복). 앵커 내용(first_name/anchor_text)은 그대로 주입 = 제어 역전 유지.
+    _pos = (_OPEN_CHAPTER_ORDER.index(chapter)
+            if chapter in _OPEN_CHAPTER_ORDER else 0)
+    # 첫 하위역량의 맞춤 앵커 1개 — 결정론(챕터 순서 기반, random 아님).
     anchors = SUBCOMPETENCY_ANCHORS.get(first_key) if first_key else None
-    anchor_text = random.choice(anchors) if anchors else None
-
-    # 🌉 브릿지 모드: 직전 답변 키워드에서 파생되는 대화형 전환 (역량명 호명 X)
-    if bridge_context:
-        _ctx = bridge_context.strip().rstrip(".!?~ ")
-        lead = random.choice([
-            f"방금 '{_ctx}' 이야기를 들으면서, 리더님이 그런 순간들을 "
-            f"어떻게 마주해오셨는지가 더 궁금해졌어요.",
-            f"'{_ctx}' 하시던 그 결이 마음에 오래 남네요. 그 이야기에서 "
-            f"자연스럽게 한 걸음 더 들어가 볼게요.",
-            f"조금 전 '{_ctx}' 말씀이 계속 맴도네요. 그 흐름을 그대로 이어서 "
-            f"여쭤보고 싶은 게 하나 생겼어요.",
-        ])
-        invite = (
-            f" 최근 {anchor_text}처럼, 리더님께서 유독 에너지를 쏟으셨거나 "
-            f"고민이 깊으셨던 또 다른 경험이 있다면 그 장면 하나 "
-            f"들려주시겠어요?"
-            if anchor_text
-            else " 최근 비슷한 무게로 씨름하셨던 경험이 하나 떠오르신다면, "
-                 "편하게 들려주시겠어요?"
-        )
-        return f"{lead}{invite}"
-
-    # (브릿지 없음 — 첫 챕터 등) 기존 방식: 하위역량 타겟 STAR 질문.
+    anchor_text = anchors[_pos % len(anchors)] if anchors else None
+    _frame = _ANCHOR_FRAMES[_pos % len(_ANCHOR_FRAMES)].format(sub=first_name)
     anchor_sentence = (
         f" 예를 들어 {anchor_text}처럼요. 그 장면이 떠오르신다면 "
         f"편하게 들려주셔도 좋습니다."
         if anchor_text
         else " 떠오르시는 구체적인 장면 하나면 충분합니다."
     )
-    # 🚫 환각 방지: "방금 말씀드린 하위 역량 중에서"(화면에 목차를 보여준
-    #   적 없음)를 삭제. 첫 하위역량을 자연스럽게 지목해 탐색으로 진입한다.
-    return (
-        f"좋습니다! 그럼 바로 구체적인 경험 이야기로 들어가 볼게요.\n\n"
-        f"먼저 '{first_name}'에 대해 여쭤볼게요. 최근 이와 관련해서 "
-        f"리더님께서 에너지를 쏟으셨거나 고민이 깊으셨던 사례가 "
-        f"있으실까요?{anchor_sentence}"
-    )
+
+    # 🌉 브릿지 모드: 직전 답변 키워드에서 파생되는 대화형 리드 + 앵커 프레임.
+    if bridge_context:
+        _ctx = bridge_context.strip().rstrip(".!?~ ")
+        _lead = _BRIDGE_LEADS[_pos % len(_BRIDGE_LEADS)].format(ctx=_ctx)
+        return f"{_lead} {_frame}{anchor_sentence}"
+
+    # (브릿지 없음 — 첫 챕터 등) 하위역량 타겟 앵커 질문(풀 프레임).
+    return f"{_frame}{anchor_sentence}"
 
 
 def build_chapter_transition_question(chapter: str) -> str:

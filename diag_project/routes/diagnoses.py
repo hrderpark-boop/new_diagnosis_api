@@ -750,13 +750,24 @@ async def _submit_message_phase3a(
             current_ampm_phrase=state.get("current_ampm_phrase", "오늘"),
             is_hostile=_hostile,
         )
-    # 🐛 fix(4): CHAPTER_OPENING 은 더 이상 시스템 하드코딩 템플릿으로 고정하지
-    #   않는다(앵커 첫 질문 "…에너지를 쏟으셨거나 고민이 깊으셨던…"이 매 챕터
-    #   글자 그대로 반복되던 문제). LLM 가이드(_build_chapter_opening_guide)로
-    #   표현을 변주한다. 제어 역전은 유지 — asked_subs 기록·타겟(current_target_sub)
-    #   결정은 LLM 호출 '이전'에 확정되고, 가이드에 '시점+인물+행동·은유금지·질문
-    #   1개' 제약을 못박았다. system_override_text 를 None 으로 둬 아래 else(LLM
-    #   생성) 경로로 보낸다.
+    elif instruction_used == "CHAPTER_OPENING":
+        # 챕터 도입 — 첫 BEI 앵커 질문. item4: LLM 대신 백엔드 '템플릿 풀'로
+        #   문장 틀을 챕터마다 다르게 골라(무반복·결정론) '시점+인물+행동·은유금지'
+        #   앵커 품질을 구조적으로 보장한다. 앵커 내용(타겟 하위역량)은 주입,
+        #   틀만 변주 → 제어 역전 유지. 브릿지(직전 사건 요약)로 대화 연결.
+        _collected = state.get("all_collected_events") or []
+        _bridge_ctx = None
+        for _ev in reversed(_collected):
+            _kw = (_ev.get("summary") or "").strip()
+            if _kw:
+                _bridge_ctx = _kw
+                break
+        system_override_text = build_chapter_opening_with_user_def(
+            chapter=chapter,
+            user_definition=state.get("last_user_response", "") or "",
+            first_subcompetency_name=state.get("first_subcompetency_name", ""),
+            bridge_context=_bridge_ctx,
+        )
 
     if system_override_text is not None:
         reply = system_override_text
