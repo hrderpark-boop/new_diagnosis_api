@@ -33,11 +33,25 @@ if not DATABASE_URL:
         ".env 파일에 DATABASE_URL=... 을 추가하세요."
     )
 # 2. 비동기 엔진 생성
+# connect_args 결정:
+#   - sqlite: check_same_thread=False
+#   - Postgres Transaction 풀러(:6543, PgBouncer): prepared statement 미지원 →
+#     statement_cache_size=0 + prepared_statement_cache_size=0 로 캐싱을 꺼야 앱이
+#     정상 동작한다(회사망이 5432 를 막을 때 로컬을 6543 으로 돌리기 위함).
+#   - 그 외(Session 풀러 :5432 = Render/프로덕션): 기존 그대로({}) — 아무 변화 없음.
+if "sqlite" in DATABASE_URL:
+    _connect_args = {"check_same_thread": False}
+elif ":6543" in DATABASE_URL:  # Transaction 풀러
+    _connect_args = {"statement_cache_size": 0,
+                     "prepared_statement_cache_size": 0}
+else:
+    _connect_args = {}
+
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False, 
+    echo=False,
     future=True,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+    connect_args=_connect_args,
 )
 
 # 3. 세션 팩토리
