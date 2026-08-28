@@ -43,13 +43,17 @@ def _mask_dsn(dsn: str) -> str:
     return re.sub(r"://[^@]*@", "://<자격증명숨김>@", dsn or "")
 
 
-async def main(email: str, new_password: str) -> int:
+async def main(email: str, new_password: str, port: int | None) -> int:
     import asyncpg
     dsn = os.getenv("DATABASE_URL") or os.getenv("DATABASE_URI")
     if not dsn:
         print("🛑 DATABASE_URL 이 설정돼 있지 않습니다. .env 또는 환경변수 확인.")
         return 2
     conn_dsn = dsn.replace("postgresql+asyncpg://", "postgresql://")
+    # 포트 오버라이드(회사망이 5432 를 막으면 6543=Transaction 풀러로).
+    #   DSN 의 자격증명은 그대로 두고 포트만 바꾼다(전체 URL 을 손입력하지 않게).
+    if port:
+        conn_dsn = re.sub(r"(:)\d+(/)", rf"\g<1>{port}\g<2>", conn_dsn, count=1)
 
     # 실행 전 접속 대상 확인(프로덕션 Supabase 인지 눈으로 확인).
     print(f"접속 대상 DB: {_mask_dsn(conn_dsn)}")
@@ -59,7 +63,10 @@ async def main(email: str, new_password: str) -> int:
 
     new_hash = hash_password(new_password)  # bcrypt (admin_login 과 동일 검증)
 
-    conn = await asyncpg.connect(conn_dsn)
+    # statement_cache_size=0: Transaction 풀러(6543, PgBouncer)에서 prepared
+    #   statement 미지원으로 나는 오류를 막는다(세션 모드에도 무해). timeout 로
+    #   무한 대기 방지.
+    conn = await asyncpg.connect(conn_dsn, statement_cache_size=0, timeout=15)
     try:
         row = await conn.fetchrow(
             "SELECT id, email, role, is_active FROM admin_users WHERE email=$1",
@@ -84,6 +91,8 @@ async def main(email: str, new_password: str) -> int:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="관리자 비밀번호 재설정")
     ap.add_argument("--email", default=_DEFAULT_EMAIL)
+    ap.add_argument("--port", type=int, default=None,
+                    help="DB 포트 오버라이드(회사망이 5432 차단 시 6543 사용).")
     args = ap.parse_args()
 
     pw = os.getenv("NEW_ADMIN_PASSWORD")
@@ -97,4 +106,4 @@ if __name__ == "__main__":
         print(f"🛑 비밀번호는 최소 {_MIN_LEN}자 이상이어야 합니다.")
         sys.exit(5)
 
-    sys.exit(asyncio.run(main(args.email, pw)))
+    sys.exit(asyncio.run(main(args.email, pw, args.port)))
