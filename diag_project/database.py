@@ -52,6 +52,11 @@ engine = create_async_engine(
     echo=False,
     future=True,
     connect_args=_connect_args,
+    # 성능/안정: Supabase(pgbouncer)는 유휴 연결을 끊는다. pre_ping 으로 죽은
+    #   풀 연결을 잡기 전에 살아있는지 확인해 '첫 쿼리 실패/지연' 스파이크를
+    #   막고, recycle 로 오래된 연결을 30분마다 교체한다. sqlite 엔 무해.
+    pool_pre_ping=True,
+    pool_recycle=1800,
 )
 
 # 3. 세션 팩토리
