@@ -146,6 +146,32 @@ def _resolve_persona(coach_id: uuid.UUID, user_name: str, visit_count: int):
     return persona, opening
 
 # ------------------------------------------------------------------
+# [0] 진행 중 세션 사전 확인 (GET /active) — 코치 선택 화면에서 미리 안내용.
+#   진행 중/일시중지 세션이 있으면 그 세션의 '원래 코치'를 함께 알려, 코치를
+#   새로 골라도 재개 시 원래 코치로 이어짐을 미리 고지할 수 있게 한다.
+# ------------------------------------------------------------------
+@router.get("/active")
+async def get_active_session(
+    participant_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(DiagnosisSession).where(
+        DiagnosisSession.user_id == participant_id,
+        DiagnosisSession.status.in_(["in_progress", "paused"]),
+    ).order_by(desc(DiagnosisSession.created_at))
+    s = (await db.execute(q)).scalars().first()
+    if not s:
+        return {"has_active": False}
+    key = _coach_key_from_id(s.coach_id)
+    return {
+        "has_active": True,
+        "session_id": str(s.id),
+        "coach_id": str(s.coach_id),
+        "coach_name": COACHES_PERSONA[key]["name"],
+    }
+
+
+# ------------------------------------------------------------------
 # [1] 진단 세션 시작 (POST /start) - ✅ 이어하기 기능 부활!
 # ------------------------------------------------------------------
 @router.post("/start", status_code=status.HTTP_201_CREATED)
@@ -183,11 +209,18 @@ async def start_diagnosis(
         # 메시지가 없으면 기본 멘트
         response_msg = last_message.content if last_message else "리더님, 다시 만나서 반가워요. 이어서 진행해볼까요?"
 
+        # 재개 세션의 '원래 코치'를 함께 반환 — 프론트가 방금 클릭한 코치가 아니라
+        #   이 세션의 코치로 프로필·안내를 표시하게 한다(재개 시 코치 불일치 방지).
+        _resume_key = _coach_key_from_id(existing_session.coach_id)
+        _resume_coach_name = COACHES_PERSONA[_resume_key]["name"]
+
         return {
             "diagnosis_id": existing_session.id,
             "session_id": existing_session.id,
             "coach_response_message": response_msg,
-            "next_action": "resume" # 프론트엔드에 '이어하기'임을 알림
+            "next_action": "resume",  # 프론트엔드에 '이어하기'임을 알림
+            "coach_id": str(existing_session.coach_id),  # 재개 세션의 원래 코치
+            "coach_name": _resume_coach_name,
         }
 
     # [Case B] 진행 중인 게 없다 -> 새 세션 생성 (New Game)
