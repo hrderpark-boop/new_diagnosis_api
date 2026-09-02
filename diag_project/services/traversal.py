@@ -105,6 +105,34 @@ def progress_stalled(turns_since_asked_increase: int) -> bool:
 
 
 # ── asked 원장 조작 (순수) — 호출자가 반환값을 영속화한다 ──
+LEDGER_KEYS = ("asked_subs", "current_target", "turns_on_target")
+
+
+def snapshot_ledger(store: dict) -> dict:
+    """프로브 스텝 '직전'의 원장 3키를 깊은 복사로 보관한다(H5 롤백용)."""
+    import copy
+    return {k: copy.deepcopy((store or {}).get(k)) for k in LEDGER_KEYS}
+
+
+def restore_ledger(store: dict, snapshot: dict) -> dict:
+    """H5: LLM 호출이 실패해 앵커가 실제로 발화되지 못한 턴의 원장 전진을 되돌린다.
+
+    '기록=발화' 결합의 예외 구멍: apply_probe_turn 은 LLM 호출 이전에 asked 를
+    기록하는데, LLM 이 실패하면 사과 폴백 문장만 나가고 앵커는 나가지 않는다.
+    이때 기록을 남기면 넓이 게이트가 허수를 본다. 원장 3키만 스냅샷으로 되돌리고
+    나머지 키(참여이탈 카운터 등)는 건드리지 않는다. 텍스트 확인 방식이 아니라
+    '호출 실패'라는 시스템 사실에만 반응한다.
+    """
+    store = dict(store or {})
+    for k in LEDGER_KEYS:
+        v = (snapshot or {}).get(k)
+        if v is None:
+            store.pop(k, None)
+        else:
+            store[k] = v
+    return store
+
+
 def record_asked(store: dict, chapter: str, sub: str) -> dict:
     """asked_subs[chapter] 에 sub 를 (중복 없이) 추가한 새 store 반환.
     반드시 LLM 호출 '이전'에 호출한다."""

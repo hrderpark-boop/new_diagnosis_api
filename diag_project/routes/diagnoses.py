@@ -645,9 +645,13 @@ async def _submit_message_phase3a(
         "AVOIDANCE_DETECTED", "ABSENCE_PROBE",
     }
     current_target_sub = None
+    # H5: LLM 호출 실패 시 이 턴의 원장 전진을 되돌리기 위한 스냅샷(프로브 턴만).
+    _ledger_snapshot = None
     if chapter and instruction_used in _PROBE_INSTR:
+        from diag_project.services.traversal import snapshot_ledger
         # 재개 테스트(T-E)와 동일한 순수 스텝을 공유한다 — 원장이 유일 소스.
         _store = dict(session.self_assessment_data or {})
+        _ledger_snapshot = snapshot_ledger(_store)
         _all_subs = state.get("all_subcompetencies") or []
         _event_done = instruction_used == "STAR_COMPLETE_NEW_EVENT"
         # 🔑 타겟 전진 감지용: 스텝 '이전'의 현재 타겟(없으면 None=챕터 첫 앵커).
@@ -730,6 +734,7 @@ async def _submit_message_phase3a(
     # 두 턴은 LLM 확률적 행동(자기소개 반복·정의 누락)이 반복되어
     # 템플릿으로 고정. 나머지 턴은 기존대로 LLM 생성.
     system_override_text = None
+    _llm_error = False  # H5: LLM 호출 실패 턴 표식(원장 롤백 + LLM_ERROR 태깅)
 
     # 🚨 3-Strike 강제 종료 (Session Abort) — 최우선 처리.
     #   세션 전체 비생산 응답 누적 → 정중한 종료 멘트 출력 후 세션 영구 종료.
@@ -873,6 +878,26 @@ async def _submit_message_phase3a(
         reply = llm_output["reply"]
         llm_state = llm_output.get("state") or {}
         event_metadata = llm_output.get("event_metadata")
+        # H5: LLM 호출 실패 → 사과 폴백만 나가고 앵커는 발화되지 않았다. 이 턴의
+        #   asked 원장 전진(apply_probe_turn)을 스냅샷으로 되돌려 '기록=발화'
+        #   결합을 유지한다(넓이 게이트 허수 방지). 참여이탈 카운터 등 다른 키는
+        #   그대로. 시스템 사실(호출 실패)에만 반응 — 텍스트 검증 방식 아님.
+        if llm_output.get("error"):
+            _llm_error = True
+            if _ledger_snapshot is not None:
+                from diag_project.services.traversal import restore_ledger
+                from sqlalchemy.orm.attributes import flag_modified as _fm_rb
+                session.self_assessment_data = restore_ledger(
+                    session.self_assessment_data, _ledger_snapshot
+                )
+                _fm_rb(session, "self_assessment_data")
+                logger.warning(
+                    "↩️ H5 LLM 실패 → asked 원장 롤백: [%s] target=%s instr=%s",
+                    chapter, current_target_sub, instruction_used,
+                )
+            user_msg.instruction_used = "LLM_ERROR"
+            db.add(user_msg)
+            await db.commit()
 
     # 8. 제어 태그 처리 (감사 위험 #4 해결)
     is_chapter_completed = "[CHAPTER_COMPLETE]" in reply
@@ -1185,7 +1210,9 @@ async def _submit_message_phase3a(
         chapter=ai_msg_chapter,
         event_id=None if is_pre_diagnosis else real_event_id,
         probe_type_used=probe_type_used,
-        instruction_used=instruction_used,
+        # H5: LLM 실패 턴은 LLM_ERROR 로 태깅 — 다음 턴의 참여이탈 카운팅
+        #   (_BEI_PROBE_INSTR 기준)과 학습 라벨에서 '앵커 턴'으로 오인되지 않게.
+        instruction_used=("LLM_ERROR" if _llm_error else instruction_used),
         turn_index=_turn_index,  # user 메시지와 동일 값 → ML 페어링 키
     )
     db.add(ai_msg)

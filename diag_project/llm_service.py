@@ -1099,6 +1099,9 @@ class GeminiService:
                 ),
                 "state": {},
                 "event_metadata": None,
+                # H5: 호출 실패 사실을 명시 — 호출자(diagnoses)가 이 턴의 asked
+                #   원장 전진을 롤백하고 LLM_ERROR 로 태깅한다(앵커 미발화 허수 방지).
+                "error": True,
             }
 
     # -------------------------------------------------------------------------
