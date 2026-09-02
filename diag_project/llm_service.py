@@ -1940,9 +1940,10 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         #   피드백·GAP)에는 '질문했으나 사례 미확인' 관찰로 활용 가능하다.
         #   여기서는 카운트만 노출하고, 점수 경로는 위 순수 함수가 봉인한다.
         _cov["evidence_missing"] = max(0, _asked_total - _measured_total)
-        # 🔒 V-6: 종합 점수 셧다운 — 구조적 기준(대역량 3개+ 각 2건+ measured).
-        #   절대 측정 수(measured<11)는 경계에서 불안정(반복 진단 5~14 변동)해
-        #   정식/부분 리포트가 오락가락 → 구조 기준으로 교체(깊이+분산 요구).
+        # 🔒 V-6(1) 확정(2026-09-02): 종합 섹션 게이트 = measured_total ≥
+        #   COMPOSITE_MIN_MEASURED(18). 구조 기준(대역량 3개+ 각 2건+)은 V-6
+        #   중간 단계였고 대체됨 — qualifying 은 정보용으로만 남긴다.
+        #   (docs/code_review_2026-09-02.md §0)
         from diag_project.services.scoring import (
             composite_shown as _composite_shown, COMPOSITE_MIN_MEASURED,
         )
