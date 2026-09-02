@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from pydantic import BaseModel
@@ -380,6 +381,20 @@ async def update_report(
 _STATUS_PRESERVED_ON_ANALYZE = frozenset({"aborted", "aborted_disengaged", "paused"})
 
 
+def protected_human_edited(reports):
+    """H1: 관리자 교정본(is_human_edited)이 있으면 그중 최신 1건을 반환(없으면 None).
+
+    교정본은 (ai_original ↔ 사람 교정본) 골든 쌍이라 재분석으로 지우지 않는다.
+    """
+    edited = [r for r in (reports or []) if getattr(r, "is_human_edited", False)]
+    if not edited:
+        return None
+    edited.sort(key=lambda r: (getattr(r, "edited_at", None) or
+                               getattr(r, "created_at", None) or datetime.min),
+                reverse=True)
+    return edited[0]
+
+
 def status_after_analyze(current_status: str | None, completed_count: int) -> str:
     """analyze 가 세션 상태를 어떻게 바꿔야 하는지 결정한다(순수).
 
@@ -413,16 +428,29 @@ async def analyze_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # 기존 리포트가 있으면 스킵하지 않고 삭제 → 무조건 처음부터 재분석(Overwrite).
+    # H1: 기존 리포트는 '새 리포트 저장이 성공한 뒤, 같은 트랜잭션에서' 삭제한다.
+    #   과거엔 분석 시작 전에 삭제·커밋해 LLM 실패/503/예외 시 리포트가 사라졌다.
+    #   관리자 교정본(is_human_edited)은 골든 데이터(ai_original ↔ 교정본 쌍)라
+    #   재분석으로 덮어쓰지 않는다 — 기존 리포트를 그대로 두고 200 으로 응답.
     existing_query = select(DiagnosisReport).where(DiagnosisReport.session_id == session_uuid)
     result = await db.execute(existing_query)
-    existing_reports = result.scalars().all()
+    existing_reports = list(result.scalars().all())
+    _protected = protected_human_edited(existing_reports)
+    if _protected:
+        logger.warning(
+            "🛡️ 관리자 교정본 보호 — 재분석 스킵(session=%s, report=%s, edited_by=%s)",
+            session_id, _protected.id, _protected.edited_by,
+        )
+        return JSONResponse(status_code=200, content={
+            "message": "관리자 교정본이 있어 재분석하지 않았습니다. 기존 리포트를 유지합니다.",
+            "report_id": str(_protected.id),
+            "session_id": session_id,
+            "skipped": "human_edited",
+        })
     if existing_reports:
-        for _r in existing_reports:
-            await db.delete(_r)
-        await db.commit()
         logger.info(
-            f"♻️ 기존 리포트 {len(existing_reports)}건 삭제 → 강제 재생성: {session_id}"
+            "♻️ 기존 리포트 %d건 — 새 리포트 저장 성공 후 같은 트랜잭션에서 교체: %s",
+            len(existing_reports), session_id,
         )
 
     user = await db.get(Participant, session.user_id)
@@ -511,6 +539,11 @@ async def analyze_session(
     )
     
     db.add(new_report)
+    # H1: 새 리포트가 세션에 올라간 뒤 '같은 트랜잭션'에서 구 리포트를 지운다.
+    #   아래 단일 commit 이 실패하면 둘 다 롤백 → 어느 시점에도 리포트 0건 상태가
+    #   커밋되지 않는다(교정본은 위에서 이미 보호돼 여기 오지 않는다).
+    for _old in existing_reports:
+        await db.delete(_old)
 
     # B: 리포트 정상 저장 → 이전 degraded 마커가 있으면 정리(stale 방지).
     _sd_ok = dict(session.self_assessment_data or {})
