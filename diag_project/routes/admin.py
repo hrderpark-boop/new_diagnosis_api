@@ -731,6 +731,21 @@ async def get_report_detail(
     # 자가진단은 세션에 저장돼 있다
     session = await db.get(DiagnosisSession, report.session_id)
 
+    # ⚠️ self_assessment_data 컬럼은 asked_subs 원장(대화 중 기록)과 자가진단
+    #   제출분이 '함께' 담긴다. 컬럼 전체를 내보내면 (1) 원장 노이즈가 새고
+    #   (2) 자가진단 미제출(건너뛰기) 세션도 dict 가 truthy 라, 프론트가
+    #   report.self_assessment.scores 를 읽다 크래시한다(Object.entries(undefined)).
+    #   → 제출의 증거인 scores 가 있을 때만, 제출분 4개 키로 좁혀 노출한다.
+    _sad = session.self_assessment_data if session else None
+    _self_eval = None
+    if isinstance(_sad, dict) and _sad.get("scores"):
+        _self_eval = {
+            "scores": _sad.get("scores"),
+            "strength_weakness_text": _sad.get("strength_weakness_text"),
+            "self_average": _sad.get("self_average"),
+            "submitted_at": _sad.get("submitted_at"),
+        }
+
     saved = report.scores or {}
     return {
         "id": str(report.id),
@@ -754,7 +769,7 @@ async def get_report_detail(
         "edited_by": report.edited_by,
         "has_ai_original": report.ai_original is not None,
         # 대상자가 대화 시작 전 스스로 매긴 평가 (메타인지 비교용)
-        "self_assessment": session.self_assessment_data if session else None,
+        "self_assessment": _self_eval,
     }
 
 
