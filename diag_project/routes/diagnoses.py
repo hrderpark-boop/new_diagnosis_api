@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import func, delete, desc
+from sqlalchemy import func, desc
 from pydantic import BaseModel
 
 from diag_project.config import phase3a_enabled
@@ -75,9 +75,6 @@ class ChatMessageRequest(BaseModel):
     session_id: uuid.UUID
     diagnosis_id: Optional[uuid.UUID] = None 
     content: str
-
-class ResetRequest(BaseModel):
-    participant_id: Optional[uuid.UUID] = None 
 
 # ------------------------------------------------------------------
 # Constants & Data
@@ -1349,31 +1346,11 @@ async def _handle_event_lifecycle(
 
 
 # ------------------------------------------------------------------
-# [3] 데이터 초기화 (Reset)
+# [3] (제거됨) POST /reset — 무인증 파괴 엔드포인트(C1 검토 C3).
+#   participant_id 만 알면 타인의 세션 전량을 지울 수 있었고, events/reports 를
+#   지우지 않아 FK 위반(500)으로 부분 삭제 상태를 남겼다. 데이터 삭제는
+#   어드민 전용 일괄 삭제(/admin/participants/bulk-delete)만 사용한다.
 # ------------------------------------------------------------------
-@router.post("/reset", status_code=status.HTTP_200_OK)
-async def reset_diagnosis_data(
-    request: ResetRequest,
-    db: AsyncSession = Depends(get_db)
-):
-    if not request.participant_id:
-        raise HTTPException(status_code=400, detail="participant_id is required for safety.")
-
-    sessions_query = select(DiagnosisSession.id).where(DiagnosisSession.user_id == request.participant_id)
-    result = await db.execute(sessions_query)
-    session_ids = result.scalars().all()
-
-    if not session_ids:
-        return {"message": "No data found for this user."}
-
-    delete_msgs = delete(ChatMessage).where(ChatMessage.session_id.in_(session_ids))
-    await db.execute(delete_msgs)
-
-    delete_sessions = delete(DiagnosisSession).where(DiagnosisSession.user_id == request.participant_id)
-    await db.execute(delete_sessions)
-    
-    await db.commit()
-    return {"message": "Reset complete."}
 
 # ------------------------------------------------------------------
 # [4] 세션 상태 조회 (GET /state)
