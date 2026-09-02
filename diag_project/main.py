@@ -56,6 +56,10 @@ else:
 
 @app.on_event("startup")
 async def on_startup():
+    # 🔒 C1: SECRET_KEY 미설정/개발 기본값이면 여기서 기동 실패(의도된 동작).
+    #   기본값으로 뜨면 어드민 JWT 를 누구나 위조할 수 있으므로 fail-closed.
+    from diag_project.config import require_secret_key
+    require_secret_key()
     logger.info("🚀 Application startup: Initializing database...")
     await init_db()
     logger.info("✅ Database initialized.")

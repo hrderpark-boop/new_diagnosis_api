@@ -3,19 +3,26 @@
 
 import logging
 import os
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
 from typing import List
 
-# (참고) .env 파일이 있다면 여기서 로드합니다.
-# from dotenv import load_dotenv
-# load_dotenv()
+# 로컬 .env 를 import 시점에 로드한다(운영은 Render Environment 가 주입).
+#   database.py 도 로드하지만, 모듈 import 순서에 따라 이 파일이 먼저 평가될 수
+#   있어 SECRET_KEY 가 빈 값으로 굳는 것을 막는다(멱등 호출).
+load_dotenv()
+
+# 🔒 C1: 과거 개발 기본값. 이 값(또는 빈 값)으로는 절대 기동/서명하지 않는다 —
+#   기본값이 살아 있으면 어드민 JWT(HS256)를 누구나 위조할 수 있다.
+_INSECURE_SECRET_KEYS = {"", "default_super_secret_key_for_dev"}
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "My Diagnosis API"
-    
-    # 1. (C-3 인증) 보안 설정
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "default_super_secret_key_for_dev")
+
+    # 1. (C-3 인증) 보안 설정 — 기본값 없음. 반드시 환경변수로 주입(openssl rand -hex 32).
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 # 1일
 
@@ -46,6 +53,23 @@ class Settings(BaseSettings):
     )
 
 settings = Settings()
+
+
+def require_secret_key() -> str:
+    """SECRET_KEY 가 운영에 쓸 수 있는 값인지 검증하고 반환한다.
+
+    미설정/개발 기본값이면 RuntimeError — 앱 기동(main.on_startup)과 JWT
+    서명·검증(services/auth) 양쪽에서 호출해 fail-closed 로 막는다.
+    Render 에 SECRET_KEY 가 없으면 기동 자체가 실패하도록 의도된 동작이다.
+    """
+    key = (settings.SECRET_KEY or "").strip()
+    if key in _INSECURE_SECRET_KEYS:
+        raise RuntimeError(
+            "SECRET_KEY 환경변수가 설정되지 않았거나 개발 기본값입니다. "
+            "`openssl rand -hex 32` 로 생성해 Render Environment(또는 로컬 .env)에 "
+            "SECRET_KEY 로 등록한 뒤 재기동하세요."
+        )
+    return key
 
 
 def phase3a_enabled() -> bool:

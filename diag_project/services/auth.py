@@ -102,12 +102,29 @@ def create_access_token(admin: AdminUser) -> str:
         "exp": expire,
         "typ": "admin",
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return jwt.encode(payload, _signing_key(), algorithm=settings.ALGORITHM)
+
+
+def _signing_key() -> str:
+    """🔒 C1: 검증된 SECRET_KEY 만 서명/검증에 쓴다(빈 값·개발 기본값 → 500).
+
+    기동 시 require_secret_key() 가 이미 막지만, 테스트·스크립트 등 startup 을
+    거치지 않는 경로에서도 위조 가능한 키로 토큰이 만들어지지 않게 2차 방어.
+    """
+    from diag_project.config import require_secret_key
+    try:
+        return require_secret_key()
+    except RuntimeError as exc:
+        logger.error("SECRET_KEY 미설정: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="서버 인증 설정이 완료되지 않았습니다(SECRET_KEY).",
+        )
 
 
 def decode_token(token: str) -> dict:
     try:
-        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        return jwt.decode(token, _signing_key(), algorithms=[settings.ALGORITHM])
     except JWTError as exc:
         logger.info("JWT 검증 실패: %s", exc)
         raise HTTPException(
