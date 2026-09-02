@@ -358,6 +358,26 @@ async def update_report(
     }
 
 
+# 상태 전이 표 (analyze 후) — M22. 순수 함수(테스트: tests/test_resumable_statuses.py)
+#   완주(5/5)                → completed (어떤 상태에서든)
+#   미완주 & 보존 상태       → 그대로 (aborted / aborted_disengaged / paused)
+#   미완주 & 그 외           → in_progress (재개 대상)
+_STATUS_PRESERVED_ON_ANALYZE = frozenset({"aborted", "aborted_disengaged", "paused"})
+
+
+def status_after_analyze(current_status: str | None, completed_count: int) -> str:
+    """analyze 가 세션 상태를 어떻게 바꿔야 하는지 결정한다(순수).
+
+    과거엔 미완주면 무조건 in_progress 로 덮어써 3-Strike 로 강제 종료된
+    세션(aborted)과 이탈 중단(aborted_disengaged)·휴식(paused)까지 '부활'했다.
+    """
+    if completed_count >= 5:
+        return resolve_completion_status(completed_count)
+    if current_status in _STATUS_PRESERVED_ON_ANALYZE:
+        return current_status
+    return "in_progress"
+
+
 # --------------------------------------------------------------------------
 # [2] 결과 분석 요청 (POST) - 진단 종료 시 호출
 # --------------------------------------------------------------------------
@@ -499,7 +519,8 @@ async def analyze_session(
         _completed_count = 0  # General/라포 등 첫 역량 진입 전
 
     _cov = (analysis_result or {}).get("coverage") or {}
-    session.status = resolve_completion_status(_completed_count)
+    _prev_status = session.status
+    session.status = status_after_analyze(_prev_status, _completed_count)
     if _completed_count >= 5:
         # V-6(1): 완주 세션은 전부 'completed'. '종합 섹션 유무'는 상태가 아니라
         #   커버리지 플래그(composite_shown = measured_total ≥ 임계)로 내린다.
@@ -513,11 +534,13 @@ async def analyze_session(
     else:
         # V-6/조정3: 미완주는 'incomplete'(신규 상태)를 만들지 않는다 — 이탈
         #   신호가 없으면 '아직 진행 중'인 재개 대상이므로 in_progress 로 남긴다.
+        #   M22: 단, aborted(3-Strike)·aborted_disengaged·paused 는 그대로 둔다 —
+        #   analyze 가 강제 종료 세션을 in_progress 로 '부활'시키던 오염 방지.
         #   current_topic(진행 위치)은 그대로 둬 진행률이 실제 위치를 반영한다.
-        session.status = "in_progress"
         logger.warning(
-            "⚠️ 미완주 세션 analyze: %d/5 역량만 완료 → status=in_progress "
-            "(재개 대상, current_topic=%s 유지)", _completed_count, _ct,
+            "⚠️ 미완주 세션 analyze: %d/5 역량만 완료 → status=%s→%s "
+            "(current_topic=%s 유지)", _completed_count, _prev_status,
+            session.status, _ct,
         )
 
     db.add(session)

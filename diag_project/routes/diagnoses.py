@@ -147,6 +147,13 @@ def _resolve_persona(coach_id: uuid.UUID, user_name: str, visit_count: int):
 #   진행 중/일시중지 세션이 있으면 그 세션의 '원래 코치'를 함께 알려, 코치를
 #   새로 골라도 재개 시 원래 코치로 이어짐을 미리 고지할 수 있게 한다.
 # ------------------------------------------------------------------
+# 🔁 H3: '이어하기' 대상 상태의 단일 정의. /active·/start·submit_message 1-b 가
+#   전부 이 집합을 본다. aborted_disengaged(A-4 참여 이탈 중단)는 설계상 '원장
+#   보존 + 재개 가능'인데 과거엔 in_progress/paused 만 재개돼 새 세션이 생기며
+#   원장이 고아가 됐다. aborted(3-Strike)는 재개 불가 — 여기 넣지 않는다.
+RESUMABLE_STATUSES = ("in_progress", "paused", "aborted_disengaged")
+
+
 @router.get("/active")
 async def get_active_session(
     participant_id: uuid.UUID,
@@ -154,7 +161,7 @@ async def get_active_session(
 ):
     q = select(DiagnosisSession).where(
         DiagnosisSession.user_id == participant_id,
-        DiagnosisSession.status.in_(["in_progress", "paused"]),
+        DiagnosisSession.status.in_(list(RESUMABLE_STATUSES)),
     ).order_by(desc(DiagnosisSession.created_at))
     s = (await db.execute(q)).scalars().first()
     if not s:
@@ -180,12 +187,12 @@ async def start_diagnosis(
     user = await db.get(Participant, request.participant_id)
     user_name = user.name if user else "리더"
 
-    # 1. 가장 최근의 '진행 중/일시중지' 세션 찾기 (이어하기)
-    # paused(휴식 선택) 세션도 반드시 이어하기 대상 — 빠뜨리면 새 세션이 생성돼
-    # 기존 진행 내역이 유실된다.
+    # 1. 가장 최근의 '이어하기 대상' 세션 찾기 (RESUMABLE_STATUSES 단일 정의)
+    # paused(휴식)·aborted_disengaged(참여 이탈 중단, A-4) 모두 재개 대상 —
+    # 빠뜨리면 새 세션이 생성돼 기존 원장(asked/measured)이 고아가 된다.
     existing_query = select(DiagnosisSession).where(
         DiagnosisSession.user_id == request.participant_id,
-        DiagnosisSession.status.in_(["in_progress", "paused"])
+        DiagnosisSession.status.in_(list(RESUMABLE_STATUSES))
     ).order_by(desc(DiagnosisSession.created_at))
     
     result = await db.execute(existing_query)
@@ -501,13 +508,16 @@ async def _submit_message_phase3a(
             "_phase3a_metadata": {"guard": "SESSION_ALREADY_ABORTED"},
         }
 
-    # 1-b. 일시중지 세션 재개: 사용자가 다시 말을 걸면 paused → in_progress 복원.
-    #   (이번 턴이 다시 pause 로 끝나면 11-b 블록이 다시 paused 로 되돌린다.)
-    if session.status == "paused":
+    # 1-b. 재개: 사용자가 다시 말을 걸면 paused / aborted_disengaged → in_progress.
+    #   (이번 턴이 다시 pause 로 끝나면 11-b 가 paused 로, 다시 이탈 확정이면
+    #    A-4 블록이 aborted_disengaged 로 되돌린다.) H3: aborted_disengaged 는
+    #   설계상 '원장 보존·재개 가능'인데 과거엔 복원 분기가 없어 상태가 영영
+    #   aborted_disengaged 인 채 상태 머신만 돌았다.
+    if session.status in ("paused", "aborted_disengaged"):
+        logger.info("▶️ %s 세션 재개 → in_progress: %s", session.status, session.id)
         session.status = "in_progress"
         db.add(session)
         await db.commit()
-        logger.info(f"▶️ paused 세션 재개: {session.id}")
 
     # 2. 현재 챕터 결정 (current_topic 한국어 → 영문 key)
     chapter = topic_to_chapter(session.current_topic)
