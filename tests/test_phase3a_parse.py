@@ -20,13 +20,15 @@ def test_falsy_variants():
         assert phase3a_enabled() is False, v
 
 
-def test_unset_defaults_false():
+def test_unset_defaults_true():
+    # M14(2026-09-02): 미설정 기본값은 true. 환경변수 누락 한 번으로 품질 시스템
+    # 전체가 조용히 레거시로 꺼지는 사고가 있었다 — 레거시는 명시적 false 만.
     os.environ.pop("USE_PHASE3A", None)
-    assert phase3a_enabled() is False
+    assert phase3a_enabled() is True
 
 
 if __name__ == "__main__":
     for fn in (test_truthy_variants, test_falsy_variants,
-               test_unset_defaults_false):
+               test_unset_defaults_true):
         fn(); print(f"  [PASS] {fn.__name__}")
     print("=== phase3a parse: PASS ===")
