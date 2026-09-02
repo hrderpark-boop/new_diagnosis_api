@@ -453,11 +453,11 @@ async def analyze_session(
             detail=("AI 분석이 일시적으로 실패했습니다(크레딧/장애 의심). "
                     "리포트를 저장하지 않았으며 이어서 재분석할 수 있습니다."))
 
-    # 🚨 [수정] 새로운 LLM JSON 구조에 맞춰 안전하게 점수 파싱
-    total_score = analysis_result.get("total_score", 0.0)
-    radar_chart = analysis_result.get("radar_chart", {})
-    if not total_score and radar_chart:
-        total_score = sum(radar_chart.values()) / len(radar_chart)
+    # total_score 는 파이프라인(scoring.overall_score)이 이미 계산해 준 값만 쓴다.
+    #   H2: 과거 폴백 `sum(radar_chart.values())/len` 은 radar 값이 미측정(None)
+    #   일 때 TypeError(500)를 냈다 — measured 대역량 0개 세션에서 재현됨.
+    #   미측정이면 0.0 (프론트는 coverage.composite_shown 으로 종합 섹션을 게이트).
+    total_score = analysis_result.get("total_score") or 0.0
 
     # 🚨 [수정] DB 스키마 충돌 방지를 위해 전체 JSON을 scores에 캡슐화하여 저장
     new_report = DiagnosisReport(
