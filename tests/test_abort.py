@@ -38,9 +38,21 @@ def test_short_filler_is_empty():
 
 
 def test_refusal_detected():
-    for t in ["나중에 하겠습니다", "오늘은 그만할게요", "그만하죠"]:
+    # H4 이후: '건너뛰기·거부'만 refusal. 휴식·미루기("나중에 하겠습니다",
+    # "오늘은 그만할게요", "그만하죠")는 pause 로 분리됐다(아래 테스트).
+    for t in ["다음에요", "그냥 넘어가죠", "지금은 어렵습니다"]:
         c, _ = classify_engagement(t)
         ck(f"명시적 거부(짧음) → refusal ({t!r})", c == "refusal")
+
+
+def test_pause_intent_is_not_refusal():
+    """H4: 휴식·미루기 요청은 이탈(refusal)이 아니라 pause — 프론트 '잠시 쉬기/
+    다음에 하기' 버튼 문구가 ABORT_CONFIRM 체인을 타지 않아야 한다."""
+    for t in ["나중에 하겠습니다", "오늘은 그만할게요", "그만하죠",
+              "잠시 쉬었다가 다시 할게요.", "오늘은 여기서 잠시 쉴게요.",
+              "오늘은 여기까지 하고 잠시 쉴게요."]:
+        c, _ = classify_engagement(t)
+        ck(f"휴식 요청 → pause ({t!r})", c == "pause", f"(={c})")
 
 
 def test_long_substantive_mentioning_quit_is_engaged():
@@ -85,6 +97,24 @@ def test_refusal_immediate_confirm():
     ins = decide_instruction(_state(last_refusal=True, probe_cycles=2))
     ck("명시적 거부 → 사이클<5여도 즉시 ABORT_CONFIRM",
        ins == "ABORT_CONFIRM", f"(={ins})")
+
+
+def test_pause_request_beats_abort_confirm():
+    """H4: 휴식 요청은 A-2(ABORT_CONFIRM) 보다 먼저 USER_REQUESTS_PAUSE.
+    연속 이탈 3회·사이클 6이라도 pause 문구면 일시중지(재개 가능)로 간다."""
+    for t in ["잠시 쉬었다가 다시 할게요.", "오늘은 여기서 잠시 쉴게요."]:
+        ins = decide_instruction(_state(
+            last_user_response=t, disengagement_streak=3, probe_cycles=6))
+        ck(f"pause 문구 → USER_REQUESTS_PAUSE ({t!r})",
+           ins == "USER_REQUESTS_PAUSE", f"(={ins})")
+
+
+def test_pending_abort_still_wins_over_pause():
+    """ABORT_CONFIRM 에 '쉴게요'로 답한 경우(pending_abort) 는 중단 확정 유지."""
+    ins = decide_instruction(_state(
+        pending_abort=True, last_user_response="잠시 쉴게요"))
+    ck("pending_abort + pause 문구 → ABORT_DISENGAGED",
+       ins == "ABORT_DISENGAGED", f"(={ins})")
 
 
 def test_pending_abort_returns_disengaged():

@@ -579,8 +579,15 @@ async def _submit_message_phase3a(
                 _dstore["pending_abort"] = True
         else:
             _cyc = int(_dstore.get("probe_cycles", 0)) + 1
-            _stk = (0 if _eng == "engaged"
-                    else int(_dstore.get("disengagement_streak", 0)) + 1)
+            _prev_stk = int(_dstore.get("disengagement_streak", 0))
+            if _eng == "engaged":
+                _stk = 0
+            elif _eng == "pause":
+                # H4: 휴식 요청은 이탈이 아니다 — 연속 이탈 카운터를 올리지도
+                #   리셋하지도 않는다(→ USER_REQUESTS_PAUSE 로 paused).
+                _stk = _prev_stk
+            else:
+                _stk = _prev_stk + 1
             _dstore["probe_cycles"] = _cyc
             _dstore["disengagement_streak"] = _stk
             _dstore["last_refusal"] = (_eng == "refusal")

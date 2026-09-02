@@ -374,6 +374,12 @@ def decide_instruction(state: dict) -> InstructionType:
         # A-3: 직전 ABORT_CONFIRM 에 대한 답변으로 중단 확정된 경우.
         if state.get("pending_abort"):
             return "ABORT_DISENGAGED"
+        # H4: 휴식·미루기 요청(pause)은 이탈이 아니다 — ABORT_CONFIRM 보다 먼저
+        #   USER_REQUESTS_PAUSE 로 분기한다(→ 11-b paused, 재개 가능). 프론트의
+        #   '잠시 쉬기/다음에 하기' 버튼 문구가 이 경로를 탄다. (과거엔 A-2 가
+        #   먼저 평가돼 pause 문구가 ABORT_CONFIRM → aborted_disengaged 로 갔다.)
+        if detect_pause_request(state.get("last_user_response")):
+            return "USER_REQUESTS_PAUSE"
         # A-2: 중단 확인 진입 — 명시적 거부(즉시) OR 연속 3회 이탈 & 최소 5사이클.
         #   (계속 선택 시 diagnoses.py 가 streak 리셋 → 여기 재진입 안 함)
         if not state.get("awaiting_abort_decision"):

@@ -197,12 +197,18 @@ def _has_substance(text: str) -> bool:
 
 
 def classify_engagement(text: str | None) -> tuple[str, dict]:
-    """참여 상태 분류 → ('engaged' | 'empty' | 'refusal', 근거 dict).
+    """참여 상태 분류 → ('engaged' | 'empty' | 'pause' | 'refusal', 근거 dict).
 
     구조화 로깅용 근거(길이 / 실질 내용 유무 / 거부 매칭)를 함께 반환한다.
-    - 'refusal': 명시적 거부·중단 의사 → 즉시 중단 절차(A-2)
+    - 'pause'  : 휴식·미루기 요청(오늘은 여기까지/잠시 쉴게요) → 일시중지
+                 (USER_REQUESTS_PAUSE → paused, 재개 가능). 이탈이 아니다.
+    - 'refusal': 건너뛰기·거부 의사(넘어가죠/지금은 어렵) → 중단 절차(A-2)
     - 'empty'  : 무응답이거나 실질 내용 없는 단답(필러만) → 이탈 신호
     - 'engaged': 그 외(부재 진술처럼 성실히 설명한 경우 포함) → 이탈 아님
+
+    H4: 과거엔 pause 문구("오늘은 여기까지 하고 잠시 쉴게요")가 refusal 로
+    분류돼 ABORT_CONFIRM → aborted_disengaged 체인을 탔다. 프론트 '잠시 쉬기'
+    버튼이 그 경로에 걸렸으므로 pause 를 refusal 보다 먼저, 별도 라벨로 뗀다.
     """
     raw = (text or "").strip()
     length = len(raw.replace(" ", ""))
@@ -210,6 +216,10 @@ def classify_engagement(text: str | None) -> tuple[str, dict]:
     if not raw:
         return "empty", {"length": 0, "has_substance": False,
                          "refusal": False, "reason": "무응답"}
+    # H4: 명시적·직접적 휴식/미루기 요청은 pause(이탈 아님) — refusal 보다 먼저.
+    if detect_pause_request(raw):
+        return "pause", {"length": length, "has_substance": substance,
+                         "refusal": False, "reason": "휴식·미루기 요청(pause)"}
     # V-5: 명백한 미루기·재개 요청은 길어도 refusal(길이 게이트 우회).
     if _has_strong_refusal(raw):
         return "refusal", {"length": length, "has_substance": substance,
