@@ -78,5 +78,8 @@ def phase3a_enabled() -> bool:
     기존 `.lower()=="true"` 는 " true "·'"true"'·"1" 에서 조용히 false 로 떨어져
     레거시 흐름으로 새는 함정이 있었다(품질 시스템 통째 OFF). 이 함수로 통일한다.
     """
-    raw = os.getenv("USE_PHASE3A", "false")
+    # M14: 기본값 true. 환경변수 누락 한 번으로 품질 시스템(제어역전·넓이게이트)
+    #   전체가 조용히 레거시로 꺼지는 사고가 실제로 있었다. 레거시는 명시적으로
+    #   USE_PHASE3A=false 를 줄 때만 쓴다.
+    raw = os.getenv("USE_PHASE3A", "true")
     return raw.strip().strip('"').strip("'").lower() in {"true", "1", "yes", "on"}
