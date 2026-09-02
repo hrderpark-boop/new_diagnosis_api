@@ -20,7 +20,8 @@ python-jose[cryptography]>=3.0.0
 passlib[bcrypt]>=1.7.0
 bcrypt>=4.0.0
 
-# Admin reporting
+# Admin reporting (엑셀 내보내기: pandas ExcelWriter(engine="openpyxl"))
 pandas>=2.0.0
+openpyxl>=3.1.0
 
 asyncpg
