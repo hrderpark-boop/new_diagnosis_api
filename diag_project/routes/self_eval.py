@@ -160,8 +160,12 @@ async def get_self_evaluation(
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
 
     data = session.self_assessment_data
+    # ⚠️ self_assessment_data 컬럼은 asked_subs 원장(대화 중 기록)도 함께 담는다.
+    #   따라서 bool(data) 로는 '자가진단 제출 여부'를 알 수 없다 — 제출의 유일한
+    #   증거인 'scores' 키의 존재로 판정해야 재개 시 백업 게이트가 오작동하지 않는다.
+    submitted = bool(isinstance(data, dict) and data.get("scores"))
     return {
-        "submitted": bool(data),
+        "submitted": submitted,
         "self_assessment": data,
         "competency_keys": SELF_EVAL_KEYS,
     }
