@@ -78,6 +78,17 @@ def should_advance_target(
     return bool(has_completed_event) or turns_on_target >= max_turns_per_sub
 
 
+def advanced_to_new_target(cur_before: str | None, cur_after: str | None) -> bool:
+    """apply_probe_turn 이 '새' 하위역량으로 타겟을 전진시켰는가.
+
+    True 면 그 턴은 앵커 발화형(STAR_COMPLETE_NEW_EVENT)으로 지시돼야
+    한다(§T2 기록=발화 결합 — 기록만 하고 앵커를 안 던지면 넓이 게이트가
+    허수를 본다). cur_before is None 이면 챕터 첫 앵커(CHAPTER_OPENING
+    템플릿)이므로 전진 오버라이드 대상이 아니다(False).
+    """
+    return bool(cur_after and cur_before is not None and cur_after != cur_before)
+
+
 def breadth_satisfied(asked_count: int, min_explored: int) -> bool:
     """넓이 게이트 — 챕터 종료 판정과 원장이 '동일 카운터'를 본다(§1-2)."""
     return asked_count >= min_explored

@@ -636,6 +636,8 @@ async def _submit_message_phase3a(
         _store = dict(session.self_assessment_data or {})
         _all_subs = state.get("all_subcompetencies") or []
         _event_done = instruction_used == "STAR_COMPLETE_NEW_EVENT"
+        # 🔑 타겟 전진 감지용: 스텝 '이전'의 현재 타겟(없으면 None=챕터 첫 앵커).
+        _cur_before = (_store.get("current_target") or {}).get(chapter)
         _store, current_target_sub = apply_probe_turn(
             _store, chapter, _all_subs, _event_done, priority=[]
         )
@@ -643,11 +645,32 @@ async def _submit_message_phase3a(
         from sqlalchemy.orm.attributes import flag_modified as _flag_mod
         _flag_mod(session, "self_assessment_data")
         await db.commit()
+        # 🔒 T2 기록=발화 결합(넓이 게이트 허수 방지): apply_probe_turn 이 '새'
+        #   하위역량으로 타겟을 전진(record)시켰다면(=asked_subs 에 방금 1개 추가),
+        #   그 턴의 instruction 을 앵커 발화형(STAR_COMPLETE_NEW_EVENT)으로
+        #   오버라이드한다. 이렇게 해야 LLM 이 실제로 새 하위역량 앵커로 '피벗'해
+        #   질문을 던지고, asked_subs 기록 수 == 실제 앵커 발화 지시 수가 된다.
+        #   (기록 시점은 여전히 LLM 응답 '이전' — 텍스트 확인 방식으로 회귀 X.)
+        #   · _cur_before is None → 챕터 첫 앵커(CHAPTER_OPENING 템플릿) → 유지.
+        #   · 전진 조건은 apply_probe_turn 내부(STAR 완성 OR 3턴 상한). 상한 도달
+        #     시엔 STAR 미완이어도 전진→피벗한다(넓이 > 깊이, 기존 결정 유지).
+        #     3턴 이내엔 전진하지 않으므로 진행 중 STAR 를 끊지 않는다.
+        from diag_project.services.traversal import advanced_to_new_target
+        if (advanced_to_new_target(_cur_before, current_target_sub)
+                and instruction_used != "STAR_COMPLETE_NEW_EVENT"):
+            logger.info(
+                "🧭 T2 타겟 전진 감지: [%s] %s→%s ⇒ instruction 오버라이드 "
+                "%s→STAR_COMPLETE_NEW_EVENT (앵커 발화 강제)",
+                chapter, _cur_before, current_target_sub, instruction_used,
+            )
+            instruction_used = "STAR_COMPLETE_NEW_EVENT"
+            state["instruction_for_this_turn"] = "STAR_COMPLETE_NEW_EVENT"
         logger.info(
-            "🧭 T2 타겟: [%s] target=%s asked=%d turns=%d",
+            "🧭 T2 타겟: [%s] target=%s asked=%d turns=%d instr=%s",
             chapter, current_target_sub,
             len(asked_for_chapter(session.self_assessment_data, chapter)),
             (session.self_assessment_data.get("turns_on_target") or {}).get(chapter, 0),
+            instruction_used,
         )
     state["current_target_sub"] = current_target_sub
     _turn_index = (
