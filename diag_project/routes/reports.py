@@ -187,21 +187,36 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db)):
 
     coach_name = "AI Coach"
     user_name = "Leader"
-    
+    # H6: 리포트 상단 '응답자 정보'는 실제 참가자·고객사 데이터만 쓴다(프론트의
+    #   하드코딩 소속/부서/직급 제거). 없는 항목은 None → 프론트가 칸을 숨긴다.
+    participant_info = {
+        "name": None, "email": None, "group_code": None, "company_name": None,
+    }
+
     session_res = await db.get(DiagnosisSession, target_uuid)
     if session_res:
         user = await db.get(Participant, session_res.user_id)
-        if user: user_name = user.name
+        if user:
+            user_name = user.name or user_name
+            participant_info["name"] = user.name
+            participant_info["email"] = user.email
+            participant_info["group_code"] = user.group_code
+            if user.company_id:
+                from diag_project.models.company import Company
+                _company = await db.get(Company, user.company_id)
+                if _company:
+                    participant_info["company_name"] = _company.name
         if session_res.coach_id:
             persona_res = await db.execute(select(CoachPersona).where(CoachPersona.coach_id == session_res.coach_id))
             persona = persona_res.scalars().first()
             if persona: coach_name = persona.name
-            
+
     # 🚨 프론트엔드가 요구하는 새로운 JSON 포맷을 그대로 살려서 반환
     saved_scores = report.scores or {}
     return {
         "user_name": user_name,
         "coach_name": coach_name,
+        "participant": participant_info,
         "total_score": report.total_score,
         "summary": report.summary,
         "radar_chart": saved_scores.get("radar_chart", saved_scores),
