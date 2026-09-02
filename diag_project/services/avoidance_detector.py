@@ -350,12 +350,20 @@ def detect_rush(text: str | None) -> bool:
 def is_unproductive_response(text: str | None) -> bool:
     """이번 발화가 '유효 데이터 없는 비생산적 응답'인지 종합 판정.
 
-    단순 회피(check_avoidance) + 남탓/비아냥/도발(detect_deflection) +
+    회피 '키워드'(모르겠/기억 안 …) + 남탓/비아냥/도발(detect_deflection) +
     재촉·시간불평(detect_rush)을 합쳐, Fail-Fast·경고 후 즉시 종료 판정의
-    단일 기준으로 쓴다. (무의미한 단답, "빨리 합시다"류 재촉 포함.)
+    단일 기준으로 쓴다.
+
+    M4: 과거엔 check_avoidance 의 '10자 미만 = 회피' 길이 조건이 그대로 들어와
+    "네", "맞아요", "직접 했어요" 같은 성실한 단답까지 avoidance_count 에 쌓였고,
+    3회면 no_yield_forced(유의미한 진단 불가 멘트)로 챕터가 닫혔다. 길이는 보지
+    않고 키워드만 본다. 무응답(빈 문자열)은 여전히 비생산 응답이다.
     """
+    if not text or not text.strip():
+        return True
+    stripped = text.strip()
     return (
-        check_avoidance(text)
+        any(kw in stripped for kw in AVOIDANCE_KEYWORDS)
         or detect_deflection(text)
         or detect_rush(text)
     )
