@@ -605,7 +605,12 @@ def decide_instruction(state: dict) -> InstructionType:
                  and state["has_contrary_probe"]
                  and state["turn_count"] >= min_turns)
     _breadth_ok = breadth_satisfied(_asked_ct, min_explored)
-    if _depth_ok and _breadth_ok:
+    # #5: 마지막 타겟도 최소 1회 심화 — 현재 타겟에서 앵커(1턴) 뒤 후속 질문을
+    #   한 번은 던진 뒤(turns_on_current_target ≥ 2) 종료한다. 한 문장 답변만으로
+    #   챕터가 닫히던 것을 막는다. 서킷브레이커·무수확·명시적 종료는 예외(그대로).
+    #   (키가 없는 구형 state 는 통과 — 회귀 보존)
+    _followup_done = state.get("turns_on_current_target", 2) >= 2
+    if _depth_ok and _breadth_ok and _followup_done:
         return "CHAPTER_READY_TO_END"
     # 🛡️ 서킷브레이커: 챕터 턴 상한 초과 → 미탐색은 남긴 채 강제 종료(235턴 방지)
     if chapter_over_budget(state["turn_count"], min_explored):
@@ -634,6 +639,9 @@ def decide_instruction(state: dict) -> InstructionType:
             # (마지막 챕터면 CHAPTER_READY_TO_END → Grand Finale →
             #  DIAGNOSIS_COMPLETE 로 확실히 종결 — 제자리 루프 방지)
             if _all_explored:
+                # #5: 마지막 타겟은 최소 1회 심화 후 종료(한 문장 근거 방지).
+                if not _followup_done:
+                    return "CONTINUE_NORMAL"
                 return "CHAPTER_READY_TO_END"
             return "STAR_COMPLETE_NEW_EVENT"
         else:
@@ -644,7 +652,8 @@ def decide_instruction(state: dict) -> InstructionType:
     #   실질적으로 더 물을 것이 없는 상태 → 종료 경계로 강제 전진.
     #   (이 탈출구가 없으면 CONTINUE_NORMAL 에 갇혀 같은 요약을 반복하는
     #    앵무새 루프가 발생한다. 사용자 '네' 단답도 여기로 흡수돼 전진.)
-    if _all_explored and state.get("events_collected", 0) >= 1:
+    if (_all_explored and state.get("events_collected", 0) >= 1
+            and _followup_done):
         return "CHAPTER_READY_TO_END"
 
     # 13. 기본 진행
@@ -983,6 +992,12 @@ async def build_turn_state(
     _store = (getattr(_sess_asked, "self_assessment_data", None) or {}) \
         if _sess_asked else {}
     asked_in_chapter = asked_for_chapter(_store, chapter)
+    # #5: 현재 타겟 하위역량에서 소비한 프로브 턴 수(앵커 턴=1). 넓이 충족 직후
+    #   마지막 타겟이 한 문장 답변만으로 닫히지 않도록, 종료 전 최소 1회 심화
+    #   (>=2)를 요구하는 데 쓴다. (3턴 상한은 apply_probe_turn 이 그대로 유지)
+    turns_on_current_target = int(
+        (_store.get("turns_on_target") or {}).get(chapter, 0)
+    ) if chapter else 0
     # 🚦 A: 참여 이탈 상태(diagnoses.py 가 매 턴 갱신·영속). 중단 확인 판정용.
     disengagement_streak = int(_store.get("disengagement_streak", 0))
     probe_cycles = int(_store.get("probe_cycles", 0))
@@ -1104,6 +1119,7 @@ async def build_turn_state(
         "explored_subcompetencies": explored_subcompetencies,
         "unexplored_subcompetencies": unexplored_subcompetencies,
         "asked_in_chapter": asked_in_chapter,  # T2: 실시간 탐색(넓이) 지표
+        "turns_on_current_target": turns_on_current_target,  # #5 최소 1회 심화
         "last_instruction": last_instruction,  # 2단 폴백 1회 제한용
         "disengagement_streak": disengagement_streak,  # 🚦 A 연속 이탈
         "probe_cycles": probe_cycles,
