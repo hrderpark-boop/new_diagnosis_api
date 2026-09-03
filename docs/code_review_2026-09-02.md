@@ -74,6 +74,17 @@ POST /reports/{sid}/analyze
 | M23 | Medium | `layer3_state.py:173`, `layer1_system.py:861` | Ella 예시/폴백 잠재 누출 | 변수화 | ⏭ |
 | L1~L13 | Low | (검토 보고서 참조) | 소속 동기화 대소문자, report_by_pid 임의, 죽은 설정/분기, 로그 중복 등 | 정리 | ⏭ |
 
+## 2-b. 2단계 착수 메모 (2026-09-03 추가)
+
+- **첫 항목**: `diagnosis-frontend/app/assessment/self-eval/page.tsx:71` — mount effect 안에서
+  `chatUrl` 을 선언 전에 접근(ESLint `react-hooks` error). 직전 작업(d945bc0, 재개 세션
+  자가진단 스킵)에서 생긴 것. 런타임은 정상이나 선언 순서를 정리한다.
+- **M2 관찰**: 1단계 배포 후 완주 테스트 로그에서 `🧭 T2 타겟 전진 감지 … 오버라이드
+  CONTRARY_NEEDED→STAR_COMPLETE_NEW_EVENT` 가 찍히는지, 그리고 그 챕터의 `has_contrary_probe`
+  가 끝까지 False 로 남는지 확인 후 보고. 삼켜지면 CONTRARY_NEEDED 는 오버라이드 대상에서 제외.
+- 1단계 판단 확정(2026-09-03): H1 은 교정본 존재 시 재분석 스킵(200), H4 는 정중한 긴 미루기도
+  pause, H6 은 비교 차트 컴포넌트 삭제. 모두 승인됨.
+
 ## 3. 진행 순서
 
 1. 1단계(파일럿 차단): C1, C3, H1, H2, H3(+M16, M22), H4, H5, H6, H7, M4, M14 — 항목별 커밋.
