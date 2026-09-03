@@ -232,25 +232,10 @@ def build_onboarding_launch(user_name: str) -> str:
     )
 
 
-def build_chapter_thought_question(chapter: str) -> str:
-    """'계속 진행' 동의 직후 — 다음 역량에 대한 리더의 평소 생각을 여는 질문.
-
-    CHAPTER_CONTINUE_CONFIRMED 턴에서 LLM 브릿지 한 문장 뒤에 시스템이
-    덧붙인다. 질문 없이 브릿지만 나가면 대화가 정체되고, 다음 턴의
-    COMPETENCY_ALIGN 이 받을 '사용자의 생각'도 수집되지 않기 때문.
-    (실무적·직관적 톤, 다변화 — Core Rule 3 준수)
-    """
-    framework = COMPETENCY_FRAMEWORK.get(chapter, {})
-    name = framework.get("name", "다음 영역")
-    variations = [
-        f"리더님 팀에서 '{name}'은 평소 어떤 모습으로 작동하고 있나요? "
-        f"떠오르시는 대로 편하게 들려주세요.",
-        f"리더님은 '{name}' 하면 실무에서 어떤 장면이 먼저 떠오르세요?",
-        f"현실에서 '{name}'을 챙긴다는 건 참 쉽지 않죠. 이 부분을 챙기실 때 "
-        f"가장 신경 쓰시는 포인트는 뭐예요?",
-        f"'{name}', 리더님만의 방식으로 풀어가신다면 어떻게 접근하세요?",
-    ]
-    return random.choice(variations)
+# (제거됨) build_chapter_thought_question — 전환 예고 뒤에 시스템이 덧붙이던
+#   '다음 역량 생각 질문' 풀. "'성과관리'을 챙긴다는 건…" 조사 오류의 출처였고,
+#   정의 질문(COMPETENCY_ASK)이 두 번 나가는 순서 어긋남을 만들었다.
+#   전환 턴은 예고에서 끝내고, 정의 질문은 다음 턴 COMPETENCY_ASK 가 던진다.
 
 
 # item4: 첫 BEI 앵커 질문 '문장 틀' 풀 — LLM 대신 백엔드 결정론 변주.

@@ -46,7 +46,6 @@ from diag_project.services.time_greeting import (
 from diag_project.services.intro_messages import (
     build_intro_anchor_section,
     build_chapter_opening_with_user_def,
-    build_chapter_thought_question,
 )
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
@@ -1082,10 +1081,11 @@ async def _submit_message_phase3a(
     if instruction_used == "CHAPTER_READY_TO_END":
         wrap_up = clean_reply.strip() or "이 영역, 여기서 잘 매듭짓겠습니다."
         if _next_ch:
-            # 질문 누락 시에만 시스템이 다음 역량 도입 질문을 덧붙여, 종결·
-            # 전환·첫 질문이 한 턴에 매끄럽게 이어지게 한다.
-            if "?" not in wrap_up:
-                wrap_up = f"{wrap_up}\n\n{build_chapter_thought_question(_next_ch)}"
+            # 전환 '예고'까지만. 다음 역량의 정의 질문(COMPETENCY_ASK)은 리더님이
+            # 팝업으로 확인한 뒤 다음 턴의 첫 발화가 된다. (과거엔 '?' 가 없으면
+            # 시스템이 build_chapter_thought_question 을 덧붙여 "'성과관리'을
+            # 챙긴다는 건…" 같은 조사 오류 질문이 예고 뒤에 붙었고, 정의 질문이
+            # 두 번 나가는 순서 어긋남을 만들었다.)
             clean_reply = wrap_up
             # ✅ 즉시 전환: 완료·시작 마커를 세워 다음 챕터로 견인 (대기 없음).
             is_chapter_completed = True
@@ -1103,13 +1103,8 @@ async def _submit_message_phase3a(
     #   → 다음 턴에 다음 영역 COMPETENCY_ALIGN 으로 자연스럽게 진입.
     if instruction_used == "CHAPTER_CONTINUE_CONFIRMED":
         clean_reply = clean_reply.strip() or "좋습니다. 그럼 바로 이어가 볼게요."
-        # 🛡️ 대화 정체 방지: 브릿지만 나가고 질문이 없으면 사용자가 무엇을
-        # 답해야 할지 알 수 없다(다음 턴 ALIGN 이 받을 '사용자 생각'도 미수집).
-        # 다음 역량에 대한 생각을 여는 질문을 시스템이 이어 붙인다.
-        if _next_ch and "?" not in clean_reply:
-            clean_reply = (
-                f"{clean_reply}\n\n{build_chapter_thought_question(_next_ch)}"
-            )
+        # 브릿지 한 문장만. 다음 역량의 정의 질문은 다음 턴 COMPETENCY_ASK 가
+        # 첫 발화로 던진다(시스템 템플릿 질문 덧붙임 폐지 — 조사 오류·중복 질문).
         is_chapter_completed = True
         is_chapter_starting = True
 

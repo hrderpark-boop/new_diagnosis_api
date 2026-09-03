@@ -10,35 +10,9 @@ import json
 import random
 
 
-def get_josa(word: str, josa: str) -> str:
-    """한국어 조사 자동 보정 — 앞 단어의 받침(종성) 유무로 올바른 조사 선택.
-
-    josa 는 '받침있을때/받침없을때' 형식 문자열:
-      '을/를', '이/가', '은/는', '과/와', '으로/로', '이라는/라는' 등.
-
-    예)
-      get_josa('성과관리', '을/를') -> '를'   (리: 받침 없음)
-      get_josa('직원',     '을/를') -> '을'   (원: ㄴ받침)
-      get_josa('사람관리', '이/가') -> '가'
-      get_josa('서울',     '으로/로') -> '로'  (울: ㄹ받침 특례)
-
-    한글 음절이 아닌 문자로 끝나면 받침 없는 형태를 기본값으로 반환한다.
-    """
-    with_batchim, without_batchim = josa.split("/")
-    if not word:
-        return without_batchim
-
-    code = ord(word[-1])
-    # 한글 음절 영역(가~힣): 종성 인덱스 = (code - 0xAC00) % 28, 0이면 받침 없음.
-    if 0xAC00 <= code <= 0xD7A3:
-        jongseong = (code - 0xAC00) % 28
-        # '으로/로' 특례: 받침이 없거나(0) ㄹ받침(8)이면 '로'.
-        if with_batchim == "으로":
-            return without_batchim if jongseong in (0, 8) else with_batchim
-        return without_batchim if jongseong == 0 else with_batchim
-
-    # 한글이 아닌 문자(영문/숫자/기호)로 끝나면 받침 없는 형태를 기본값으로.
-    return without_batchim
+# 조사 자동 선택은 services/korean.py 로 이동(시스템 템플릿과 공유). 기존
+# 호출부 호환을 위해 이름을 그대로 재노출한다.
+from diag_project.services.korean import get_josa, with_josa  # noqa: F401
 
 
 def format_turn_state_for_llm(state: dict) -> str:
@@ -339,18 +313,20 @@ def _build_competency_intro_guide(state: dict | None) -> str:
     }
     chapter_name = chapter_name_map.get(chapter, "이 역량")
 
+    _cn_eul = with_josa(chapter_name, "을/를", quote=True)
+    _cn_ga = with_josa(chapter_name, "이/가", quote=True)
     return (
         f"역량 정의 소개 단계입니다. 챕터를 소개하고 리더님이 "
-        f"'{chapter_name}'를 어떻게 생각하는지 먼저 여쭤봅니다.\n\n"
+        f"{_cn_eul} 어떻게 생각하는지 먼저 여쭤봅니다.\n\n"
         f"**목적**: 리더님의 언어로 역량을 정의하도록 유도 → "
         f"다음 턴에 시스템이 프레임워크 정의와 비교해 합의 도출\n\n"
         f"**응답 예시**:\n"
         f"  '그럼 '{chapter_name}' 영역부터 시작하겠습니다. "
         f"본격적으로 들어가기 전에 한 가지 여쭤보고 싶어요. "
-        f"리더님은 '{chapter_name}'가 무엇이라고 생각하세요?'\n\n"
+        f"리더님은 {_cn_ga} 무엇이라고 생각하세요?'\n\n"
         f"  또는 더 짧게:\n"
         f"  '먼저 '{chapter_name}' 영역에 대해 이야기 나눠볼게요. "
-        f"시작 전에, 리더님은 '{chapter_name}'를 어떻게 정의하세요?'\n\n"
+        f"시작 전에, 리더님은 {_cn_eul} 어떻게 정의하세요?'\n\n"
         f"**규칙**:\n"
         f"- 한 번에 한 질문만. 역량 정의 하나만 물어볼 것.\n"
         f"- BEI 사건 질문 절대 금지. '경험이 있으신가요?' 금지.\n"
@@ -372,34 +348,39 @@ def _build_confirm_guide(state: dict | None) -> str:
 
     # 명확한 정의 질문 구조 (Step 5). 모든 영역 공통 형식:
     # "[역량명]을 무엇이라고 생각하시나요? 그렇게 생각하시는 이유도 간단히."
+    # 조사(을/를·은/는·으로/로)는 챕터명 받침에 맞춰 자동 선택 — 예시 문장을
+    # LLM 이 그대로 따라 쓰므로 여기서부터 정확해야 한다.
+    _cn_eul = with_josa(chapter_name, "을/를", quote=True)
+    _cn_eun = with_josa(chapter_name, "은/는", quote=True)
+    _cn_ro = with_josa(chapter_name, "으로/로", quote=True)
     if is_first_chapter:
         opening_strategy = (
             f"**도입 + 정의 질문 (첫 영역)**:\n"
-            f"준비됐다는 동의를 짧게 받은 뒤, 첫 영역 '{chapter_name}'로 "
+            f"준비됐다는 동의를 짧게 받은 뒤, 첫 영역 {_cn_ro} "
             f"자연스럽게 들어가며 아래 '명확한 정의 질문'을 던지세요.\n\n"
             f"  좋은 예시:\n"
             f"    '좋습니다, 그럼 첫 영역인 '{chapter_name}'부터 시작해볼게요. "
-            f"리더님께서는 '{chapter_name}'을 무엇이라고 생각하시나요? "
+            f"리더님께서는 {_cn_eul} 무엇이라고 생각하시나요? "
             f"그렇게 생각하시는 이유도 간단히 부탁드려요. [START_CHAPTER]'\n\n"
         )
     else:
         opening_strategy = (
             f"**브리지 + 정의 화두 (전환 영역) — Core Rule 3·4 적용**:\n"
             f"앞 영역에서 보여준 강점·이야기를 한 줄로 짚어 다리를 놓은 뒤, "
-            f"'{chapter_name}'로 자연스럽게 넘어가며 이 영역에 대한 생각을 "
+            f"{_cn_ro} 자연스럽게 넘어가며 이 영역에 대한 생각을 "
             f"묻는다. '네' 확인을 기다리는 종결 핑퐁 없이 한 발화로.\n\n"
             f"🚨 매번 똑같은 '무엇이라고 생각하시나요? 이유도…' 템플릿 반복 "
             f"금지. '철학', '본질' 같은 올드·추상 표현 배제. 실용적·직관적 "
             f"화두로 **매번 다르게** (아래 중 다른 결로 변주):\n"
-            f"   - '현실에서 '{chapter_name}'을 챙긴다는 건 참 쉽지 않죠. "
+            f"   - '현실에서 {_cn_eul} 챙긴다는 건 참 쉽지 않죠. "
             f"실무에서 이 부분을 관리하실 때 가장 신경 쓰시는 포인트는 "
             f"뭐예요? [START_CHAPTER]'\n"
             f"   - '이어서 '{chapter_name}' 이야기 나눠볼게요. 리더님 팀에서 "
-            f"'{chapter_name}'은 평소 어떤 모습으로 작동하고 있나요? "
+            f"{_cn_eun} 평소 어떤 모습으로 작동하고 있나요? "
             f"[START_CHAPTER]'\n"
             f"   - '리더님은 '{chapter_name}' 하면 실무에서 어떤 장면이 먼저 "
             f"떠오르세요? [START_CHAPTER]'\n"
-            f"   - '리더님만의 방식으로 '{chapter_name}'을 풀어가신다면 어떻게 "
+            f"   - '리더님만의 방식으로 {_cn_eul} 풀어가신다면 어떻게 "
             f"접근하세요? [START_CHAPTER]'\n\n"
         )
 
@@ -563,8 +544,10 @@ def _get_instruction_guide(
             "묻지 말 것 — 선택권을 넘기면 무의미한 턴만 늘어납니다.\n"
             "  결 참고(그대로 복붙 금지, 담백하고 정중하게): '이 영역은 오늘 "
             "유의미한 진단이 어려운 상황인 것 같습니다. 이 부분은 여기서 "
-            f"정리하고, 바로 다음 역량인 '{_next_name}'으로 넘어가겠습니다 — "
-            f"{_next_name}와 관련해 최근 실제로 겪으신 장면이 하나 있으실까요?'\n\n"
+            f"정리하고, 바로 다음 역량인 {with_josa(_next_name, '으로/로', quote=True)} "
+            "넘어가겠습니다.'\n"
+            "(여기서도 다음 역량의 질문은 던지지 않습니다 — 예고까지만. 정의 "
+            "질문은 다음 턴 COMPETENCY_ASK 가 던집니다.)\n\n"
             "🚫 '계속할까요/쉴까요' 열린 질문 금지. 없는 경험을 있는 것처럼 "
             "요약하거나 과장된 강점 칭찬 금지. 사용자를 탓하거나 면박 주는 "
             "표현도 금지(담백하게 '다음으로'만). "
@@ -665,11 +648,13 @@ def _get_instruction_guide(
             "대신 그 감정에 머무르세요(Core Rule 7).\n\n"
             "이번 턴 응답(2-3문장):\n"
             f"1) 직전 영역에서 넘어온 흐름이면 한 문장으로 부드럽게 브리지.\n"
-            f"2) **'{_cur_chapter_name}'을(를) 리더님은 평소 어떻게 생각하시는지/"
-            "무엇이라 보시는지**를 열린 질문으로 묻고 마무리.\n\n"
+            f"2) **{with_josa(_cur_chapter_name, '을/를', quote=True)} 리더님은 "
+            "평소 어떻게 생각하시는지/무엇이라 보시는지**를 열린 질문으로 묻고 "
+            "마무리.\n\n"
             "표현은 매번 다르게 — 아래는 결 참고용(그대로 복붙 금지, 변주):\n"
             f"  · '리더님은 {_cur_chapter_name}, 하면 어떤 게 먼저 떠오르세요?'\n"
-            f"  · '{_cur_chapter_name}을(를) 리더님 나름대로는 무엇이라 보세요?'\n"
+            f"  · '{with_josa(_cur_chapter_name, '을/를')} 리더님 나름대로는 "
+            "무엇이라 보세요?'\n"
             f"  · '리더님께 {_cur_chapter_name}란 평소 어떤 의미인가요?'\n"
             f"  · '{_cur_chapter_name} 하면 리더님은 무엇이 가장 중요하다고 "
             "느끼세요?'\n\n"
@@ -701,7 +686,7 @@ def _get_instruction_guide(
             "별도 줄**로 세로로 나열하세요. 예시 서식(내용은 이번 역량에 맞게):\n"
             "```\n"
             "말씀하신 ○○○도 중요한 부분입니다.\n\n"
-            f"저희는 {_cur_def} 능력까지를 {_cur_chapter_name}으로 봅니다.\n\n"
+            f"저희는 {_cur_def} 능력까지를 {with_josa(_cur_chapter_name, '으로/로')} 봅니다.\n\n"
             f"구체적으로는 {_sub_count_ko} 가지를 살펴봅니다.\n"
             "· (하위역량 1)\n"
             "· (하위역량 2)\n"
