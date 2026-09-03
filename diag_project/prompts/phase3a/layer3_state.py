@@ -93,7 +93,23 @@ def format_turn_state_for_llm(state: dict) -> str:
             f"{chr(10).join(_lines)}\n\n"
         )
 
-    return f"""{global_memory_block}[Turn State]
+    # #6 페르소나 상기 + 문체 반복 제약(시스템 계산). 가이드 예시 문장의 균일한
+    #   톤이 페르소나를 덮고, "네, ~하셨군요"+요약이 매 턴 반복되던 것을 막는다.
+    from diag_project.services.style_tracker import format_style_constraints
+    _persona = state.get("coach_persona") or {}
+    persona_block = ""
+    if _persona.get("name"):
+        persona_block = (
+            f"[🎭 페르소나 유지] 당신은 {_persona['name']} — "
+            f"{_persona.get('coaching_style', '')} ({_persona.get('tags', '')}). "
+            "아래 가이드의 예시 문장은 '내용의 결'만 참고하고, 문장 길이·종결어미·"
+            "호응 방식은 시스템 프롬프트의 【말투 프로필】대로 바꿔 쓰세요.\n\n"
+        )
+    style_block = format_style_constraints(state.get("style_constraints"))
+    if style_block:
+        style_block += "\n\n"
+
+    return f"""{global_memory_block}{persona_block}{style_block}[Turn State]
 {state_text}
 
 [Instruction for this turn]
@@ -504,6 +520,25 @@ def _get_instruction_guide(
     # 현재 챕터의 하위역량 목록 (BEI '하위역량 릴레이'용)
     _cur_fw = COMPETENCY_FRAMEWORK.get(_cur, {})
     _cur_chapter_name = _cur_fw.get("name", "이 영역")
+    # #6 챕터 마무리 멘트 변주: 챕터 순서로 '결' 힌트를 하나만 주입해 매 챕터 다른
+    #   마무리가 나오게 한다("들려주신 귀한 경험들은 충분히 깊이 있게 살펴보았습니다"
+    #   가 세션마다 반복되던 것 방지). 마무리는 1~2문장으로 짧게.
+    _WRAP_HINTS = [
+        "리더님 답변 속 '한 장면'을 딱 하나 집어 짧게 인상 남기기(요약 금지). "
+        "예: '팀원 의견을 받아 교육 체계를 새로 짜셨던 그 장면이 오래 남네요.'",
+        "리더님이 반복해서 쓴 '단어' 하나를 되돌려 주며 매듭. "
+        "예: '오늘 \"직접\"이라는 말을 여러 번 하셨어요. 그 결이 이 영역의 답이었습니다.'",
+        "질문 형태의 여운 없이, 감사 한 문장만 담백하게. "
+        "예: '솔직하게 들려주셔서 감사합니다. 이 영역은 여기서 정리하겠습니다.'",
+        "리더님의 판단 기준 하나를 짚어 짧게. "
+        "예: '흔들릴 때 \"속도보다 합의\"를 고르시는 분이라는 걸 알게 됐어요.'",
+        "가장 짧게 — 한 문장 마무리. "
+        "예: '이 영역, 충분히 들었습니다.'",
+    ]
+    _ch_keys = [k for k in COMPETENCY_FRAMEWORK if k != "supplementary"]
+    _wrap_hint = _WRAP_HINTS[
+        (_ch_keys.index(_cur) if _cur in _ch_keys else 0) % len(_WRAP_HINTS)
+    ]
     _sub_names = [
         v.get("name", "") for v in _cur_fw.get("indicators", {}).values()
         if v.get("name")
@@ -572,14 +607,14 @@ def _get_instruction_guide(
             "아닙니다. 전체 종료·작별 인사·'모든 진단이 끝났다'는 멘트, "
             "[DIAGNOSIS_COMPLETE] 태그를 **절대 쓰지 마세요.**\n\n"
             "**응답은 반드시 두 부분으로, 한 호흡에 이어서 구성하세요:**\n\n"
-            "① **Wrap-up (요약·공감, 2문장)**: 방금 나눈 이야기에서 드러난 "
-            "리더님의 강점·결을 짚어, 따뜻하고 진심 어린 요약·공감으로 이 "
-            "영역을 매듭지으세요. (매번 다른 톤)\n\n"
+            "① **Wrap-up (1~2문장, 짧게)**: 요약 나열 금지. 이번 챕터의 마무리 "
+            f"'결'(시스템 지정): {_wrap_hint}\n"
+            "   🚫 '들려주신 귀한 경험들은 충분히 깊이 있게 살펴보았습니다' 류의 "
+            "상투적 총평 금지 — 지난 세션과 똑같이 들립니다.\n\n"
             f"② **강제 전환 '예고'만 (질문 금지)**: 요약 뒤에 곧바로, 선택을 "
             f"묻지 말고 다음 역량('{_next_name}')으로 넘어감을 '선언'하며 매듭지으세요. "
-            "결 참고(그대로 복붙 금지, 매번 변주):\n"
-            f"   '리더님의 귀한 경험 잘 들었습니다. {_cur_chapter_name} 영역은 "
-            f"충분히 다뤘으니, 이제 다음 역량인 {_next_name}{get_josa(_next_name, '으로/로')} "
+            "결 참고(그대로 복붙 금지):\n"
+            f"   '(위 ①의 마무리 1~2문장) 이제 {with_josa(_next_name, '으로/로', quote=True)} "
             "이어가 보겠습니다.'\n"
             "🚫 **여기서 다음 역량에 대한 질문(정의 질문·경험 질문)을 던지지 "
             "마세요.** 전환 '예고'까지만 하고 문장을 끝냅니다. 리더님이 확인한 "
@@ -591,10 +626,9 @@ def _get_instruction_guide(
             "선택권을 넘기는 열린 질문 (세션 주도권 상실).\n"
             "- '리더님이 선택해 주세요' 류의 대기 유도 표현.\n"
             "- [CHAPTER_COMPLETE]/[START_CHAPTER] 태그 ❌ → 시스템이 부착.\n\n"
-            "예: '말씀을 들으며 리더님이 사람을 대하는 깊이가 느껴졌어요. 쉽지 "
-            "않은 상황을 그렇게 풀어내신 점이 오래 기억에 남을 것 같네요. "
-            f"이 영역은 충분히 다뤘으니, 이제 다음 역량인 {_next_name}{get_josa(_next_name, '으로/로')} "
-            "이어가 보겠습니다.'"
+            "예(결만 참고, 이번 챕터 힌트에 맞게 새로 쓰기): '팀원 의견을 받아 "
+            "체계를 새로 짜셨던 그 장면이 오래 남네요. "
+            f"이제 {with_josa(_next_name, '으로/로', quote=True)} 이어가 보겠습니다.'"
         )
     else:
         # 🏁 마지막 영역(자기관리) — 다음 영역 없음. Grand Finale 강제.

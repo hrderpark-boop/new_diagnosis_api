@@ -1010,6 +1010,20 @@ async def build_turn_state(
         n for n in all_subcompetencies if n not in asked_in_chapter
     ]
 
+    # #6 문체 반복 추적: 최근 코치 발화 3개의 '시작 패턴'을 계산해 LLM 에 제약으로
+    #   준다("네, ~하셨군요" 연속 2턴 금지 / 요약 되받기 3턴 1회 이하).
+    #   LLM 은 스스로 턴을 세지 못하므로 백엔드가 센다.
+    _recent_coach_res = await db.execute(
+        select(ChatMessage.content)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == MessageRole.MODEL)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(3)
+    )
+    _recent_coach = [c or "" for c in _recent_coach_res.scalars().all()]
+    from diag_project.services.style_tracker import compute_style_constraints
+    style_constraints = compute_style_constraints(_recent_coach)
+
     # 직전 코치(assistant) 턴의 instruction — 2단 폴백이 '한 번만' 발동하도록.
     _last_instr_res = await db.execute(
         select(ChatMessage.instruction_used)
@@ -1120,6 +1134,7 @@ async def build_turn_state(
         "unexplored_subcompetencies": unexplored_subcompetencies,
         "asked_in_chapter": asked_in_chapter,  # T2: 실시간 탐색(넓이) 지표
         "turns_on_current_target": turns_on_current_target,  # #5 최소 1회 심화
+        "style_constraints": style_constraints,  # #6 문체 반복 제약(시스템 계산)
         "last_instruction": last_instruction,  # 2단 폴백 1회 제한용
         "disengagement_streak": disengagement_streak,  # 🚦 A 연속 이탈
         "probe_cycles": probe_cycles,

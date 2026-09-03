@@ -718,10 +718,17 @@ async def _submit_message_phase3a(
         # 첫 질문이 시스템 템플릿(CHAPTER_OPENING)으로 대체되어 더 이상 불필요.
         # LLM 이 이를 그대로 echo 하는 문제 방지를 위해 BEI 턴 컨텍스트에서 제거.
         chapter_context = chapter_context.split("## 챕터 시작 스크립트")[0].rstrip()
-    turn_state_text = format_turn_state_for_llm(state)
-
     # 페르소나 통합 system prompt — 사용자가 '선택한' 코치(session.coach_id) 기준.
     coach_key = _coach_key_from_id(session.coach_id)
+    # #6: 매 턴 Layer3 상단에도 페르소나를 상기시킨다(Layer1 끝의 3줄만으로는
+    #   가이드 예시 문장의 균일한 톤에 묻혀 어느 코치든 같은 말투가 나왔다).
+    _persona = COACHES_PERSONA.get(coach_key) or {}
+    state["coach_persona"] = {
+        "name": _persona.get("name", ""),
+        "coaching_style": _persona.get("coaching_style", ""),
+        "tags": _persona.get("tags", ""),
+    }
+    turn_state_text = format_turn_state_for_llm(state)
     user_name = state.get("user_name", "리더")
     system_prompt = build_layer1_with_persona(
         coach_id=coach_key,
