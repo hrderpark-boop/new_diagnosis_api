@@ -17,13 +17,20 @@ ALL_NAMES = [
     v["name"] for ck in CHAPTERS
     for v in COMPETENCY_FRAMEWORK[ck]["indicators"].values()
 ] + [COMPETENCY_FRAMEWORK[ck]["name"] for ck in CHAPTERS]
-_TIME = re.compile(r"최근|근래|요즘")
+_TIME = re.compile(r"최근|근래|요즘|올해|지난 몇")
+
+# 어미 3종 (HR 검토본 변형 포함):
+#   A '~있으셨어요/있으세요/있으셨나요/있으실까요/있으신가요?'
+#   B '(그때) 어떻게 하셨어요/하셨나요/해결하셨어요/행동하셨나요?' + '어떠한 조치를 하셨나요?'
+#   C '있었다면 어떤 일이었어요/이었나요/이었을까요? / 어떤 상황이었을까요?'
+_B = re.compile(r"(어떻게 [가-힣 ]*셨(어요|나요)|어떠한 조치를 하셨나요)\?$")
+_C = re.compile(r"어떤 (일|상황)이었(어요|나요|을까요)\?$")
 
 
 def _ending(q: str) -> str:
-    if q.endswith("그때 어떻게 하셨어요?"):
+    if _B.search(q):
         return "B"
-    if q.endswith("있었다면 어떤 일이었어요?"):
+    if _C.search(q):
         return "C"
     return "A"
 
