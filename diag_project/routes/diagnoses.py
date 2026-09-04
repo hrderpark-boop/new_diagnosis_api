@@ -1,6 +1,5 @@
 import logging
 import os
-import random
 import uuid
 from uuid import UUID
 import re
@@ -1056,7 +1055,9 @@ async def _submit_message_phase3a(
     # 8-a. DIAGNOSIS_INTRO 하이브리드: LLM 호응 + 시스템 진단 안내 본문 합치기
     if instruction_used == "DIAGNOSIS_INTRO" and not _suppress_mechanical_text:
         llm_acknowledgment = clean_reply
-        if not llm_acknowledgment or "죄송합니다" in llm_acknowledgment:
+        # 후처리 #1: 빈 응답일 때만 폴백. 과거의 '"죄송합니다" 포함' 조건은
+        #   사과가 들어간 정상 응답(META 가이드가 권장)까지 통째로 날렸다.
+        if not llm_acknowledgment.strip():
             llm_acknowledgment = "말씀 감사합니다."
         anchor_section = build_intro_anchor_section()
         clean_reply = f"{llm_acknowledgment}\n\n{anchor_section}"
@@ -1066,7 +1067,9 @@ async def _submit_message_phase3a(
     #   전체 응답을 생성하므로, 시스템이 목록을 뒤에 붙이지 않는다.
     #   (LLM 이 빈 응답/사과만 낸 극단적 경우에만 최소 폴백.)
     if instruction_used == "COMPETENCY_ALIGN" and not _suppress_mechanical_text:
-        if not clean_reply or "죄송합니다" in clean_reply:
+        # 후처리 #2: 빈 응답일 때만 폴백('"죄송합니다" 포함' 조건 제거 — 사과가
+        #   들어간 정상 응답은 그대로 통과).
+        if not clean_reply.strip():
             _fw = COMPETENCY_FRAMEWORK.get(chapter, {})
             _nm = _fw.get("name", "이 영역")
             clean_reply = (
@@ -1130,18 +1133,52 @@ async def _submit_message_phase3a(
         if (_last_model_msg
                 and _last_model_msg.content
                 and _last_model_msg.content.strip() == clean_reply.strip()):
-            logger.warning("🦜 동일 응답 반복 감지 → 진행 유도 멘트로 교체")
-            clean_reply = random.choice([
-                "네, 이 부분은 충분히 나눈 것 같아요. 조금 다른 각도에서 "
-                "여쭤볼게요 — 최근 이와 관련해 새롭게 고민되셨던 지점이 "
-                "있다면 어떤 걸까요?",
-                "좋습니다, 여기까지는 잘 정리된 것 같아요. 그럼 한 걸음 더 "
-                "들어가서, 그 상황에서 리더님이 내리신 판단의 기준이 "
-                "궁금해지는데요 — 어떤 기준이었어요?",
-                "말씀 감사해요. 이 이야기는 여기서 잘 매듭짓고, 이어서 "
-                "여쭤보고 싶은 게 하나 있어요 — 비슷한 상황이 다시 온다면 "
-                "그때도 같은 선택을 하실까요?",
-            ])
+            # 후처리 #5(개정): 고정 3문장 교체 폐지 — 그 문장들은 전부 "네,/좋습니다,"
+            #   로 시작하고 현재 타겟 앵커·문체 제약을 우회했다. 대신 '직전과 같은
+            #   응답 금지 + 현재 타겟 질문' 제약을 붙여 LLM 재생성 1회. 재생성도
+            #   동일하면 그때만 폴백(현재 타겟 질문 1개, 없으면 판단 기준 질문).
+            logger.warning("🦜 동일 응답 반복 감지 → 제약 추가 후 LLM 재생성 1회")
+            from diag_project.data.competencies import (
+                find_sub_key_by_name, get_anchor_questions,
+            )
+            _tq = []
+            if chapter and current_target_sub:
+                _k = find_sub_key_by_name(chapter, current_target_sub)
+                _tq = get_anchor_questions(_k) if _k else []
+            _retry_note = (
+                "\n\n🚨 [시스템 — 재생성 지시] 방금 만든 응답이 직전 코치 발화와 "
+                "완전히 동일합니다. 같은 문장을 다시 쓰지 마세요. 요약 되받기 없이, "
+                "'네,'로 시작하지 말고, 바로 새로운 질문 하나로 대화를 앞으로 미세요."
+                + (
+                    "\n이번 질문 본문(하위역량 이름 언급 금지): "
+                    + " / ".join(_tq)
+                    if _tq else ""
+                )
+            )
+            _regen: dict = {}
+            try:
+                _regen = await llm.generate_phase3a_interaction(
+                    system_prompt=system_prompt,
+                    chapter_context=chapter_context,
+                    turn_state_text=turn_state_text + _retry_note,
+                    compressed_history=compressed_history,
+                    user_message=request.content,
+                    light_mode=True,  # 문장만 필요(state 는 1차 응답 것 유지)
+                )
+                _regen_reply = _MARKER_RE.sub("", _regen.get("reply") or "").strip()
+            except Exception as _e:  # 재생성 실패는 폴백으로
+                logger.error("🦜 재생성 실패: %s", _e)
+                _regen_reply = ""
+            if (_regen_reply and not _regen.get("error")
+                    and _regen_reply != clean_reply.strip()):
+                clean_reply = _regen_reply
+            else:
+                logger.warning("🦜 재생성도 동일/실패 → 폴백 질문")
+                clean_reply = (
+                    _tq[0] if _tq else
+                    "그 상황에서 리더님이 내리신 판단의 기준이 궁금한데요 — "
+                    "어떤 기준이었어요?"
+                )
 
     # 8-g. 최종 안전망: 하이브리드 조립 이후에도 남아있을 수 있는 시스템
     #   마커를 프론트 전달 직전에 한 번 더 완벽 제거.

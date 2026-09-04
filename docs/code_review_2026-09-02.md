@@ -85,6 +85,29 @@ POST /reports/{sid}/analyze
 - 1단계 판단 확정(2026-09-03): H1 은 교정본 존재 시 재분석 스킵(200), H4 는 정중한 긴 미루기도
   pause, H6 은 비교 차트 컴포넌트 삭제. 모두 승인됨.
 
+## 2-c. 조건부 후처리 목록 (2026-09-04 전수 확인 — 2단계 검토 대상)
+
+LLM 응답이 나온 뒤 "조건 X면 덧붙임/교체/무시"로 동작하는 코드. 한 수정이 다른 규칙을
+깨우는 부작용의 전형이라 목록으로 보존한다(`routes/diagnoses.py` `_submit_message_phase3a`).
+✅ = 2026-09-04 수정 완료.
+
+| # | 위치 | 조건 | 동작 | 상태 |
+|---|---|---|---|---|
+| 1 | 8-a DIAGNOSIS_INTRO | 빈 응답 (~~"죄송합니다" 포함~~) | "말씀 감사합니다." + 안내 본문 | ✅ 조건 축소 |
+| 2 | 8-b COMPETENCY_ALIGN | 빈 응답 (~~"죄송합니다" 포함~~) | 고정 폴백 문장 | ✅ 조건 축소 |
+| 3 | 8-d CHAPTER_READY_TO_END | 빈 응답 | "이 영역, 여기서 잘 매듭짓겠습니다." + 완료·시작 마커 강제 | 보존 (`?` 조건은 제거됨) |
+| 4 | 8-e CHAPTER_CONTINUE_CONFIRMED | 빈 응답 | 고정 브릿지 문장 | 보존(죽은 경로) |
+| 5 | 8-f 앵무새 방어 | 직전 코치 메시지와 동일 | ~~무작위 3문장 교체~~ → 제약 추가 후 LLM 재생성 1회, 재생성도 동일하면 타겟 질문 폴백 | ✅ |
+| 6 | SESSION_END_EARLY | 조기 종료 마커 | 고정 마무리 문장 덧붙임 | 보존 |
+| 7 | 마커 게이트 | `[DIAGNOSIS_COMPLETE]` + 다음 챕터 존재 | 마커 무시 | 보존(의도된 방어) |
+| 8 | 마커 게이트 | `[CHAPTER_COMPLETE]` + 비허용 instruction | 마커 무시 | 보존 |
+| 9 | 마커 게이트 | `[SESSION_PAUSE]` ↔ USER_REQUESTS_PAUSE | 무시 / 강제 paused(양방향) | 보존 |
+| 10 | 마커 게이트 | `[SESSION_END_EARLY]` + 비허용 instruction | pause 로 격하 | 보존 |
+| 11 | SUGGEST_PAUSE 2-Strike | 3번째 제안 | 강제 종료로 변환 | 보존 |
+| 12 | `_suppress_mechanical_text` | 조기 종료·제안·일시중지 턴 | 1·2번 덧붙임 건너뜀 | 보존 |
+| 13 | `build_turn_state` 9-f | 라포 3턴+동의 | `[READY_FOR_INTRO]` 강제 | 보존 |
+| 14 | `llm_service._generate_with_retry` | 출력에 "User:"/"사용자:" | 이후 절단 (M7) | 2단계 |
+
 ## 3. 진행 순서
 
 1. 1단계(파일럿 차단): C1, C3, H1, H2, H3(+M16, M22), H4, H5, H6, H7, M4, M14 — 항목별 커밋.
