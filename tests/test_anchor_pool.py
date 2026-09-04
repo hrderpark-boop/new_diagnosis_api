@@ -41,7 +41,7 @@ def test_no_metaphor():
 
 def test_has_timeframe():
     for s in _msgs():
-        assert "최근" in s or "근래" in s, s
+        assert "최근" in s or "근래" in s or "요즘" in s, s
 
 
 def test_pool_size_covers_chapters():
@@ -49,13 +49,23 @@ def test_pool_size_covers_chapters():
     assert len(_ANCHOR_FRAMES) >= len(_CHAPTERS)
 
 
-def test_sub_name_injected():
-    """백엔드가 첫 하위역량명을 실제로 주입(제어 역전)."""
+def test_sub_name_not_exposed():
+    """#2: 앵커 질문에 하위역량 '이름'이 노출되지 않는다(타겟은 백엔드만 안다).
+
+    과거 테스트는 '이름 주입'을 요구했으나, 이름을 들은 대상자가 '그게 뭔지
+    어렵다'고 되묻는 것이 로그로 확인돼 반전했다. 본문은 대화체 질문이 맡는다.
+    """
+    from diag_project.data.competencies import get_anchor_questions
     for ck in _CHAPTERS:
-        first = next(iter(COMPETENCY_FRAMEWORK[ck]["indicators"].values()))["name"]
+        key, ind = next(iter(COMPETENCY_FRAMEWORK[ck]["indicators"].items()))
         msg = _open(chapter=ck, user_definition="",
-                    first_subcompetency_name=first, bridge_context=None)
-        assert first in msg, (ck, first)
+                    first_subcompetency_name=ind["name"], bridge_context=None)
+        assert ind["name"] not in msg, (ck, ind["name"], msg)
+        assert f"'{ind['name']}'" not in msg
+        # 본문은 그 하위역량의 확정 질문 중 하나 그대로
+        assert any(q in msg for q in get_anchor_questions(key)), (ck, msg)
+        # 이중 질문 금지: 물음표는 하나
+        assert msg.count("?") == 1, msg
 
 
 if __name__ == "__main__":

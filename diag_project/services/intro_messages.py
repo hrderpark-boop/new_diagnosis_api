@@ -8,7 +8,8 @@ import random
 
 from diag_project.data.competencies import (
     COMPETENCY_FRAMEWORK,
-    SUBCOMPETENCY_ANCHORS,
+    SUBCOMPETENCY_ANCHORS,  # noqa: F401  (situation 서술 — 분석·게이트용, 호환 유지)
+    get_anchor_questions,
 )
 
 # 5개 챕터의 진단 정의 (LLM 이 아닌 시스템이 직접 사용)
@@ -242,23 +243,20 @@ def build_onboarding_launch(user_name: str) -> str:
 #   챕터 순서로 프레임을 골라 5개 챕터가 모두 다른 틀을 쓴다(무반복). 모든 틀은
 #   'BEI 앵커 제약'을 구조적으로 보장한다: 시점(최근/근래) + 리더가 '직접 한 행동'
 #   + 구체 경험/사례/장면 요구, 은유·비유 없음. {sub}=첫 하위역량(백엔드 주입).
+# #2(2026-09-04): 앵커 질문에서 하위역량 '이름'을 노출하지 않는다. 본문은
+#   SUBCOMPETENCY_ANCHOR_QUESTIONS 의 대화체 질문({question})이 맡고, 프레임은
+#   도입 한 마디 또는 부담을 낮추는 평서문 한 줄만 담는다(이중 질문 금지).
+#   (로그 근거: "'전략적 사고'와 관련해서 경험이…" → "그게 뭔지 너무 어려워요",
+#    상황 묘사 앵커 → 바로 사례. AI 는 무엇을 재는지 알되 대상자에겐 안 보인다.)
 _ANCHOR_FRAMES = [
-    "먼저 '{sub}'에 대해 여쭤볼게요. 최근 이와 관련해서 리더님이 직접 겪으신 "
-    "경험이 하나 있으실까요?",
-    "'{sub}' 쪽으로 먼저 들어가 볼게요. 최근에 그런 상황을 실제로 다루셨던 "
-    "장면이 떠오르시나요?",
-    "'{sub}'부터 여쭤볼게요. 근래에 이와 관련해 리더님이 직접 나서서 처리하셨던 "
-    "일이 있으셨어요?",
-    "먼저 '{sub}' 이야기를 해볼게요. 최근 몇 달 사이 이런 상황을 마주해 직접 "
-    "대응하셨던 경험이 있으실까요?",
-    "'{sub}'에 대해 먼저 묻고 싶어요. 최근에 리더님이 구체적으로 행동하셨던 "
-    "사례가 하나 있으신가요?",
-    "'{sub}'부터 시작해 볼게요. 최근 이와 관련해 특별히 신경 써서 처리하셨던 "
-    "일이 떠오르시나요?",
-    "먼저 '{sub}' 관련 경험을 들어볼게요. 근래에 이 부분에서 리더님이 직접 "
-    "판단하고 움직이셨던 순간이 있으셨어요?",
-    "'{sub}' 이야기로 먼저 들어가 볼게요. 최근에 리더님이 직접 관여해 풀어가셨던 "
-    "구체적인 상황이 있으실까요?",
+    "먼저 하나 여쭤볼게요. {question}",
+    "가볍게 시작해 볼게요. {question}",
+    "{question} 떠오르는 장면 하나면 충분합니다.",
+    "실제 있었던 일로 시작해 볼게요. {question}",
+    "{question} 잘한 일이 아니어도 괜찮아요.",
+    "바로 여쭤볼게요. {question}",
+    "{question} 언제, 누구와 있었던 일인지부터 편하게요.",
+    "이 영역은 이 질문부터요. {question}",
 ]
 # 브릿지(직전 답변 이어받기) 리드도 챕터 순서로 순환.
 _BRIDGE_LEADS = [
@@ -306,29 +304,30 @@ def build_chapter_opening_with_user_def(
         indicators[first_key].get("name", "") if first_key else ""
     ) or first_subcompetency_name or chapter_name
 
-    # item4: 문장 틀·앵커 예시를 챕터 순서로 결정론 선택 → 5개 챕터 모두 다르게
-    #   (무반복). 앵커 내용(first_name/anchor_text)은 그대로 주입 = 제어 역전 유지.
+    # item4: 문장 틀·질문을 챕터 순서로 결정론 선택 → 5개 챕터 모두 다르게
+    #   (무반복). 타겟(first_key)은 백엔드가 정하고 문장만 변주 = 제어 역전 유지.
     _pos = (_OPEN_CHAPTER_ORDER.index(chapter)
             if chapter in _OPEN_CHAPTER_ORDER else 0)
-    # 첫 하위역량의 맞춤 앵커 1개 — 결정론(챕터 순서 기반, random 아님).
-    anchors = SUBCOMPETENCY_ANCHORS.get(first_key) if first_key else None
-    anchor_text = anchors[_pos % len(anchors)] if anchors else None
-    _frame = _ANCHOR_FRAMES[_pos % len(_ANCHOR_FRAMES)].format(sub=first_name)
-    anchor_sentence = (
-        f" 예를 들어 {anchor_text}처럼요. 그 장면이 떠오르신다면 "
-        f"편하게 들려주셔도 좋습니다."
-        if anchor_text
-        else " 떠오르시는 구체적인 장면 하나면 충분합니다."
-    )
+    # #2: 첫 하위역량의 대화체 앵커 질문(이름 미노출) — 결정론(챕터 순서 기반).
+    questions = get_anchor_questions(first_key) if first_key else []
+    if questions:
+        question = questions[_pos % len(questions)]
+    else:
+        # 질문 사전에 없는 키(방어) — 이름 대신 일반 상황 질문.
+        question = "최근에 리더님이 직접 나서서 풀어야 했던 일이 하나 있으셨어요?"
+    _frame = _ANCHOR_FRAMES[_pos % len(_ANCHOR_FRAMES)].format(question=question)
+    del first_name  # 이름은 질문에 쓰지 않는다(호환 인자만 유지)
 
-    # 🌉 브릿지 모드: 직전 답변 키워드에서 파생되는 대화형 리드 + 앵커 프레임.
+    # 🌉 브릿지 모드: 직전 답변 키워드에서 파생되는 대화형 리드 + 앵커 질문.
+    #   리드가 이미 도입 역할을 하므로 프레임 도입은 빼고 질문 본문만 잇는다
+    #   ("…들어가 볼게요. 가볍게 시작해 볼게요." 이중 도입 방지).
     if bridge_context:
         _ctx = bridge_context.strip().rstrip(".!?~ ")
         _lead = _BRIDGE_LEADS[_pos % len(_BRIDGE_LEADS)].format(ctx=_ctx)
-        return f"{_lead} {_frame}{anchor_sentence}"
+        return f"{_lead} {question}"
 
-    # (브릿지 없음 — 첫 챕터 등) 하위역량 타겟 앵커 질문(풀 프레임).
-    return f"{_frame}{anchor_sentence}"
+    # (브릿지 없음 — 첫 챕터 등) 하위역량 타겟 앵커 질문.
+    return _frame
 
 
 def build_chapter_transition_question(chapter: str) -> str:

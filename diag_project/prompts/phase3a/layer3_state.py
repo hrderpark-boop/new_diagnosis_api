@@ -566,6 +566,19 @@ def _get_instruction_guide(
         f"'{_target_sub}'" if _target_sub
         else (f"'{_unexplored[0]}'" if _unexplored else "다른 하위 역량")
     )
+    # #2: 현재 타겟(없으면 첫 미탐색)의 대화체 앵커 질문 2개 — LLM 턴 앵커의 본문.
+    from diag_project.data.competencies import (
+        find_sub_key_by_name, get_anchor_questions,
+    )
+    _tq_name = _target_sub or (_unexplored[0] if _unexplored else None)
+    _tq_key = find_sub_key_by_name(_cur, _tq_name) if _tq_name else None
+    _tq_list = get_anchor_questions(_tq_key) if _tq_key else []
+    _target_question_block = (
+        "\n".join(f"   ({i + 1}) {q}" for i, q in enumerate(_tq_list))
+        if _tq_list else
+        "   (질문 사전 없음 — '최근에 리더님이 직접 나서서 풀어야 했던 일'을 "
+        "상황 묘사로 물으세요. 이름은 여전히 말하지 않습니다.)"
+    )
 
     _no_yield_forced = (state or {}).get("no_yield_forced", False)
 
@@ -882,10 +895,14 @@ def _get_instruction_guide(
             "뭉뚱그림. / 이미 탐색한 하위 역량 재질문(중복).\n\n"
             "🧭 **[T2 넓이 순회 — 매우 중요]**: 한 사례를 충분히(최대 3턴: 앵커 "
             "1 + 구체화 폴백 1 + 심화 1) 들었으면, 억지로 더 파지 말고 위 '유도할 "
-            f"방향'의 **아직 안 다룬 하위 역량({_first_unexplored})으로 이동**한다. "
-            "새 하위 역량으로 넘어가는 그 질문에서는 **그 이름을 대화 속에 자연스럽게 "
-            "한 번 언급**해도 좋다(리더가 어느 주제인지 알도록). 단 목차 나열이 "
-            "아니라 리더님 답변의 실마리에 얹어 자연스럽게.\n\n"
+            f"방향'의 **아직 안 다룬 하위 역량({_first_unexplored})으로 이동**한다.\n\n"
+            "🎯 **[이번 앵커 질문 — 이름 노출 금지]** 새 하위 역량으로 넘어가는 "
+            "질문에서 **하위 역량 이름('전략적 사고' 등)을 말하지 마세요.** 이름을 "
+            "들으면 리더님은 '그게 뭔지 어렵다'고 되묻습니다. 대신 아래 대화체 "
+            "질문 중 하나를 **질문 본문으로 그대로(또는 리더님 답변 실마리에 얹어 "
+            "살짝 다듬어)** 던지세요. 당신은 무엇을 재는지 알되 리더님께는 보이지 "
+            "않게. 리더님이 '그게 무슨 뜻이냐'고 되물을 때만 풀어 설명합니다.\n"
+            f"{_target_question_block}\n\n"
             "**필수 흐름 (대화 속에 질문을 '녹이기')**:\n"
             "1. 방금 리더님 답변에서 **연결 고리**를 하나 찾으세요 — 등장한 "
             "인물·감정·상황·판단 중 다음 방향으로 이어질 실마리.\n"
