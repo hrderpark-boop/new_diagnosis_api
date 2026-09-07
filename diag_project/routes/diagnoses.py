@@ -541,6 +541,7 @@ async def _submit_message_phase3a(
         "STAR_COMPLETE_NEW_EVENT", "CONTRARY_NEEDED", "ABSTRACT_AVOIDANCE",
         "AVOIDANCE_DETECTED", "ABSENCE_PROBE", "ABORT_CONFIRM",
         "CHAPTER_NO_YIELD_ULTIMATUM",
+        "COMPETENCY_ALIGN",  # #2: ALIGN 턴이 첫 앵커를 품으므로 그 답변도 프로브 답변
     }
     _last_probe = None
     if chapter:
@@ -641,6 +642,9 @@ async def _submit_message_phase3a(
         "CHAPTER_OPENING", "CONTINUE_NORMAL", "STAR_INCOMPLETE",
         "STAR_COMPLETE_NEW_EVENT", "CONTRARY_NEEDED", "ABSTRACT_AVOIDANCE",
         "AVOIDANCE_DETECTED", "ABSENCE_PROBE",
+        # #2(2026-09-07): 정의 제시(ALIGN) 턴이 첫 앵커까지 한 메시지로 나간다.
+        #   asked 기록은 여전히 LLM 호출 '이전'(이 스텝) — 합치는 것은 출력 조립만.
+        "COMPETENCY_ALIGN",
     }
     current_target_sub = None
     # H5: LLM 호출 실패 시 이 턴의 원장 전진을 되돌리기 위한 스냅샷(프로브 턴만).
@@ -1076,6 +1080,27 @@ async def _submit_message_phase3a(
                 f"네, 리더님 말씀 잘 들었습니다. 그 결을 이어서 '{_nm}' "
                 f"경험을 조금 더 구체적으로 들여다볼게요."
             )
+        # #2(2026-09-07): 정의 제시 → 빈 줄 → 첫 앵커 질문을 한 메시지로. "들어가
+        #   볼까요?" → "네" 확인 턴(정보 없음) 제거. 타겟(asked)은 위 프로브 스텝에서
+        #   LLM 호출 이전에 기록됐고, 여기서는 출력만 조립한다. 브릿지 리드 없이
+        #   앵커 본문만 붙인다(정의 뒤라 리드가 어색).
+        if chapter and current_target_sub:
+            _anchor = build_chapter_opening_with_user_def(
+                chapter=chapter,
+                user_definition=request.content or "",
+                first_subcompetency_name=current_target_sub,
+                bridge_context=None,
+            )
+            clean_reply = f"{clean_reply.rstrip()}\n\n{_anchor}"
+            # 다음 턴 decider 가 CHAPTER_OPENING 을 다시 내지 않도록 원장에 표식.
+            _st_om = dict(session.self_assessment_data or {})
+            _om = dict(_st_om.get("opening_merged") or {})
+            _om[chapter] = True
+            _st_om["opening_merged"] = _om
+            session.self_assessment_data = _st_om
+            from sqlalchemy.orm.attributes import flag_modified as _fm_om
+            _fm_om(session, "self_assessment_data")
+            await db.commit()
 
     # 8-c. CHAPTER_OPENING 은 Step 7 에서 시스템이 전체 출력 (하이브리드 폐지).
     # build_chapter_opening_with_user_def 가 정의 + 첫 BEI 질문까지 포함하므로
@@ -1089,6 +1114,17 @@ async def _submit_message_phase3a(
     #   코치가 주도권을 쥐고 즉시 다음 챕터로 전환한다.
     #   → CHAPTER_CONTINUE_CONFIRMED 와 동일하게 완료·시작 마커를 세운다.
     if instruction_used == "CHAPTER_READY_TO_END":
+        # 1-b: 내부 종료 사유는 로그에만 남긴다(리더에게 나가는 문구는 중립).
+        logger.info(
+            "🏁 챕터 종료 [%s] no_yield_forced=%s star70=%s avoid=%s asked=%s "
+            "turns_on_target=%s ultimatum=%s turn_count=%s",
+            chapter, state.get("no_yield_forced"),
+            state.get("events_with_star_70"),
+            state.get("avoidance_count_in_chapter"),
+            len(state.get("asked_in_chapter") or []),
+            state.get("turns_on_current_target"),
+            state.get("no_yield_ultimatum_given"), state.get("turn_count"),
+        )
         wrap_up = clean_reply.strip() or "이 영역, 여기서 잘 매듭짓겠습니다."
         if _next_ch:
             # 전환 '예고'까지만. 다음 역량의 정의 질문(COMPETENCY_ASK)은 리더님이

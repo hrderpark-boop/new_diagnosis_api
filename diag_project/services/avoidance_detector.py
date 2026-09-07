@@ -98,13 +98,19 @@ INJECTION_KEYWORDS = [
 
 
 def check_avoidance(text: str | None) -> bool:
-    """회피 감지: 너무 짧거나 회피 키워드 포함."""
-    if not text:
+    """회피 감지: 무응답 / 필러만 있는 단답 / 회피 키워드.
+
+    1-a(2026-09-07): 과거의 '10자 미만 = 회피' 길이 규칙 제거. "최근에 없었는데요"
+    (부재 진술)가 이 규칙에 걸려 AVOIDANCE_DETECTED 로 라우팅됐다. 길이 대신
+    '실질 토큰이 없는가'(classify_engagement 의 empty)로 판정한다 — "네", "글쎄요"
+    는 여전히 회피(마이크로 코칭 대상), 부재 진술·재언급은 회피가 아니다.
+    """
+    if not text or not text.strip():
         return True
     stripped = text.strip()
-    if len(stripped) < 10:
+    if any(kw in stripped for kw in AVOIDANCE_KEYWORDS):
         return True
-    return any(kw in stripped for kw in AVOIDANCE_KEYWORDS)
+    return not _has_substance(stripped)
 
 
 # 부재 진술(absence statement) 표지 — "그런 경험은 없다 / 만들어두지 못했다 /
@@ -246,7 +252,17 @@ def detect_absence_statement(text: str | None) -> bool:
     if not text:
         return False
     stripped = text.strip()
-    return any(kw in stripped for kw in ABSENCE_KEYWORDS)
+    if any(kw in stripped for kw in ABSENCE_KEYWORDS):
+        return True
+    # 1-a: 짧은 부정 단답("최근에 없었는데요", "없었습니다")도 부재 진술로 본다.
+    #   긴 서술 속 "반발은 없었어요"는 사건 설명이므로 길이 게이트(≤25자)로 구분.
+    if len(stripped.replace(" ", "")) <= 25:
+        return any(kw in stripped for kw in _SHORT_ABSENCE_ENDINGS)
+    return False
+
+
+_SHORT_ABSENCE_ENDINGS = ("없었는데", "없었어요", "없었습니다", "없네요", "없어요",
+                          "없습니다", "없는데요", "없는 것 같")
 
 
 # 남탓(외부 귀인) · 비아냥 · 진단 자체를 무시하는 도발 패턴.

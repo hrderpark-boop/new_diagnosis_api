@@ -517,8 +517,9 @@ def decide_instruction(state: dict) -> InstructionType:
         if not competency_aligned:
             return "COMPETENCY_ALIGN"
 
-        # 4-2: 챕터 오프닝 (첫 BEI 질문)
-        if chapter_msg_count == 0:
+        # 4-2: 챕터 오프닝 (첫 BEI 질문). #2: ALIGN 턴이 첫 앵커를 이미 품었으면
+        #   (opening_merged) 다시 던지지 않고 일반 BEI 흐름으로 내려간다.
+        if chapter_msg_count == 0 and not state.get("opening_merged", False):
             return "CHAPTER_OPENING"
 
     last_response = state.get("last_user_response")
@@ -1135,6 +1136,10 @@ async def build_turn_state(
         "asked_in_chapter": asked_in_chapter,  # T2: 실시간 탐색(넓이) 지표
         "turns_on_current_target": turns_on_current_target,  # #5 최소 1회 심화
         "style_constraints": style_constraints,  # #6 문체 반복 제약(시스템 계산)
+        # #2: ALIGN 턴에 첫 앵커가 이미 붙었는가(원장 표식) → CHAPTER_OPENING 재발화 방지
+        "opening_merged": bool(
+            (_store.get("opening_merged") or {}).get(chapter)
+        ) if chapter else False,
         "last_instruction": last_instruction,  # 2단 폴백 1회 제한용
         "disengagement_streak": disengagement_streak,  # 🚦 A 연속 이탈
         "probe_cycles": probe_cycles,
