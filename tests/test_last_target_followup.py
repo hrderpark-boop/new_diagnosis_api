@@ -58,10 +58,13 @@ def test_exit_a_complete_event_waits_for_one_followup():
     assert ins2 == "CHAPTER_READY_TO_END", ins2
 
 
-def test_circuit_breaker_ignores_followup_gate():
-    # 조직관리 cap = 3*3+4 = 13 → 상한이면 심화 여부와 무관하게 닫는다.
+def test_circuit_breaker_also_waits_for_one_followup():
+    # 1-c(2026-09-07)로 변경: 예산(cap=13) 종료도 마지막 타겟 1회 심화를 기다린다.
+    #   (과거엔 상한이면 즉시 닫았음.) MAX_TURNS(40)가 최종 backstop.
     ins = decide_instruction(_state(1, turn_count=13, chapter_message_count=13))
-    assert ins == "CHAPTER_READY_TO_END", ins
+    assert ins == "CONTINUE_NORMAL", ins
+    ins2 = decide_instruction(_state(2, turn_count=13, chapter_message_count=13))
+    assert ins2 == "CHAPTER_READY_TO_END", ins2
 
 
 def test_legacy_state_without_key_unchanged():

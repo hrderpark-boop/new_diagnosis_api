@@ -556,20 +556,22 @@ def decide_instruction(state: dict) -> InstructionType:
     # 🧭 T2: no-yield 종료는 넓이(MIN_EXPLORED) 충족 또는 서킷브레이커
     #   이후에만 허용. 미달 시엔 챕터를 끝내지 않고(아래 회피 프로브로
     #   낙하) 미탐색 하위역량으로 타겟을 계속 전진시킨다.
-    _can_close = _chapter_can_close(state)
-    if _no_strong and _avoid_count >= 3 and _bei_turns >= 3 and _can_close:
-        return "CHAPTER_READY_TO_END"  # no_yield_forced 로 무수확 강제 전환
+    # 1-c(2026-09-07): 무수확(no-yield)은 챕터를 '종료하지 못한다'.
+    #   events_with_star_70 은 LLM 사건 추적에 기대는 대화 흐름 제어용 신호이고,
+    #   실제 근거는 세션 후 deep_analysis 가 전체 대화를 다시 읽는다. 추적이
+    #   실패해도 데이터는 안 잃고 잘못 종료될 뿐이므로, 종료 권한을 뺀다.
+    #   종료 경로는 넓이 충족 / 예산 소진 / 이탈(abort) 셋만. 회피형은 이탈
+    #   로직(A 블록)이, 사례가 약한 성실 응답자는 넓이 순회(3턴 상한)가 처리한다.
+    #   (과거 4-a: avoid≥3 & no_strong → 종료 — 제거)
+    del _avoid_count  # 카운터는 로그·no_yield_forced 플래그용으로만 남는다
 
-    # 4-b. 🛡️ N턴 무수확 방어 (무한 개념화 루프 탈출):
-    #   BEI 질문을 NO_YIELD_TURNS 이상 던졌는데도 강한 STAR 사건이 0이면,
-    #   추상적 회피에 끌려다니는 상태 → 최후통첩 1회 후 강제 전환.
-    if _bei_turns >= NO_YIELD_TURNS and _no_strong:
-        if not state.get("no_yield_ultimatum_given"):
-            return "CHAPTER_NO_YIELD_ULTIMATUM"      # 최후통첩 (1회)
-        # 최후통첩 후에도 무수확 → 넓이 충족/서킷브레이커면 강제 전환,
-        # 아니면 종료 보류하고 미탐색 하위역량 계속 탐색.
-        if _can_close:
-            return "CHAPTER_READY_TO_END"
+    # 4-b. 무수확 최후통첩("딱 한 장면만")은 '탐침'으로 유지한다 — 이번 로그에서도
+    #   그 질문에 구체 답이 나왔다. 단 최근 답변 2개가 실질적(engaged·30자+)이면
+    #   발동하지 않는다(성실 응답자에게 추궁하지 않음). 종료로 이어지지 않는다.
+    if (_bei_turns >= NO_YIELD_TURNS and _no_strong
+            and not state.get("no_yield_ultimatum_given")
+            and state.get("recent_engaged_streak", 0) < 2):
+        return "CHAPTER_NO_YIELD_ULTIMATUM"      # 최후통첩 (1회, 탐침)
 
     # 5. 첫 턴 회피 (라포 회복)
     if state["turn_count"] <= 2 and state["contains_avoidance_keywords"]:
@@ -611,10 +613,17 @@ def decide_instruction(state: dict) -> InstructionType:
     #   챕터가 닫히던 것을 막는다. 서킷브레이커·무수확·명시적 종료는 예외(그대로).
     #   (키가 없는 구형 state 는 통과 — 회귀 보존)
     _followup_done = state.get("turns_on_current_target", 2) >= 2
-    if _depth_ok and _breadth_ok and _followup_done:
+    # 1-c 제안2: 미탐색 하위역량이 남아 있으면 넓이·예산 종료 경로도 닫지 않는다
+    #   (앵커 4개가 전부 나가야 한다). 키가 없는 구형 state 는 통과(회귀 보존).
+    #   MAX_TURNS_REACHED(#8, 35~50턴)가 최종 backstop 으로 남는다.
+    _unexplored_remaining = bool(state.get("unexplored_subcompetencies"))
+    if (_depth_ok and _breadth_ok and _followup_done
+            and not _unexplored_remaining):
         return "CHAPTER_READY_TO_END"
-    # 🛡️ 서킷브레이커: 챕터 턴 상한 초과 → 미탐색은 남긴 채 강제 종료(235턴 방지)
-    if chapter_over_budget(state["turn_count"], min_explored):
+    # 🛡️ 서킷브레이커: 챕터 턴 상한 초과 → 강제 종료(235턴 방지). 단 미탐색이
+    #   남아 있거나 마지막 타겟 심화 전이면 닫지 않고 순회를 계속한다(1-c).
+    if (chapter_over_budget(state["turn_count"], min_explored)
+            and not _unexplored_remaining and _followup_done):
         return "CHAPTER_READY_TO_END"
 
     # 10. 반례 탐침 필요
@@ -710,6 +719,19 @@ async def build_turn_state(
         .where(ChatMessage.role == MessageRole.USER)
     )
     user_messages = msg_result.scalars().all()
+    # 1-c: 최근 사용자 답변의 '실질 응답' 연속 수(engaged & 공백 제외 30자 이상).
+    #   무수확 최후통첩은 이 값이 2 이상이면 발동하지 않는다(성실 응답자 추궁 금지).
+    from diag_project.services.avoidance_detector import (
+        classify_engagement as _cls_eng,
+    )
+    recent_engaged_streak = 0
+    for _m in reversed(list(user_messages)):
+        _c = (_m.content or "")
+        if (_cls_eng(_c)[0] == "engaged"
+                and len(_c.replace(" ", "")) >= 30):
+            recent_engaged_streak += 1
+        else:
+            break
     turn_count = len(user_messages)
 
     # 2-b. 🚨 3-Strike: 세션 '전체'(챕터 무관)의 비생산 응답 누적 카운트.
@@ -1136,6 +1158,7 @@ async def build_turn_state(
         "asked_in_chapter": asked_in_chapter,  # T2: 실시간 탐색(넓이) 지표
         "turns_on_current_target": turns_on_current_target,  # #5 최소 1회 심화
         "style_constraints": style_constraints,  # #6 문체 반복 제약(시스템 계산)
+        "recent_engaged_streak": recent_engaged_streak,  # 1-c 최후통첩 발동 억제
         # #2: ALIGN 턴에 첫 앵커가 이미 붙었는가(원장 표식) → CHAPTER_OPENING 재발화 방지
         "opening_merged": bool(
             (_store.get("opening_merged") or {}).get(chapter)

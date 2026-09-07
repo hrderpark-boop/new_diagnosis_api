@@ -85,6 +85,17 @@ POST /reports/{sid}/analyze
 - 1단계 판단 확정(2026-09-03): H1 은 교정본 존재 시 재분석 스킵(200), H4 는 정중한 긴 미루기도
   pause, H6 은 비교 차트 컴포넌트 삭제. 모두 승인됨.
 
+## 2-b-2. 관찰 항목 추가 (2026-09-07)
+
+- **STAR 사건 추적 실패**: 조직관리 재주행(세션 1d62f46e)에서 STAR_COMPLETE_NEW_EVENT 턴이
+  여러 번 나갔는데 사건은 1개(star_coverage 0.5, 미완료)만 생성됐다. 이로 인해
+  `events_with_star_70=0` → 무수확 최후통첩·무수확 문구가 성실 응답자에게 나갔다.
+  1-c(2026-09-07)로 무수확은 더 이상 챕터를 종료하지 못하므로 우선순위는 낮춤.
+  M2(CONTRARY_NEEDED 삼킴)와 함께 다음 로그에서 `_handle_event_lifecycle` 의 사건 생성
+  조건(llm_state/event_metadata)을 관찰한다.
+- **복붙 중복 미감지**: `duplicate_suspected` 는 항상 False(미구현), Global Memory 의 사건
+  summary 도 None → 지난 세션 답변 복붙이 시스템·LLM 모두에서 감지되지 않았다. 2단계.
+
 ## 2-c. 조건부 후처리 목록 (2026-09-04 전수 확인 — 2단계 검토 대상)
 
 LLM 응답이 나온 뒤 "조건 X면 덧붙임/교체/무시"로 동작하는 코드. 한 수정이 다른 규칙을
