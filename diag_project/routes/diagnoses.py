@@ -68,6 +68,13 @@ class DiagnosisStartRequest(BaseModel):
     participant_id: uuid.UUID
     template_id: uuid.UUID
     coach_persona_id: Optional[uuid.UUID] = None
+    # 2단계 '새로 시작': True 면 재개 가능한 기존 세션을 abandoned(보관, 삭제 아님)로
+    # 바꾸고 새 세션을 만든다. 기본 False = 기존대로 재개.
+    force_new: bool = False
+
+
+class AbandonRequest(BaseModel):
+    participant_id: uuid.UUID
 
 class ChatMessageRequest(BaseModel):
     session_id: uuid.UUID
@@ -150,6 +157,24 @@ def _resolve_persona(coach_id: uuid.UUID, user_name: str, visit_count: int):
 #   보존 + 재개 가능'인데 과거엔 in_progress/paused 만 재개돼 새 세션이 생기며
 #   원장이 고아가 됐다. aborted(3-Strike)는 재개 불가 — 여기 넣지 않는다.
 RESUMABLE_STATUSES = ("in_progress", "paused", "aborted_disengaged")
+# 2단계 '새로 시작': 리더가 기존 진단을 두고 새로 시작하면 기존 세션은 이 상태로
+# '보관'된다(삭제 아님 — 원장·대화 유지, 리포트 파이프라인 미호출). 재개 대상이
+# 아니므로 RESUMABLE_STATUSES 에 넣지 않는다. analyze 도 이 상태를 덮어쓰지 않는다.
+ABANDONED = "abandoned"
+
+
+def mark_abandoned(sessions) -> int:
+    """재개 가능한 세션 객체들을 abandoned 로 표시하고 개수를 돌려준다(순수, 커밋은 호출자).
+
+    RESUMABLE_STATUSES 가 아닌 세션(completed/aborted 등)은 건드리지 않는다.
+    """
+    n = 0
+    for s in sessions or []:
+        if getattr(s, "status", None) in RESUMABLE_STATUSES:
+            s.status = ABANDONED
+            s.updated_at = datetime.now()
+            n += 1
+    return n
 
 
 @router.get("/active")
@@ -174,6 +199,31 @@ async def get_active_session(
 
 
 # ------------------------------------------------------------------
+# [0-b] '새로 시작' — 재개 가능한 세션을 abandoned 로 보관 (POST /abandon)
+#   코치 선택 화면의 재개 배너에서 확인 팝업을 거친 뒤 호출한다. 삭제가 아니라
+#   상태 전환이므로 원장·대화는 남고, 이후 /start 는 새 세션을 만든다.
+#   (참가자 인증은 (B) 작업에서 다른 참가자 API 와 함께 소유자 검증을 붙인다.)
+# ------------------------------------------------------------------
+@router.post("/abandon")
+async def abandon_resumable_sessions(
+    request: AbandonRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(DiagnosisSession).where(
+        DiagnosisSession.user_id == request.participant_id,
+        DiagnosisSession.status.in_(list(RESUMABLE_STATUSES)),
+    )
+    sessions = (await db.execute(q)).scalars().all()
+    n = mark_abandoned(sessions)
+    for s in sessions:
+        db.add(s)
+    await db.commit()
+    logger.info("🗂️ 새로 시작: participant=%s 세션 %d건 abandoned 보관",
+                request.participant_id, n)
+    return {"abandoned": n}
+
+
+# ------------------------------------------------------------------
 # [1] 진단 세션 시작 (POST /start) - ✅ 이어하기 기능 부활!
 # ------------------------------------------------------------------
 @router.post("/start", status_code=status.HTTP_201_CREATED)
@@ -195,6 +245,18 @@ async def start_diagnosis(
     
     result = await db.execute(existing_query)
     existing_session = result.scalars().first()
+
+    # [Case A-0] '새로 시작'(force_new): 재개 가능한 세션을 전부 abandoned 로 보관하고
+    #   새 세션으로 간다(/abandon 을 못 거친 경로의 안전망 — 같은 결과).
+    if existing_session and request.force_new:
+        _all_res = (await db.execute(existing_query)).scalars().all()
+        _n = mark_abandoned(_all_res)
+        for _s in _all_res:
+            db.add(_s)
+        await db.commit()
+        logger.info("🗂️ force_new: participant=%s 세션 %d건 abandoned → 새 세션",
+                    request.participant_id, _n)
+        existing_session = None
 
     # [Case A] 진행 중인 세션이 있다! -> 이어하기(Resume)
     if existing_session:
@@ -486,9 +548,12 @@ async def _submit_message_phase3a(
     # 1-a2. 🛡️ [무한 루프 차단] 강제 종료(aborted)된 세션도 상태 머신 재진입 금지.
     #   가드가 없으면 후속 입력마다 상태 머신을 다시 돌아 종료 멘트를 반복
     #   생성한다(프론트가 is_terminated 로 입력을 잠그지만 API 레벨 2차 방어).
-    if session.status == "aborted":
+    if session.status in ("aborted", ABANDONED):
         return {
             "coach_response_message": (
+                "이 진단은 새로 시작하면서 보관되었습니다. 코치 선택 화면에서 "
+                "새 진단을 이어가 주세요."
+                if session.status == ABANDONED else
                 "저는 현재 리더님께서 진단을 진행하실 준비가 필요하다고 "
                 "생각됩니다. 진단 준비가 되셨을 때 다시 접속해 주시기 바랍니다. "
                 "그럼 진단은 여기서 종료하겠습니다."
@@ -502,7 +567,7 @@ async def _submit_message_phase3a(
             "next_topic": None,
             "reward": None,
             "is_terminated": True,
-            "session_status": "aborted",
+            "session_status": session.status,
             "_phase3a_metadata": {"guard": "SESSION_ALREADY_ABORTED"},
         }
 

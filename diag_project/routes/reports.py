@@ -378,7 +378,7 @@ async def update_report(
 #   완주(5/5)                → completed (어떤 상태에서든)
 #   미완주 & 보존 상태       → 그대로 (aborted / aborted_disengaged / paused)
 #   미완주 & 그 외           → in_progress (재개 대상)
-_STATUS_PRESERVED_ON_ANALYZE = frozenset({"aborted", "aborted_disengaged", "paused"})
+_STATUS_PRESERVED_ON_ANALYZE = frozenset({"aborted", "aborted_disengaged", "paused", "abandoned"})
 
 
 def protected_human_edited(reports):
