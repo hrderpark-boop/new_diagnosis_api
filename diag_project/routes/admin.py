@@ -412,6 +412,8 @@ async def list_participants(
             "last_at": None, "last_topic": None, "last_session_id": None,
         }
     )
+    # 4(b) 관리자 복원: 참여자별 abandoned(보관) 세션 목록 — [복원] 버튼용
+    abandoned_by_pid: Dict[UUID, List[DiagnosisSession]] = defaultdict(list)
     # 참여자 → 최근 세션 id (대화 원문 모달 연결용)
     if p_ids:
         s_result = await db.execute(
@@ -420,6 +422,8 @@ async def list_participants(
         for s in s_result.scalars().all():
             stat = session_stats[s.user_id]
             stat["total"] += 1
+            if s.status == "abandoned":
+                abandoned_by_pid[s.user_id].append(s)
             if s.status == "completed":
                 stat["completed"] += 1
             if stat["last_at"] is None or (s.created_at and s.created_at > stat["last_at"]):
@@ -451,6 +455,35 @@ async def list_participants(
         for uid, rid in r_result.all():
             report_by_pid[uid] = str(rid)
 
+    # 보관 세션의 메시지 수(관리자가 어느 세션인지 판단하는 근거) — 단일 그룹 쿼리
+    abandoned_ids = [s.id for ss in abandoned_by_pid.values() for s in ss]
+    msg_count_by_sid: Dict[UUID, int] = {}
+    if abandoned_ids:
+        mc = await db.execute(
+            select(ChatMessage.session_id, func.count(ChatMessage.id))
+            .where(ChatMessage.session_id.in_(abandoned_ids))
+            .group_by(ChatMessage.session_id)
+        )
+        msg_count_by_sid = {sid: int(n) for sid, n in mc.all()}
+    from diag_project.routes.diagnoses import _coach_key_from_id
+    from diag_project.data.coaches_persona import COACHES_PERSONA
+
+    def _abandoned_rows(pid: UUID) -> List[Dict[str, Any]]:
+        rows = sorted(abandoned_by_pid.get(pid, []),
+                      key=lambda x: x.updated_at or x.created_at, reverse=True)
+        out = []
+        for x in rows:
+            try:
+                cname = COACHES_PERSONA[_coach_key_from_id(x.coach_id)]["name"]
+            except Exception:
+                cname = "-"
+            out.append({
+                "id": str(x.id), "coach_name": cname, "current_topic": x.current_topic,
+                "created_at": x.created_at, "updated_at": x.updated_at,
+                "message_count": msg_count_by_sid.get(x.id, 0),
+            })
+        return out
+
     cmap = await _company_map(db)
     items = []
     for p in participants:
@@ -480,6 +513,8 @@ async def list_participants(
                     str(stat["last_session_id"]) if stat["last_session_id"] else None
                 ),
                 "report_id": report_by_pid.get(p.id),
+                # 4(b): 보관(abandoned) 세션 — 관리자가 [복원] 으로 되살릴 수 있다
+                "abandoned_sessions": _abandoned_rows(p.id),
             }
         )
 
@@ -490,6 +525,28 @@ async def list_participants(
         page_size=page_size,
         total_pages=max(1, (total + page_size - 1) // page_size),
     )
+
+
+# ===========================================================================
+# 2-a. 세션 복원 (abandoned → in_progress) — 관리자 경로, 인증·회사 격리 필수
+#   참가자가 "잘못 눌렀다, 복원해달라" 고 하면 관리자가 여기서 처리한다(4-b).
+#   상태 전이 표(docs/session_state_transitions.md)의 유일한 복원 경로를 공용 함수로 공유.
+# ===========================================================================
+@router.post("/sessions/{session_id}/restore")
+async def admin_restore_session(
+    session_id: UUID,
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    s = await db.get(DiagnosisSession, session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    p = await db.get(Participant, s.user_id)
+    ctx.assert_can_access_company(p.company_id if p else None)
+    from diag_project.routes.diagnoses import restore_session_by_id
+    result = await restore_session_by_id(db, session_id)
+    logger.info("♻️ 관리자 복원: admin=%s session=%s", getattr(ctx.admin, "email", "?"), session_id)
+    return result
 
 
 # ===========================================================================

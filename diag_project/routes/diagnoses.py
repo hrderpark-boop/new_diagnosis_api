@@ -79,6 +79,12 @@ class DiagnosisStartRequest(BaseModel):
 class AbandonRequest(BaseModel):
     participant_id: uuid.UUID
 
+
+class RestoreRequest(BaseModel):
+    """4(c) 복원: abandoned 세션을 다시 in_progress 로(상태 전이 표의 '복원 경로').
+    (참가자 경로는 파일럿 범위라 인증 없음 — (B) 에서 소유자 검증. 관리자 경로는 require_admin.)"""
+    session_id: uuid.UUID
+
 class ChatMessageRequest(BaseModel):
     session_id: uuid.UUID
     diagnosis_id: Optional[uuid.UUID] = None 
@@ -180,6 +186,68 @@ def mark_abandoned(sessions) -> int:
     return n
 
 
+# ── 세션 상태 전이 표 — docs/session_state_transitions.md 와 항상 동일하게 유지 ──
+#   in_progress ⇄ paused                      (휴식 / 재개: submit_message)
+#   in_progress → completed                    (분석 완료: reports.analyze)
+#   in_progress → aborted                      (3-Strike 강제 종료 — 종점, 재개·복원 불가)
+#   in_progress → aborted_disengaged → in_progress   (참여 이탈 중단 / 재개: submit_message)
+#   in_progress·paused·aborted_disengaged → abandoned   (새로 시작: /abandon, /start force_new)
+#   abandoned → in_progress                    (복원 — 이 경로만: /restore, /admin/sessions/{id}/restore)
+#   이 표에 없는 전이는 만들지 않는다(빈틈 방지).
+
+
+def apply_restore(target, others) -> dict:
+    """4(c) 복원(순수, 커밋은 호출자).
+
+    - target: abandoned → in_progress. paused/aborted_disengaged 도 in_progress 로.
+      이미 in_progress 면 멱등(두 번 복원해도 꼬이지 않음).
+    - others: 같은 참가자의 다른 재개 가능 세션 → abandoned (진행 중인 새 세션은 보관).
+    - completed / aborted 는 복원 불가 → ValueError (호출자가 409).
+    - 원장·메시지·이벤트 무변경. 상태만 바뀐다.
+    """
+    st = getattr(target, "status", None)
+    if st not in (ABANDONED,) + tuple(RESUMABLE_STATUSES):
+        raise ValueError(f"복원할 수 없는 상태입니다: {st}")
+    already = st == "in_progress"
+    target.status = "in_progress"
+    target.updated_at = datetime.now()
+    tid = getattr(target, "id", None)
+    n = mark_abandoned([o for o in (others or []) if getattr(o, "id", None) != tid])
+    return {"restored": True, "already_in_progress": already, "abandoned_others": n}
+
+
+async def restore_session_by_id(db: AsyncSession, session_id: uuid.UUID) -> dict:
+    """복원 공용 처리 — 참가자 경로(/restore)와 관리자 경로(/admin/sessions/{id}/restore)가 함께 쓴다."""
+    s = await db.get(DiagnosisSession, session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    others_q = select(DiagnosisSession).where(
+        DiagnosisSession.user_id == s.user_id,
+        DiagnosisSession.status.in_(list(RESUMABLE_STATUSES)),
+        DiagnosisSession.id != s.id,
+    )
+    others = (await db.execute(others_q)).scalars().all()
+    try:
+        r = apply_restore(s, others)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    db.add(s)
+    for o in others:
+        db.add(o)
+    await db.commit()
+    key = _coach_key_from_id(s.coach_id)
+    logger.info("♻️ 복원: session=%s participant=%s 다른 진행 세션 %d건 abandoned",
+                s.id, s.user_id, r["abandoned_others"])
+    return {
+        **r,
+        "session_id": str(s.id),
+        "participant_id": str(s.user_id),
+        "status": s.status,
+        "coach_id": str(s.coach_id),
+        "coach_name": COACHES_PERSONA[key]["name"],
+    }
+
+
 @router.get("/active")
 async def get_active_session(
     participant_id: uuid.UUID,
@@ -216,14 +284,38 @@ async def abandon_resumable_sessions(
         DiagnosisSession.user_id == request.participant_id,
         DiagnosisSession.status.in_(list(RESUMABLE_STATUSES)),
     )
-    sessions = (await db.execute(q)).scalars().all()
+    sessions = (await db.execute(q.order_by(desc(DiagnosisSession.created_at)))).scalars().all()
     n = mark_abandoned(sessions)
     for s in sessions:
         db.add(s)
     await db.commit()
     logger.info("🗂️ 새로 시작: participant=%s 세션 %d건 abandoned 보관",
                 request.participant_id, n)
-    return {"abandoned": n}
+    # 4(a) 즉시 되돌리기용: 방금 보관한 세션(최신 순)과 코치를 돌려준다.
+    return {
+        "abandoned": n,
+        "sessions": [
+            {
+                "session_id": str(s.id),
+                "coach_id": str(s.coach_id),
+                "coach_name": COACHES_PERSONA[_coach_key_from_id(s.coach_id)]["name"],
+            }
+            for s in sessions
+        ],
+    }
+
+
+# ------------------------------------------------------------------
+# [0-c] 복원 — abandoned → in_progress (POST /restore)  ※ 상태 전이 표의 유일한 복원 경로
+#   4(a) 즉시 되돌리기(자가진단 상단 배너)가 호출한다. 같은 참가자의 다른 진행 세션
+#   (방금 만든 빈 세션 등)은 abandoned 로. 참가자 인증은 (B) 에서 — 파일럿 범위 감수.
+# ------------------------------------------------------------------
+@router.post("/restore")
+async def restore_abandoned_session(
+    request: RestoreRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    return await restore_session_by_id(db, request.session_id)
 
 
 # ------------------------------------------------------------------
