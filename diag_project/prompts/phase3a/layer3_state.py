@@ -105,11 +105,52 @@ def format_turn_state_for_llm(state: dict) -> str:
             "아래 가이드의 예시 문장은 '내용의 결'만 참고하고, 문장 길이·종결어미·"
             "호응 방식은 시스템 프롬프트의 【말투 프로필】대로 바꿔 쓰세요.\n\n"
         )
-    style_block = format_style_constraints(state.get("style_constraints"))
+    style_block = format_style_constraints(
+        state.get("style_constraints"), _persona.get("name")
+    )
     if style_block:
         style_block += "\n\n"
 
-    return f"""{global_memory_block}{persona_block}{style_block}[Turn State]
+    # 🎯 결과(R) 탐침 강제(시스템 계산, 2026-09-14): 현재 하위역량의 마지막 프로브 턴인데
+    #   아직 결과를 묻지 않았다. 3턴 상한은 그대로 — 묻지도 않고 넘어가는 것만 막는다.
+    force_block = ""
+    if state.get("force_result_probe"):
+        _tgt = state.get("current_target_name") or "현재 하위역량"
+        force_block = (
+            "[🎯 결과 탐침 강제 — 시스템 계산, 반드시 준수]\n"
+            f"- '{_tgt}' 에서 지금까지 사건의 상황·행동만 들었고 **결과를 아직 묻지 않았습니다**. "
+            "이번 턴이 이 하위역량의 마지막 질문입니다.\n"
+            "- 이번 턴은 반드시 **현재 사건의 결과(R)** 를 묻습니다 — '그래서 그 결과가 어떻게 "
+            "되었는지', '팀은 어떻게 반응했는지', '그 일에서 무엇을 배웠는지' 중 하나로. "
+            "구체화·반례·새 사건 청하기·다른 하위역량 앵커는 이번 턴에 금지.\n"
+            "- 결과가 좋지 않았어도 그대로 듣습니다. 답이 약해도 다음 턴에 시스템이 넘어갑니다.\n\n"
+        )
+
+    # 🔁 중복 지적 대응(시스템 계산, 2026-09-14): "이 질문은 아까 한 것 같은데요".
+    #   인정만 하고 옛 사건으로 되돌아가지 말고, 인정 + 이번엔 무엇을 다르게 보려는지
+    #   한 줄 + 현재 타겟 관점의 질문. 이 안내가 오히려 대상자를 편하게 한다.
+    dup_block = ""
+    if instruction == "META_QUESTION_FROM_USER":
+        from diag_project.services.instruction_decider import detect_duplicate_claim
+        if detect_duplicate_claim(state.get("last_user_response")):
+            _tgt = state.get("current_target_name")
+            _tgt_line = (
+                f"- 지금 보려는 관점은 '{_tgt}' 입니다. 앞선 사건으로 돌아가 같은 것을 다시 묻지 "
+                "말고, 이 관점에서 '이번엔 다른 장면·다른 행동'을 청하세요.\n"
+                if _tgt else
+                "- 앞선 사건으로 돌아가 같은 것을 다시 묻지 말고, 이번엔 다른 장면·다른 행동을 청하세요.\n"
+            )
+            dup_block = (
+                "[🔁 중복 지적 대응 — 시스템 계산, 반드시 준수]\n"
+                "- 리더님이 '아까 한 질문 같다'고 지적했습니다. **인정 한 마디 + 이번엔 무엇을 "
+                "다르게 보려는지 한 줄 설명 + 질문** 세 요소를 한 응답에 모두 담으세요. 인정만 "
+                "하고 끝내는 것('네, 유사한 질문이었습니다.')은 금지.\n"
+                "- 예(결만 참고): '맞습니다. 앞서는 설득 과정을 여쭀고, 이번엔 그때 리더님이 직접 "
+                "하신 행동이 궁금해서 다시 여쭀습니다. 그 자리에서 리더님은 무엇을 하셨나요?'\n"
+                + _tgt_line + "\n"
+            )
+
+    return f"""{global_memory_block}{persona_block}{style_block}{force_block}{dup_block}[Turn State]
 {state_text}
 
 [Instruction for this turn]
@@ -1023,6 +1064,12 @@ def _get_instruction_guide(
             "다시 한번 여쭤봐도 될까요?'\n\n"
             "**메타 질문 유형 ('진단이 뭐예요?', '얼마나 걸려요?'):**\n"
             "짧게 직접 답변 후 부드럽게 흐름 복귀.\n\n"
+            "**중복 지적 유형 ('이 질문 아까 한 것 같은데요', '같은 질문이네요'):**\n"
+            "1. 인정 한 마디('맞습니다.'). 사과문 남발 X.\n"
+            "2. 이번엔 무엇을 다르게 보려는지 한 줄로 설명 — 앞서 물은 것과 지금 물으려는 것의 "
+            "차이(과정 vs 행동, 사건 vs 결과, 다른 하위역량 관점 등).\n"
+            "3. 그 관점의 질문을 바로 던진다. 인정만 하고 끝내거나('네, 유사한 질문이었습니다.') "
+            "앞선 사건으로 되돌아가 같은 것을 다시 묻지 않는다.\n\n"
             "원칙: 사과 먼저, 강행 금지, 리더님 주도로 재정렬."
         ),
         "FIRST_TURN_AVOIDANCE": (

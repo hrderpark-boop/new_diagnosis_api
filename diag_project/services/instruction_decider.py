@@ -330,12 +330,33 @@ OBJECTION_KEYWORDS = [
     "질문이 이상",
 ]
 
+# 🔁 중복 지적(2026-09-14): "이 질문은 아까 한 것 같은데요" 류 — 항의로 잡아
+#   META_QUESTION_FROM_USER 로 보내되(프로브 턴 소비 X), 가이드에서 '인정 + 이번엔
+#   무엇을 다르게 보려는지 한 줄' 을 요구한다. 기존 "네, 유사한 질문이었습니다." 처럼
+#   인정만 하고 옛 사건으로 되돌아가던 응답을 막는다.
+DUPLICATE_CLAIM_KEYWORDS = [
+    "아까 한 것 같", "아까 한것 같", "아까 했던 질문", "아까 물어", "아까 물으", "아까 질문",
+    "이미 물어", "이미 물으", "전에 물어", "전에 물으", "앞에서 물", "앞서 물어",
+    "비슷한 질문", "같은 질문", "같은 걸 물", "같은 거 물", "질문이 반복", "반복되는 질문",
+    "또 묻", "또 물어", "방금 물어", "방금 물으", "이미 대답", "이미 답했", "아까 대답",
+    "아까 답했", "아까 말씀드렸", "아까 말씀 드렸", "이미 말씀드렸",
+]
+OBJECTION_KEYWORDS += [k for k in DUPLICATE_CLAIM_KEYWORDS if k not in OBJECTION_KEYWORDS]
+
 
 def detect_user_objection(user_response: str) -> bool:
     """사용자가 진행 흐름에 항의하는지 감지."""
     if not user_response:
         return False
     return any(kw in user_response.strip() for kw in OBJECTION_KEYWORDS)
+
+
+def detect_duplicate_claim(user_response: str | None) -> bool:
+    """사용자가 '이 질문 아까 했다/같은 질문이다' 고 지적하는가(중복 지적)."""
+    if not user_response:
+        return False
+    t = user_response.strip()
+    return any(kw in t for kw in DUPLICATE_CLAIM_KEYWORDS)
 
 
 def decide_instruction(state: dict) -> InstructionType:
@@ -1044,8 +1065,18 @@ async def build_turn_state(
         .limit(3)
     )
     _recent_coach = [c or "" for c in _recent_coach_res.scalars().all()]
+    # 복창 판정용: 각 코치 발화 '직전'의 사용자 발화(최신 순). 이번 턴 user 메시지는
+    #   아직 저장 전이므로 최신 3개가 직전 코치 턴들과 1:1 로 짝지어진다.
+    _recent_user_res = await db.execute(
+        select(ChatMessage.content)
+        .where(ChatMessage.session_id == session_id)
+        .where(ChatMessage.role == MessageRole.USER)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(3)
+    )
+    _recent_user = [c or "" for c in _recent_user_res.scalars().all()]
     from diag_project.services.style_tracker import compute_style_constraints
-    style_constraints = compute_style_constraints(_recent_coach)
+    style_constraints = compute_style_constraints(_recent_coach, _recent_user)
 
     # 직전 코치(assistant) 턴의 instruction — 2단 폴백이 '한 번만' 발동하도록.
     _last_instr_res = await db.execute(
@@ -1157,6 +1188,10 @@ async def build_turn_state(
         "unexplored_subcompetencies": unexplored_subcompetencies,
         "asked_in_chapter": asked_in_chapter,  # T2: 실시간 탐색(넓이) 지표
         "turns_on_current_target": turns_on_current_target,  # #5 최소 1회 심화
+        # 🔁 중복 지적 대응·🎯 R 탐침 강제 블록용: 현재 타겟 하위역량 이름(원장)
+        "current_target_name": (
+            (_store.get("current_target") or {}).get(chapter) if chapter else None
+        ),
         "style_constraints": style_constraints,  # #6 문체 반복 제약(시스템 계산)
         "recent_engaged_streak": recent_engaged_streak,  # 1-c 최후통첩 발동 억제
         # #2: ALIGN 턴에 첫 앵커가 이미 붙었는가(원장 표식) → CHAPTER_OPENING 재발화 방지

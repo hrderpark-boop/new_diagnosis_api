@@ -4,7 +4,13 @@
 LLM 은 스스로 턴을 세지 못하므로 백엔드가 최근 3개 코치 발화를 보고
   · '네, ~하셨군요/말씀이시군요' 시작이 직전 턴에 있었으면 → 이번 턴 금지
   · 요약 되받기가 최근 2턴 안에 있었으면 → 이번 턴 금지(3턴에 1번 이하)
-를 순수 함수로 계산한다. 시스템 템플릿 턴(앵커·전환 템플릿)도 코치 발화로 세지만
+를 순수 함수로 계산한다.
+
+2026-09-14 확장: '요약 되받기' 판정을 "네로 시작"이 아니라 **직전 사용자 발화의
+명사구를 그대로 복창하는 문장**으로 넓혔다. Jessica 가 "네"를 빼고 "~하셨습니다"
+평서문으로 같은 패턴을 유지해 제약을 우회했기 때문. 판정 = 표지어(_RECAP) OR
+평서문 요약 종결(_PLAIN_RECAP_END) OR 사용자 어절 복창(echoes_user).
+금지 턴의 대안은 페르소나별: Ella 는 감정 한 줄, Jessica 는 관찰·통찰 한 줄. 시스템 템플릿 턴(앵커·전환 템플릿)도 코치 발화로 세지만
 그 문장들은 패턴에 걸리지 않게 작성돼 있어 영향이 없다.
 """
 import re
@@ -17,6 +23,55 @@ _RECAP = re.compile(
     r"(하셨군요|말씀이시군요|이시군요|셨네요|하셨네요|말씀하신|말씀해 ?주신|"
     r"들려주신|들으니|정리하면|정리해 ?보면|요약하면|~?라는 말씀)"
 )
+# 평서문 요약: 첫 문장이 질문이 아닌 채 '~하셨습니다/~셨죠' 로 끝남(Jessica 우회형).
+_PLAIN_RECAP_END = re.compile(r"(셨습니다|셨죠|셨고요|이었습니다|였습니다|확인되었습니다)[.!…]?\s*$")
+# 사용자 어절에서 조사를 떼어 '내용 어절'만 남긴다(복창 판정용).
+_JOSA_RE = re.compile(
+    r"(에서는|으로는|에게는|한테는|까지는|부터는|이라도|라도|에서|으로|에게|한테|처럼|보다|"
+    r"부터|까지|이나|든지|은|는|이|가|을|를|의|에|로|과|와|도|만|께|나|요)$"
+)
+# 동사 어미를 떼어 어간만 남긴다('올리라고'↔'올리도록', '분석하기'↔'분석하셨').
+_VERB_END = re.compile(
+    r"(하겠다고|하라고|하도록|하면서|했습니다|했어요|했었|하기|했죠|했고|하며|해서|하고|"
+    r"라고|도록|면서|했|죠|한|할|함)$"
+)
+_STOP = {
+    "그래서", "그런데", "그리고", "하지만", "그러니까", "그러면", "저는", "제가", "저희", "우리",
+    "그냥", "정도", "같아요", "같은", "같은데", "때가", "있어요", "있었어요", "했어요", "했죠",
+    "그때", "이런", "저런", "그런", "무슨", "어떤", "조금", "많이", "너무", "다시", "우선",
+    "일단", "아니", "근데", "사실", "제일", "가장", "그거", "이거", "그게", "이게", "뭐랄까",
+    "느낌", "생각", "부분", "경우", "때문", "정말", "진짜", "약간", "결국", "역시", "물론",
+    "리더님", "팀원", "팀원들",
+}
+
+
+def _content_chunks(text: str) -> list[str]:
+    """사용자 발화 → 조사 뗀 2자 이상 내용 어절 목록."""
+    out = []
+    for tok in re.split(r"[\s,.!?…~\"'()\[\]/·—-]+", text or ""):
+        tok = tok.strip()
+        if len(tok) < 2:
+            continue
+        base = _JOSA_RE.sub("", tok)
+        stem = _VERB_END.sub("", base)
+        if len(stem) >= 2:
+            base = stem
+        if len(base) >= 2 and base not in _STOP:
+            out.append(base)
+    return out
+
+
+def echoes_user(coach_text: str, user_text: str | None) -> bool:
+    """코치 첫 문장이 직전 사용자 발화의 명사구를 그대로 복창하는가.
+
+    사용자 내용 어절이 코치 첫 문장에 2개 이상 그대로 들어 있거나, 5자 이상 어절이
+    1개라도 그대로 들어 있으면 복창. (질문문이면 복창으로 보지 않는다 — 되묻기는 허용.)
+    """
+    fs = _first_sentence(coach_text)
+    if not fs or not user_text or fs.rstrip().endswith("?"):
+        return False
+    hits = {c for c in set(_content_chunks(user_text)) if c in fs}
+    return len(hits) >= 2 or any(len(c) >= 5 for c in hits)
 
 
 def _first_sentence(text: str) -> str:
@@ -37,25 +92,44 @@ def starts_with_ne_recap(text: str) -> bool:
 
 
 def is_recap_opening(text: str) -> bool:
-    """첫 문장이 '요약 되받기'인가(리더님 답변을 다시 정리해 주는 문장)."""
+    """첫 문장이 '요약 되받기'인가(리더님 답변을 다시 정리해 주는 문장).
+
+    표지어('~하셨군요/말씀하신…') 또는 질문 아닌 평서문 요약 종결('~하셨습니다.').
+    """
     fs = _first_sentence(text)
-    return bool(fs) and bool(_RECAP.search(fs))
+    if not fs:
+        return False
+    if fs.rstrip().endswith("?"):
+        return bool(_RECAP.search(fs))
+    return bool(_RECAP.search(fs)) or bool(_PLAIN_RECAP_END.search(fs))
 
 
-def compute_style_constraints(recent_coach: list[str]) -> dict:
+def is_recap_turn(coach_text: str, user_text: str | None = None) -> bool:
+    """이 코치 턴이 '요약 되받기'였는가 — 표지어 OR 직전 사용자 발화 복창."""
+    return is_recap_opening(coach_text) or echoes_user(coach_text, user_text)
+
+
+def compute_style_constraints(
+    recent_coach: list[str], recent_user: list[str] | None = None,
+) -> dict:
     """최근 코치 발화(최신 순, 최대 3개)로 이번 턴 문체 제약을 계산한다.
 
+    recent_user: 각 코치 발화 '직전'의 사용자 발화(같은 순서, 최신 순). 복창 판정용.
     반환:
       recent_openers   : 최근 발화 첫 문장(최신 순, 로그·프롬프트 표시용)
       ne_recap_prev    : 직전 발화가 '네, ~하셨군요' 시작이었는가
-      recap_count_2    : 최근 2턴 중 요약 되받기 수
+      recap_count_2    : 최근 2턴 중 요약 되받기(표지어·평서문 요약·복창) 수
       forbid_ne_opening: 이번 턴 '네, ~하셨군요' 시작 금지
       forbid_recap     : 이번 턴 요약 되받기 금지(3턴에 1번 이하)
     """
     recent = [r or "" for r in (recent_coach or [])][:3]
+    users = [u or "" for u in (recent_user or [])][:3]
     openers = [_first_sentence(r) for r in recent]
     ne_prev = bool(recent) and starts_with_ne_recap(recent[0])
-    recap_2 = sum(1 for r in recent[:2] if is_recap_opening(r))
+    recap_2 = sum(
+        1 for i, r in enumerate(recent[:2])
+        if is_recap_turn(r, users[i] if i < len(users) else "")
+    )
     return {
         "recent_openers": openers,
         "ne_recap_prev": ne_prev,
@@ -65,7 +139,20 @@ def compute_style_constraints(recent_coach: list[str]) -> dict:
     }
 
 
-def format_style_constraints(sc: dict | None) -> str:
+def _persona_reaction_hint(persona_name: str | None) -> str:
+    """금지 턴의 대안 — 페르소나별 '한 줄 반응' 결. 앵무새 복창은 모두 금지."""
+    n = (persona_name or "").strip()
+    if n.startswith("Ella"):
+        return ("Ella 는 감정 한 줄로 받습니다(예: '그 순간 마음이 무거우셨겠어요.'). ")
+    if n.startswith("Jessica"):
+        return ("Jessica 는 관찰·통찰 한 줄로 받습니다(예: '그 판단이 쉽지 않으셨겠네요.', "
+                "'기준을 먼저 세우신 점이 눈에 띕니다.'). 감탄·위로 없이도 이 정도는 페르소나 안입니다. ")
+    if n:
+        return "페르소나의 결로 해석·공감 한 줄을 붙이거나 바로 질문하세요. "
+    return ""
+
+
+def format_style_constraints(sc: dict | None, persona_name: str | None = None) -> str:
     """프롬프트 삽입용 텍스트. 제약이 없으면 빈 문자열."""
     if not sc:
         return ""
@@ -78,9 +165,11 @@ def format_style_constraints(sc: dict | None) -> str:
         )
     if sc.get("forbid_recap"):
         lines.append(
-            "- 최근 2턴 안에 리더님 답변을 요약해 되받은 문장이 있었습니다. **이번 "
-            "턴은 요약 되받기 금지** — 답변을 다시 정리하지 말고 바로 다음 질문(또는 "
-            "짧은 반응 + 질문)으로."
+            "- 최근 2턴 안에 리더님 답변을 요약하거나 리더님이 쓴 명사구를 그대로 복창한 "
+            "문장이 있었습니다. **이번 턴은 요약 되받기 금지(복창 포함)** — '네'를 빼고 '~하셨습니다' "
+            "평서문으로 바꿔도 같은 패턴입니다. 답변을 다시 정리하지 말고 (a) 바로 다음 "
+            "질문으로 들어가거나 (b) 한 줄 해석·공감을 붙인 뒤 질문하세요. "
+            + _persona_reaction_hint(persona_name)
         )
     if not lines:
         return ""

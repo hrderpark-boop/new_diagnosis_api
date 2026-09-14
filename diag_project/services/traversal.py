@@ -13,6 +13,7 @@ session.self_assessment_data 에 영속화한다:
 """
 
 import math
+import re
 
 MAX_TURNS_PER_SUB = 3          # 앵커 1 + 구체화 폴백 1 + 심화 1
 CHAPTER_TURN_SLACK = 4         # 챕터 상한 = min_explored*3 + 4
@@ -105,7 +106,7 @@ def progress_stalled(turns_since_asked_increase: int) -> bool:
 
 
 # ── asked 원장 조작 (순수) — 호출자가 반환값을 영속화한다 ──
-LEDGER_KEYS = ("asked_subs", "current_target", "turns_on_target")
+LEDGER_KEYS = ("asked_subs", "current_target", "turns_on_target", "result_probed")
 
 
 def snapshot_ledger(store: dict) -> dict:
@@ -184,8 +185,52 @@ def apply_probe_turn(
             #   → 넓이 우선: 깊이(STAR)가 연속 실패해도 3턴이면 다음 하위역량으로
             #     전진해 커버리지를 확보한다(커버리지 > 깊이).
             store.setdefault("turns_on_target", {})[chapter] = 1
+            # 🎯 새 타겟에서는 아직 결과(R)를 묻지 않았다 — R 탐침 강제 판정용 리셋.
+            store.setdefault("result_probed", {})[chapter] = False
             cur = target
         # target 이 None(전량 탐색)이면 현재 타겟 유지
     else:
         store.setdefault("turns_on_target", {})[chapter] = turns + 1
     return store, cur
+
+
+# ── 🎯 결과(R) 탐침 강제 (2026-09-14) ──
+#   문제: 하위역량당 3턴 상한 때문에 "그래서 어떻게 됐나"를 묻지도 않고 다음 앵커로
+#   넘어갔다(kjpark 세션: 전략적 사고 T8~T10 → 결과 탐침 없이 T11 전진). 3턴 상한은
+#   유지하되, 현재 타겟의 '마지막 프로브 턴'(turns == 상한)에 아직 R 을 묻지 않았으면
+#   그 턴을 결과 탐침으로 고정한다. R 을 물었는데 답이 약하면 다음 턴에 그대로 전진.
+#   판정은 백엔드 결정론: LLM 자기보고(probe_type MEASUREMENT) 또는 코치 문장 표지.
+_RESULT_PROBE_RE = re.compile(
+    r"(결과|어떻게\s*(됐|되었|되셨|됐었|되었었)|어떻게\s*반응|반응(은|이|을)|"
+    r"성과(는|가|를|로)|달라(진|졌)|변화(가|는|를)|효과(는|가|를)|"
+    r"그\s*(뒤|후|이후)|어떤\s*영향|배우(신|셨|게)|배운\s*(점|것|게)|얻으신|얻은\s*(것|점)|"
+    r"남(은|긴)\s*(것|점|교훈))"
+)
+
+
+def is_result_probe_text(text: str | None) -> bool:
+    """코치 발화가 사건의 결과·반응·배움을 묻는 문장 표지를 담는가."""
+    return bool(text) and bool(_RESULT_PROBE_RE.search(text))
+
+
+def result_probed(store: dict, chapter: str) -> bool:
+    return bool(((store or {}).get("result_probed") or {}).get(chapter, False))
+
+
+def mark_result_probed(store: dict, chapter: str) -> dict:
+    """이번 코치 턴이 R 을 물었다 — 현재 타겟에 기록(호출자가 영속화)."""
+    store = dict(store or {})
+    store.setdefault("result_probed", {})[chapter] = True
+    return store
+
+
+def needs_result_probe(
+    store: dict, chapter: str, max_turns_per_sub: int = MAX_TURNS_PER_SUB,
+) -> bool:
+    """이번 턴이 현재 타겟의 마지막 프로브 턴(turns ≥ 상한)인데 아직 R 을 안 물었는가.
+
+    apply_probe_turn 이 turns 를 올린 '뒤'에 호출한다. 전량 탐색 후 타겟이 유지되는
+    경우(turns 가 상한에 머묾)에도 R 을 한 번 물을 때까지만 True.
+    """
+    turns = int(((store or {}).get("turns_on_target") or {}).get(chapter, 0))
+    return turns >= max_turns_per_sub and not result_probed(store, chapter)

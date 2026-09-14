@@ -49,6 +49,9 @@ from diag_project.services.intro_messages import (
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
+from diag_project.services.traversal import (
+    advanced_to_new_target, is_result_probe_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -712,6 +715,7 @@ async def _submit_message_phase3a(
         "COMPETENCY_ALIGN",
     }
     current_target_sub = None
+    _cur_before = None          # 프로브 스텝 '이전' 타겟(프로브 턴이 아니면 None 유지)
     # H5: LLM 호출 실패 시 이 턴의 원장 전진을 되돌리기 위한 스냅샷(프로브 턴만).
     _ledger_snapshot = None
     if chapter and instruction_used in _PROBE_INSTR:
@@ -750,12 +754,36 @@ async def _submit_message_phase3a(
             )
             instruction_used = "STAR_COMPLETE_NEW_EVENT"
             state["instruction_for_this_turn"] = "STAR_COMPLETE_NEW_EVENT"
+        # 🎯 R 탐침 강제(2026-09-14): 이 하위역량의 마지막 프로브 턴(turns==상한)인데 아직
+        #   결과(R)를 묻지 않았다면 이번 턴을 결과 탐침으로 고정한다. 3턴 상한은 그대로 —
+        #   '묻지도 않고' 다음 앵커로 넘어가는 것만 막는다(답이 약해도 다음 턴엔 전진).
+        #   앵커(전진) 턴·특수 처리(회피·부재 등) 턴은 대상이 아니다.
+        from diag_project.services.traversal import needs_result_probe
+        _target_advanced_now = (
+            _cur_before is None
+            or advanced_to_new_target(_cur_before, current_target_sub)
+        )
+        _force_r = (
+            not _target_advanced_now
+            and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE")
+            and needs_result_probe(session.self_assessment_data, chapter)
+        )
+        state["force_result_probe"] = _force_r
+        if _force_r and instruction_used != "STAR_INCOMPLETE":
+            logger.info(
+                "🎯 R 탐침 강제: [%s] target=%s turns=%d instr %s→STAR_INCOMPLETE",
+                chapter, current_target_sub,
+                (session.self_assessment_data.get("turns_on_target") or {}).get(chapter, 0),
+                instruction_used,
+            )
+            instruction_used = "STAR_INCOMPLETE"
+            state["instruction_for_this_turn"] = "STAR_INCOMPLETE"
         logger.info(
-            "🧭 T2 타겟: [%s] target=%s asked=%d turns=%d instr=%s",
+            "🧭 T2 타겟: [%s] target=%s asked=%d turns=%d instr=%s force_R=%s",
             chapter, current_target_sub,
             len(asked_for_chapter(session.self_assessment_data, chapter)),
             (session.self_assessment_data.get("turns_on_target") or {}).get(chapter, 0),
-            instruction_used,
+            instruction_used, _force_r,
         )
     state["current_target_sub"] = current_target_sub
     _turn_index = (
@@ -1342,6 +1370,23 @@ async def _submit_message_phase3a(
         ai_msg_chapter = _seamless_next_chapter or chapter
     else:
         ai_msg_chapter = None if is_pre_diagnosis else chapter
+
+    # 🎯 R 탐침 기록(2026-09-14): 이 코치 턴이 결과를 물었으면(LLM 자기보고 MEASUREMENT
+    #   또는 문장 표지) 현재 타겟의 result_probed=True. 앵커(전진) 턴·LLM 실패 턴은 제외
+    #   (앵커 문장의 '결과' 표현이 새 타겟의 R 로 오기록되지 않게). 커밋은 아래 ai_msg 와 함께.
+    if (chapter and not _llm_error and current_target_sub
+            and instruction_used in _PROBE_INSTR
+            and not (_cur_before is None
+                     or advanced_to_new_target(_cur_before, current_target_sub))
+            and (probe_type_used == "MEASUREMENT" or is_result_probe_text(clean_reply))):
+        from diag_project.services.traversal import mark_result_probed
+        from sqlalchemy.orm.attributes import flag_modified as _flag_mod_r
+        session.self_assessment_data = mark_result_probed(
+            session.self_assessment_data, chapter
+        )
+        _flag_mod_r(session, "self_assessment_data")
+        logger.info("🎯 R 탐침 기록: [%s] target=%s probe_type=%s",
+                    chapter, current_target_sub, probe_type_used)
 
     ai_msg = ChatMessage(
         session_id=session.id,
