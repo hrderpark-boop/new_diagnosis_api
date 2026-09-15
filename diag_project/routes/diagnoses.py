@@ -1405,6 +1405,50 @@ async def _submit_message_phase3a(
     #   마커를 프론트 전달 직전에 한 번 더 완벽 제거.
     clean_reply = _MARKER_RE.sub("", clean_reply).strip()
 
+    # 8-h. 느낌표 상한(2026-09-15): 페르소나별 상한(Michael 1·안내턴 0, 나머지 0)을 백엔드가 센다.
+    #   초과 → 재생성 1회(같은 프롬프트 + 상한 지시) → 그래도 초과면 초과분을 마침표로 치환.
+    #   시스템 템플릿 턴(system_override_text)은 재생성 없이 치환만(공용 템플릿의 '!' 가
+    #   상한 0 인 코치에게 나가지 않게).
+    if not _llm_error:
+        from diag_project.services.style_tracker import (
+            count_exclamations, enforce_exclamation_cap, exclamation_cap,
+        )
+        _ex_cap = exclamation_cap(
+            (state.get("coach_persona") or {}).get("name"), instruction_used
+        )
+        _ex_n = count_exclamations(clean_reply)
+        if _ex_n > _ex_cap and system_override_text is not None:
+            clean_reply, _ = enforce_exclamation_cap(clean_reply, _ex_cap)
+            logger.info("❗ 템플릿 턴 느낌표 치환: %d → %d (instr=%s)",
+                        _ex_n, count_exclamations(clean_reply), instruction_used)
+        elif _ex_n > _ex_cap:
+            logger.info("❗ 느낌표 초과: %d > 상한 %d (instr=%s) → 재생성 1회",
+                        _ex_n, _ex_cap, instruction_used)
+            _ex_note = (
+                f"\n\n🚨 [시스템 — 재생성 지시] 방금 만든 응답에 느낌표(!)가 {_ex_n}개였습니다. "
+                f"이번 응답은 느낌표 **최대 {_ex_cap}개**로, 내용·질문은 그대로 두고 문장 종결만 "
+                "마침표로 바꿔 다시 쓰세요. 에너지는 단어로 냅니다."
+            )
+            try:
+                _ex_regen = await llm.generate_phase3a_interaction(
+                    system_prompt=system_prompt,
+                    chapter_context=chapter_context,
+                    turn_state_text=turn_state_text + _ex_note,
+                    compressed_history=compressed_history,
+                    user_message=request.content,
+                    light_mode=True,
+                )
+                _ex_reply = _MARKER_RE.sub("", _ex_regen.get("reply") or "").strip()
+            except Exception as _e:
+                logger.error("❗ 느낌표 재생성 실패: %s", _e)
+                _ex_reply = ""
+            if _ex_reply and count_exclamations(_ex_reply) <= _ex_cap:
+                clean_reply = _ex_reply
+            else:
+                _src = _ex_reply if (_ex_reply and count_exclamations(_ex_reply) < _ex_n) else clean_reply
+                clean_reply, _before = enforce_exclamation_cap(_src, _ex_cap)
+                logger.info("❗ 느낌표 치환: %d → %d", _before, count_exclamations(clean_reply))
+
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     probe_type_used = llm_state.get("probe_type_used")
 

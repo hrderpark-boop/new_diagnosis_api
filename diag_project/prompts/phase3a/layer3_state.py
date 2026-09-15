@@ -106,7 +106,7 @@ def format_turn_state_for_llm(state: dict) -> str:
             "호응 방식은 시스템 프롬프트의 【말투 프로필】대로 바꿔 쓰세요.\n\n"
         )
     style_block = format_style_constraints(
-        state.get("style_constraints"), _persona.get("name")
+        state.get("style_constraints"), _persona.get("name"), instruction
     )
     if style_block:
         style_block += "\n\n"

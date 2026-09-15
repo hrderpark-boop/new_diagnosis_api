@@ -4,6 +4,11 @@ API 0콜: /analyze 로 이미 저장된 리포트(DiagnosisReport.scores)와 세
 DB 에서 읽어 집계만 한다. 참가자 세션이 끝난 뒤 실행한다.
 
 용법: python tools/pilot_report.py <email_like> [out.json]
+      python tools/pilot_report.py --compare            # 파일럿 전원 코치별 나란히 비교(P-7 불변성)
+      python tools/pilot_report.py --compare a@x.com b@y.com   # 지정 참가자만
+
+--compare 는 참가자별 최신 세션의 코치·measured·회피율·완주 여부를 한 표로 찍는다.
+코치 선택이 측정 결과를 바꾸는지(불변성)는 이 표의 코치별 편차로 본다.
 """
 import asyncio
 import json
@@ -29,15 +34,17 @@ async def _load(email_like: str) -> dict:
         "postgresql+asyncpg://", "postgresql://")
     conn = await asyncpg.connect(u)
     s = await conn.fetchrow(
-        "SELECT s.id, s.status, s.current_topic, s.self_assessment_data, p.name "
+        "SELECT s.id, s.status, s.current_topic, s.self_assessment_data, p.name, "
+        "s.coach_id, c.name AS coach_name "
         "FROM diagnosis_sessions s JOIN participants p ON s.user_id=p.id "
+        "LEFT JOIN coaches c ON c.id=s.coach_id "
         "WHERE p.email LIKE $1 ORDER BY s.created_at DESC LIMIT 1", email_like)
     if not s:
         await conn.close()
         raise SystemExit(f"세션 없음: {email_like}")
     sid = s["id"]
     msgs = await conn.fetch(
-        "SELECT role, content, created_at FROM chat_messages "
+        "SELECT role, content, created_at, instruction_used FROM chat_messages "
         "WHERE session_id=$1 ORDER BY created_at ASC", sid)
     rep = await conn.fetchrow(
         "SELECT scores, total_score, created_at FROM diagnosis_reports "
@@ -50,9 +57,24 @@ async def _load(email_like: str) -> dict:
         scores = rep["scores"]
         scores = json.loads(scores) if isinstance(scores, str) else scores
     return {"name": s["name"], "status": s["status"],
+            "coach_id": str(s["coach_id"]) if s["coach_id"] else None,
+            "coach_name": s["coach_name"],
             "current_topic": s["current_topic"], "sad": sad,
             "messages": [dict(m) for m in msgs],
             "scores": scores, "has_report": rep is not None}
+
+
+# 회피율: 사용자 턴 중 회피 판정(instruction_used)이 붙은 비율 — 코치별 라포 영향 비교용(P-7).
+_AVOID_INSTR = {"AVOIDANCE_DETECTED", "ABSTRACT_AVOIDANCE", "FIRST_TURN_AVOIDANCE",
+                "NO_YIELD_ULTIMATUM", "SESSION_ABORT_WARNING"}
+
+
+def _avoidance_rate(msgs: list) -> float | None:
+    users = [m for m in msgs if m["role"] == "user"]
+    if not users:
+        return None
+    n = sum(1 for m in users if (m.get("instruction_used") or "") in _AVOID_INSTR)
+    return round(n / len(users), 3)
 
 
 def _packet(d: dict) -> dict:
@@ -98,6 +120,8 @@ def _packet(d: dict) -> dict:
 
     return {
         "참가자": d["name"], "세션상태": d["status"],
+        "코치": d.get("coach_name"), "coach_id": d.get("coach_id"),
+        "회피율": _avoidance_rate(msgs),
         "리포트존재": d["has_report"],
         "── ⚠️ 경고 (P-4/자기관리 감시) ──": zero_warn or "없음",
         "── P-3 참여 ──": {
@@ -127,7 +151,66 @@ def _packet(d: dict) -> dict:
     }
 
 
+async def compare(emails: list[str]) -> list[dict]:
+    """P-7 불변성: 참가자별(최신 세션) 코치·measured·회피율·완주를 한 표로."""
+    import asyncpg
+    u = (os.getenv("DATABASE_URL") or os.getenv("DATABASE_URI")).replace(
+        "postgresql+asyncpg://", "postgresql://")
+    conn = await asyncpg.connect(u)
+    if emails:
+        targets = emails
+    else:
+        rows = await conn.fetch(
+            "SELECT DISTINCT p.email FROM participants p "
+            "JOIN diagnosis_sessions s ON s.user_id=p.id ORDER BY p.email")
+        targets = [r["email"] for r in rows]
+    await conn.close()
+    out = []
+    for e in targets:
+        try:
+            d = await _load(e)
+        except SystemExit:
+            continue
+        cov = ((d.get("scores") or {}).get("coverage") or {})
+        users = [m for m in d["messages"] if m["role"] == "user"]
+        out.append({
+            "참가자": d["name"], "코치": (d.get("coach_name") or "-").split("(")[0].strip(),
+            "상태": d["status"], "완주": d["status"] == "completed",
+            "measured/26": cov.get("measured"), "asked/26": cov.get("asked"),
+            "회피율": _avoidance_rate(d["messages"]), "사용자턴": len(users),
+        })
+    return out
+
+
+def _print_compare(rows: list[dict]) -> None:
+    if not rows:
+        print("세션이 있는 참가자가 없습니다.")
+        return
+    cols = ["참가자", "코치", "상태", "완주", "measured/26", "asked/26", "회피율", "사용자턴"]
+    w = {c: max(len(c), *(len(str(r.get(c))) for r in rows)) for c in cols}
+    print(" | ".join(c.ljust(w[c]) for c in cols))
+    print("-+-".join("-" * w[c] for c in cols))
+    for r in rows:
+        print(" | ".join(str(r.get(c)).ljust(w[c]) for c in cols))
+    # 코치별 요약(같은 코치가 2명 이상이면 평균)
+    by = {}
+    for r in rows:
+        by.setdefault(r["코치"], []).append(r)
+    print("\n코치별: " + " / ".join(
+        f"{k}: n={len(v)}, measured 평균={_avg([x['measured/26'] for x in v])}, "
+        f"회피율 평균={_avg([x['회피율'] for x in v])}, 완주 {sum(1 for x in v if x['완주'])}/{len(v)}"
+        for k, v in by.items()))
+
+
+def _avg(xs):
+    xs = [x for x in xs if isinstance(x, (int, float))]
+    return round(sum(xs) / len(xs), 2) if xs else None
+
+
 async def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "--compare":
+        _print_compare(await compare(sys.argv[2:]))
+        return
     if len(sys.argv) < 2:
         print(__doc__)
         return

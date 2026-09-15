@@ -33,6 +33,8 @@ PLAIN_Q = "그 분석의 구체적인 기준은 무엇이었습니까?"
 # ── 1) 되받기 판정 확장 ──
 def test_plain_statement_recap_is_detected():
     assert is_recap_opening(JESSICA_PLAIN)        # '~하셨습니다.' 평서문 요약
+    assert is_recap_opening("팀원들의 불만이 있었던 상황이군요. 그때 어떻게 대응하셨습니까?")  # '~군요' 상황 요약(시뮬 Jessica)
+    assert not is_recap_opening("그 판단이 쉽지 않으셨겠네요. 그때 무엇을 먼저 하셨습니까?")   # '~네요' 해석 한 줄은 허용
     assert not is_recap_opening(INSIGHT)          # 해석 한 줄은 되받기 아님
     assert not is_recap_opening(PLAIN_Q)          # 바로 질문
 
@@ -60,6 +62,13 @@ def test_persona_specific_hint_in_constraint_text():
     assert "관찰·통찰" in j and "쉽지 않으셨겠네요" in j
     assert "감정 한 줄" in e
     assert "복창" in j and "평서문" in j and "요약 되받기 금지" in j
+    # 2026-09-15: 나머지 4명도 페르소나별 대체 문장 규칙을 갖는다(앵무새 복창 금지는 공통)
+    expect = {"Olivia (올리비아)": "관점을 넓히는", "Daniel (다니엘)": "인정·격려",
+              "Michael (마이클)": "추진을 북돋는", "Lucas (루카스)": "요점 정리"}
+    for name, kw in expect.items():
+        t = format_style_constraints(sc, name)
+        assert kw in t and "복창" in t, name
+    assert "질문만 던지는 것도 안 됩니다" in format_style_constraints(sc, "Lucas (루카스)")
 
 
 # ── 2) 결과(R) 탐침 강제 ──
@@ -129,3 +138,36 @@ def test_layer3_has_duplicate_block_and_force_block():
     assert "결과 탐침 강제" in txt2 and "전략적 사고" in txt2 and "중복 지적 대응" not in txt2
     plain = dict(forced, force_result_probe=False)
     assert "결과 탐침 강제" not in format_turn_state_for_llm(plain)
+
+
+# ── 느낌표 상한(2026-09-15) ──
+def test_exclamation_cap_per_persona_and_turn():
+    from diag_project.services.style_tracker import exclamation_cap, enforce_exclamation_cap
+    assert exclamation_cap("Michael (마이클)", "CONTINUE_NORMAL") == 1
+    assert exclamation_cap("Michael (마이클)", "DIAGNOSIS_INTRO") == 0      # 안내·설명 턴 0
+    assert exclamation_cap("Michael (마이클)", "COMPETENCY_ALIGN") == 0
+    for n in ("Ella (엘라)", "Jessica (제시카)", "Olivia (올리비아)", "Daniel (다니엘)", "Lucas (루카스)"):
+        assert exclamation_cap(n, "CONTINUE_NORMAL") == 0, n
+    t, before = enforce_exclamation_cap("좋습니다! 힘차게 시작해볼까요! 이유도 말씀해주세요!", 1)
+    assert before == 3 and t.count("!") == 1 and t.endswith("말씀해주세요.")
+    t2, _ = enforce_exclamation_cap("정말요?! 대단하네요!! 그다음은요?", 0)
+    assert t2 == "정말요? 대단하네요. 그다음은요?"
+    same, n0 = enforce_exclamation_cap("느낌표 없음.", 0)
+    assert same == "느낌표 없음." and n0 == 0
+
+
+def test_style_block_states_exclamation_cap():
+    from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
+    base = {
+        "chapter": CH, "turn_count": 5, "events_collected": 1, "events_with_star_70": 0,
+        "current_event_id": None, "current_event_star_coverage": None,
+        "has_contrary_probe": False, "avoidance_count_in_chapter": 0,
+        "all_subcompetencies": ALL, "explored_subcompetencies": [],
+        "unexplored_subcompetencies": [], "asked_in_chapter": [],
+        "instruction_for_this_turn": "DIAGNOSIS_INTRO",
+        "coach_persona": {"name": "Michael (마이클)", "coaching_style": "에너지", "tags": "#열정"},
+    }
+    assert "최대 0개" in format_turn_state_for_llm(base)
+    assert "최대 1개" in format_turn_state_for_llm(dict(base, instruction_for_this_turn="CONTINUE_NORMAL"))
+    assert "최대 0개" in format_turn_state_for_llm(dict(base, instruction_for_this_turn="CONTINUE_NORMAL",
+                                                         coach_persona={"name": "Daniel (다니엘)"}))

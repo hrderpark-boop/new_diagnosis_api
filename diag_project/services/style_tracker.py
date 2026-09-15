@@ -24,7 +24,9 @@ _RECAP = re.compile(
     r"들려주신|들으니|정리하면|정리해 ?보면|요약하면|~?라는 말씀)"
 )
 # 평서문 요약: 첫 문장이 질문이 아닌 채 '~하셨습니다/~셨죠' 로 끝남(Jessica 우회형).
-_PLAIN_RECAP_END = re.compile(r"(셨습니다|셨죠|셨고요|이었습니다|였습니다|확인되었습니다)[.!…]?\s*$")
+#   '~군요' 로 끝나는 상황 요약("팀원들의 불만이 있었던 상황이군요.")도 되받기. '~네요' 는 제외 —
+#   해석·공감 한 줄("그 판단이 쉽지 않으셨겠네요.")의 종결이라 금지하면 대체 문장까지 막힌다.
+_PLAIN_RECAP_END = re.compile(r"(셨습니다|셨죠|셨고요|이었습니다|였습니다|확인되었습니다|군요)[.!…]?\s*$")
 # 사용자 어절에서 조사를 떼어 '내용 어절'만 남긴다(복창 판정용).
 _JOSA_RE = re.compile(
     r"(에서는|으로는|에게는|한테는|까지는|부터는|이라도|라도|에서|으로|에게|한테|처럼|보다|"
@@ -139,24 +141,109 @@ def compute_style_constraints(
     }
 
 
+# 되받기 금지 턴의 '대체 문장' 규칙 — 6명 전부 앵무새 복창은 금지, 대신 붙이는 한 줄이 다르다.
+#   (2026-09-15: Olivia·Daniel·Michael·Lucas 추가. Lucas 도 '요점 정리 한 줄' 없이 질문만 던지면 안 된다.)
+_PERSONA_REACTION = {
+    "Ella": ("Ella 는 감정 한 줄로 받습니다(예: '그 순간 마음이 무거우셨겠어요.'). "),
+    "Jessica": ("Jessica 는 관찰·통찰 한 줄로 받습니다(예: '그 판단이 쉽지 않으셨겠네요.', "
+                "'기준을 먼저 세우신 점이 눈에 띕니다.'). 감탄·위로 없이도 이 정도는 페르소나 안입니다. "),
+    "Olivia": ("Olivia 는 관점을 넓히는 한 줄로 받습니다(예: '그건 보통 리더가 안 고르는 길이었네요.', "
+               "'뒤집어 보면 그 불평이 오히려 힌트였을 수도 있겠어요.'). 리더님 말을 되풀이하지 말고 "
+               "'다른 각도' 하나를 던진 뒤 질문하세요. "),
+    "Daniel": ("Daniel 은 인정·격려 한 줄로 받습니다(예: '그 자리에서 그렇게 하기가 쉽지 않은데, "
+               "잘 버티셨습니다.', '그 판단은 리더가 해야 할 몫을 하신 겁니다.'). 선배의 무게로 "
+               "짧게 인정한 뒤 질문하세요. "),
+    "Michael": ("Michael 은 추진을 북돋는 한 줄로 받습니다(예: '거기서 멈추지 않고 밀어붙이신 거네요!', "
+                "'그 한 걸음이 팀을 움직였겠는데요.'). 해낸 행동을 짚어 힘을 실은 뒤 다음 장면을 "
+                "물으세요. 느낌표는 한 번. "),
+    "Lucas": ("Lucas 는 요점 정리 한 줄로 받습니다(예: '핵심은 설득이 아니라 연결이었네요.', "
+              "'그러니까 병목은 정보였군요.'). 리더님 문장을 복창하는 요약이 아니라 '한 단어로 압축한 "
+              "요점'이어야 하고, 공감 없이 질문만 던지는 것도 안 됩니다. "),
+}
+
+
+# ── 느낌표 상한(2026-09-15): 페르소나별로 백엔드가 센다. Michael 만 1, 나머지 0. ──
+#   Michael 시뮬레이션에서 안내 턴 5개·세션 합계 14개가 나와 프로필("한두 번")의 두 배를 넘었다.
+#   안내·설명 턴(진행 안내, 정의 제시 등)은 Michael 도 0. 초과 시 재생성 1회 → 그래도 초과면
+#   초과분을 마침표로 치환(enforce_exclamation_cap).
+_EXCLAMATION_CAP = {"Michael": 1}
+_EXPLAIN_INSTRUCTIONS = {
+    "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "COMPETENCY_ALIGN", "META_QUESTION_FROM_USER",
+    "CHAPTER_READY_TO_END", "CHAPTER_CONTINUE_CONFIRMED", "USER_REQUESTS_PAUSE",
+}
+
+
+def exclamation_cap(persona_name: str | None, instruction: str | None = None) -> int:
+    """이번 응답의 느낌표 상한. Michael 1(안내·설명 턴 0), 나머지 0."""
+    n = (persona_name or "").strip()
+    cap = 0
+    for key, c in _EXCLAMATION_CAP.items():
+        if n.startswith(key):
+            cap = c
+    if instruction in _EXPLAIN_INSTRUCTIONS:
+        return 0
+    return cap
+
+
+def count_exclamations(text: str | None) -> int:
+    return (text or "").count("!")
+
+
+def enforce_exclamation_cap(text: str, cap: int) -> tuple[str, int]:
+    """상한을 넘는 느낌표를 마침표로 바꾼다. (치환 결과, 원래 개수) 반환.
+
+    앞에서부터 cap 개는 남긴다. '!!' 연속은 하나로, '?!' 는 '?' 로, '.!' 는 '.' 로 정리한다.
+    """
+    if not text:
+        return text, 0
+    total = text.count("!")
+    if total <= cap:
+        return text, total
+    out = []
+    kept = 0
+    for ch in text:
+        if ch == "!":
+            if kept < cap:
+                kept += 1
+                out.append(ch)
+            else:
+                out.append(".")
+        else:
+            out.append(ch)
+    t = "".join(out)
+    t = re.sub(r"\?\.", "?", t)          # '?!' → '?.' → '?'
+    t = re.sub(r"!\.", "!", t)            # '!!' 의 두 번째 → '!.' → '!'
+    t = re.sub(r"(?<!\.)\.\.(?!\.)", ".", t)  # '..' → '.' ('...' 말줄임은 유지)
+    return t, total
+
+
 def _persona_reaction_hint(persona_name: str | None) -> str:
     """금지 턴의 대안 — 페르소나별 '한 줄 반응' 결. 앵무새 복창은 모두 금지."""
     n = (persona_name or "").strip()
-    if n.startswith("Ella"):
-        return ("Ella 는 감정 한 줄로 받습니다(예: '그 순간 마음이 무거우셨겠어요.'). ")
-    if n.startswith("Jessica"):
-        return ("Jessica 는 관찰·통찰 한 줄로 받습니다(예: '그 판단이 쉽지 않으셨겠네요.', "
-                "'기준을 먼저 세우신 점이 눈에 띕니다.'). 감탄·위로 없이도 이 정도는 페르소나 안입니다. ")
+    for key, hint in _PERSONA_REACTION.items():
+        if n.startswith(key):
+            return hint
     if n:
         return "페르소나의 결로 해석·공감 한 줄을 붙이거나 바로 질문하세요. "
     return ""
 
 
-def format_style_constraints(sc: dict | None, persona_name: str | None = None) -> str:
-    """프롬프트 삽입용 텍스트. 제약이 없으면 빈 문자열."""
-    if not sc:
+def format_style_constraints(
+    sc: dict | None, persona_name: str | None = None, instruction: str | None = None,
+) -> str:
+    """프롬프트 삽입용 텍스트. 제약이 없으면 빈 문자열(페르소나가 주어지면 느낌표 상한 줄은 항상)."""
+    if not sc and not persona_name:
         return ""
+    sc = sc or {}
     lines = []
+    if persona_name:
+        cap = exclamation_cap(persona_name, instruction)
+        lines.append(
+            f"- 느낌표(!) 상한: 이번 응답에 **최대 {cap}개**"
+            + (" — 안내·설명 턴이라 0개" if cap == 0 and instruction in _EXPLAIN_INSTRUCTIONS
+               and (persona_name or "").startswith("Michael") else "")
+            + ". 시스템이 세어 초과분은 마침표로 바꿉니다. 에너지·강조는 느낌표가 아니라 단어로."
+        )
     if sc.get("forbid_ne_opening"):
         lines.append(
             "- 직전 턴이 '네, ~하셨군요/~말씀이시군요'로 시작했습니다. **이번 턴은 "
