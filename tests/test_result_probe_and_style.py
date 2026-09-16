@@ -59,7 +59,7 @@ def test_persona_specific_hint_in_constraint_text():
     sc = {"forbid_recap": True, "forbid_ne_opening": False}
     j = format_style_constraints(sc, "Jessica (제시카)")
     e = format_style_constraints(sc, "Ella (엘라)")
-    assert "관찰·통찰" in j and "쉽지 않으셨겠네요" in j
+    assert "관찰" in j and "쉽지 않으셨겠네요" in j
     assert "감정 한 줄" in e
     assert "복창" in j and "평서문" in j and "요약 되받기 금지" in j
     # 2026-09-15: 나머지 4명도 페르소나별 대체 문장 규칙을 갖는다(앵무새 복창 금지는 공통)

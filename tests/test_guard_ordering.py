@@ -76,9 +76,9 @@ def test_max_turns_is_unreachable_backstop():
 
 
 def test_min3_circuit_breaker():
-    # min_explored 3 챕터(cap=13): 13턴에 서킷브레이커 종료.
-    ins = decide_instruction(_bei_state("organization_management", 13, 1))
-    ck("조직관리 13턴 → CHAPTER_READY_TO_END(서킷브레이커)",
+    # 조직관리(min_explored 4, cap=16): 16턴에 서킷브레이커 종료.
+    ins = decide_instruction(_bei_state("organization_management", 16, 1))
+    ck("조직관리 16턴 → CHAPTER_READY_TO_END(서킷브레이커)",
        ins == "CHAPTER_READY_TO_END", f"(={ins})")
 
 

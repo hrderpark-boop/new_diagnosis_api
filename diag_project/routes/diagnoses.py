@@ -52,6 +52,7 @@ from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
 from diag_project.services.traversal import (
     advanced_to_new_target, is_result_probe_text,
 )
+from diag_project.services.style_tracker import is_recap_turn, starts_with_ne_recap
 
 logger = logging.getLogger(__name__)
 
@@ -930,6 +931,14 @@ async def _submit_message_phase3a(
     system_override_text = None
     _llm_error = False  # H5: LLM 호출 실패 턴 표식(원장 롤백 + LLM_ERROR 태깅)
 
+    # 2(2026-09-16) 챕터 전환 팝업 대기 중 자유 텍스트: 안내만, 상태 무변경(시스템 템플릿).
+    if instruction_used == "AWAIT_NEXT_CHAPTER_CHOICE":
+        _nm = chapter_to_topic(chapter) if chapter else "다음"
+        system_override_text = (
+            f"위 버튼으로 다음 단계를 선택해 주세요. '다음 챕터로 이동'을 누르시면 "
+            f"'{_nm}' 영역으로 이어갑니다. 잠시 쉬고 싶으시면 '잠시 쉴게요'라고 적어 주셔도 됩니다."
+        )
+
     # 🚨 3-Strike 강제 종료 (Session Abort) — 최우선 처리.
     #   세션 전체 비생산 응답 누적 → 정중한 종료 멘트 출력 후 세션 영구 종료.
     #   (3회 카운팅은 철저히 백엔드 내부 처리 — 멘트에 '3회' 등 수치 노출 금지.)
@@ -1270,6 +1279,12 @@ async def _submit_message_phase3a(
         #   LLM 호출 이전에 기록됐고, 여기서는 출력만 조립한다. 브릿지 리드 없이
         #   앵커 본문만 붙인다(정의 뒤라 리드가 어색).
         if chapter and current_target_sub:
+            # 1(2026-09-16) ALIGN 이중 질문: LLM 이 정의 제시를 자기 질문으로 끝내면 그 문장을
+            #   지우고 템플릿 앵커만 질문으로 남긴다(최종 출력의 물음표는 앵커 하나).
+            from diag_project.services.output_guard import strip_trailing_question
+            clean_reply, _n_tail = strip_trailing_question(clean_reply)
+            if _n_tail:
+                logger.info("✂️ ALIGN 꼬리 질문 %d문장 제거 후 앵커 결합", _n_tail)
             _anchor = build_chapter_opening_with_user_def(
                 chapter=chapter,
                 user_definition=request.content or "",
@@ -1404,6 +1419,115 @@ async def _submit_message_phase3a(
     # 8-g. 최종 안전망: 하이브리드 조립 이후에도 남아있을 수 있는 시스템
     #   마커를 프론트 전달 직전에 한 번 더 완벽 제거.
     clean_reply = _MARKER_RE.sub("", clean_reply).strip()
+
+    # 8-i. 통합 출력 가드(2026-09-16, Daniel 재주행 5건) — LLM 턴만. 위반 감지 → 재생성 1회(모든
+    #   위반을 한 지시로) → 남은 위반은 하드 교정. 프롬프트 지시는 지켜지지 않았다(4-a 대조표).
+    #     · 평가적 칭찬(6명 공통 금지 목록)            → 문장 삭제
+    #     · 전환 환각("다음 챕터로 넘어가겠습니다")   → 문장 삭제(종료 권한 있는 턴 제외)
+    #     · 앵커 턴 하위역량 이름 노출·오타겟           → 현재 타겟 템플릿 앵커로 교체
+    #     · 되받기: 금지 턴에 요약/'네' 시작, 리드 2문장 → 리드 한 줄만([요약|대체 한 줄]+[질문])
+    if system_override_text is None and not _llm_error and clean_reply:
+        from diag_project.services.output_guard import (
+            TRANSITION_ALLOWED_INSTRUCTIONS, find_praise, find_sub_names, has_transition_claim,
+            off_target_overlap, split_sentences, is_question, strip_praise,
+            strip_transition_sentences, template_anchor, trim_lead_sentences,
+        )
+        from diag_project.data.competencies import (
+            COMPETENCY_FRAMEWORK as _CF, find_sub_key_by_name as _fsk, get_anchor_questions as _gaq,
+        )
+        _sc = state.get("style_constraints") or {}
+        _is_probe = instruction_used in _PROBE_INSTR
+        _is_anchor = instruction_used == "STAR_COMPLETE_NEW_EVENT"
+        _all_names = [v.get("name") for c in _CF.values() for v in (c.get("indicators") or {}).values()]
+        _asked_qs: list[str] = []
+        if _is_anchor and chapter:
+            for _nm2 in (state.get("asked_in_chapter") or []):
+                if _nm2 == current_target_sub:
+                    continue
+                _k2 = _fsk(chapter, _nm2)
+                _asked_qs += (_gaq(_k2) if _k2 else [])
+        _tgt_q = ""
+        if _is_anchor and chapter and current_target_sub:
+            _kt = _fsk(chapter, current_target_sub)
+            _tgt_q = (_gaq(_kt) or [""])[0] if _kt else ""
+
+        def _violations(txt: str) -> dict:
+            v: dict = {}
+            pr = find_praise(txt)
+            if pr:
+                v["praise"] = pr
+            if instruction_used not in TRANSITION_ALLOWED_INSTRUCTIONS and has_transition_claim(txt):
+                v["transition"] = True
+            if _is_anchor:
+                nm = find_sub_names(txt, _all_names)
+                if nm:
+                    v["names"] = nm
+                off, oq = off_target_overlap(txt, _asked_qs)
+                if off:
+                    v["off_target"] = oq
+            if _is_probe:
+                leads = []
+                for _s2 in split_sentences(txt):
+                    if is_question(_s2):
+                        break
+                    leads.append(_s2)
+                if _sc.get("forbid_ne_opening") and txt.lstrip().startswith(("네,", "네.", "넵,", "예,")):
+                    v["ne_opening"] = True
+                if _sc.get("forbid_recap") and leads and (
+                    is_recap_turn(leads[0], request.content) or starts_with_ne_recap(leads[0])):
+                    v["recap"] = True
+                if len(leads) > 1:
+                    v["lead_stack"] = len(leads)
+            return v
+
+        _v = _violations(clean_reply)
+        if _v:
+            logger.info("🛡️ 출력 가드 위반: %s (instr=%s) → 재생성 1회", _v, instruction_used)
+            _notes = ["\n\n🚨 [시스템 — 재생성 지시] 방금 만든 응답에 다음 위반이 있습니다. 내용은 유지하되 고쳐 다시 쓰세요."]
+            if "praise" in _v:
+                _notes.append(f"- 평가적 칭찬 금지: {', '.join(_v['praise'])} 같은 표현을 빼세요. 인정은 사실 확인('그 결정을 내리셨군요')까지.")
+            if "transition" in _v:
+                _notes.append("- 이번 턴은 영역을 마치거나 다음 챕터로 넘어가는 턴이 아닙니다. 전환·마무리 선언 문장을 빼고 질문으로 이어가세요.")
+            if "names" in _v or "off_target" in _v:
+                _notes.append("- 하위역량 이름을 말하지 말고, 이미 다룬 사건·주제를 다시 묻지 마세요."
+                              + (f" 이번 앵커 질문 본문: {_tgt_q}" if _tgt_q else ""))
+            if "ne_opening" in _v or "recap" in _v or "lead_stack" in _v:
+                _notes.append("- 질문 앞의 리드는 한 문장뿐입니다. '네,'로 시작하지 말고, 요약 되받기가 금지된 턴이면 페르소나의 대체 한 줄만 두세요.")
+            try:
+                _g_regen = await llm.generate_phase3a_interaction(
+                    system_prompt=system_prompt,
+                    chapter_context=chapter_context,
+                    turn_state_text=turn_state_text + "\n".join(_notes),
+                    compressed_history=compressed_history,
+                    user_message=request.content,
+                    light_mode=True,
+                )
+                _g_reply = _MARKER_RE.sub("", _g_regen.get("reply") or "").strip()
+            except Exception as _e:
+                logger.error("🛡️ 출력 가드 재생성 실패: %s", _e)
+                _g_reply = ""
+            if _g_reply and not _g_regen.get("error"):
+                _v2 = _violations(_g_reply)
+                if len(_v2) < len(_v) or not _v2:
+                    clean_reply = _g_reply
+                    _v = _v2
+            # 하드 교정(남은 위반)
+            if _v:
+                logger.info("🛡️ 출력 가드 하드 교정: %s", _v)
+                if ("names" in _v or "off_target" in _v) and _tgt_q:
+                    clean_reply = template_anchor(_tgt_q)
+                    _v = {k: v for k, v in _v.items() if k not in ("names", "off_target", "praise", "transition", "recap", "ne_opening", "lead_stack")}
+                if "praise" in _v:
+                    clean_reply, _n = strip_praise(clean_reply)
+                if "transition" in _v:
+                    clean_reply, _n = strip_transition_sentences(clean_reply)
+                if _is_probe and ("recap" in _v or "ne_opening" in _v or "lead_stack" in _v):
+                    clean_reply, _n = trim_lead_sentences(
+                        clean_reply, bool(_sc.get("forbid_recap")), request.content,
+                        forbid_ne=bool(_sc.get("forbid_ne_opening")),
+                    )
+                if not clean_reply.strip() and _tgt_q:
+                    clean_reply = template_anchor(_tgt_q)
 
     # 8-h. 느낌표 상한(2026-09-15): 페르소나별 상한(Michael 1·안내턴 0, 나머지 0)을 백엔드가 센다.
     #   초과 → 재생성 1회(같은 프롬프트 + 상한 지시) → 그래도 초과면 초과분을 마침표로 치환.
@@ -1605,6 +1729,10 @@ async def _submit_message_phase3a(
     )
 
     # 12. 응답 (감사 위험 #3 해결: reply → coach_response_message 매핑)
+    # 2(2026-09-16): 전환 팝업 대기 안내 턴 — 프론트가 '다음 챕터로 이동' 배너를 다시 띄우도록
+    #   is_topic_completed 를 True 로(챕터·원장은 그대로, completed_topics 도 그대로).
+    if instruction_used == "AWAIT_NEXT_CHAPTER_CHOICE":
+        is_chapter_completed = True
     return {
         "coach_response_message": clean_reply,
         "is_topic_completed": is_chapter_completed,

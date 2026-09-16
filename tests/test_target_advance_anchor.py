@@ -79,9 +79,9 @@ def test_org_emits_at_least_three_anchors():
 def test_stonewaller_breadth_close_still_works():
     # event_done 이 끝까지 False(강한 STAR 0)여도, 상한 전진으로 asked 가
     # 쌓여 min_explored 를 채운다 → breadth_satisfied True(챕터 종료 가능).
-    store, anchors, _ = _simulate(ORG_SUBS, CH, turns=9, event_done=False)
+    store, anchors, _ = _simulate(ORG_SUBS, CH, turns=12, event_done=False)
     asked = len(asked_for_chapter(store, CH))
-    min_exp = min_explored_for(len(ORG_SUBS))   # = 3
+    min_exp = min_explored_for(len(ORG_SUBS))   # = 4 (2026-09-16: 4개 이하는 전부)
     assert breadth_satisfied(asked, min_exp) is True
     # 그리고 허수가 아니라 '실제 앵커가 지시된' 만큼만 종료 근거가 된다.
     assert anchors == asked

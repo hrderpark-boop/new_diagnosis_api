@@ -59,11 +59,11 @@ def test_exit_a_complete_event_waits_for_one_followup():
 
 
 def test_circuit_breaker_also_waits_for_one_followup():
-    # 1-c(2026-09-07)로 변경: 예산(cap=13) 종료도 마지막 타겟 1회 심화를 기다린다.
+    # 1-c(2026-09-07)로 변경: 예산(cap=16, 2026-09-16) 종료도 마지막 타겟 1회 심화를 기다린다.
     #   (과거엔 상한이면 즉시 닫았음.) MAX_TURNS(40)가 최종 backstop.
-    ins = decide_instruction(_state(1, turn_count=13, chapter_message_count=13))
+    ins = decide_instruction(_state(1, turn_count=16, chapter_message_count=16))
     assert ins == "CONTINUE_NORMAL", ins
-    ins2 = decide_instruction(_state(2, turn_count=13, chapter_message_count=13))
+    ins2 = decide_instruction(_state(2, turn_count=16, chapter_message_count=16))
     assert ins2 == "CHAPTER_READY_TO_END", ins2
 
 

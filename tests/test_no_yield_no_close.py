@@ -79,10 +79,10 @@ def test_ultimatum_suppressed_for_engaged_streak_but_kept_as_probe():
 
 
 def test_budget_does_not_close_while_unexplored_remain():
-    # 조직관리 cap=13. 13턴이어도 미탐색이 남으면 계속, 전부 탐색+심화면 닫힘
-    assert decide_instruction(_state(asked=2, turn_count=13, turns_on_target=3)) \
+    # 조직관리 cap=16(2026-09-16: min_explored 4). 16턴이어도 미탐색이 남으면 계속, 전부 탐색+심화면 닫힘
+    assert decide_instruction(_state(asked=2, turn_count=16, turns_on_target=3)) \
         in PROBES
-    assert decide_instruction(_state(asked=4, turn_count=13, turns_on_target=2)) \
+    assert decide_instruction(_state(asked=4, turn_count=16, turns_on_target=2)) \
         == "CHAPTER_READY_TO_END"
 
 

@@ -21,8 +21,15 @@ STALL_WATCHDOG_TURNS = 6       # 연속 N턴 asked 미증가 → 강제 전진
 
 
 def min_explored_for(sub_count: int) -> int:
-    """넓이 하한 = max(3, ceil(n*0.6))."""
-    return max(3, math.ceil(sub_count * 0.6))
+    """넓이 하한 = n (n ≤ 4: 전부 묻는다) / max(3, ceil(n*0.6)) (n > 4).
+
+    2026-09-16: 조직관리(4)에서 3개만 묻고 닫혀 '혁신적 사고' 앵커가 안 나갔다.
+    → 조직 4/4, 자기 3/3, 성과 3/5, 일 3/5, 사람 6/9. 서킷브레이커 상한(cap)도 따라 오른다.
+    """
+    n = int(sub_count)
+    if n <= 4:
+        return n
+    return max(3, math.ceil(n * 0.6))
 
 
 def chapter_turn_cap(min_explored: int) -> int:

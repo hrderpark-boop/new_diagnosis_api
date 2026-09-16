@@ -6,6 +6,7 @@
 설계 출처: docs/phase3a/01_design.md (Section 7.4-7.5)
 """
 
+import re
 from typing import Literal
 from uuid import UUID
 
@@ -73,7 +74,6 @@ def _extract_user_name(text: str) -> str | None:
     - "안녕하세요"                     → None (이름 없음)
     - ""                              → None
     """
-    import re
     from diag_project.services.avoidance_detector import detect_deflection
 
     if not text or not text.strip():
@@ -183,7 +183,28 @@ InstructionType = Literal[
     "META_QUESTION_FROM_USER",
     "FIRST_TURN_AVOIDANCE",
     "INVALID_INPUT",
+    # 2026-09-16: 챕터 전환 직후(정의 질문 전) 버튼 대신 친 자유 텍스트 → 안내만, 상태 무변경
+    "AWAIT_NEXT_CHAPTER_CHOICE",
 ]
+
+# 챕터 전환 팝업에서 버튼 대신 텍스트로 '확인'한 것으로 볼 표현(이중 방어).
+#   시작 어절(네/예/알겠/좋아요…)로 열거나, 짧은 문장(≤25자)에 다음/계속/진행 키워드가 있을 때만.
+#   ("…분석하기 시작했죠" 같은 이전 챕터 답변이 '시작' 한 글자로 동의로 오인되지 않게)
+_NEXT_CONSENT_OPENER = re.compile(r"^(네|예|넵|넹|응|좋아요|좋습니다|좋아|알겠|그래요|괜찮아요|오케이|ok|okay|yes)", re.I)
+NEXT_CHAPTER_CONSENT_KEYWORDS = ("다음", "계속", "진행", "넘어가", "이어가", "갑시다", "가시죠", "가요")
+_NEXT_CONSENT_NEG = ("아니", "아직", "잠깐", "잠시", "글쎄", "모르", "쉴", "쉬고", "그만", "중단", "안 ")
+
+
+def is_next_chapter_consent(text: str | None) -> bool:
+    """'네/알겠습니다/좋아요/다음' 계열 → 확인으로 간주."""
+    if not text:
+        return False
+    t = text.strip()
+    if any(n in t for n in _NEXT_CONSENT_NEG):
+        return False
+    if is_user_consent(t) or _NEXT_CONSENT_OPENER.match(t):
+        return True
+    return len(t) <= 25 and any(k in t for k in NEXT_CHAPTER_CONSENT_KEYWORDS)
 
 
 # 챕터별 최소 사건 수
@@ -204,8 +225,9 @@ _SUB_COUNTS = {
     "people_management": 9, "work_management": 5, "self_management": 3,
 }
 MIN_EXPLORED: dict[str, int] = {
-    k: max(3, _math.ceil(n * 0.6)) for k, n in _SUB_COUNTS.items()
-}  # → 조직 3 / 성과 3 / 사람 6 / 일 3 / 자기 3 (합 18)
+    k: (n if n <= 4 else max(3, _math.ceil(n * 0.6))) for k, n in _SUB_COUNTS.items()
+}  # → 조직 4 / 성과 3 / 사람 6 / 일 3 / 자기 3 (합 19). traversal.min_explored_for 와 동일식
+#   (2026-09-16: 하위역량 4개 이하 챕터는 전부 묻는다 — cap 도 조직 4×3+4=16 으로)
 
 # 챕터별 최대 턴 수 (user 메시지 기준)
 #   🚨 §6: MAX_TURNS_REACHED 는 '도달 불가한 backstop' 이다. 챕터 종료는 항상
@@ -428,6 +450,20 @@ def decide_instruction(state: dict) -> InstructionType:
         if is_invalid_input(_decision):
             return "INVALID_INPUT"
         return "CHAPTER_CONTINUE_CONFIRMED"
+
+    # === 0.55순위(2026-09-16): 챕터 전환 직후 '다음 챕터로 이동' 팝업 대기 중 텍스트 도착 ===
+    #   직전 코치 발화가 CHAPTER_READY_TO_END(전환 예고)였고 새 챕터의 정의 질문이 아직 안 나갔다.
+    #   '네/알겠습니다/좋아요/다음' 계열은 확인으로 간주 → 아래 정의 질문(COMPETENCY_ASK) 경로로 통과.
+    #   휴식 의도 → 일시중지. 그 외 텍스트 → "버튼으로 선택해 주세요" 안내만 돌려주고 상태를 바꾸지
+    #   않는다(이전 챕터 탐침 재개·정의 답변 오인 방지 — 프론트 입력 잠금과 이중 방어).
+    if state.get("awaiting_next_chapter_choice"):
+        _txt = state.get("last_user_response") or ""
+        if detect_pause_request(_txt):
+            return "USER_REQUESTS_PAUSE"
+        if detect_user_objection(_txt) or detect_meta_question(_txt):
+            return "META_QUESTION_FROM_USER"
+        if not is_next_chapter_consent(_txt):
+            return "AWAIT_NEXT_CHAPTER_CHOICE"
 
     # === 0.7순위: 사용자의 '종료 수용/요청' 감지 (상태 동기화 버그 방어) ===
     #   사용자가 "이제 끝내죠/마무리하죠/감사합니다" 로 종료 의사를 밝혔는데
@@ -911,6 +947,13 @@ async def build_turn_state(
         latest_model_msg is not None
         and latest_model_msg.probe_type_used == "AWAIT_CONTINUE"
     )
+    # 2026-09-16: 전환 예고(CHAPTER_READY_TO_END) 직후 = 프론트 '다음 챕터로 이동' 팝업 대기.
+    #   정의 질문(definition_asked)이 나가기 전까지만 True. (아래 definition_asked 계산 뒤 확정)
+    _after_transition = (
+        latest_model_msg is not None
+        and latest_model_msg.instruction_used == "CHAPTER_READY_TO_END"
+        and latest_model_msg.probe_type_used == "START_CHAPTER"
+    )
 
     # 8-a3c. 코치의 '조기 종료 제안(SUGGEST_PAUSE)' 누적 횟수.
     #   2-Strike 규칙: 제안은 최대 2회 — 2회를 넘기면 3번째부터는 제안이
@@ -998,6 +1041,7 @@ async def build_turn_state(
             ["COMPETENCY_ASK", "DIAGNOSIS_CONFIRM"]))
     )
     definition_asked = definition_asked_result.scalars().first() is not None
+    awaiting_next_chapter_choice = bool(_after_transition and not definition_asked)
 
     # 8-e. 첫 세부 역량 이름 (CHAPTER_OPENING 가이드용) + 역량 framework
     from diag_project.data.competencies import COMPETENCY_FRAMEWORK
@@ -1176,6 +1220,7 @@ async def build_turn_state(
         "competency_aligned": competency_aligned,
         "definition_asked": definition_asked,
         "awaiting_continue_decision": awaiting_continue_decision,
+        "awaiting_next_chapter_choice": awaiting_next_chapter_choice,  # 2026-09-16 전환 팝업 대기
         "suggest_pause_count": suggest_pause_count,
         "session_deflection_count": session_deflection_count,
         "session_already_warned": session_already_warned,
