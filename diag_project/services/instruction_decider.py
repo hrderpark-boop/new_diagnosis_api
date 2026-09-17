@@ -441,15 +441,8 @@ def decide_instruction(state: dict) -> InstructionType:
     #     환각이 발생한다. 다음 턴에 조건이 유지되면 경계 질문을 다시 묻는다.)
     #   - 휴식 의도 → USER_REQUESTS_PAUSE (일시중지, 챕터 전환 차단)
     #   - 명확한 계속/동의 → CHAPTER_CONTINUE_CONFIRMED (다음 챕터로 전환)
-    if state.get("awaiting_continue_decision"):
-        _decision = state.get("last_user_response") or ""
-        if detect_user_objection(_decision) or detect_meta_question(_decision):
-            return "META_QUESTION_FROM_USER"
-        if detect_pause_request(_decision):
-            return "USER_REQUESTS_PAUSE"
-        if is_invalid_input(_decision):
-            return "INVALID_INPUT"
-        return "CHAPTER_CONTINUE_CONFIRMED"
+    # (2026-09-17) 경계 '계속/휴식' 대기 분기 삭제 — 마커가 어디서도 세워지지 않던 죽은 경로.
+    #   전환 팝업 대기는 아래 awaiting_next_chapter_choice 가 맡는다.
 
     # === 0.55순위(2026-09-16): 챕터 전환 직후 '다음 챕터로 이동' 팝업 대기 중 텍스트 도착 ===
     #   직전 코치 발화가 CHAPTER_READY_TO_END(전환 예고)였고 새 챕터의 정의 질문이 아직 안 나갔다.
@@ -932,9 +925,7 @@ async def build_turn_state(
     )
     chapter_started = chapter_started_result.scalars().first() is not None
 
-    # 8-a3b. 챕터 종료 후 '계속/휴식' 의사 대기 여부.
-    #   직전(가장 최근) AI 메시지가 AWAIT_CONTINUE 마커면, 방금 "계속할까요/
-    #   쉴까요?"를 물어놓고 사용자 답을 기다리는 상태 → 이번 user 턴이 '결정 턴'.
+    # 8-a3b. 직전(가장 최근) AI 메시지 — 전환 예고 직후 판정(awaiting_next_chapter_choice)에 쓴다.
     latest_model_result = await db.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
@@ -943,10 +934,6 @@ async def build_turn_state(
         .limit(1)
     )
     latest_model_msg = latest_model_result.scalars().first()
-    awaiting_continue_decision = (
-        latest_model_msg is not None
-        and latest_model_msg.probe_type_used == "AWAIT_CONTINUE"
-    )
     # 2026-09-16: 전환 예고(CHAPTER_READY_TO_END) 직후 = 프론트 '다음 챕터로 이동' 팝업 대기.
     #   정의 질문(definition_asked)이 나가기 전까지만 True. (아래 definition_asked 계산 뒤 확정)
     _after_transition = (
@@ -1219,7 +1206,6 @@ async def build_turn_state(
         "competency_intro_done": competency_intro_done,
         "competency_aligned": competency_aligned,
         "definition_asked": definition_asked,
-        "awaiting_continue_decision": awaiting_continue_decision,
         "awaiting_next_chapter_choice": awaiting_next_chapter_choice,  # 2026-09-16 전환 팝업 대기
         "suggest_pause_count": suggest_pause_count,
         "session_deflection_count": session_deflection_count,

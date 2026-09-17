@@ -171,3 +171,29 @@ def test_style_block_states_exclamation_cap():
     assert "최대 1개" in format_turn_state_for_llm(dict(base, instruction_for_this_turn="CONTINUE_NORMAL"))
     assert "최대 0개" in format_turn_state_for_llm(dict(base, instruction_for_this_turn="CONTINUE_NORMAL",
                                                          coach_persona={"name": "Daniel (다니엘)"}))
+
+
+# ── 조기 전진 AND result_probed (2026-09-17) ──
+def test_early_advance_requires_backend_result_probe():
+    st, cur = T.apply_probe_turn({}, CH, ALL, event_done=False)          # 앵커 turns=1
+    # LLM 이 STAR 완결을 보고(event_done=True)해도 결과를 실제로 묻지 않았으면(result_probed=False) 전진 X
+    st, cur2 = T.apply_probe_turn(st, CH, ALL, event_done=True)
+    assert cur2 == cur and st["turns_on_target"][CH] == 2
+    # 결과를 물은 뒤(result_probed=True)에는 조기 전진 허용
+    st = T.mark_result_probed(st, CH)
+    st, cur3 = T.apply_probe_turn(st, CH, ALL, event_done=True)
+    assert cur3 == ALL[1] and st["turns_on_target"][CH] == 1
+    # 3턴 상한 전진은 조건 무관(기존대로)
+    st, _ = T.apply_probe_turn(st, CH, ALL, event_done=False)            # turns=2
+    st, _ = T.apply_probe_turn(st, CH, ALL, event_done=False)            # turns=3
+    assert st["result_probed"][CH] is False
+    st, cur4 = T.apply_probe_turn(st, CH, ALL, event_done=False)         # 상한 → 전진
+    assert cur4 == ALL[2]
+
+
+def test_await_continue_dead_path_removed():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import instruction_decider as ID
+    assert "AWAIT_" + "CONTINUE" not in inspect.getsource(D)
+    assert "awaiting_continue_" + "decision" not in inspect.getsource(ID)

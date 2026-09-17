@@ -633,7 +633,6 @@ async def _submit_message_phase3a(
             "is_session_starting": False,
             "is_session_completed": True,
             "is_session_paused": False,
-            "is_awaiting_continue": False,
             "has_next_chapter": False,
             "next_topic": None,
             "reward": None,
@@ -658,7 +657,6 @@ async def _submit_message_phase3a(
             "is_session_starting": False,
             "is_session_completed": False,
             "is_session_paused": False,
-            "is_awaiting_continue": False,
             "has_next_chapter": False,
             "next_topic": None,
             "reward": None,
@@ -856,11 +854,21 @@ async def _submit_message_phase3a(
             _cur_before is None
             or advanced_to_new_target(_cur_before, current_target_sub)
         )
+        # 2026-09-17: decider 가 STAR 완결(LLM 자기보고)로 새 사건을 청하려 했지만 result_probed=False 라
+        #   원장이 전진을 막은 턴 → 새 사건 대신 현재 사건의 결과(R)를 묻는다(깊이 유지).
+        from diag_project.services.traversal import result_probed as _rp
+        if (instruction_used == "STAR_COMPLETE_NEW_EVENT" and not _target_advanced_now
+                and current_target_sub and not _rp(session.self_assessment_data, chapter)):
+            logger.info("🧭 조기 전진 차단: [%s] target=%s STAR 완결 보고됐으나 result_probed=False → R 탐침",
+                        chapter, current_target_sub)
+            instruction_used = "STAR_INCOMPLETE"
+            state["instruction_for_this_turn"] = "STAR_INCOMPLETE"
+            state["force_result_probe"] = True
         _force_r = (
             not _target_advanced_now
             and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE")
             and needs_result_probe(session.self_assessment_data, chapter)
-        )
+        ) or bool(state.get("force_result_probe"))
         state["force_result_probe"] = _force_r
         if _force_r and instruction_used != "STAR_INCOMPLETE":
             logger.info(
@@ -1745,8 +1753,6 @@ async def _submit_message_phase3a(
         "is_aborted_disengaged": _is_abort_disengaged,
         "is_awaiting_abort_decision": _is_abort_confirm,
         "session_status": session.status,
-        # 챕터 경계에서 '계속/휴식' 답변을 기다리는 중 — 프론트가 선택 버튼 노출
-        "is_awaiting_continue": probe_type_used == "AWAIT_CONTINUE",
         # 코치가 조기 종료를 '제안'함 — 프론트가 '다음에 하기/계속 진행하기'
         # 버튼을 노출해야 함 (Core Rule 7, 최대 2회)
         "needs_user_decision": needs_user_decision,
@@ -1884,15 +1890,9 @@ async def get_session_state(
         _next_chapter = _get_next_chapter(_cur_chapter)
         _next_topic = chapter_to_topic(_next_chapter) if _next_chapter else None
 
-    # 챕터 경계 '계속/휴식' 대기 여부 — 마지막 AI 메시지의 AWAIT_CONTINUE 마커.
-    # (새로고침/재동기화 후에도 프론트가 선택 버튼을 복원할 수 있도록 제공)
+    # (2026-09-17) 경계 '계속/휴식' 대기 마커 경로 삭제 — 어디서도 세워지지 않던 죽은 코드.
     _last_model_msg = next(
         (m for m in reversed(messages) if m.role == "model"), None
-    )
-    _is_awaiting_continue = (
-        _last_model_msg is not None
-        and _last_model_msg.probe_type_used == "AWAIT_CONTINUE"
-        and not _is_completed
     )
     # 조기 종료 '제안' 대기 여부 — 새로고침 후에도 선택 버튼 복원
     _needs_user_decision = (
@@ -1909,7 +1909,6 @@ async def get_session_state(
         "status": session.status,
         "is_paused": session.status == "paused",
         "is_completed": _is_completed,
-        "is_awaiting_continue": _is_awaiting_continue,
         "needs_user_decision": _needs_user_decision,
         "has_next_chapter": _next_chapter is not None,
         "next_topic": _next_topic,

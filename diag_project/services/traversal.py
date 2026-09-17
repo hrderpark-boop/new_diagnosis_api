@@ -180,6 +180,9 @@ def apply_probe_turn(
     asked = asked_for_chapter(store, chapter)
     cur = (store.get("current_target") or {}).get(chapter)
     turns = (store.get("turns_on_target") or {}).get(chapter, 0)
+    # 2026-09-17: 조기 전진(3턴 전 STAR 완결)은 LLM 자기보고 단독 조건이었다(과다 보고 시 깊이 건너뜀).
+    #   백엔드 판정 result_probed(결과를 실제로 물었는가)를 AND 로 — 3턴 상한 전진은 조건 무관(기존대로).
+    event_done = bool(event_done) and result_probed(store, chapter)
 
     if cur is None or should_advance_target(turns, event_done):
         target = select_next_target(asked, all_subs, priority or [])
