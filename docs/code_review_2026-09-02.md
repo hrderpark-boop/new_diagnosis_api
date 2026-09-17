@@ -119,6 +119,38 @@ LLM 응답이 나온 뒤 "조건 X면 덧붙임/교체/무시"로 동작하는 �
 | 13 | `build_turn_state` 9-f | 라포 3턴+동의 | `[READY_FOR_INTRO]` 강제 | 보존 |
 | 14 | `llm_service._generate_with_retry` | 출력에 "User:"/"사용자:" | 이후 절단 (M7) | 2단계 |
 
+## 2-d. LLM 자기보고 태그를 흐름 제어가 신뢰하는 곳 — 전수 확인 (2026-09-17, 2단계 검토 대상)
+
+배경: Daniel 재주행 4-a 대조에서 되받기 판정이 LLM 자기보고(`probe_type_used`)에 기대던 것이 드러났다.
+'유령 측정'(asked = LLM.measured)과 같은 유형이다. 흐름 제어가 LLM 이 낸 태그를 **단독 조건**으로 쓰는 분기를
+전수 확인했다. 지금 고치지 않는다 — 2단계에서 항목별로 결정한다.
+
+범례: 🟥 LLM 태그 단독 조건(백엔드 검증 없음) / 🟨 LLM 신호 + 백엔드 보정 혼합 / 🟩 OR 조건·백엔드 결정론(안전) / ⬜ 죽은 경로
+
+| # | 위치 | LLM 태그 | 흐름에 미치는 영향 | 판정 |
+|---|---|---|---|---|
+| 1 | `diagnoses._handle_event_lifecycle` 1791 | `llm_state.current_event_id` | 사건 **생성** 자체가 LLM 신호로만 결정. 신호 없으면 사건 미추적(→ 깊이 게이트 0) | 🟥 |
+| 2 | 같은 함수 1823~1827 | `llm_state.star_coverage.A/R/T` | 사용자 발화를 A/R/T 슬롯에 채움 → `event.star_coverage` 산출 | 🟥 |
+| 3 | `instruction_decider` 1189 `events_with_star_70` | (#2의 파생) | 깊이 게이트 `_depth_ok`(664), 무수확 판정 `_no_strong`(611·1281), 종료 경계 | 🟥 파생 |
+| 4 | `instruction_decider` 702 `current_event_star_coverage` | (#2의 파생) | 규칙 12: 전부 True 면 `STAR_COMPLETE_NEW_EVENT` → `apply_probe_turn(event_done=True)` 로 **3턴 전에 타겟 전진** | 🟥 파생 |
+| 5 | 같은 함수 1835 | `llm_state.turn_intent == "EVENT_COMPLETE"` + `event_metadata` | `complete_event`: is_complete·`mapped_subcompetency` 기록(원장 mapped 는 LLM 이 정함) | 🟥 |
+| 6 | `instruction_decider` 867~875 `has_contrary` | `probe_type_used == "CONTRARY"`(LLM 자기보고) | 깊이 게이트 `_depth_ok`(반례 필수), `should_do_contrary`(732~741) → CONTRARY_NEEDED 반복/중단 | 🟥 |
+| 7 | `diagnoses` 1641 `result_probed` | `probe_type_used == "MEASUREMENT"` **OR** `is_result_probe_text(reply)` | R 탐침 강제 해제. OR 라 한쪽이 틀려도 문장 표지가 잡는다 — **확인만, 안전** | 🟩 |
+| 8 | `diagnoses` 1108·1109·1117 마커 파싱 | 응답 텍스트의 `[READY_FOR_INTRO]` `[START_CHAPTER]` `[SUGGEST_PAUSE]` | READY_FOR_INTRO → 라포 종료 판정(912); SUGGEST_PAUSE → 2-Strike 카운트(965)·needs_user_decision. START_CHAPTER 는 8-d/8-e 가 코드로 확정(환각 게이트 1178·1213) | 🟨 (READY_FOR_INTRO·SUGGEST_PAUSE 는 사실상 🟥) |
+| 9 | `diagnoses` 1577 `probe_type_used = llm_state.get(...)` | LLM 자기보고 값이 기본 | 시스템 마커(START_CHAPTER 등) 로 덮이지 않는 턴은 LLM 값이 그대로 저장 → #6·#7 의 입력. 학습 라벨에도 섞임 | 🟨 |
+| 10 | `instruction_decider` 883·893·903 | NO_YIELD_ULTIMATUM · ABORT_WARNING · NAME_RECONFIRM | 시스템이 instruction/코드 판정으로 세운 마커 — LLM 아님 | 🟩 |
+| 11 | `diagnoses` 1749 `is_awaiting_continue`, decider 948 | `probe_type_used == "AWAIT_CONTINUE"` | 현재 어디서도 세워지지 않는 값 — 프론트 `awaitingContinue` 배너 포함 죽은 경로 | ⬜ |
+| 12 | `style_tracker.compute_style_constraints` | 없음 — 저장된 코치·사용자 발화 텍스트 판정 | 되받기·'네' 시작 판정은 2026-09-14/16 확장으로 결정론. 단 #9 의 `probe_type` 은 쓰지 않음 | 🟩 |
+| 13 | `llm_service` 1496~1533 `eff_measured` | 분석 LLM 의 `measured`·`claimed level` | 레벨 게이트(pass/dropped/pending)로 보정 후에만 measured 카운트 — 유령 측정 수정 완료분. `asked` 는 원장에서 | 🟨 |
+| 14 | `diagnoses` 8-i 출력 가드(2026-09-16) | 없음 — 출력 텍스트 결정론 검사 | 칭찬·전환 환각·앵커 이름·되받기 리드는 텍스트로 판정 | 🟩 |
+
+**2단계 결정 후보(고치지 않았음)**
+- #1~#5: 사건 생성·STAR 채움·완결을 LLM 신호에서 떼어 백엔드 결정론으로 옮기는 안. 최소안 = "R 탐침(#7)처럼 OR 로":
+  `star_coverage.R` OR `is_result_probe_text(직전 코치 질문)` AND 사용자 답변 길이 기준, `EVENT_COMPLETE` OR 3턴 상한.
+- #6: `has_contrary` 를 코치 발화 텍스트 표지("예상과 달리/잘 안 됐던/어려움을 겪었던")와 OR 로.
+- #8: READY_FOR_INTRO·SUGGEST_PAUSE 마커는 라포 턴 수·2-Strike 카운터 등 백엔드 카운터와 AND 로 묶는 안.
+- #11: 죽은 경로 삭제(프론트 `awaitingContinue` 포함) 또는 실제 대기 상태로 복원 — 2026-09-16 의 `awaiting_next_chapter_choice` 가 그 자리를 대신하고 있다.
+
 ## 3. 진행 순서
 
 1. 1단계(파일럿 차단): C1, C3, H1, H2, H3(+M16, M22), H4, H5, H6, H7, M4, M14 — 항목별 커밋.
