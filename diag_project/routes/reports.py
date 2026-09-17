@@ -480,11 +480,14 @@ async def analyze_session(
     )
 
     # AI 분석 실행 (chapter_transcripts 제공 시 챕터별 Map 호출 → Reduce)
+    # 2026-09-17: 온보딩 담당 업무 맥락(참고 플래그용, 점수 무관)
+    _pctx = (session.self_assessment_data or {}).get("participant_context") or {}
     analysis_result = await llm.generate_diagnosis_result(
         history=formatted_history,
         user_name=user_name,
         chapter_transcripts=chapter_transcripts,
         asked_subcompetencies=asked_subs,
+        role_summary=_pctx.get("role_summary"),
     )
     if not analysis_result:
         raise HTTPException(status_code=500, detail="AI 분석 결과를 생성하지 못했습니다.")

@@ -134,3 +134,80 @@ def test_breadth_floor_all_when_four_or_fewer():
     assert T.chapter_turn_cap(ID.MIN_EXPLORED["organization_management"]) == 16
     for ch, m in ID.MIN_EXPLORED.items():
         assert T.chapter_turn_cap(m) < ID.MAX_TURNS[ch]
+
+
+# ── 2026-09-17 Daniel 성과관리 재주행 6건 ──
+CH = "organization_management"
+def test_echo_requires_two_chunks_single_quote_allowed():
+    from diag_project.services.style_tracker import echoes_user
+    user = "팀원들이 마음속으로 진심으로 인정하는지는 모르겠습니다."
+    # 한 어절 인용(연결 한 절)은 복창이 아니다
+    assert not echoes_user("방금 말씀하신 '인정'과도 이어지는데요, 목표를 정할 때는 어떻게 하셨습니까?", user)
+    # 어절 2개 이상 되풀이는 복창
+    assert echoes_user("팀원들이 진심으로 인정하는지 모르겠다고 하셨습니다. 그다음은요?", user)
+
+
+def test_bridge_keyword_and_bridged_anchor():
+    kw = G.bridge_keyword("팀원들이 마음속으로 진심으로 인정하는지는 모르겠습니다.")
+    assert kw and 2 <= len(kw) <= 6
+    t = G.template_anchor_bridged("최근에 결과를 어떻게 확인하셨습니까?", "팀원들이 진심으로 인정하는지 모르겠습니다.")
+    assert t.startswith("방금 말씀하신 '") and t.endswith("확인하셨습니까?") and t.count("?") == 1
+    assert G.template_anchor_bridged("질문?", "") == G.template_anchor("질문?")
+
+
+def test_result_probe_pool_rotates_without_repeat():
+    st = {}
+    seen = []
+    for _ in range(len(T.RESULT_PROBE_POOL)):
+        q, st = T.pick_result_probe(st, CH)
+        seen.append(q)
+    assert len(set(seen)) == len(T.RESULT_PROBE_POOL)            # 챕터 안 무반복
+    assert T.used_result_probes(st, CH) == seen
+    q2, st = T.pick_result_probe(st, CH)                           # 다 쓰면 처음부터
+    assert q2 == T.RESULT_PROBE_POOL[0]
+    assert all("그렇게 하니" not in q for q in T.RESULT_PROBE_POOL)
+
+
+def test_repeated_result_probe_detected():
+    used = ["그 뒤로 달라진 게 있었습니까?"]
+    assert G.find_repeated_result_probe("그렇게 하니까 어떻게 됐습니까?", []) is not None   # 상투형
+    assert G.find_repeated_result_probe("그때 그 뒤로 달라진 게 있었습니까?", used) is None  # 다른 문장
+    assert G.find_repeated_result_probe("그 뒤로 달라진 게 있었습니까?", used) is not None  # 같은 문장 반복
+    assert G.find_repeated_result_probe("결과를 어떻게 확인하셨습니까?", used) is None
+
+
+def test_absence_keywords_extended():
+    from diag_project.services.avoidance_detector import detect_absence_statement
+    for t in ("그때그때 해결했고 특별한 것 없음", "딱히 기억나는 건 없습니다", "특별한 것은 없었어요", "그때그때 처리했죠"):
+        assert detect_absence_statement(t), t
+    assert not detect_absence_statement("그때그때 상황을 보며 팀원들과 우선순위를 다시 정하고 두 달에 걸쳐 새 체계를 안착시켰습니다.")
+
+
+def test_rapport_role_turn_and_context_state():
+    assert ID._force_rapport_category(1) == "담당업무" and ID._force_rapport_category(2) == "기대"
+    import inspect
+    from diag_project.routes import diagnoses as D
+    src = inspect.getsource(D)
+    assert "ROLE_ASK" in src and "participant_context" in src and "어떤 일을 맡고 계신지" in src
+
+
+def test_praise_list_covers_wrapup_phrases_and_wrapup_is_template():
+    for p in ("인상적입니다", "매우 인상 깊습니다", "리더님의 면모", "기준이 선명하게 그려지는 듯합니다", "돋보이는 결정"):
+        assert G.find_praise(p), p
+    import inspect
+    from diag_project.routes import diagnoses as D
+    src = inspect.getsource(D)
+    assert "여기까지 충분히 들었습니다. 이제 '{chapter_to_topic(_next_ch)}'로 이어가 보겠습니다." in src
+    # ALIGN 은 리드 교정 대상에서 제외(정의·목록이 지워지던 버그)
+    assert 'instruction_used not in ("COMPETENCY_ALIGN", "CHAPTER_OPENING")' in src
+
+
+def test_bridge_rule_in_style_hints_and_analysis_flag():
+    from diag_project.services.style_tracker import format_style_constraints
+    sc = {"forbid_recap": True, "forbid_ne_opening": False}
+    for n in ("Daniel (다니엘)", "Jessica (제시카)", "Lucas (루카스)"):
+        t = format_style_constraints(sc, n)
+        assert "연결 한 절" in t and "한 어절" in t, n
+    from diag_project.llm_service import GeminiService
+    tmpl = GeminiService._build_sub_scores_json_template(None, ["목표설정 및 공유"])
+    assert "consistency_flag" in tmpl

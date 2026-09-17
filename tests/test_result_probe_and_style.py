@@ -59,16 +59,16 @@ def test_persona_specific_hint_in_constraint_text():
     sc = {"forbid_recap": True, "forbid_ne_opening": False}
     j = format_style_constraints(sc, "Jessica (제시카)")
     e = format_style_constraints(sc, "Ella (엘라)")
-    assert "관찰" in j and "쉽지 않으셨겠네요" in j
-    assert "감정 한 줄" in e
+    # 2026-09-17: 대체 문장은 '연결 한 절'(직전 발화 단어 하나를 다음 질문의 이유로) — 6명 공통, 톤만 다르다
+    assert "연결 한 절" in j and "간결" in j
+    assert "연결 한 절" in e and "부드럽게" in e
     assert "복창" in j and "평서문" in j and "요약 되받기 금지" in j
-    # 2026-09-15: 나머지 4명도 페르소나별 대체 문장 규칙을 갖는다(앵무새 복창 금지는 공통)
-    expect = {"Olivia (올리비아)": "관점을 넓히는", "Daniel (다니엘)": "인정·격려",
-              "Michael (마이클)": "추진을 북돋는", "Lucas (루카스)": "요점 정리"}
+    expect = {"Olivia (올리비아)": "다른 각도", "Daniel (다니엘)": "격식체",
+              "Michael (마이클)": "추진감", "Lucas (루카스)": "요점"}
     for name, kw in expect.items():
         t = format_style_constraints(sc, name)
-        assert kw in t and "복창" in t, name
-    assert "질문만 던지는 것도 안 됩니다" in format_style_constraints(sc, "Lucas (루카스)")
+        assert kw in t and "연결 한 절" in t and "한 어절" in t, name
+    assert "질문만 던지지 마세요" in format_style_constraints(sc, "Lucas (루카스)")
 
 
 # ── 2) 결과(R) 탐침 강제 ──

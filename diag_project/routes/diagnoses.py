@@ -781,6 +781,25 @@ async def _submit_message_phase3a(
     #   - turn_index: 세션 내 누적 user 턴 번호 (user/model 쌍 페어링 키)
     #   - instruction_used: 이 발화가 촉발한 instruction (학습 라벨)
     instruction_used = state.get("instruction_for_this_turn")
+    # 6(2026-09-17) 담당 업무 답변 → session store participant_context {role_summary, team_size}.
+    #   응답이 없거나 모호(≤3자·동의어만)하면 저장하지 않고 넘어간다. 스키마 변경 없이 JSONB store 에 둔다.
+    if state.get("role_ask_pending") and (request.content or "").strip():
+        from diag_project.services.instruction_decider import is_user_consent as _iuc
+        _rt = request.content.strip()
+        if len(_rt) > 3 and not _iuc(_rt):
+            import re as _re_role
+            _m = _re_role.search(r"(\d{1,4})\s*(명|인)", _rt)
+            _pc_store = dict(session.self_assessment_data or {})
+            _pc_store["participant_context"] = {
+                "role_summary": _rt[:300],
+                "team_size": int(_m.group(1)) if _m else None,
+            }
+            session.self_assessment_data = _pc_store
+            from sqlalchemy.orm.attributes import flag_modified as _fm_pc
+            _fm_pc(session, "self_assessment_data")
+            await db.commit()
+            state["participant_context"] = _pc_store["participant_context"]
+            logger.info("🧩 participant_context 저장: team_size=%s role='%s'", _m.group(1) if _m else None, _rt[:40])
     PRE_DIAGNOSIS_INSTRUCTIONS = {
         "RAPPORT_BUILDING",
         "DIAGNOSIS_INTRO",
@@ -815,6 +834,14 @@ async def _submit_message_phase3a(
         _store = dict(session.self_assessment_data or {})
         _ledger_snapshot = snapshot_ledger(_store)
         _all_subs = state.get("all_subcompetencies") or []
+        # 4(2026-09-17) 부재 진술 2단: 직전 코치 턴이 폴백(ABSENCE_PROBE)이었는데도 또 부재 진술이면
+        #   더 캐묻지 않고 이번 턴에 다음 하위역량으로 전진(현재 타겟 턴을 상한으로 올려 apply 가 전진하게).
+        from diag_project.services.avoidance_detector import detect_absence_statement as _abs
+        if (state.get("last_instruction") == "ABSENCE_PROBE" and _abs(request.content)
+                and (_store.get("current_target") or {}).get(chapter)):
+            from diag_project.services.traversal import MAX_TURNS_PER_SUB as _MAXT
+            _store.setdefault("turns_on_target", {})[chapter] = _MAXT
+            logger.info("🚫 부재 진술 2회(폴백 후) → [%s] 타겟 전진", chapter)
         _event_done = instruction_used == "STAR_COMPLETE_NEW_EVENT"
         # 🔑 타겟 전진 감지용: 스텝 '이전'의 현재 타겟(없으면 None=챕터 첫 앵커).
         _cur_before = (_store.get("current_target") or {}).get(chapter)
@@ -870,6 +897,13 @@ async def _submit_message_phase3a(
             and needs_result_probe(session.self_assessment_data, chapter)
         ) or bool(state.get("force_result_probe"))
         state["force_result_probe"] = _force_r
+        if _force_r and chapter:
+            from diag_project.services.traversal import pick_result_probe as _pick_rp
+            _rp_text, _st_rp2 = _pick_rp(session.self_assessment_data, chapter)
+            session.self_assessment_data = _st_rp2
+            from sqlalchemy.orm.attributes import flag_modified as _fm_rp2
+            _fm_rp2(session, "self_assessment_data")
+            state["result_probe_text"] = _rp_text
         if _force_r and instruction_used != "STAR_INCOMPLETE":
             logger.info(
                 "🎯 R 탐침 강제: [%s] target=%s turns=%d instr %s→STAR_INCOMPLETE",
@@ -1038,6 +1072,15 @@ async def _submit_message_phase3a(
             user_name=user_name,
             current_ampm_phrase=state.get("current_ampm_phrase", "오늘"),
             is_hostile=_hostile,
+        )
+    elif (not _is_aborted and not _is_warning and not _is_name_reconfirm
+            and instruction_used == "RAPPORT_BUILDING"
+            and state.get("rapport_turn_count", 0) == 1):
+        # 6(2026-09-17) 라포 2턴 — 담당 업무 질문(템플릿). 답변은 다음 턴에 participant_context 로 저장.
+        _ack = "그러시군요. " if not detect_deflection(request.content) else "네, 리더님. "
+        system_override_text = (
+            f"{_ack}어떤 일을 맡고 계신지도 간단히 알려주시겠어요? "
+            "팀 규모나 주로 하시는 업무 정도면 됩니다."
         )
     elif instruction_used == "CHAPTER_OPENING":
         # 챕터 도입 — 첫 BEI 앵커 질문. item4: LLM 대신 백엔드 '템플릿 풀'로
@@ -1333,7 +1376,11 @@ async def _submit_message_phase3a(
             state.get("turns_on_current_target"),
             state.get("no_yield_ultimatum_given"), state.get("turn_count"),
         )
-        wrap_up = clean_reply.strip() or "이 영역, 여기서 잘 매듭짓겠습니다."
+        # 5(2026-09-17) 마무리 총평 금지: LLM 문장을 쓰지 않고 고정 문구만.
+        wrap_up = (
+            f"여기까지 충분히 들었습니다. 이제 '{chapter_to_topic(_next_ch)}'로 이어가 보겠습니다."
+            if _next_ch else "여기까지 충분히 들었습니다. 이제 진단을 마무리하겠습니다."
+        )
         if _next_ch:
             # 전환 '예고'까지만. 다음 역량의 정의 질문(COMPETENCY_ASK)은 리더님이
             # 팝업으로 확인한 뒤 다음 턴의 첫 발화가 된다. (과거엔 '?' 가 없으면
@@ -1444,7 +1491,10 @@ async def _submit_message_phase3a(
             COMPETENCY_FRAMEWORK as _CF, find_sub_key_by_name as _fsk, get_anchor_questions as _gaq,
         )
         _sc = state.get("style_constraints") or {}
-        _is_probe = instruction_used in _PROBE_INSTR
+        # 2026-09-17: ALIGN(정의 제시+목록+앵커)·CHAPTER_OPENING 은 리드가 여러 문장인 것이 정상 —
+        #   되받기/리드 검사에서 제외(제외 안 하면 정의·5개 안내가 '리드 한 줄' 교정에 통째로 지워진다).
+        _is_probe = (instruction_used in _PROBE_INSTR
+                     and instruction_used not in ("COMPETENCY_ALIGN", "CHAPTER_OPENING"))
         _is_anchor = instruction_used == "STAR_COMPLETE_NEW_EVENT"
         _all_names = [v.get("name") for c in _CF.values() for v in (c.get("indicators") or {}).values()]
         _asked_qs: list[str] = []
@@ -1523,7 +1573,8 @@ async def _submit_message_phase3a(
             if _v:
                 logger.info("🛡️ 출력 가드 하드 교정: %s", _v)
                 if ("names" in _v or "off_target" in _v) and _tgt_q:
-                    clean_reply = template_anchor(_tgt_q)
+                    from diag_project.services.output_guard import template_anchor_bridged
+                    clean_reply = template_anchor_bridged(_tgt_q, request.content)
                     _v = {k: v for k, v in _v.items() if k not in ("names", "off_target", "praise", "transition", "recap", "ne_opening", "lead_stack")}
                 if "praise" in _v:
                     clean_reply, _n = strip_praise(clean_reply)
@@ -1536,6 +1587,20 @@ async def _submit_message_phase3a(
                     )
                 if not clean_reply.strip() and _tgt_q:
                     clean_reply = template_anchor(_tgt_q)
+
+        # 3(2026-09-17) Result 탐침 문장 변주: 상투형('그렇게 하니 어떻게 됐습니까') 또는 이 챕터에서 이미 쓴
+        #   결과 질문과 같은 문장이면 풀에서 안 쓴 문장으로 교체(챕터 안 무반복).
+        if chapter and _is_probe:
+            from diag_project.services.output_guard import find_repeated_result_probe
+            from diag_project.services.traversal import pick_result_probe, used_result_probes
+            _dup = find_repeated_result_probe(clean_reply, used_result_probes(session.self_assessment_data, chapter))
+            if _dup:
+                _new_q, _st_rp = pick_result_probe(session.self_assessment_data, chapter)
+                clean_reply = clean_reply.replace(_dup, _new_q, 1)
+                session.self_assessment_data = _st_rp
+                from sqlalchemy.orm.attributes import flag_modified as _fm_rp
+                _fm_rp(session, "self_assessment_data")
+                logger.info("🔁 결과 질문 반복 교체: '%s' → '%s'", _dup[:40], _new_q)
 
     # 8-h. 느낌표 상한(2026-09-15): 페르소나별 상한(Michael 1·안내턴 0, 나머지 0)을 백엔드가 센다.
     #   초과 → 재생성 1회(같은 프롬프트 + 상한 지시) → 그래도 초과면 초과분을 마침표로 치환.
@@ -1614,6 +1679,10 @@ async def _submit_message_phase3a(
     elif _is_name_reconfirm:
         # 이름 재확인 턴 — 다음 턴에 '이미 되물음'을 판별해 재질문을 막는 마커.
         probe_type_used = "NAME_RECONFIRM"
+    elif (instruction_used == "RAPPORT_BUILDING" and system_override_text is not None
+            and state.get("rapport_turn_count", 0) == 1):
+        # 6(2026-09-17) 담당 업무 질문 턴 — 다음 턴에 답변을 participant_context 로 저장하는 근거 마커.
+        probe_type_used = "ROLE_ASK"
 
     # 진단 전 단계는 사건 생명주기 스킵
     is_pre_diagnosis = (instruction_used in PRE_DIAGNOSIS_INSTRUCTIONS)

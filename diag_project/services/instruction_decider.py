@@ -288,13 +288,16 @@ def _force_rapport_category(rapport_turn_count: int) -> str:
     rapport_turn_count = build_turn_state 실행 시점의 chapter=None user 메시지 수
     (현재 user 메시지는 아직 chapter=None 아님 → 직접 인덱스로 사용).
 
-    0 → 일상 (시간대 활용, 첫 AI 라포 응답)
-    1 → 기대 (감사 + 의미 부여 + 답하기 쉬운 기대 질문)
-    2+ → 진단_대화 (마무리, 사용자 시작 의지 확인)
+    0 → 일상 (시간대 활용, 첫 AI 라포 응답 — 시스템 템플릿)
+    1 → 담당업무 (2026-09-17: "어떤 일을 맡고 계신지" — 시스템 템플릿, LLM 미호출)
+    2 → 기대 (감사 + 의미 부여 + 답하기 쉬운 기대 질문)
+    3+ → 진단_대화 (마무리, 사용자 시작 의지 확인)
     """
     if rapport_turn_count == 0:
         return "일상"
     elif rapport_turn_count == 1:
+        return "담당업무"
+    elif rapport_turn_count == 2:
         return "기대"
     else:
         return "진단_대화"
@@ -1207,6 +1210,10 @@ async def build_turn_state(
         "competency_aligned": competency_aligned,
         "definition_asked": definition_asked,
         "awaiting_next_chapter_choice": awaiting_next_chapter_choice,  # 2026-09-16 전환 팝업 대기
+        # 2026-09-17 온보딩 담당 업무: 직전 코치 턴이 역할 질문(ROLE_ASK)이면 이번 사용자 답을 저장
+        "role_ask_pending": bool(latest_model_msg is not None
+                                 and latest_model_msg.probe_type_used == "ROLE_ASK"),
+        "participant_context": _store.get("participant_context") or None,
         "suggest_pause_count": suggest_pause_count,
         "session_deflection_count": session_deflection_count,
         "session_already_warned": session_already_warned,

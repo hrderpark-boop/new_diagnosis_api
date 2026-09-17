@@ -135,6 +135,9 @@ BANNED_PRAISE = [
     "탁월", "뛰어난", "뛰어나", "감탄", "대단하", "대단한", "존경", "모범적", "귀감", "완벽하",
     "놀라운", "놀랍", "역량이 돋보", "돋보입니다", "돋보이", "리더십이 빛", "빛나는", "귀한 경험",
     "소중한 경험", "값진", "멋진", "멋지", "훌륭", "깊이 공감합니다", "전적으로 공감",
+    # 2026-09-17 보강(마무리 총평에서 재발): 인상적·돋보·선명하게 그려지는 등 평가적 총평
+    "돋보", "인상적", "선명하게 그려", "그려지는 듯", "기준이 선명", "면모", "리더십이 느껴", "역량이 느껴",
+    "저력", "내공", "진정한 리더", "리더로서의 자질",
 ]
 _PRAISE_RE = re.compile("|".join(re.escape(p) for p in sorted(set(BANNED_PRAISE), key=len, reverse=True)))
 
@@ -198,3 +201,38 @@ def trim_lead_sentences(text: str, forbid_recap: bool, user_text: str | None, fo
 
 def first_lead(text: str) -> str:
     return _first_sentence(text)
+
+
+# ── 연결 한 절(2026-09-17): 직전 사용자 발화에서 핵심 단어 하나 ──
+def bridge_keyword(user_text: str | None, max_len: int = 6) -> str:
+    """직전 사용자 발화의 내용 어절 중 하나(2~max_len자, 가장 긴 것). 없으면 ''."""
+    cands = [c for c in _content_chunks(user_text or "") if 2 <= len(c) <= max_len]
+    return max(cands, key=len) if cands else ""
+
+
+def template_anchor_bridged(question: str, user_text: str | None) -> str:
+    """템플릿 앵커 앞에 연결 한 절 — 인용은 한 어절만(복창 판정 회피)."""
+    kw = bridge_keyword(user_text)
+    if kw:
+        return f"방금 말씀하신 '{kw}'와도 이어지는데요, {question}".strip()
+    return template_anchor(question)
+
+
+# ── Result 탐침 문장 반복(2026-09-17): 같은 문장은 한 챕터에 한 번 ──
+_GENERIC_RESULT_RE = re.compile(r"그렇게\s*(하니|하니까|해서|하셔서|하시니)\s*어떻게\s*(됐|되었|되셨)")
+
+
+def norm_sentence(s: str) -> str:
+    return re.sub(r"[\s.,!?…'\"()]", "", s or "")
+
+
+def find_repeated_result_probe(text: str, used_sentences: list[str]) -> str | None:
+    """출력의 문장이 (a) 상투형 '그렇게 하니 어떻게 됐습니까' 이거나 (b) 이 챕터에서 이미 쓴 결과 질문과
+    같으면 그 문장을 돌려준다(교체 대상). 없으면 None."""
+    used = {norm_sentence(u) for u in (used_sentences or []) if u}
+    for sent in split_sentences(text):
+        if not is_question(sent):
+            continue
+        if _GENERIC_RESULT_RE.search(sent) or norm_sentence(sent) in used:
+            return sent
+    return None

@@ -244,3 +244,34 @@ def needs_result_probe(
     """
     turns = int(((store or {}).get("turns_on_target") or {}).get(chapter, 0))
     return turns >= max_turns_per_sub and not result_probed(store, chapter)
+
+
+# ── 🎯 결과(R) 탐침 문장 풀(2026-09-17): "그렇게 하니 어떻게 됐습니까" 4회 반복 → 챕터 안 무반복 ──
+RESULT_PROBE_POOL = [
+    "그 뒤로 달라진 게 있었습니까?",
+    "팀원들은 그것을 어떻게 받아들였나요?",
+    "결과를 어떻게 확인하셨습니까?",
+    "지금 돌아보면 어떤 결과였습니까?",
+    "그 이후 팀에는 무엇이 남았습니까?",
+    "기대했던 것과 실제 결과는 어떻게 달랐습니까?",
+]
+
+
+def pick_result_probe(store: dict, chapter: str) -> tuple[str, dict]:
+    """이 챕터에서 아직 안 쓴 결과 질문을 고르고 사용 기록을 남긴다(순수, 커밋은 호출자).
+    전부 썼으면 처음부터 다시 돈다."""
+    store = dict(store or {})
+    used_map = dict(store.get("result_probe_used") or {})
+    used = list(used_map.get(chapter) or [])
+    remaining = [i for i in range(len(RESULT_PROBE_POOL)) if i not in used]
+    if not remaining:
+        used, remaining = [], list(range(len(RESULT_PROBE_POOL)))
+    idx = remaining[0]
+    used_map[chapter] = used + [idx]
+    store["result_probe_used"] = used_map
+    return RESULT_PROBE_POOL[idx], store
+
+
+def used_result_probes(store: dict, chapter: str) -> list[str]:
+    idxs = ((store or {}).get("result_probe_used") or {}).get(chapter) or []
+    return [RESULT_PROBE_POOL[i] for i in idxs if 0 <= i < len(RESULT_PROBE_POOL)]

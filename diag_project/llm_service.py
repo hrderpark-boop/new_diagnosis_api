@@ -1144,6 +1144,7 @@ class GeminiService:
         full_transcript: str,
         asked_subs: set | None = None,
         outer_idx: int = 0,
+        role_summary: str | None = None,
     ) -> Dict[str, Any]:
         """
         STEP 2: 단일 역량에 대한 심층 분석
@@ -1179,6 +1180,17 @@ class GeminiService:
             )
         else:
             _focus_block = ""
+
+        # 2026-09-17 온보딩 담당 업무 맥락(참고 플래그): 근거 사례가 담당 업무와 명백히 무관한 직무 사례면
+        #   consistency_flag=true. 점수에는 반영하지 않고 리포트 관리자 뷰에만 노출한다.
+        _role_block = (
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "[리더 담당 업무 맥락 — 온보딩에서 본인이 말한 것]\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"  · {role_summary.strip()}\n"
+            "하위역량별 consistency_flag: 근거 발화의 사례가 이 담당 업무와 '명백히 무관한 다른 직무'의 일이면 true,\n"
+            "그 외(같은 직무·판단 불가·근거 없음)는 false. 점수·레벨 판정에는 절대 반영하지 말 것.\n\n"
+        ) if (role_summary or "").strip() else ""
 
         prompt = f"""
 [Role] Senior HR Assessment Expert & Executive Coach (C-Level 컨설팅 경력 15년 이상)
@@ -1314,7 +1326,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 - 반드시 포함: ① 그 행동/상황의 '비즈니스적 임팩트' ② 리더의 '내적
   딜레마와 극복 논리' — 전문 HR 컨설턴트의 밀도로 서술하되 단문 유지.
 
-{_focus_block}━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{_role_block}{_focus_block}━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [분석 대상 발언 — {korean_name} 관련 (챕터 태그로 1차 분리)]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {relevant_utterances}
@@ -1454,7 +1466,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 f'    "{name}": {{"measured": <true|false — 이 하위역량에 대한 '
                 f'리더의 실제 근거 발화가 대화에 존재하는가>, "level": '
                 f'<measured=true 면 1~4 정수, false 면 null>, "evidence": '
-                f'[<measured=true 면 근거 발화 원문 1건 이상, false 면 빈 배열>]}}'
+                f'[<measured=true 면 근거 발화 원문 1건 이상, false 면 빈 배열>], '
+                f'"consistency_flag": <true|false — 근거 사례가 담당 업무 맥락과 명백히 무관한 직무 사례인가(맥락 없으면 false)>}}'
             )
         return ",\n".join(lines)
 
@@ -1534,9 +1547,12 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 "level": level, "score": score, "evidence": disp_ev,
                 "status": status, "gate_status": gate_status,
                 "borderline": bl,
+                # 2026-09-17: 담당 업무 맥락과 무관한 직무 사례 표식(점수 무관, 관리자 뷰용)
+                "consistency_flag": bool(p.get("consistency_flag")) if candidate else False,
             }
 
         result["sub_ledger"] = sub_ledger
+        result["consistency_flags"] = [s_ for s_, v in sub_ledger.items() if v.get("consistency_flag")]
         result["sub_scores"] = {s: v["score"] for s, v in sub_ledger.items()}
         result["measured_count"] = measured_count
         result["asked_count"] = sum(1 for v in sub_ledger.values() if v["asked"])
@@ -1801,7 +1817,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 
     async def _analyze_all_once(
         self, history, chapter_transcripts, asked_subcompetencies,
-        competency_keys, outer_idx: int = 0,
+        competency_keys, outer_idx: int = 0, role_summary: str | None = None,
     ) -> Dict[str, Dict]:
         """분석 파이프라인 1회(outer run): Map(역량별 심층분석 5) + 레벨 게이트.
 
@@ -1819,7 +1835,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 self._analyze_single_competency(
                     competency_key=key, relevant_utterances=_chapter_data(key),
                     full_transcript=_full, asked_subs=_asked.get(key) or set(),
-                    outer_idx=outer_idx)
+                    outer_idx=outer_idx, role_summary=role_summary)
                 for key in competency_keys]
         else:
             # 🚨 §5 레거시 폴백: 프로덕션(analyze_session)은 항상
@@ -1868,6 +1884,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         user_name: str,
         chapter_transcripts: Dict[str, str] | None = None,
         asked_subcompetencies: Dict[str, set] | None = None,
+        role_summary: str | None = None,
     ) -> Dict[str, Any]:
         """
         Map-Reduce 채점:
@@ -1903,13 +1920,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 logger.info("🔁 outer run %d/%d", _o + 1, _n_outer)
                 _outer_results.append(await self._analyze_all_once(
                     history, chapter_transcripts, asked_subcompetencies,
-                    competency_keys, outer_idx=_o))
+                    competency_keys, outer_idx=_o, role_summary=role_summary))
             from diag_project.services.outer_merge import merge_outer_runs
             competency_results = merge_outer_runs(_outer_results, _n_outer)
         else:
             competency_results = await self._analyze_all_once(
                 history, chapter_transcripts, asked_subcompetencies,
-                competency_keys, outer_idx=0)
+                competency_keys, outer_idx=0, role_summary=role_summary)
 
         # 🔎 T-A 감사 신호(로그 전용): 병합 결과 기준. 동일 STAR 사건이 3+
         #   하위역량에 매핑되고 레벨 방향이 엇갈리면 경고(레벨 인플레 감시).
