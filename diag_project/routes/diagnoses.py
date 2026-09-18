@@ -1570,6 +1570,7 @@ async def _submit_message_phase3a(
             return v
 
         _v = _violations(clean_reply)
+        _tm["violations"] = dict(_v)
         # (2026-09-18 A/B 측정) recap·lead_stack·praise·transition·ne_opening 은 재생성해도 대부분 그대로 남아
         #   결국 하드 교정으로 끝났다(19턴 중 recap 12 → 재생성 후 11 잔존). 이 유형은 재생성 없이 바로 교정.
         #   재생성은 문장 교체가 어색한 names·off_target 에만(FM_REGEN_ALL=1 이면 예전처럼 전부 재생성 — 측정용).
@@ -1611,6 +1612,7 @@ async def _submit_message_phase3a(
         # 하드 교정(남은 위반 — 재생성을 생략한 턴은 1차 출력의 위반 그대로)
         if True:
             if _v:
+                _tm["hard"] = True
                 logger.info("🛡️ 출력 가드 하드 교정: %s", _v)
                 if ("names" in _v or "off_target" in _v) and _tgt_q:
                     from diag_project.services.output_guard import template_anchor_bridged
@@ -1866,6 +1868,22 @@ async def _submit_message_phase3a(
     if instruction_used == "AWAIT_NEXT_CHAPTER_CHOICE":
         is_chapter_completed = True
     _total = _time.perf_counter() - _tm["t0"]
+    # (2026-09-18) 턴별 가드 결과를 세션 store 에 남긴다(Render 로그는 실세션 후 조회 불가). 최근 200턴만 유지.
+    try:
+        _gl_store = dict(session.self_assessment_data or {})
+        _gl = list(_gl_store.get("guard_log") or [])[-199:]
+        _gl.append({
+            "t": _turn_index, "ch": chapter, "instr": instruction_used,
+            "v": sorted((_tm.get("violations") or {}).keys()), "regen": _tm["regen_n"],
+            "hard": bool(_tm.get("hard")), "llm": round(_tm["llm"], 1), "total": round(_total, 1),
+        })
+        _gl_store["guard_log"] = _gl
+        session.self_assessment_data = _gl_store
+        from sqlalchemy.orm.attributes import flag_modified as _fm_gl
+        _fm_gl(session, "self_assessment_data")
+        await db.commit()
+    except Exception as _e:
+        logger.warning("guard_log 기록 실패: %s", _e)
     logger.info("⏱ turn timing session=%s instr=%s decider=%.2fs llm=%.2fs regen=%d(%.2fs) post+db=%.2fs total=%.2fs style_tail=%s",
                 str(session.id)[:8], instruction_used, _tm["decider"], _tm["llm"], _tm["regen_n"], _tm["regen_s"],
                 max(0.0, _total - _tm["decider"] - _tm["llm"] - _tm["regen_s"]), _total, state.get("style_at_tail"))
