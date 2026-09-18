@@ -613,6 +613,22 @@ async def _submit_message_phase3a(
     llm: GeminiService,
 ):
     """Phase 3-A 흐름. USE_PHASE3A=true 시 활성."""
+    import time as _time
+    # ⏱ (2026-09-18) 턴 계측: decider / LLM 1차 / 재생성 횟수·시간 / 후처리+DB. 로그 한 줄로 남긴다.
+    _tm = {"t0": _time.perf_counter(), "decider": 0.0, "llm": 0.0, "regen_n": 0, "regen_s": 0.0}
+    _style_tail = ""
+
+    _gen = llm.generate_phase3a_interaction
+
+    async def _timed_regen(**kw):
+        """재생성 호출 래퍼 — 횟수·시간 누적 + 꼬리 블록 자동 전달."""
+        _r0 = _time.perf_counter()
+        _tm["regen_n"] += 1
+        try:
+            return await _gen(tail_block=_style_tail, **kw)
+        finally:
+            _tm["regen_s"] += _time.perf_counter() - _r0
+
     # 1. 세션 조회
     session = await db.get(DiagnosisSession, request.session_id)
     if not session:
@@ -775,6 +791,7 @@ async def _submit_message_phase3a(
 
     # 4. Turn State 빌드
     state = await build_turn_state(db, session.id, chapter)
+    _tm["decider"] = _time.perf_counter() - _tm["t0"]
 
     # 4-a. user 메시지 메타데이터 소급 기록 (ML 학습 데이터 구조화):
     #   - 진단 전 단계면 chapter 를 NULL 로 소급 변경 (라포 사담 분리)
@@ -959,7 +976,13 @@ async def _submit_message_phase3a(
         "coaching_style": _persona.get("coaching_style", ""),
         "tags": _persona.get("tags", ""),
     }
+    # (2026-09-18) 문체 제약을 프롬프트 꼬리(사용자 메시지 직전)로. FM_STYLE_TAIL=0 이면 기존 위치(A/B 측정용).
+    import os as _os_st
+    state["style_at_tail"] = _os_st.getenv("FM_STYLE_TAIL", "1") != "0"
     turn_state_text = format_turn_state_for_llm(state)
+    if state["style_at_tail"]:
+        from diag_project.prompts.phase3a.layer3_state import build_style_tail
+        _style_tail = build_style_tail(state)
     user_name = state.get("user_name", "리더")
     system_prompt = build_layer1_with_persona(
         coach_id=coach_key,
@@ -1121,6 +1144,7 @@ async def _submit_message_phase3a(
             # 경계 브릿지 턴: 한 문장 브릿지만 (경량)
             "CHAPTER_CONTINUE_CONFIRMED",
         }
+        _l0 = _time.perf_counter()
         llm_output = await llm.generate_phase3a_interaction(
             system_prompt=system_prompt,
             chapter_context=chapter_context,
@@ -1128,7 +1152,9 @@ async def _submit_message_phase3a(
             compressed_history=compressed_history,
             user_message=request.content,
             light_mode=(instruction_used in _LIGHT_MODE_INSTRUCTIONS),
+            tail_block=_style_tail,
         )
+        _tm["llm"] = _time.perf_counter() - _l0
         reply = llm_output["reply"]
         llm_state = llm_output.get("state") or {}
         event_metadata = llm_output.get("event_metadata")
@@ -1448,7 +1474,7 @@ async def _submit_message_phase3a(
             )
             _regen: dict = {}
             try:
-                _regen = await llm.generate_phase3a_interaction(
+                _regen = await _timed_regen(
                     system_prompt=system_prompt,
                     chapter_context=chapter_context,
                     turn_state_text=turn_state_text + _retry_note,
@@ -1523,6 +1549,11 @@ async def _submit_message_phase3a(
                 off, oq = off_target_overlap(txt, _asked_qs)
                 if off:
                     v["off_target"] = oq
+            elif _is_probe:
+                # (2026-09-18) 비앵커 프로브 턴의 이름 노출("'변화관리'와 관련하여") — 재생성 없이 구절만 걷어낸다
+                nm = find_sub_names(txt, _all_names)
+                if nm:
+                    v["names_mention"] = nm
             if _is_probe:
                 leads = []
                 for _s2 in split_sentences(txt):
@@ -1539,7 +1570,15 @@ async def _submit_message_phase3a(
             return v
 
         _v = _violations(clean_reply)
-        if _v:
+        # (2026-09-18 A/B 측정) recap·lead_stack·praise·transition·ne_opening 은 재생성해도 대부분 그대로 남아
+        #   결국 하드 교정으로 끝났다(19턴 중 recap 12 → 재생성 후 11 잔존). 이 유형은 재생성 없이 바로 교정.
+        #   재생성은 문장 교체가 어색한 names·off_target 에만(FM_REGEN_ALL=1 이면 예전처럼 전부 재생성 — 측정용).
+        _REGEN_KEYS = {"names", "off_target"}
+        import os as _os_rg
+        _need_regen = bool(_v) and (bool(set(_v) & _REGEN_KEYS) or _os_rg.getenv("FM_REGEN_ALL") == "1")
+        if _v and not _need_regen:
+            logger.info("🛡️ 출력 가드 위반(재생성 생략, 하드 교정): %s (instr=%s)", _v, instruction_used)
+        if _need_regen:
             logger.info("🛡️ 출력 가드 위반: %s (instr=%s) → 재생성 1회", _v, instruction_used)
             _notes = ["\n\n🚨 [시스템 — 재생성 지시] 방금 만든 응답에 다음 위반이 있습니다. 내용은 유지하되 고쳐 다시 쓰세요."]
             if "praise" in _v:
@@ -1552,7 +1591,7 @@ async def _submit_message_phase3a(
             if "ne_opening" in _v or "recap" in _v or "lead_stack" in _v:
                 _notes.append("- 질문 앞의 리드는 한 문장뿐입니다. '네,'로 시작하지 말고, 요약 되받기가 금지된 턴이면 페르소나의 대체 한 줄만 두세요.")
             try:
-                _g_regen = await llm.generate_phase3a_interaction(
+                _g_regen = await _timed_regen(
                     system_prompt=system_prompt,
                     chapter_context=chapter_context,
                     turn_state_text=turn_state_text + "\n".join(_notes),
@@ -1569,13 +1608,17 @@ async def _submit_message_phase3a(
                 if len(_v2) < len(_v) or not _v2:
                     clean_reply = _g_reply
                     _v = _v2
-            # 하드 교정(남은 위반)
+        # 하드 교정(남은 위반 — 재생성을 생략한 턴은 1차 출력의 위반 그대로)
+        if True:
             if _v:
                 logger.info("🛡️ 출력 가드 하드 교정: %s", _v)
                 if ("names" in _v or "off_target" in _v) and _tgt_q:
                     from diag_project.services.output_guard import template_anchor_bridged
                     clean_reply = template_anchor_bridged(_tgt_q, request.content)
                     _v = {k: v for k, v in _v.items() if k not in ("names", "off_target", "praise", "transition", "recap", "ne_opening", "lead_stack")}
+                if "names_mention" in _v:
+                    from diag_project.services.output_guard import strip_sub_name_mentions
+                    clean_reply, _n = strip_sub_name_mentions(clean_reply, _all_names)
                 if "praise" in _v:
                     clean_reply, _n = strip_praise(clean_reply)
                 if "transition" in _v:
@@ -1587,6 +1630,18 @@ async def _submit_message_phase3a(
                     )
                 if not clean_reply.strip() and _tgt_q:
                     clean_reply = template_anchor(_tgt_q)
+                # (2026-09-18) 교정 뒤 질문이 남지 않은 프로브 턴(예: 전환 문장뿐이던 출력) → 결과 질문으로 대체.
+                #   빈 서술만 나가면 리더가 답할 것이 없다. 현재 사건의 결과를 연결 절과 함께 묻는다.
+                from diag_project.services.output_guard import has_question
+                if _is_probe and not has_question(clean_reply) and chapter:
+                    from diag_project.services.traversal import pick_result_probe as _prp
+                    from diag_project.services.output_guard import template_anchor_bridged as _tab
+                    _q, _st_q = _prp(session.self_assessment_data, chapter)
+                    session.self_assessment_data = _st_q
+                    from sqlalchemy.orm.attributes import flag_modified as _fm_q
+                    _fm_q(session, "self_assessment_data")
+                    clean_reply = _tab(_q, request.content)
+                    logger.info("🛡️ 질문 없는 출력 → 결과 질문 대체: %s", _q)
 
         # 3(2026-09-17) Result 탐침 문장 변주: 상투형('그렇게 하니 어떻게 됐습니까') 또는 이 챕터에서 이미 쓴
         #   결과 질문과 같은 문장이면 풀에서 안 쓴 문장으로 교체(챕터 안 무반복).
@@ -1627,7 +1682,7 @@ async def _submit_message_phase3a(
                 "마침표로 바꿔 다시 쓰세요. 에너지는 단어로 냅니다."
             )
             try:
-                _ex_regen = await llm.generate_phase3a_interaction(
+                _ex_regen = await _timed_regen(
                     system_prompt=system_prompt,
                     chapter_context=chapter_context,
                     turn_state_text=turn_state_text + _ex_note,
@@ -1810,6 +1865,10 @@ async def _submit_message_phase3a(
     #   is_topic_completed 를 True 로(챕터·원장은 그대로, completed_topics 도 그대로).
     if instruction_used == "AWAIT_NEXT_CHAPTER_CHOICE":
         is_chapter_completed = True
+    _total = _time.perf_counter() - _tm["t0"]
+    logger.info("⏱ turn timing session=%s instr=%s decider=%.2fs llm=%.2fs regen=%d(%.2fs) post+db=%.2fs total=%.2fs style_tail=%s",
+                str(session.id)[:8], instruction_used, _tm["decider"], _tm["llm"], _tm["regen_n"], _tm["regen_s"],
+                max(0.0, _total - _tm["decider"] - _tm["llm"] - _tm["regen_s"]), _total, state.get("style_at_tail"))
     return {
         "coach_response_message": clean_reply,
         "is_topic_completed": is_chapter_completed,

@@ -1,0 +1,70 @@
+# 코치 턴 지연 — 측정·재생성 감축·프롬프트 토큰·스트리밍 설계 (2026-09-18)
+
+## (a) 재생성 줄이기 — 적용 내용
+- 문체 제약 블록을 Layer3 중간에서 **프롬프트 꼬리(사용자 메시지 직전)**로 이동 (`build_style_tail`,
+  `generate_phase3a_interaction(tail_block=)`). `FM_STYLE_TAIL=0` 이면 기존 위치(A/B 측정용).
+- 금지 턴에 negative example: "이렇게 시작하지 말 것: '네, ~하셨군요' / '~하셨다는 말씀, 잘 들었습니다'".
+- 되받기 판정 완화: 연결 한 절("방금 말씀하신 '인정'과도 이어지는데요, …?")은 표지어 '말씀하신'이 들어가도
+  되받기가 아니다 — 판정 전에 절을 걷어낸다(`_strip_bridge`). 걷어내지 않으면 규칙대로 쓴 턴이 다음 두 턴의
+  '요약 금지'를 켜서 불필요한 재생성을 부른다.
+- ⏱ 턴 계측 로그: `⏱ turn timing session= instr= decider= llm= regen=N(s) post+db= total=`.
+- fixture: `tests/fixtures/fixture_daniel_users.json` (kjpark Daniel 세션 온보딩+조직관리+성과관리 사용자 발화 37턴),
+  리플레이: `tools/replay_session.py` (로컬 sqlite 서버, 프로덕션 무접촉).
+
+### A/B/C 측정 결과 (같은 fixture 38턴, Daniel, 로컬 sqlite — LLM 시간은 실제 API)
+| 조건 | 재생성 걸린 턴 | 재생성 시간 | 총 시간 | 턴 평균 | LLM 1차 평균 |
+|---|---|---|---|---|---|
+| A 기존(문체 블록 중간, 위반이면 전부 재생성) | 19/38 (50%) | 38.9s (9%) | 420.0s | 11.05s | 10.00s |
+| B 꼬리 이동 + negative example | 19/38 (50%) | 36.7s (10%) | 374.5s | 9.86s | 8.85s |
+| **C** B + 재생성을 이름 노출·오타겟에만 | **1/38 (3%)** | 1.7s (0%) | **351.0s** | 9.24s | 9.16s |
+
+- 위치 이동만으로는 재생성이 줄지 않았다. A·B 모두 위반의 대부분이 되받기(recap)·리드 중첩(lead_stack)이고
+  (B: 19턴 중 12), **재생성 후에도 12 중 11 이 그대로 남아** 결국 하드 교정으로 끝났다 → 그 유형의 재생성은 시간만 쓴다.
+- C: 재생성은 `names`·`off_target`(문장 교체가 어색한 경우)에만. 나머지(recap·lead_stack·praise·transition·ne_opening)는
+  1차 출력을 바로 하드 교정. 목표(34턴 중 5턴 이하) 달성. `FM_REGEN_ALL=1` 로 예전 동작 복원(측정용).
+- 남는 지연은 LLM 1차 자체(9~10s, 로컬 measure 는 실서비스 13~16s 보다 짧다 — 네트워크·Render 차이). → (b) 토큰 감축.
+- 부수 발견·수정: 비앵커 턴의 하위역량 이름 인용("'변화관리'와 관련하여")은 구절만 걷어냄, 교정 뒤 질문이 없는 출력은
+  결과 질문(풀)으로 대체, 연결 절 템플릿의 인용 어절은 동사 조각 제외.
+
+## (b) 코치 프롬프트 토큰 — 측정 (gemini-2.5-flash count_tokens)
+| 레이어 | 문자 | 토큰 |
+|---|---|---|
+| Layer1 (system_instruction, Daniel) | 25,759 | **14,219** |
+| Layer2 (챕터 컨텍스트, 사람관리) | 1,053 | 564 |
+| Layer3 (턴 상태+지시, STAR_INCOMPLETE) | 1,807 | 996 |
+| 대화 히스토리(슬라이딩 윈도우) | 가변 | 턴당 ~1,500~3,000 |
+
+Layer1 이 5k 기준의 **약 3배**. 매 턴 system_instruction 으로 통째로 들어간다(캐시 없음). 1차 4초의 주원인.
+
+### 줄일 수 있는 것 — 목록 (구현 X, 별도 라운드)
+| # | 섹션 | 크기 | 판단 |
+|---|---|---|---|
+| 1 | Core Rule 7 — Session Authority | 3,112 (12%) | 조기 종료·2-Strike·강제 종료 흐름은 이제 백엔드(decider·마커·게이트)가 결정한다. LLM 에는 "제안 문장 1개" 지시만 남기고 절차 서술 삭제 → **-2,500** |
+| 2 | C-Level 임원 코치 페르소나 + 코치 페르소나(톤) + 제1원칙 + 동반 관찰자 | 3,270 | 같은 말(사람처럼·취조 금지·호기심)이 4곳에 중복. 하나로 합쳐 600자 → **-2,600** |
+| 3 | 5가지 핵심 대화 규칙 + 호응·진행 규칙 + 8가지 상황별 반응 패턴 + 5가지 회피 패턴 | 3,368 | 회피·부재·중복·이탈은 백엔드가 감지해 instruction 으로 준다(AVOIDANCE_DETECTED, ABSENCE_PROBE…). Layer3 가이드가 턴마다 해당 규칙만 주므로 Layer1 의 상시 서술은 삭제 가능 → **-2,800** |
+| 4 | 출력 예시 3개(사건 진행/사건 완료/챕터 완료) + 필드 설명 + 응답 구조 | 3,232 | light 턴(라포·INTRO·ALIGN 등)은 JSON 을 안 쓴다. heavy 턴에만 필요 → **light 턴 system_instruction 에서 제외(-3,200)**, heavy 턴은 예시 1개로 축약(-1,500) |
+| 5 | Core Rule 3(Transition)·4(Seamless)·9(Three-Strike)·10(Persona Integrity) | 2,344 | 3·4 는 전환이 템플릿·가드로 강제됨, 9 는 백엔드 3-Strike, 10 은 한 줄로 충분 → **-1,800** |
+| 6 | 6가지 탐침 종류 + 18개 탐침 템플릿 + 탐침 결정 트리 | ~1,900 | 탐침 종류는 Layer3 instruction 이 이미 고른다. 종류 정의 한 줄씩만 남김 → **-1,300** |
+| 7 | 금지어·권장 표현·대체 표현 | 652 | 칭찬 금지·느낌표는 출력 가드가 강제. 꼬리 블록에 있으니 Layer1 중복 삭제 → **-500** |
+
+합계 약 **-13,000자(≈ -7,000 토큰)**. 남는 Layer1 은 ~7k 토큰. 추가로 **light/heavy 두 벌의 Layer1** 을 두면 light 턴은 ~4k.
+주의: 삭제 전 각 규칙이 백엔드 가드·decider 로 실제 대체되는지 매핑표를 먼저 만든다(Core Rule 7 의 SUGGEST_PAUSE 마커는 아직 LLM 자기보고 — 2-d 감사 목록 #8).
+캐시: Gemini implicit caching 은 같은 prefix 를 자동으로 잡지만 system_instruction 이 코치 이름·visit_count 로 매 세션 달라 세션 간 재사용은 안 된다. 세션 내에서는 재사용 가능 — 4초가 줄지 않는 것으로 보아 히트가 안 되거나 히트해도 지연 이득이 작다. 토큰 감축이 확실한 길.
+
+## (c) 스트리밍 — 설계만 (다음 라운드)
+- 조건: (a) 로 재생성 턴을 5/34 이하로 줄인 뒤. 재생성·하드 교정이 걸리는 턴은 완성 후 검사라 스트리밍 불가.
+- 백엔드: `POST /diagnoses/submit_message/stream` (SSE). 흐름 = decider → 프롬프트 조립(기존 그대로) →
+  `generate_content_stream` 으로 청크 수신. **light 턴(JSON 없음)**은 청크를 그대로 `event: delta` 로 흘리고,
+  heavy 턴(JSON 봉투)은 `"reply":"` 뒤 문자열 구간만 파싱해 delta 로 흘린다(닫는 따옴표 전까지).
+  완성 후 기존 후처리(마커·가드·느낌표·R 문장 교체) 실행 → 최종 텍스트가 스트리밍한 것과 다르면
+  `event: replace` 로 전체 교체(사용자는 문장이 잠깐 바뀌는 것을 본다 — 재생성 턴에서만 발생), 같으면 `event: done` + 기존 JSON 응답 그대로.
+  DB 저장·원장 전진은 완성 후 기존 위치에서 1회.
+- 프론트: `fetch` + ReadableStream(EventSource 는 POST 불가). 코치 말풍선을 빈 상태로 먼저 만들고 delta 를 append,
+  `replace` 오면 통째 교체, `done` 에서 기존 `res.data` 처리 분기(completed_topics·배너·잠금)를 그대로 호출.
+  타이핑 점 3개는 첫 delta 에서 제거.
+- 실패 처리: 스트림 중 오류면 비스트리밍 엔드포인트로 1회 재시도(기존 응답 계약 유지). 프론트는 `NEXT_PUBLIC_STREAM=1` 로 토글.
+- 기대: 총 시간 동일, 첫 글자 ~1초(system_instruction 14k 토큰 → prefill 후 첫 토큰). (b) 감축과 같이 가면 더 빠르다.
+
+## (d) Render
+- 콜드스타트 52초 관측(09-15 openapi 첫 응답 53초). Free 슬립이면 참가자에게 그대로 노출된다.
+- **파일럿 첫 참가자 전에 Instance Type 을 Starter 로** (docs/deploy_backend.md F 항목). 코드 변경 없음.

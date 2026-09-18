@@ -96,12 +96,25 @@ def starts_with_ne_recap(text: str) -> bool:
     return bool(_NE_OPENER.match(fs)) or bool(_GUNYO_END.search(fs))
 
 
+# 연결 한 절(2026-09-17 규칙): "방금 말씀하신 '인정'과도 이어지는데요, …?" — 표지어 '말씀하신' 이 들어가지만
+#   되받기가 아니다(한 어절 인용을 다음 질문의 이유로 씀). 판정 전에 이 절을 걷어낸다(2026-09-18).
+_BRIDGE_RE = re.compile(
+    r"(방금|앞서|아까|조금 전)?\s*(말씀하신|말씀해 ?주신|언급하신)\s*['\"“‘][^'\"”’]{1,10}['\"”’]\s*"
+    r"(과도|와도|과|와|을|를|에|도|이야기|말씀)?"
+)
+
+
+def _strip_bridge(sentence: str) -> str:
+    return _BRIDGE_RE.sub("", sentence or "")
+
+
 def is_recap_opening(text: str) -> bool:
     """첫 문장이 '요약 되받기'인가(리더님 답변을 다시 정리해 주는 문장).
 
     표지어('~하셨군요/말씀하신…') 또는 질문 아닌 평서문 요약 종결('~하셨습니다.').
+    연결 한 절("방금 말씀하신 '○○'과도 …?")은 걷어내고 판정한다.
     """
-    fs = _first_sentence(text)
+    fs = _strip_bridge(_first_sentence(text))
     if not fs:
         return False
     if fs.rstrip().endswith("?"):
@@ -261,14 +274,16 @@ def format_style_constraints(
         lines.append(
             "- 직전 턴이 '네, ~하셨군요/~말씀이시군요'로 시작했습니다. **이번 턴은 "
             "그 시작 금지** — 호응어 없이 바로 질문으로 들어가거나 다른 짧은 반응 "
-            "한 마디('그랬군요.', '아, 그 장면요.')로 시작하세요."
+            "한 마디('그랬군요.', '아, 그 장면요.')로 시작하세요. "
+            "이렇게 시작하지 말 것: \"네, ~하셨군요\" / \"네, ~말씀 잘 들었습니다\""
         )
     if sc.get("forbid_recap"):
         lines.append(
             "- 최근 2턴 안에 리더님 답변을 요약하거나 리더님이 쓴 명사구를 그대로 복창한 "
             "문장이 있었습니다. **이번 턴은 요약 되받기 금지(복창 포함)** — '네'를 빼고 '~하셨습니다' "
             "평서문으로 바꿔도 같은 패턴입니다. 답변을 다시 정리하지 말고 (a) 바로 다음 "
-            "질문으로 들어가거나 (b) 한 줄 해석·공감을 붙인 뒤 질문하세요. "
+            "질문으로 들어가거나 (b) 연결 한 절을 붙인 뒤 질문하세요. "
+            "이렇게 시작하지 말 것: \"네, ~하셨군요. 그때 …?\" / \"~하셨다는 말씀, 잘 들었습니다.\" "
             + _persona_reaction_hint(persona_name)
         )
     if not lines:

@@ -211,3 +211,48 @@ def test_bridge_rule_in_style_hints_and_analysis_flag():
     from diag_project.llm_service import GeminiService
     tmpl = GeminiService._build_sub_scores_json_template(None, ["목표설정 및 공유"])
     assert "consistency_flag" in tmpl
+
+
+# ── 2026-09-18 (a) 재생성 줄이기: 연결 절 예외·꼬리 블록·negative example ──
+def test_bridge_clause_is_not_recap():
+    from diag_project.services.style_tracker import is_recap_opening, compute_style_constraints
+    bridge = "방금 말씀하신 '인정'과도 이어지는데요, 목표를 정할 때는 어떻게 하셨습니까?"
+    assert not is_recap_opening(bridge)
+    assert is_recap_opening("말씀하신 내용, 잘 들었습니다. 그다음은요?")     # 인용 없는 '말씀하신' 은 그대로 되받기
+    # 직전 두 턴이 연결 절이면 이번 턴 요약 금지가 걸리지 않는다(불필요한 금지 → 재생성 방지)
+    sc = compute_style_constraints([bridge, "말씀하신 '지표'와 연결해 여쭙니다. 누가 정했습니까?"], ["인정하는지 모르겠습니다", "지표가 문제였죠"])
+    assert sc["forbid_recap"] is False
+
+
+def test_style_tail_block_placed_before_latest_user_message():
+    from diag_project.prompts.phase3a.layer3_state import build_style_tail, format_turn_state_for_llm
+    st = {"chapter": CH, "turn_count": 5, "events_collected": 1, "events_with_star_70": 0,
+          "current_event_id": None, "current_event_star_coverage": None, "has_contrary_probe": False,
+          "avoidance_count_in_chapter": 0, "all_subcompetencies": [], "explored_subcompetencies": [],
+          "unexplored_subcompetencies": [], "asked_in_chapter": [], "instruction_for_this_turn": "STAR_INCOMPLETE",
+          "coach_persona": {"name": "Daniel (다니엘)"}, "style_constraints": {"forbid_ne_opening": True, "forbid_recap": True},
+          "style_at_tail": True}
+    mid = format_turn_state_for_llm(st)
+    tail = build_style_tail(st)
+    assert "이번 턴 문체 제약" not in mid and "마지막 확인" in tail
+    assert "이렇게 시작하지 말 것" in tail and "네, ~하셨군요" in tail
+    import inspect
+    from diag_project.llm_service import GeminiService
+    src = inspect.getsource(GeminiService.generate_phase3a_interaction)
+    assert src.index('f"{_tail}"') < src.index('[Latest User Message]')
+
+
+def test_sub_name_mention_stripped_in_non_anchor_turn():
+    t = "앞서 리더님께서 말씀해주신 '변화관리'와 관련하여, 그 노력이 어떤 결과로 이어졌는지 여쭤봐도 되겠습니까?"
+    out, n = G.strip_sub_name_mentions(t, NAMES)
+    assert n >= 1 and "변화관리" not in out and out.endswith("되겠습니까?")
+    same, n0 = G.strip_sub_name_mentions("그때 팀은 어떻게 반응했습니까?", NAMES)
+    assert n0 == 0 and same.startswith("그때")
+
+
+def test_bridge_keyword_prefers_noun_over_verb_fragment():
+    assert G.bridge_keyword("팀원들의 주인의식이 향상되었고 기획안의 목적이 명확해졌습니다.") not in ("향상되었고", "명확해졌")
+    kw = G.bridge_keyword("팀원들의 주인의식이 향상되었고 기획안의 목적이 명확해졌습니다.")
+    assert kw and not G._VERBISH_END.search(kw)
+    assert G.has_question("조직관리 영역 이야기는 이쯤에서 마무리하겠습니다.") is False
+    assert G.has_question("그 뒤로 달라진 게 있었습니까?") is True

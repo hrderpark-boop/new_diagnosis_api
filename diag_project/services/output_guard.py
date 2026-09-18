@@ -204,10 +204,18 @@ def first_lead(text: str) -> str:
 
 
 # ── 연결 한 절(2026-09-17): 직전 사용자 발화에서 핵심 단어 하나 ──
+_VERBISH_END = re.compile(r"(되었고|됐고|했고|하고|해서|되어|었|였|했|하며|으며|면서|다면|니까|지만|는데|는지|라고|다고|고|서|며|면|다|요|죠|지|게|니)$")
+
+
 def bridge_keyword(user_text: str | None, max_len: int = 6) -> str:
-    """직전 사용자 발화의 내용 어절 중 하나(2~max_len자, 가장 긴 것). 없으면 ''."""
-    cands = [c for c in _content_chunks(user_text or "") if 2 <= len(c) <= max_len]
-    return max(cands, key=len) if cands else ""
+    """직전 사용자 발화의 내용 어절 중 명사형 하나(2~max_len자). 동사 조각('향상되었고')은 제외. 없으면 ''."""
+    cands = [c for c in _content_chunks(user_text or "")
+             if 2 <= len(c) <= max_len and not _VERBISH_END.search(c)]
+    if not cands:
+        return ""
+    # 명사구는 3~4자에 몰린다 — 너무 긴 것보다 3~4자를 우선, 같은 길이면 먼저 나온 것
+    cands.sort(key=lambda c: (abs(len(c) - 3), ))
+    return cands[0]
 
 
 def template_anchor_bridged(question: str, user_text: str | None) -> str:
@@ -236,3 +244,24 @@ def find_repeated_result_probe(text: str, used_sentences: list[str]) -> str | No
         if _GENERIC_RESULT_RE.search(sent) or norm_sentence(sent) in used:
             return sent
     return None
+
+
+def strip_sub_name_mentions(text: str, names: list[str]) -> tuple[str, int]:
+    """비앵커 프로브 턴의 하위역량 이름 노출을 걷어낸다(2026-09-18).
+    "'변화관리'와 관련하여, " / "'전략적 사고' 측면에서 " 같은 인용 구절을 통째로 지우고, 남은 맨 이름은 '그 부분'으로."""
+    t = text or ""
+    n = 0
+    for v in name_variants(names):
+        if len(v) < 3 or v not in t:
+            continue
+        pat = re.compile(r"['\"“‘]?" + re.escape(v) + r"['\"”’]?\s*(과|와|에|의|을|를|은|는)?\s*(관련하여|관련해서|관련해|측면에서|부분에서|이야기와|말씀과)?[,\s]*")
+        t2, k = pat.subn("", t)
+        if k:
+            n += k
+            t = t2
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    return t, n
+
+
+def has_question(text: str) -> bool:
+    return any(is_question(x) for x in split_sentences(text))

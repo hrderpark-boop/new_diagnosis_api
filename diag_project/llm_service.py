@@ -1011,6 +1011,7 @@ class GeminiService:
         compressed_history: list[dict],
         user_message: str,
         light_mode: bool = False,
+        tail_block: str | None = None,
     ) -> dict:
         """Phase 3-A: 3-Layer 프롬프트로 LLM 호출.
 
@@ -1036,10 +1037,13 @@ class GeminiService:
             for m in windowed_history
         )
 
+        # (2026-09-18) tail_block: 이번 턴 문체 제약을 사용자 메시지 '직전'에 — 가장 잘 지켜지는 자리.
+        _tail = f"{tail_block.strip()}\n\n" if (tail_block or "").strip() else ""
         user_content = (
             f"{chapter_context}\n\n"
             f"{turn_state_text}\n\n"
             f"[Conversation History]\n{history_text}\n\n"
+            f"{_tail}"
             f"[Latest User Message]\n{user_message}"
         )
 

@@ -105,7 +105,9 @@ def format_turn_state_for_llm(state: dict) -> str:
             "아래 가이드의 예시 문장은 '내용의 결'만 참고하고, 문장 길이·종결어미·"
             "호응 방식은 시스템 프롬프트의 【말투 프로필】대로 바꿔 쓰세요.\n\n"
         )
-    style_block = format_style_constraints(
+    # (2026-09-18) 문체 제약은 프롬프트 맨 끝(사용자 메시지 직전)에 둔다 — 850줄 중간에 있으면 LLM 이 놓친다.
+    #   style_at_tail=True 면 여기서는 비우고 build_style_tail() 이 꼬리 블록을 만든다.
+    style_block = "" if state.get("style_at_tail") else format_style_constraints(
         state.get("style_constraints"), _persona.get("name"), instruction
     )
     if style_block:
@@ -1093,3 +1095,16 @@ def _get_instruction_guide(
     }
 
     return guides.get(instruction, "기본 진행")
+
+
+def build_style_tail(state: dict) -> str:
+    """프롬프트 꼬리 블록(사용자 메시지 직전): 이번 턴 문체 제약 — 마지막에 읽히는 자리."""
+    from diag_project.services.style_tracker import format_style_constraints
+    _persona = state.get("coach_persona") or {}
+    block = format_style_constraints(
+        state.get("style_constraints"), _persona.get("name"), state.get("instruction_for_this_turn")
+    )
+    if not block:
+        return ""
+    return block.replace("[🎛 이번 턴 문체 제약 — 시스템 계산, 반드시 준수]",
+                         "[🎛 이번 턴 문체 제약 — 마지막 확인. 답을 쓰기 직전에 이것부터 지키세요]")
