@@ -13,6 +13,7 @@
 import re
 
 from diag_project.services.style_tracker import (
+    _BRIDGE_RE,
     _content_chunks, _first_sentence, echoes_user, is_recap_opening, starts_with_ne_recap,
 )
 
@@ -173,6 +174,11 @@ def trim_lead_sentences(text: str, forbid_recap: bool, user_text: str | None, fo
     - 허용 턴: 리드가 2문장 이상이면 마지막 한 줄만 남긴다(요약 한 줄 + 질문).
     - forbid_ne: 남은 첫 문장의 '네, ' 호응어를 뗀다.
     질문이 없는 출력(안내·마무리)은 건드리지 않는다. (결과, 지운 문장 수)
+
+    질문 보존 보장(2026-09-21): 첫 질문 이후 문장은 절대 건드리지 않는다.
+    연결 절 보장(2026-09-21, 사람관리 세션 23·28 사고): 연결 절("방금 말씀하신 '인정'과도 이어지는데요")이 든
+    리드 문장은 되받기로 지우지 않고, 리드 2문장 중 하나를 고를 때도 연결 절 문장을 남긴다.
+    되받기를 지워 리드가 하나도 안 남으면 맨 질문 대신 연결 절 템플릿(직전 발화 어절 하나)을 앞에 붙인다.
     """
     sents = split_sentences(text)
     qi = next((i for i, s in enumerate(sents) if is_question(s)), None)
@@ -183,19 +189,28 @@ def trim_lead_sentences(text: str, forbid_recap: bool, user_text: str | None, fo
         return out, 0
     leads, rest = sents[:qi], sents[qi:]
     removed = 0
+    recap_removed = False
     if forbid_recap:
         kept = []
         for s in leads:
-            if starts_with_ne_recap(s) or is_recap_opening(s) or echoes_user(s, user_text):
+            if _BRIDGE_RE.search(s):
+                kept.append(s)  # 연결 절은 되받기가 아니다 — 절대 안 지움
+            elif starts_with_ne_recap(s) or is_recap_opening(s) or echoes_user(s, user_text):
                 removed += 1
+                recap_removed = True
             else:
                 kept.append(s)
         leads = kept
     if len(leads) > 1:
+        bridged = [s for s in leads if _BRIDGE_RE.search(s)]
         removed += len(leads) - 1
-        leads = [leads[-1]]
+        leads = [bridged[-1] if bridged else leads[-1]]
     if leads and forbid_ne:
         leads[0] = re.sub(r"^\s*(네|넵|예)\s*[,.]\s*", "", leads[0], count=1)
+    if not leads and recap_removed and not _BRIDGE_RE.search(rest[0]):
+        kw = bridge_keyword(user_text)
+        if kw:
+            rest = [f"{bridge_prefix(kw)}{_strip_lead_connector(rest[0])}"] + rest[1:]
     return " ".join(leads + rest).strip(), removed
 
 
@@ -204,13 +219,19 @@ def first_lead(text: str) -> str:
 
 
 # ── 연결 한 절(2026-09-17): 직전 사용자 발화에서 핵심 단어 하나 ──
-_VERBISH_END = re.compile(r"(되었고|됐고|했고|하고|해서|되어|었|였|했|하며|으며|면서|다면|니까|지만|는데|는지|라고|다고|고|서|며|면|다|요|죠|지|게|니)$")
+_VERBISH_END = re.compile(r"(되었고|됐고|했고|하고|해서|되어|었|였|했|하며|으며|면서|다면|니까|지만|는데|는지|라고|다고|고|서|며|면|다|요|죠|지|게|니"
+                          r"|운|는|한|던|할|될|된|해|하|돼|되|어|아|적|들|님|께|서는|만|도)$")
+
+
+_BRIDGE_STOP = {"딱히", "그때그때", "특별히", "그냥", "별로", "아마", "정말", "진짜", "사실", "일단", "물론", "솔직히",
+                "그렇게", "이렇게", "저렇게", "그러니까", "어쨌든", "아무래도", "그래도", "그런데", "하지만", "그리고"}
 
 
 def bridge_keyword(user_text: str | None, max_len: int = 6) -> str:
-    """직전 사용자 발화의 내용 어절 중 명사형 하나(2~max_len자). 동사 조각('향상되었고')은 제외. 없으면 ''."""
+    """직전 사용자 발화의 내용 어절 중 명사형 하나(2~max_len자). 동사·형용사 조각('향상되었고'·'새로운'·'적응하')은 제외.
+    없으면 ''."""
     cands = [c for c in _content_chunks(user_text or "")
-             if 2 <= len(c) <= max_len and not _VERBISH_END.search(c)]
+             if 2 <= len(c) <= max_len and not _VERBISH_END.search(c) and c not in _BRIDGE_STOP]
     if not cands:
         return ""
     # 명사구는 3~4자에 몰린다 — 너무 긴 것보다 3~4자를 우선, 같은 길이면 먼저 나온 것
@@ -218,12 +239,33 @@ def bridge_keyword(user_text: str | None, max_len: int = 6) -> str:
     return cands[0]
 
 
+def _has_final_consonant(word: str) -> bool:
+    ch = (word or "")[-1:]
+    if not ch or not ("가" <= ch <= "힣"):
+        return False
+    return (ord(ch) - 0xAC00) % 28 != 0
+
+
+_LEAD_CONNECTOR_RE = re.compile(r"^\s*(그 결에서 이어 여쭙니다만|그러한 관점에서|그런 관점에서|그런 맥락에서|이어서 여쭙니다만|그렇다면|그럼)\s*,?\s*")
+
+
+def _strip_lead_connector(q: str) -> str:
+    """연결 절을 앞에 붙일 때 질문 자체의 접속 리드('그 결에서 이어 여쭙니다만,')는 뗀다 — 이중 리드 방지."""
+    return _LEAD_CONNECTOR_RE.sub("", q or "", count=1)
+
+
+def bridge_prefix(kw: str) -> str:
+    """연결 절 접두: 받침 유무로 과/와 선택 — '인정'과도 / '지표'와도."""
+    josa = "과도" if _has_final_consonant(kw) else "와도"
+    return f"방금 말씀하신 '{kw}'{josa} 이어지는데요, "
+
+
 def template_anchor_bridged(question: str, user_text: str | None) -> str:
     """템플릿 앵커 앞에 연결 한 절 — 인용은 한 어절만(복창 판정 회피)."""
     kw = bridge_keyword(user_text)
-    if kw:
-        return f"방금 말씀하신 '{kw}'와도 이어지는데요, {question}".strip()
-    return template_anchor(question)
+    if kw and not _BRIDGE_RE.search(question or ""):
+        return f"{bridge_prefix(kw)}{_strip_lead_connector(question)}".strip()
+    return template_anchor(question) if not _BRIDGE_RE.search(question or "") else question
 
 
 # ── Result 탐침 문장 반복(2026-09-17): 같은 문장은 한 챕터에 한 번 ──
@@ -246,21 +288,60 @@ def find_repeated_result_probe(text: str, used_sentences: list[str]) -> str | No
     return None
 
 
+_JOSA_AFTER_BUBUN = {"를": "을", "가": "이", "는": "은", "와": "과", "나": "이나", "로": "으로", "란": "이란", "라는": "이라는"}
+
+
 def strip_sub_name_mentions(text: str, names: list[str]) -> tuple[str, int]:
-    """비앵커 프로브 턴의 하위역량 이름 노출을 걷어낸다(2026-09-18).
-    "'변화관리'와 관련하여, " / "'전략적 사고' 측면에서 " 같은 인용 구절을 통째로 지우고, 남은 맨 이름은 '그 부분'으로."""
+    """비앵커 프로브 턴의 하위역량 이름 노출을 걷어낸다(2026-09-18, 09-21 보강).
+    (a) "'변화관리'와 관련하여, " / "변화관리 측면에서 " 처럼 관련 구절이 따르면 구절째 삭제.
+    (b) 따옴표로 이름 전체만 감싼 "'팀워크'이나 장기 성과" 는 '그 부분'으로 치환(조사는 받침에 맞춰 교정 — "팀의 이나" 같은 파손 방지).
+    긴 인용구 안의 부분 일치("'프로세스 표준화 작업이 정착'되는")는 건드리지 않는다 — 걷어내면 따옴표가 깨진다."""
     t = text or ""
     n = 0
+    _REL = r"(관련하여|관련해서|관련해|측면에서|부분에서|이야기와|말씀과)"
+    _JOSA = r"(이나|나|이라는|라는|이란|란|으로|로|과|와|에|의|을|를|은|는|도|이|가)?"
     for v in name_variants(names):
         if len(v) < 3 or v not in t:
             continue
-        pat = re.compile(r"['\"“‘]?" + re.escape(v) + r"['\"”’]?\s*(과|와|에|의|을|를|은|는)?\s*(관련하여|관련해서|관련해|측면에서|부분에서|이야기와|말씀과)?[,\s]*")
-        t2, k = pat.subn("", t)
+        quoted_rel = re.compile(r"['\"“‘]" + re.escape(v) + r"['\"”’]\s*" + _JOSA + r"\s*" + _REL + r"[,\s]*")
+        bare_rel = re.compile(re.escape(v) + r"\s*" + _JOSA + r"\s*" + _REL + r"[,\s]*")
+        for pat in (quoted_rel, bare_rel):
+            t2, k = pat.subn("", t)
+            if k:
+                n += k
+                t = t2
+        quoted = re.compile(r"['\"“‘]" + re.escape(v) + r"['\"”’]" + _JOSA)
+
+        def _rep(m: re.Match) -> str:
+            j = m.group(1) or ""
+            return "그 부분" + _JOSA_AFTER_BUBUN.get(j, j)
+        t2, k = quoted.subn(_rep, t)
         if k:
             n += k
             t = t2
     t = re.sub(r"\s{2,}", " ", t).strip()
     return t, n
+
+
+_Q_NOISE_RE = re.compile(r"(방금|앞서|아까|조금 전)?\s*(말씀하신|말씀해 ?주신|언급하신)\s*['\"“‘][^'\"”’]{1,10}['\"”’]\s*(과도|와도|과|와)?\s*(이어지는데요|이어지는 부분입니다만|이어서|이어지는데)?[,\s]*"
+                          r"|혹시|혹|리더님께서는|리더님은|리더님|그렇다면|그럼|그 결에서 이어 여쭙니다만|그러한 관점에서|최근에|근래에|요즘")
+
+
+def _question_core(sentence: str) -> str:
+    return norm_sentence(_Q_NOISE_RE.sub("", sentence or ""))
+
+
+def same_question_as_previous(text: str, prev_coach_text: str | None) -> str | None:
+    """이번 출력의 질문 문장이 직전 코치 턴의 질문과 (연결 절·'혹시'·호칭을 뺀 뒤) 같으면 그 문장을 돌려준다(2026-09-21).
+    사람관리 리플레이 21·22턴: 템플릿 앵커 뒤 LLM 이 같은 앵커를 '혹시'만 바꿔 되물었다."""
+    if not prev_coach_text:
+        return None
+    prev = {_question_core(q) for q in split_sentences(prev_coach_text) if is_question(q)}
+    prev = {q for q in prev if len(q) >= 8}
+    for q in split_sentences(text or ""):
+        if is_question(q) and _question_core(q) in prev:
+            return q
+    return None
 
 
 def has_question(text: str) -> bool:

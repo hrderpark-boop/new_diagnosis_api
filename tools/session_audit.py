@@ -46,7 +46,8 @@ async def main():
     await conn.close()
     print(f"세션 {str(s['id'])[:8]} {s['coach']} status={s['status']} topic={s['current_topic']} msgs={len(ms)}")
     chapters = sorted({m["chapter"] for m in ms if m["chapter"]}) if all_ch else [chapter]
-    gl = {g.get("t"): g for g in (sad.get("guard_log") or []) if isinstance(g, dict)}
+    # guard_log 의 t 는 챕터 안 turn_index — 챕터를 같이 키로(다른 챕터의 같은 t 와 섞이지 않게, 2026-09-21)
+    gl = {(g.get("ch"), g.get("t")): g for g in (sad.get("guard_log") or []) if isinstance(g, dict)}
     for ch in chapters:
         rows = [m for m in ms if m["chapter"] == ch]
         print(f"\n===== {ch}")
@@ -63,7 +64,7 @@ async def main():
             if m["role"] == "user":
                 prev_user = m["content"] or ""; continue
             coach_n += 1
-            g = gl.get(m["turn_index"], {})
+            g = gl.get((ch, m["turn_index"]), {})
             v = ",".join(g.get("v") or [])
             hard += 1 if g.get("hard") else 0; regen += g.get("regen") or 0
             c = m["content"] or ""

@@ -369,11 +369,17 @@ DUPLICATE_CLAIM_KEYWORDS = [
 OBJECTION_KEYWORDS += [k for k in DUPLICATE_CLAIM_KEYWORDS if k not in OBJECTION_KEYWORDS]
 
 
+OBJECTION_MAX_LEN = 200   # 2026-09-21: 항의는 짧다. 긴 사례 서술에 '같은 질문' 같은 어절이 섞여도 항의가 아니다.
+
+
 def detect_user_objection(user_response: str) -> bool:
-    """사용자가 진행 흐름에 항의하는지 감지."""
+    """사용자가 진행 흐름에 항의하는지 감지(짧은 발화 또는 물음표가 있을 때만)."""
     if not user_response:
         return False
-    return any(kw in user_response.strip() for kw in OBJECTION_KEYWORDS)
+    t = user_response.strip()
+    if len(t) > OBJECTION_MAX_LEN and "?" not in t:
+        return False
+    return any(kw in t for kw in OBJECTION_KEYWORDS)
 
 
 def detect_duplicate_claim(user_response: str | None) -> bool:
@@ -547,10 +553,12 @@ def decide_instruction(state: dict) -> InstructionType:
     if chapter_started or state.get("competency_aligned"):
         _last = state.get("last_user_response") or ""
         if detect_user_objection(_last):
+            state["route_reason"] = "objection"
             return "META_QUESTION_FROM_USER"
         if detect_pause_request(_last):
             return "USER_REQUESTS_PAUSE"
         if detect_meta_question(_last):
+            state["route_reason"] = "meta"
             return "META_QUESTION_FROM_USER"
 
     # Stage 4: 챕터 진입 (역량 합의 → 첫 BEI)

@@ -937,6 +937,18 @@ async def _submit_message_phase3a(
             (session.self_assessment_data.get("turns_on_target") or {}).get(chapter, 0),
             instruction_used, _force_r,
         )
+    # (2026-09-21) 교정·재생성과 무관하게 모든 코치 턴은 turns_on_target 에 세어진다 — 프로브 집합 밖 턴
+    #   (META_QUESTION_FROM_USER 등)은 전진 없이 턴 수만 +1.
+    if chapter and instruction_used not in _PROBE_INSTR and instruction_used in (
+            "META_QUESTION_FROM_USER", "DUPLICATE_SUSPECTED", "CROSS_CHAPTER_OPPORTUNITY"):
+        from diag_project.services.traversal import bump_turns_only
+        _st_b, _cur_b = bump_turns_only(session.self_assessment_data, chapter)
+        if _cur_b:
+            session.self_assessment_data = _st_b
+            from sqlalchemy.orm.attributes import flag_modified as _fm_b
+            _fm_b(session, "self_assessment_data")
+            await db.commit()
+            current_target_sub = _cur_b
     state["current_target_sub"] = current_target_sub
     _turn_index = (
         state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
@@ -1501,39 +1513,68 @@ async def _submit_message_phase3a(
     #   마커를 프론트 전달 직전에 한 번 더 완벽 제거.
     clean_reply = _MARKER_RE.sub("", clean_reply).strip()
 
-    # 8-i. 통합 출력 가드(2026-09-16, Daniel 재주행 5건) — LLM 턴만. 위반 감지 → 재생성 1회(모든
-    #   위반을 한 지시로) → 남은 위반은 하드 교정. 프롬프트 지시는 지켜지지 않았다(4-a 대조표).
-    #     · 평가적 칭찬(6명 공통 금지 목록)            → 문장 삭제
-    #     · 전환 환각("다음 챕터로 넘어가겠습니다")   → 문장 삭제(종료 권한 있는 턴 제외)
-    #     · 앵커 턴 하위역량 이름 노출·오타겟           → 현재 타겟 템플릿 앵커로 교체
-    #     · 되받기: 금지 턴에 요약/'네' 시작, 리드 2문장 → 리드 한 줄만([요약|대체 한 줄]+[질문])
-    if system_override_text is None and not _llm_error and clean_reply:
+    # 8-i. 통합 출력 가드(2026-09-16 도입, 09-18 C 모드, 09-21 질문·연결 절 보존 보강) — LLM 턴만.
+    #   위반 감지 → [names·off_target·no_question] 만 재생성 1회 → 남은 위반은 하드 교정(문장 단위).
+    #   하드 교정의 두 가지 보장(사람관리 09-21 사고 — 교정이 연결 절·질문을 잘라 턴이 깨졌다):
+    #     (1) 질문 보존: 어떤 교정도 질문을 없애지 않는다. 없애게 되면 그 교정을 건너뛰거나(칭찬·이름 구절)
+    #         현재 타겟의 템플릿 앵커로 간다(전환 문장이 곧 질문인 경우).
+    #     (2) 연결 절 보존: "방금 말씀하신 '인정'과도 이어지는데요" 가 든 문장은 되받기로 안 지운다(trim_lead_sentences).
+    #   프로브 턴이 끝까지 질문 없이 남으면 결과 질문 풀이 아니라 현재 타겟 템플릿 앵커(연결 절 포함).
+    #   부재 폴백 턴(ABSENCE_PROBE)·템플릿 턴은 가드 대상 아님. 모든 결과는 guard_log 에 남는다.
+    #   후처리 단계 전체 표: docs/postprocess_pipeline.md — 프롬프트 규칙을 추가할 때 이 표와 대조한다.
+    if system_override_text is None and not _llm_error and clean_reply and instruction_used != "ABSENCE_PROBE":
         from diag_project.services.output_guard import (
-            TRANSITION_ALLOWED_INSTRUCTIONS, find_praise, find_sub_names, has_transition_claim,
-            off_target_overlap, split_sentences, is_question, strip_praise,
-            strip_transition_sentences, template_anchor, trim_lead_sentences,
+            TRANSITION_ALLOWED_INSTRUCTIONS, find_praise, find_sub_names, has_question, has_transition_claim,
+            off_target_overlap, split_sentences, strip_praise, strip_sub_name_mentions,
+            strip_transition_sentences, template_anchor_bridged, trim_lead_sentences, same_question_as_previous,
         )
+        from diag_project.services.output_guard import is_question as is_question_sentence
+        _prev_coach_text = ""
+        _recent_coach_texts: list[str] = []
+        try:
+            _pq = await db.execute(
+                select(ChatMessage.content).where(ChatMessage.session_id == session.id)
+                .where(ChatMessage.role == MessageRole.MODEL).order_by(ChatMessage.created_at.desc()).limit(2))
+            _recent_coach_texts = [x or "" for x in _pq.scalars().all()]
+            _prev_coach_text = _recent_coach_texts[0] if _recent_coach_texts else ""
+        except Exception:
+            _prev_coach_text = ""
+
+        def _anchor_fallback() -> str:
+            """교정 폴백 문장: 현재 타겟 템플릿 앵커(연결 절). 그 앵커가 직전 2턴에 이미 나갔으면(리플레이 F 16·11턴 —
+            폴백이 폴백을 반복) 결과 질문 풀에서 안 쓴 문장으로."""
+            from diag_project.services.output_guard import norm_sentence as _ns_fb
+            nonlocal session
+            if _tgt_q and chapter and _ns_fb(_tgt_q) not in _ns_fb(" ".join(_recent_coach_texts)):
+                return template_anchor_bridged(_tgt_q, request.content)
+            if chapter:
+                from diag_project.services.traversal import pick_result_probe as _prp_fb
+                _q_fb, _st_fb = _prp_fb(session.self_assessment_data, chapter)
+                session.self_assessment_data = _st_fb
+                from sqlalchemy.orm.attributes import flag_modified as _fm_fb
+                _fm_fb(session, "self_assessment_data")
+                return template_anchor_bridged(_q_fb, request.content)
+            return template_anchor_bridged(_tgt_q, request.content)
         from diag_project.data.competencies import (
             COMPETENCY_FRAMEWORK as _CF, find_sub_key_by_name as _fsk, get_anchor_questions as _gaq,
         )
         _sc = state.get("style_constraints") or {}
-        # 2026-09-17: ALIGN(정의 제시+목록+앵커)·CHAPTER_OPENING 은 리드가 여러 문장인 것이 정상 —
-        #   되받기/리드 검사에서 제외(제외 안 하면 정의·5개 안내가 '리드 한 줄' 교정에 통째로 지워진다).
+        # ALIGN(정의 제시+목록+앵커)·CHAPTER_OPENING 은 리드가 여러 문장인 것이 정상 — 되받기/리드 검사 제외.
         _is_probe = (instruction_used in _PROBE_INSTR
                      and instruction_used not in ("COMPETENCY_ALIGN", "CHAPTER_OPENING"))
         _is_anchor = instruction_used == "STAR_COMPLETE_NEW_EVENT"
         _all_names = [v.get("name") for c in _CF.values() for v in (c.get("indicators") or {}).values()]
         _asked_qs: list[str] = []
-        if _is_anchor and chapter:
-            for _nm2 in (state.get("asked_in_chapter") or []):
-                if _nm2 == current_target_sub:
-                    continue
-                _k2 = _fsk(chapter, _nm2)
-                _asked_qs += (_gaq(_k2) if _k2 else [])
         _tgt_q = ""
-        if _is_anchor and chapter and current_target_sub:
+        if chapter and current_target_sub:
             _kt = _fsk(chapter, current_target_sub)
             _tgt_q = (_gaq(_kt) or [""])[0] if _kt else ""
+            if _is_anchor:
+                for _nm2 in (state.get("asked_in_chapter") or []):
+                    if _nm2 == current_target_sub:
+                        continue
+                    _k2 = _fsk(chapter, _nm2)
+                    _asked_qs += (_gaq(_k2) if _k2 else [])
 
         def _violations(txt: str) -> dict:
             v: dict = {}
@@ -1550,31 +1591,36 @@ async def _submit_message_phase3a(
                 if off:
                     v["off_target"] = oq
             elif _is_probe:
-                # (2026-09-18) 비앵커 프로브 턴의 이름 노출("'변화관리'와 관련하여") — 재생성 없이 구절만 걷어낸다
                 nm = find_sub_names(txt, _all_names)
                 if nm:
                     v["names_mention"] = nm
             if _is_probe:
                 leads = []
                 for _s2 in split_sentences(txt):
-                    if is_question(_s2):
+                    if is_question_sentence(_s2):
                         break
                     leads.append(_s2)
                 if _sc.get("forbid_ne_opening") and txt.lstrip().startswith(("네,", "네.", "넵,", "예,")):
                     v["ne_opening"] = True
+                # 되받기: 첫 리드가 요약 복창일 때만. 연결 절('말씀하신'+한 어절)은 is_recap_opening 이 걷어내고 판정.
                 if _sc.get("forbid_recap") and leads and (
-                    is_recap_turn(leads[0], request.content) or starts_with_ne_recap(leads[0])):
+                        is_recap_turn(leads[0], request.content) or starts_with_ne_recap(leads[0])):
                     v["recap"] = True
                 if len(leads) > 1:
                     v["lead_stack"] = len(leads)
+                if not has_question(txt):
+                    v["no_question"] = True
+                _sq = same_question_as_previous(txt, _prev_coach_text)
+                if _sq:
+                    v["same_question"] = _sq[:60]
             return v
 
         _v = _violations(clean_reply)
         _tm["violations"] = dict(_v)
-        # (2026-09-18 A/B 측정) recap·lead_stack·praise·transition·ne_opening 은 재생성해도 대부분 그대로 남아
-        #   결국 하드 교정으로 끝났다(19턴 중 recap 12 → 재생성 후 11 잔존). 이 유형은 재생성 없이 바로 교정.
-        #   재생성은 문장 교체가 어색한 names·off_target 에만(FM_REGEN_ALL=1 이면 예전처럼 전부 재생성 — 측정용).
-        _REGEN_KEYS = {"names", "off_target"}
+        # (2026-09-18 A/B 측정) recap·lead_stack·praise·transition·ne_opening 은 재생성해도 대부분 그대로 남는다
+        #   (19턴 중 recap 12 → 재생성 후 11 잔존) → 재생성 없이 바로 교정. 재생성은 문장 교체가 어색한
+        #   names·off_target 과, 출력 자체에 질문이 없는 no_question 에만. FM_REGEN_ALL=1 이면 전부 재생성(측정용).
+        _REGEN_KEYS = {"names", "off_target", "no_question", "same_question"}
         import os as _os_rg
         _need_regen = bool(_v) and (bool(set(_v) & _REGEN_KEYS) or _os_rg.getenv("FM_REGEN_ALL") == "1")
         if _v and not _need_regen:
@@ -1586,11 +1632,16 @@ async def _submit_message_phase3a(
                 _notes.append(f"- 평가적 칭찬 금지: {', '.join(_v['praise'])} 같은 표현을 빼세요. 인정은 사실 확인('그 결정을 내리셨군요')까지.")
             if "transition" in _v:
                 _notes.append("- 이번 턴은 영역을 마치거나 다음 챕터로 넘어가는 턴이 아닙니다. 전환·마무리 선언 문장을 빼고 질문으로 이어가세요.")
-            if "names" in _v or "off_target" in _v:
+            if "names" in _v or "off_target" in _v or "names_mention" in _v:
                 _notes.append("- 하위역량 이름을 말하지 말고, 이미 다룬 사건·주제를 다시 묻지 마세요."
-                              + (f" 이번 앵커 질문 본문: {_tgt_q}" if _tgt_q else ""))
+                              + (f" 이번 앵커 질문 본문: {_tgt_q}" if (_tgt_q and _is_anchor) else ""))
             if "ne_opening" in _v or "recap" in _v or "lead_stack" in _v:
-                _notes.append("- 질문 앞의 리드는 한 문장뿐입니다. '네,'로 시작하지 말고, 요약 되받기가 금지된 턴이면 페르소나의 대체 한 줄만 두세요.")
+                _notes.append("- 질문 앞의 리드는 한 문장뿐입니다. '네,'로 시작하지 말고, 요약 되받기가 금지된 턴이면 "
+                              "연결 한 절(직전 발화의 단어 하나를 다음 질문의 이유로)로 시작하세요.")
+            if "no_question" in _v:
+                _notes.append("- 응답에 질문이 없습니다. 반드시 리더님께 묻는 질문 한 문장으로 끝내세요.")
+            if "same_question" in _v:
+                _notes.append("- 직전 턴과 같은 질문을 되묻고 있습니다. 리더님이 방금 답한 내용에서 한 걸음 더 들어가는 다른 질문을 하세요.")
             try:
                 _g_regen = await _timed_regen(
                     system_prompt=system_prompt,
@@ -1609,44 +1660,45 @@ async def _submit_message_phase3a(
                 if len(_v2) < len(_v) or not _v2:
                     clean_reply = _g_reply
                     _v = _v2
-        # 하드 교정(남은 위반 — 재생성을 생략한 턴은 1차 출력의 위반 그대로)
-        if True:
-            if _v:
-                _tm["hard"] = True
-                logger.info("🛡️ 출력 가드 하드 교정: %s", _v)
-                if ("names" in _v or "off_target" in _v) and _tgt_q:
-                    from diag_project.services.output_guard import template_anchor_bridged
-                    clean_reply = template_anchor_bridged(_tgt_q, request.content)
-                    _v = {k: v for k, v in _v.items() if k not in ("names", "off_target", "praise", "transition", "recap", "ne_opening", "lead_stack")}
-                if "names_mention" in _v:
-                    from diag_project.services.output_guard import strip_sub_name_mentions
-                    clean_reply, _n = strip_sub_name_mentions(clean_reply, _all_names)
-                if "praise" in _v:
-                    clean_reply, _n = strip_praise(clean_reply)
-                if "transition" in _v:
-                    clean_reply, _n = strip_transition_sentences(clean_reply)
-                if _is_probe and ("recap" in _v or "ne_opening" in _v or "lead_stack" in _v):
-                    clean_reply, _n = trim_lead_sentences(
-                        clean_reply, bool(_sc.get("forbid_recap")), request.content,
-                        forbid_ne=bool(_sc.get("forbid_ne_opening")),
-                    )
-                if not clean_reply.strip() and _tgt_q:
-                    clean_reply = template_anchor(_tgt_q)
-                # (2026-09-18) 교정 뒤 질문이 남지 않은 프로브 턴(예: 전환 문장뿐이던 출력) → 결과 질문으로 대체.
-                #   빈 서술만 나가면 리더가 답할 것이 없다. 현재 사건의 결과를 연결 절과 함께 묻는다.
-                from diag_project.services.output_guard import has_question
-                if _is_probe and not has_question(clean_reply) and chapter:
-                    from diag_project.services.traversal import pick_result_probe as _prp
-                    from diag_project.services.output_guard import template_anchor_bridged as _tab
-                    _q, _st_q = _prp(session.self_assessment_data, chapter)
-                    session.self_assessment_data = _st_q
-                    from sqlalchemy.orm.attributes import flag_modified as _fm_q
-                    _fm_q(session, "self_assessment_data")
-                    clean_reply = _tab(_q, request.content)
-                    logger.info("🛡️ 질문 없는 출력 → 결과 질문 대체: %s", _q)
+        # 하드 교정(남은 위반) — 각 단계는 질문을 없애지 않는다.
+        if _v:
+            _tm["hard"] = True
+            logger.info("🛡️ 출력 가드 하드 교정: %s", _v)
+            if ("names" in _v or "off_target" in _v) and _tgt_q:
+                clean_reply = _anchor_fallback()
+                _v = {}
+            if "same_question" in _v and chapter:
+                # 재생성 후에도 직전 턴과 같은 질문 → 타겟 앵커(직전 2턴에 없을 때) 또는 결과 질문(풀)으로 한 걸음 전진.
+                clean_reply = _anchor_fallback()
+                logger.info("🛡️ 직전 턴과 같은 질문 → 교체: %s", clean_reply[:60])
+            if "names_mention" in _v:
+                _c2, _n = strip_sub_name_mentions(clean_reply, _all_names)
+                if has_question(_c2) or not has_question(clean_reply):
+                    clean_reply = _c2
+            if "praise" in _v:
+                _c2, _n = strip_praise(clean_reply)   # 마지막 질문 문장은 보존하는 함수
+                if has_question(_c2) or not has_question(clean_reply):
+                    clean_reply = _c2
+            if "transition" in _v:
+                _c2, _n = strip_transition_sentences(clean_reply)
+                if has_question(_c2) or not has_question(clean_reply) or not _is_probe:
+                    clean_reply = _c2
+                elif _tgt_q:
+                    # 전환 선언이 곧 질문("다음으로 넘어가도 될까요?")인 프로브 턴 → 현재 타겟 앵커
+                    clean_reply = _anchor_fallback()
+            if _is_probe and ("recap" in _v or "ne_opening" in _v or "lead_stack" in _v):
+                # 첫 질문 이후는 건드리지 않고, 연결 절 리드는 지우지 않는다. 리드가 다 지워지면 연결 절 템플릿을 앞에 붙인다.
+                clean_reply, _n = trim_lead_sentences(
+                    clean_reply, bool(_sc.get("forbid_recap")), request.content,
+                    forbid_ne=bool(_sc.get("forbid_ne_opening")),
+                )
+            # 최종 보장: 프로브 턴에 질문이 없으면 현재 타겟 템플릿 앵커(결과 질문 풀 대체는 폐기 — 같은 문장 반복 사고).
+            if _is_probe and not has_question(clean_reply.strip()) and _tgt_q:
+                clean_reply = _anchor_fallback()
+                logger.info("🛡️ 질문 없는 출력 → 현재 타겟 템플릿 앵커(직전 2턴에 있으면 결과 질문)")
 
         # 3(2026-09-17) Result 탐침 문장 변주: 상투형('그렇게 하니 어떻게 됐습니까') 또는 이 챕터에서 이미 쓴
-        #   결과 질문과 같은 문장이면 풀에서 안 쓴 문장으로 교체(챕터 안 무반복).
+        #   결과 질문과 같은 문장이면 풀에서 안 쓴 문장으로 교체(직전 2턴 제외).
         if chapter and _is_probe:
             from diag_project.services.output_guard import find_repeated_result_probe
             from diag_project.services.traversal import pick_result_probe, used_result_probes
@@ -1658,6 +1710,10 @@ async def _submit_message_phase3a(
                 from sqlalchemy.orm.attributes import flag_modified as _fm_rp
                 _fm_rp(session, "self_assessment_data")
                 logger.info("🔁 결과 질문 반복 교체: '%s' → '%s'", _dup[:40], _new_q)
+
+    # 5(2026-09-21) 문법: '있으시겠습니까' 는 미래·청유형 오용 → '있으셨습니까'
+    if clean_reply:
+        clean_reply = clean_reply.replace("있으시겠습니까", "있으셨습니까").replace("있으시겠어요", "있으셨어요")
 
     # 8-h. 느낌표 상한(2026-09-15): 페르소나별 상한(Michael 1·안내턴 0, 나머지 0)을 백엔드가 센다.
     #   초과 → 재생성 1회(같은 프롬프트 + 상한 지시) → 그래도 초과면 초과분을 마침표로 치환.
@@ -1875,6 +1931,7 @@ async def _submit_message_phase3a(
         _gl.append({
             "t": _turn_index, "ch": chapter, "instr": instruction_used,
             "v": sorted((_tm.get("violations") or {}).keys()), "regen": _tm["regen_n"],
+            "route": state.get("route_reason"),
             "hard": bool(_tm.get("hard")), "llm": round(_tm["llm"], 1), "total": round(_total, 1),
         })
         _gl_store["guard_log"] = _gl

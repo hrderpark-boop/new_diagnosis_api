@@ -52,7 +52,7 @@ _STOP = {
 def _content_chunks(text: str) -> list[str]:
     """사용자 발화 → 조사 뗀 2자 이상 내용 어절 목록."""
     out = []
-    for tok in re.split(r"[\s,.!?…~\"'()\[\]/·—-]+", text or ""):
+    for tok in re.split(r"[\s,.!?…~\"'‘’“”*()\[\]/·—-]+", text or ""):
         tok = tok.strip()
         if len(tok) < 2:
             continue

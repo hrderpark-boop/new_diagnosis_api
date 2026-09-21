@@ -256,3 +256,133 @@ def test_bridge_keyword_prefers_noun_over_verb_fragment():
     assert kw and not G._VERBISH_END.search(kw)
     assert G.has_question("조직관리 영역 이야기는 이쯤에서 마무리하겠습니다.") is False
     assert G.has_question("그 뒤로 달라진 게 있었습니까?") is True
+
+
+# ── 2026-09-21 사람관리 사고 재발 방지: 하드 교정의 질문·연결 절 보존 ──
+def test_trim_lead_keeps_bridge_sentence_when_recap_forbidden():
+    from diag_project.services.output_guard import trim_lead_sentences
+    user = "팀원들이 마음속으로 진심으로 인정하는지는 모르겠습니다."
+    txt = "방금 말씀하신 '인정'과도 이어지는데요. 그 인정을 확인하려고 무엇을 해보셨습니까?"
+    out, n = trim_lead_sentences(txt, forbid_recap=True, user_text=user)
+    assert out.startswith("방금 말씀하신 '인정'"), out
+    assert "무엇을 해보셨습니까?" in out
+
+
+def test_trim_lead_prefers_bridge_sentence_among_two_leads():
+    from diag_project.services.output_guard import trim_lead_sentences
+    txt = "그 부분이 눈에 들어옵니다. 방금 말씀하신 '지표'와도 이어지는데요. 그 기준은 누가 정했습니까?"
+    out, n = trim_lead_sentences(txt, forbid_recap=False, user_text="지표가 문제였죠.")
+    assert out.startswith("방금 말씀하신 '지표'"), out
+    assert n == 1
+
+
+def test_trim_lead_bridges_bare_question_after_recap_removed():
+    from diag_project.services.output_guard import trim_lead_sentences
+    user = "팀원들이 마음속으로 진심으로 인정하는지는 모르겠습니다."
+    txt = "팀원들이 마음속으로 진심으로 인정하는지 모르겠다고 하셨군요. 팀원들은 그것을 어떻게 받아들였습니까?"
+    out, n = trim_lead_sentences(txt, forbid_recap=True, user_text=user)
+    assert n == 1
+    assert "하셨군요" not in out
+    assert out.startswith("방금 말씀하신 '"), out          # 맨 질문이 아니라 연결 절 템플릿
+    assert out.endswith("어떻게 받아들였습니까?")
+
+
+def test_trim_lead_never_touches_sentences_after_first_question():
+    from diag_project.services.output_guard import trim_lead_sentences
+    txt = "그러셨군요. 그때 어떻게 하셨습니까? 결과는 어땠습니까?"
+    out, n = trim_lead_sentences(txt, forbid_recap=True, user_text="힘들었어요.")
+    assert "그때 어떻게 하셨습니까? 결과는 어땠습니까?" in out
+
+
+def test_strip_transition_keeps_text_when_only_transition_remains():
+    from diag_project.services.output_guard import strip_transition_sentences, has_question
+    txt = "네, 알겠습니다. 그럼 다음 챕터로 넘어가겠습니다."
+    out, n = strip_transition_sentences(txt)
+    # 호출자(8-i)가 프로브 턴이면 템플릿 앵커로 간다 — 함수 자체는 질문이 없으면 원문 보존 계약
+    assert not has_question(out)
+
+
+def test_guard_block_source_contract_2026_09_21():
+    """8-i 소스 계약: 재생성 키 = names/off_target/no_question, 결과 질문 풀 폴백 없음, ABSENCE_PROBE 제외."""
+    import inspect
+    from diag_project.routes import diagnoses as d
+    src = inspect.getsource(d._submit_message_phase3a)
+    i = src.index("# 8-i.")
+    j = src.index("# 8-h.")
+    blk = src[i:j]
+    assert '_REGEN_KEYS = {"names", "off_target", "no_question", "same_question"}' in blk
+    assert 'instruction_used != "ABSENCE_PROBE"' in blk
+    assert "질문 없는 출력 → 결과 질문 대체" not in blk           # 질문 없는 출력 → 풀 대체 폐기
+    assert "template_anchor_bridged(_tgt_q, request.content)" in blk
+    assert "trim_lead_sentences(" in blk
+
+
+def test_bridge_keyword_skips_adjective_and_verb_fragments_and_picks_josa():
+    from diag_project.services.output_guard import bridge_keyword, bridge_prefix
+    kw = bridge_keyword("새로운 방향성에 대해 우려를 표명하는 팀원들과 개별 면담을 진행하며 데이터를 공유했습니다.")
+    assert kw not in ("새로운", "표명하", "진행하"), kw
+    assert bridge_keyword("네, 알겠습니다. 다음 챕터도 편하게 말씀해 주세요.") != "말씀해"
+    assert bridge_prefix("인정").startswith("방금 말씀하신 '인정'과도")
+    assert bridge_prefix("지표").startswith("방금 말씀하신 '지표'와도")
+
+
+def test_strip_sub_name_mentions_leaves_partial_match_inside_long_quote():
+    from diag_project.services.output_guard import strip_sub_name_mentions
+    txt = "방금 말씀하신 '프로세스 표준화 작업이 정착'되는 과정에서 어떤 행동을 하셨습니까?"
+    out, n = strip_sub_name_mentions(txt, ["프로세스 표준화", "변화관리(변화지향)"])
+    assert n == 0 and out == txt
+    out2, n2 = strip_sub_name_mentions("'변화관리'와 관련하여, 그때 어떻게 하셨습니까?", ["변화관리(변화지향)"])
+    assert n2 >= 1 and out2.startswith("그때"), out2
+    out3, n3 = strip_sub_name_mentions("변화관리 측면에서 그때 어떻게 하셨습니까?", ["변화관리(변화지향)"])
+    assert n3 == 1 and out3.startswith("그때"), out3
+
+
+def test_trim_lead_no_double_bridge_and_strips_connector():
+    from diag_project.services.output_guard import trim_lead_sentences, template_anchor_bridged
+    user = "팀원이 마음의 짐을 털어낸 이후 활력이 돌아왔습니다."
+    txt = "네, 활력이 돌아왔군요. 방금 말씀하신 '활력'과도 이어지는 부분입니다만, 잘하는 팀원에게 어려운 일을 맡기신 경험이 있으셨습니까?"
+    out, n = trim_lead_sentences(txt, forbid_recap=True, user_text=user)
+    assert out.count("말씀하신") == 1, out
+    txt2 = "그러셨군요. 그 결에서 이어 여쭙니다만, 혹 지쳐서 손을 놓으려던 팀원을 다시 움직이게 하셨던 경험이 있으셨습니까?"
+    out2, _ = trim_lead_sentences(txt2, forbid_recap=True, user_text=user)
+    assert "그 결에서 이어 여쭙니다만" not in out2 and out2.startswith("방금 말씀하신 '"), out2
+    a = template_anchor_bridged("방금 말씀하신 '인정'과도 이어지는데요, 그때 어떻게 하셨습니까?", user)
+    assert a.count("말씀하신") == 1
+
+
+def test_same_question_as_previous_ignores_bridge_and_hedges():
+    from diag_project.services.output_guard import same_question_as_previous
+    prev = "방금 말씀하신 '단순히'와도 이어지는데요, 그 결에서 이어 여쭙니다만, 혹 지쳐서 손을 놓으려던 팀원을 다시 움직이게 하셨던 경험이 있으셨습니까?"
+    cur = "방금 말씀하신 '주도성'과도 이어지는데요, 혹시 지쳐서 손을 놓으려던 팀원을 다시 움직이게 하셨던 경험이 있으셨습니까?"
+    assert same_question_as_previous(cur, prev)
+    assert same_question_as_previous("그때 팀원들은 어떻게 반응했습니까?", prev) is None
+
+
+def test_absence_keywords_do_not_match_affirmative_delegation():
+    from diag_project.services.avoidance_detector import detect_absence_statement
+    assert not detect_absence_statement("작은 성취를 맛볼 수 있는 마일스톤을 쪼개어 단계별로 권한을 위임한 적이 있습니다. 매주 1on1 미팅으로 방향을 잡아 주었습니다.")
+    assert detect_absence_statement("권한을 위임한 적이 없습니다.")
+
+
+def test_bridge_keyword_ignores_curly_quotes_and_markdown():
+    from diag_project.services.output_guard import bridge_keyword
+    kw = bridge_keyword("팀원들에게 ‘실패해도 안전한 환경’을 제공하여 **주도성**을 키웠습니다.")
+    assert "’" not in kw and "*" not in kw, kw
+
+
+def test_strip_sub_name_mentions_replaces_quoted_name_with_josa_fix():
+    from diag_project.services.output_guard import strip_sub_name_mentions
+    out, n = strip_sub_name_mentions("실제로 팀의 '팀워크'나 장기적인 성과에 어떤 변화가 있었습니까?", ["팀워크 촉진(협업)", "팀워크"])
+    assert n >= 1 and "그 부분이나 장기적인" in out, out
+    out2, _ = strip_sub_name_mentions("'권한위임'를 하실 때 어떤 기준이었습니까?", ["권한위임"])
+    assert "그 부분을" in out2, out2
+
+
+def test_guard_fallback_avoids_repeating_anchor_source_contract():
+    import inspect
+    from diag_project.routes import diagnoses as d
+    src = inspect.getsource(d._submit_message_phase3a)
+    blk = src[src.index("# 8-i."):src.index("# 8-h.")]
+    assert "def _anchor_fallback()" in blk and ".limit(2)" in blk
+    # 교정 폴백은 전부 _anchor_fallback 을 지난다(직전 2턴에 나간 앵커 반복 방지)
+    assert blk.count("template_anchor_bridged(_tgt_q, request.content)") == 2  # _anchor_fallback 내부 2곳뿐

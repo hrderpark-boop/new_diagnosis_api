@@ -265,7 +265,10 @@ def pick_result_probe(store: dict, chapter: str) -> tuple[str, dict]:
     used = list(used_map.get(chapter) or [])
     remaining = [i for i in range(len(RESULT_PROBE_POOL)) if i not in used]
     if not remaining:
-        used, remaining = [], list(range(len(RESULT_PROBE_POOL)))
+        # 전부 썼으면 다시 돌되 직전 2턴에 쓴 문장은 제외(2026-09-21)
+        recent = set(used[-2:])
+        remaining = [i for i in range(len(RESULT_PROBE_POOL)) if i not in recent]
+        used = used[-2:]
     idx = remaining[0]
     used_map[chapter] = used + [idx]
     store["result_probe_used"] = used_map
@@ -275,3 +278,14 @@ def pick_result_probe(store: dict, chapter: str) -> tuple[str, dict]:
 def used_result_probes(store: dict, chapter: str) -> list[str]:
     idxs = ((store or {}).get("result_probe_used") or {}).get(chapter) or []
     return [RESULT_PROBE_POOL[i] for i in idxs if 0 <= i < len(RESULT_PROBE_POOL)]
+
+
+def bump_turns_only(store: dict, chapter: str) -> tuple[dict, str | None]:
+    """현재 타겟이 있으면 turns_on_target 을 +1 만 한다(전진·기록 없음). (2026-09-21: META 등 비프로브 턴 집계)"""
+    store = dict(store or {})
+    cur = (store.get("current_target") or {}).get(chapter)
+    if not cur:
+        return store, None
+    t = (store.get("turns_on_target") or {}).get(chapter, 0)
+    store.setdefault("turns_on_target", {})[chapter] = t + 1
+    return store, cur
