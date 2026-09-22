@@ -1,4 +1,5 @@
 import os
+import os
 import logging
 from sqlmodel import SQLModel
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -113,3 +114,18 @@ async def init_db():
             pass
 
     logger.info(f"✅ Database initialized at: {DATABASE_URL}")
+
+# ── (2026-09-22) 요청당 SQL 문 수 계측 — 턴 지연의 비LLM 부분(DB 왕복) 측정용 ──
+import contextvars as _cv
+from sqlalchemy import event as _sa_event
+
+sql_count: _cv.ContextVar[int] = _cv.ContextVar("sql_count", default=0)
+
+
+def _count_sql(conn, cursor, statement, parameters, context, executemany):
+    sql_count.set(sql_count.get() + 1)
+
+
+# 리스너는 측정 모드(FM_SQL_COUNT=1, 리플레이)에서만 건다 — 상시 등록하면 프로세스 종료가 30초 늦어지는 부작용(pytest 로 확인).
+if os.getenv("FM_SQL_COUNT") == "1":
+    _sa_event.listen(engine.sync_engine, "before_cursor_execute", _count_sql)

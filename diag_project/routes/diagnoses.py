@@ -616,6 +616,8 @@ async def _submit_message_phase3a(
     import time as _time
     # ⏱ (2026-09-18) 턴 계측: decider / LLM 1차 / 재생성 횟수·시간 / 후처리+DB. 로그 한 줄로 남긴다.
     _tm = {"t0": _time.perf_counter(), "decider": 0.0, "llm": 0.0, "regen_n": 0, "regen_s": 0.0}
+    from diag_project.database import sql_count as _sqlc
+    _sqlc.set(0)   # 이 턴의 SQL 문 수(FM_SQL_COUNT=1 일 때만 집계)
     _style_tail = ""
 
     _gen = llm.generate_phase3a_interaction
@@ -1556,7 +1558,7 @@ async def _submit_message_phase3a(
         from diag_project.services.output_guard import (
             TRANSITION_ALLOWED_INSTRUCTIONS, find_praise, find_sub_names, has_question, has_transition_claim,
             off_target_overlap, split_sentences, strip_praise, strip_sub_name_mentions,
-            template_anchor_bridged, same_question_as_previous,
+            template_anchor, cap_lead_sentences, same_question_as_previous,
         )
         from diag_project.services.output_guard import is_question as is_question_sentence
         # _prev_coach_text / _recent_coach_texts 는 히스토리 로드 직후 계산됨(2026-09-22)
@@ -1567,15 +1569,15 @@ async def _submit_message_phase3a(
             from diag_project.services.output_guard import norm_sentence as _ns_fb
             nonlocal session
             if _tgt_q and chapter and _ns_fb(_tgt_q) not in _ns_fb(" ".join(_recent_coach_texts)):
-                return template_anchor_bridged(_tgt_q, request.content)
+                return template_anchor(_tgt_q)
             if chapter:
                 from diag_project.services.traversal import pick_result_probe as _prp_fb
                 _q_fb, _st_fb = _prp_fb(session.self_assessment_data, chapter)
                 session.self_assessment_data = _st_fb
                 from sqlalchemy.orm.attributes import flag_modified as _fm_fb
                 _fm_fb(session, "self_assessment_data")
-                return template_anchor_bridged(_q_fb, request.content)
-            return template_anchor_bridged(_tgt_q, request.content)
+                return template_anchor(_q_fb)
+            return template_anchor(_tgt_q)
         from diag_project.data.competencies import (
             COMPETENCY_FRAMEWORK as _CF, find_sub_key_by_name as _fsk, get_anchor_questions as _gaq,
         )
@@ -1701,6 +1703,15 @@ async def _submit_message_phase3a(
             if _is_probe and not has_question(clean_reply.strip()) and _tgt_q:
                 clean_reply = _anchor_fallback()
                 logger.info("🛡️ 질문 없는 출력 → 현재 타겟 템플릿 앵커(직전 2턴에 있으면 결과 질문)")
+
+        # (2026-09-22 결정) 리드 한 문장 상한: 질문 앞 리드가 2문장 이상이면 첫 문장만. 매 턴 한 문장 되받기는 허용,
+        #   3턴 1회 제한은 없다. 질문부터는 불변. 프로브 턴만(ALIGN·OPENING 은 정의·목록이 리드).
+        if _is_probe:
+            clean_reply, _lc = cap_lead_sentences(clean_reply)
+            if _lc:
+                _v["lead_cap"] = _lc
+                _tm["hard"] = True
+                logger.info("✂️ 리드 %d문장 → 1문장", _lc + 1)
 
         # 3(2026-09-17) Result 탐침 문장 변주: 상투형('그렇게 하니 어떻게 됐습니까') 또는 이 챕터에서 이미 쓴
         #   결과 질문과 같은 문장이면 풀에서 안 쓴 문장으로 교체(직전 2턴 제외).
@@ -1950,7 +1961,7 @@ async def _submit_message_phase3a(
             "t": _turn_index, "ch": chapter, "instr": instruction_used,
             "v": sorted((_tm.get("violations") or {}).keys()), "regen": _tm["regen_n"],
             "route": state.get("route_reason"),
-            "hard": bool(_tm.get("hard")), "llm": round(_tm["llm"], 1), "total": round(_total, 1),
+            "hard": bool(_tm.get("hard")), "llm": round(_tm["llm"], 1), "total": round(_total, 1), "sql": _sqlc.get(),
         })
         _gl_store["guard_log"] = _gl
         session.self_assessment_data = _gl_store
@@ -1959,9 +1970,9 @@ async def _submit_message_phase3a(
         await db.commit()
     except Exception as _e:
         logger.warning("guard_log 기록 실패: %s", _e)
-    logger.info("⏱ turn timing session=%s instr=%s decider=%.2fs llm=%.2fs regen=%d(%.2fs) post+db=%.2fs total=%.2fs style_tail=%s",
+    logger.info("⏱ turn timing session=%s instr=%s decider=%.2fs llm=%.2fs regen=%d(%.2fs) post+db=%.2fs total=%.2fs sql=%d",
                 str(session.id)[:8], instruction_used, _tm["decider"], _tm["llm"], _tm["regen_n"], _tm["regen_s"],
-                max(0.0, _total - _tm["decider"] - _tm["llm"] - _tm["regen_s"]), _total, state.get("style_at_tail"))
+                max(0.0, _total - _tm["decider"] - _tm["llm"] - _tm["regen_s"]), _total, _sqlc.get())
     return {
         "coach_response_message": clean_reply,
         "is_topic_completed": is_chapter_completed,

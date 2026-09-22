@@ -173,54 +173,18 @@ def first_lead(text: str) -> str:
     return _first_sentence(text)
 
 
-# ── 연결 한 절(2026-09-17): 직전 사용자 발화에서 핵심 단어 하나 ──
-_VERBISH_END = re.compile(r"(되었고|됐고|했고|하고|해서|되어|었|였|했|하며|으며|면서|다면|니까|지만|는데|는지|라고|다고|고|서|며|면|다|요|죠|지|게|니"
-                          r"|운|는|한|던|할|될|된|해|하|돼|되|어|아|적|들|님|께|서는|만|도)$")
+# ── (2026-09-22 폐지) 연결 한 절 템플릿(bridge_keyword·template_anchor_bridged) — 인용 어절 오류("'일들이'와도")가 잦았고,
+#    LLM 의 되받기 한 문장이 다리 역할을 한다. 폴백은 template_anchor(질문)만 쓴다. ──
 
 
-_BRIDGE_STOP = {"딱히", "그때그때", "특별히", "그냥", "별로", "아마", "정말", "진짜", "사실", "일단", "물론", "솔직히",
-                "그렇게", "이렇게", "저렇게", "그러니까", "어쨌든", "아무래도", "그래도", "그런데", "하지만", "그리고"}
-
-
-def bridge_keyword(user_text: str | None, max_len: int = 6) -> str:
-    """직전 사용자 발화의 내용 어절 중 명사형 하나(2~max_len자). 동사·형용사 조각('향상되었고'·'새로운'·'적응하')은 제외.
-    없으면 ''."""
-    cands = [c for c in _content_chunks(user_text or "")
-             if 2 <= len(c) <= max_len and not _VERBISH_END.search(c) and c not in _BRIDGE_STOP]
-    if not cands:
-        return ""
-    # 명사구는 3~4자에 몰린다 — 너무 긴 것보다 3~4자를 우선, 같은 길이면 먼저 나온 것
-    cands.sort(key=lambda c: (abs(len(c) - 3), ))
-    return cands[0]
-
-
-def _has_final_consonant(word: str) -> bool:
-    ch = (word or "")[-1:]
-    if not ch or not ("가" <= ch <= "힣"):
-        return False
-    return (ord(ch) - 0xAC00) % 28 != 0
-
-
-_LEAD_CONNECTOR_RE = re.compile(r"^\s*(그 결에서 이어 여쭙니다만|그러한 관점에서|그런 관점에서|그런 맥락에서|이어서 여쭙니다만|그렇다면|그럼)\s*,?\s*")
-
-
-def _strip_lead_connector(q: str) -> str:
-    """연결 절을 앞에 붙일 때 질문 자체의 접속 리드('그 결에서 이어 여쭙니다만,')는 뗀다 — 이중 리드 방지."""
-    return _LEAD_CONNECTOR_RE.sub("", q or "", count=1)
-
-
-def bridge_prefix(kw: str) -> str:
-    """연결 절 접두: 받침 유무로 과/와 선택 — '인정'과도 / '지표'와도."""
-    josa = "과도" if _has_final_consonant(kw) else "와도"
-    return f"방금 말씀하신 '{kw}'{josa} 이어지는데요, "
-
-
-def template_anchor_bridged(question: str, user_text: str | None) -> str:
-    """템플릿 앵커 앞에 연결 한 절 — 인용은 한 어절만(복창 판정 회피)."""
-    kw = bridge_keyword(user_text)
-    if kw and not _BRIDGE_RE.search(question or ""):
-        return f"{bridge_prefix(kw)}{_strip_lead_connector(question)}".strip()
-    return template_anchor(question) if not _BRIDGE_RE.search(question or "") else question
+def cap_lead_sentences(text: str) -> tuple[str, int]:
+    """첫 질문 앞의 리드를 최대 1문장으로(2026-09-22 결정). 2문장 이상이면 첫 문장만 남긴다.
+    첫 질문부터는 절대 건드리지 않는다(postprocess_pipeline 원칙). 질문이 없는 출력은 그대로. (결과, 지운 문장 수)"""
+    sents = split_sentences(text)
+    qi = next((i for i, s in enumerate(sents) if is_question(s)), None)
+    if qi is None or qi <= 1:
+        return text, 0
+    return " ".join([sents[0]] + sents[qi:]).strip(), qi - 1
 
 
 # ── Result 탐침 문장 반복(2026-09-17): 같은 문장은 한 챕터에 한 번 ──

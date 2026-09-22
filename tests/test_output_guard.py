@@ -137,12 +137,6 @@ def test_echo_requires_two_chunks_single_quote_allowed():
     assert echoes_user("팀원들이 진심으로 인정하는지 모르겠다고 하셨습니다. 그다음은요?", user)
 
 
-def test_bridge_keyword_and_bridged_anchor():
-    kw = G.bridge_keyword("팀원들이 마음속으로 진심으로 인정하는지는 모르겠습니다.")
-    assert kw and 2 <= len(kw) <= 6
-    t = G.template_anchor_bridged("최근에 결과를 어떻게 확인하셨습니까?", "팀원들이 진심으로 인정하는지 모르겠습니다.")
-    assert t.startswith("방금 말씀하신 '") and t.endswith("확인하셨습니까?") and t.count("?") == 1
-    assert G.template_anchor_bridged("질문?", "") == G.template_anchor("질문?")
 
 
 def test_result_probe_pool_rotates_without_repeat():
@@ -240,12 +234,6 @@ def test_sub_name_mention_stripped_in_non_anchor_turn():
     assert n0 == 0 and same.startswith("그때")
 
 
-def test_bridge_keyword_prefers_noun_over_verb_fragment():
-    assert G.bridge_keyword("팀원들의 주인의식이 향상되었고 기획안의 목적이 명확해졌습니다.") not in ("향상되었고", "명확해졌")
-    kw = G.bridge_keyword("팀원들의 주인의식이 향상되었고 기획안의 목적이 명확해졌습니다.")
-    assert kw and not G._VERBISH_END.search(kw)
-    assert G.has_question("조직관리 영역 이야기는 이쯤에서 마무리하겠습니다.") is False
-    assert G.has_question("그 뒤로 달라진 게 있었습니까?") is True
 
 
 # ── 2026-09-21 사람관리 사고 재발 방지: 하드 교정의 질문·연결 절 보존 ──
@@ -268,18 +256,11 @@ def test_guard_block_source_contract_2026_09_21():
     assert '_REGEN_KEYS = {"names", "off_target", "no_question", "same_question"}' in blk
     assert 'instruction_used != "ABSENCE_PROBE"' in blk
     assert "질문 없는 출력 → 결과 질문 대체" not in blk           # 질문 없는 출력 → 풀 대체 폐기
-    assert "template_anchor_bridged(_tgt_q, request.content)" in blk
+    assert "template_anchor(_tgt_q)" in blk
     assert "trim_lead_sentences(" not in blk          # (2026-09-22) 되받기 리드 삭제 폐지
     assert "strip_transition_sentences(" not in blk   # 전환 문장 삭제 폐지 — 관찰만
 
 
-def test_bridge_keyword_skips_adjective_and_verb_fragments_and_picks_josa():
-    from diag_project.services.output_guard import bridge_keyword, bridge_prefix
-    kw = bridge_keyword("새로운 방향성에 대해 우려를 표명하는 팀원들과 개별 면담을 진행하며 데이터를 공유했습니다.")
-    assert kw not in ("새로운", "표명하", "진행하"), kw
-    assert bridge_keyword("네, 알겠습니다. 다음 챕터도 편하게 말씀해 주세요.") != "말씀해"
-    assert bridge_prefix("인정").startswith("방금 말씀하신 '인정'과도")
-    assert bridge_prefix("지표").startswith("방금 말씀하신 '지표'와도")
 
 
 def test_strip_sub_name_mentions_leaves_partial_match_inside_long_quote():
@@ -307,10 +288,6 @@ def test_absence_keywords_do_not_match_affirmative_delegation():
     assert detect_absence_statement("권한을 위임한 적이 없습니다.")
 
 
-def test_bridge_keyword_ignores_curly_quotes_and_markdown():
-    from diag_project.services.output_guard import bridge_keyword
-    kw = bridge_keyword("팀원들에게 ‘실패해도 안전한 환경’을 제공하여 **주도성**을 키웠습니다.")
-    assert "’" not in kw and "*" not in kw, kw
 
 
 def test_strip_sub_name_mentions_replaces_quoted_name_with_josa_fix():
@@ -328,4 +305,20 @@ def test_guard_fallback_avoids_repeating_anchor_source_contract():
     blk = src[src.index("# 8-i."):src.index("# 8-h.")]
     assert "def _anchor_fallback()" in blk and "_recent_coach_texts" in blk
     # 교정 폴백은 전부 _anchor_fallback 을 지난다(직전 2턴에 나간 앵커 반복 방지)
-    assert blk.count("template_anchor_bridged(_tgt_q, request.content)") == 2  # _anchor_fallback 내부 2곳뿐
+    assert blk.count("template_anchor(_tgt_q)") == 2  # _anchor_fallback 내부 2곳뿐
+
+
+# ── 2026-09-22 결정: 리드 한 문장 상한, 연결 절 템플릿 폐지 ──
+def test_cap_lead_sentences_keeps_first_lead_and_never_touches_question():
+    from diag_project.services.output_guard import cap_lead_sentences
+    t = "네, 주간 싱크 미팅을 신설하셨군요. 쉽지 않은 결정이었을 텐데요. 그 뒤로 달라진 게 있었습니까? 팀원들은 어떻게 받아들였습니까?"
+    out, n = cap_lead_sentences(t)
+    assert n == 1 and out == "네, 주간 싱크 미팅을 신설하셨군요. 그 뒤로 달라진 게 있었습니까? 팀원들은 어떻게 받아들였습니까?"
+    assert cap_lead_sentences("그러셨군요. 그때 어떻게 하셨습니까?") == ("그러셨군요. 그때 어떻게 하셨습니까?", 0)
+    assert cap_lead_sentences("그때 어떻게 하셨습니까?")[1] == 0
+    assert cap_lead_sentences("여기까지 충분히 들었습니다. 이제 이어가 보겠습니다.")[1] == 0   # 질문 없음 → 불변
+
+
+def test_bridge_template_removed():
+    import diag_project.services.output_guard as g
+    assert not hasattr(g, "template_anchor_bridged") and not hasattr(g, "bridge_keyword")
