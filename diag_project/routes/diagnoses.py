@@ -1005,10 +1005,17 @@ async def _submit_message_phase3a(
         from diag_project.prompts.phase3a.layer3_state import build_style_tail
         _style_tail = build_style_tail(state)
     user_name = state.get("user_name", "리더")
+    # (2026-09-22) light 턴(라포·INTRO·CONFIRM·ALIGN·META 등)은 BEI 절을 뺀 Layer1 — 매핑표 docs/prompt_reduction_2026-09-22.md
+    _LIGHT_LAYER1_INSTRUCTIONS = {
+        "RAPPORT_BUILDING", "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "COMPETENCY_ASK", "COMPETENCY_ALIGN",
+        "META_QUESTION_FROM_USER", "USER_REQUESTS_PAUSE", "INVALID_INPUT", "PROMPT_INJECTION_DETECTED",
+        "CHAPTER_CONTINUE_CONFIRMED", "NAME_RECONFIRM",
+    }
     system_prompt = build_layer1_with_persona(
         coach_id=coach_key,
         user_name=user_name,
         visit_count=1,
+        mode=("light" if instruction_used in _LIGHT_LAYER1_INSTRUCTIONS else "heavy"),
     )
 
     # 7. 응답 생성 — 라포 1턴 / CHAPTER_OPENING 은 시스템 직접 출력 (LLM 우회)
