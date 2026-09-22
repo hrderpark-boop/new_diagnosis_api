@@ -607,6 +607,13 @@ async def _submit_message_legacy(
     }
 
 
+# (2026-09-22) 코치 턴 LLM 실패 처리 — 시스템 안내 문구·연속 상한
+LLM_ERROR_PAUSE_AFTER = 3
+LLM_ERROR_RETRY_MESSAGE = "일시적인 문제로 답변을 준비하지 못했습니다. 잠시 후 다시 시도해 주세요."
+LLM_ERROR_PAUSED_MESSAGE = ("일시적인 문제가 계속되고 있습니다. 대화는 여기까지 안전하게 저장해 두었으니, "
+                            "잠시 후 '진단 계속하기'로 이어서 진행해 주세요.")
+
+
 async def _submit_message_phase3a(
     request: ChatMessageRequest,
     db: AsyncSession,
@@ -1181,21 +1188,45 @@ async def _submit_message_phase3a(
         #   결합을 유지한다(넓이 게이트 허수 방지). 참여이탈 카운터 등 다른 키는
         #   그대로. 시스템 사실(호출 실패)에만 반응 — 텍스트 검증 방식 아님.
         if llm_output.get("error"):
-            _llm_error = True
-            if _ledger_snapshot is not None:
-                from diag_project.services.traversal import restore_ledger
-                from sqlalchemy.orm.attributes import flag_modified as _fm_rb
-                session.self_assessment_data = restore_ledger(
-                    session.self_assessment_data, _ledger_snapshot
-                )
-                _fm_rb(session, "self_assessment_data")
-                logger.warning(
-                    "↩️ H5 LLM 실패 → asked 원장 롤백: [%s] target=%s instr=%s",
-                    chapter, current_target_sub, instruction_used,
-                )
-            user_msg.instruction_used = "LLM_ERROR"
-            db.add(user_msg)
-            await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
+            # (2026-09-22, 파일럿 전 필수) 코치 턴 LLM 실패(402·429·타임아웃): 이 턴을 통째로 되돌린다 — 사용자 메시지·원장·
+            #   사건 어떤 것도 저장하지 않는다(상태 전진 없음). 사용자에게는 코치 말풍선이 아니라 시스템 안내 + [다시 시도].
+            #   같은 세션에서 3회 연속이면 세션을 paused 로 두고 "저장 후 나중에 이어서" 안내. 연속 카운터만 저장한다.
+            _kind = llm_output.get("error_kind") or "llm"
+            logger.error("💥 코치 턴 LLM 실패(kind=%s) session=%s instr=%s → 턴 롤백", _kind, str(session.id)[:8], instruction_used)
+            await db.rollback()
+            await db.refresh(session)
+            from sqlalchemy.orm.attributes import flag_modified as _fm_le
+            _sad_le = dict(session.self_assessment_data or {})
+            _streak = int(_sad_le.get("llm_error_streak", 0) or 0) + 1
+            _paused_now = _streak >= LLM_ERROR_PAUSE_AFTER
+            _sad_le["llm_error_streak"] = 0 if _paused_now else _streak
+            session.self_assessment_data = _sad_le
+            _fm_le(session, "self_assessment_data")
+            if _paused_now and session.status not in ("completed", "aborted", ABANDONED):
+                session.status = "paused"
+            db.add(session)
+            await db.commit()
+            _order_le = _get_topic_order()
+            _done_le = (_order_le[:] if session.current_topic == "Completed"
+                        else _order_le[: _order_le.index(session.current_topic)] if session.current_topic in _order_le else [])
+            _next_le = _get_next_chapter(chapter) if chapter else None
+            return {
+                "coach_response_message": (LLM_ERROR_PAUSED_MESSAGE if _paused_now else LLM_ERROR_RETRY_MESSAGE),
+                "llm_error": True,
+                "llm_error_kind": _kind,
+                "llm_error_streak": _streak,
+                "is_topic_completed": False,
+                "is_session_starting": False,
+                "is_session_completed": False,
+                "is_session_paused": _paused_now or session.status == "paused",
+                "session_status": session.status,
+                "has_next_chapter": _next_le is not None,
+                "next_topic": chapter_to_topic(_next_le) if _next_le else None,
+                "needs_user_decision": False,
+                "reward": None,
+                "completed_topics": _done_le,
+                "_phase3a_metadata": {"guard": "LLM_ERROR", "streak": _streak},
+            }
 
     # 8. 제어 태그 처리 (감사 위험 #4 해결)
     is_chapter_completed = "[CHAPTER_COMPLETE]" in reply
@@ -1947,6 +1978,8 @@ async def _submit_message_phase3a(
             "hard": bool(_tm.get("hard")), "llm": round(_tm["llm"], 1), "total": round(_total, 1), "sql": _sqlc.get(),
         })
         _gl_store["guard_log"] = _gl
+        if _gl_store.get("llm_error_streak"):
+            _gl_store["llm_error_streak"] = 0   # 성공 턴 → 연속 실패 리셋
         session.self_assessment_data = _gl_store
         from sqlalchemy.orm.attributes import flag_modified as _fm_gl
         _fm_gl(session, "self_assessment_data")

@@ -286,6 +286,18 @@ async def admin_login(body: AdminLoginRequest, db: AsyncSession = Depends(get_db
     )
 
 
+@router.get("/alerts")
+async def admin_alerts(ctx: AdminContext = Depends(get_current_admin)):
+    """운영 알림 — 관리자 페이지 상단 배너용 (2026-09-22). Gemini 크레딧 소진(402)·마지막 LLM 오류."""
+    from diag_project.llm_service import LLM_ALERTS
+    return {
+        "gemini_credit_depleted": bool(LLM_ALERTS.get("credit_depleted_at")),
+        "credit_depleted_at": LLM_ALERTS.get("credit_depleted_at"),
+        "last_llm_error_at": LLM_ALERTS.get("last_error_at"),
+        "last_llm_error": LLM_ALERTS.get("last_error"),
+    }
+
+
 @router.get("/auth/me", response_model=AdminMeResponse)
 async def admin_me(
     ctx: AdminContext = Depends(get_current_admin),

@@ -222,6 +222,25 @@ USAGE_METER = _UsageMeter()
 #    max_output_tokens 가 thinking 토큰까지 '포함'한다. 한도가 빠듯하면
 #    thinking 이 예산을 잠식해 보이는 답변이 문장 중간에 잘린다
 #    → LIGHT 를 3000 으로 상향 + 대화 light 턴은 thinking 비활성(budget=0).
+# ── (2026-09-22) 운영 알림 상태 — 관리자 페이지 배너(/admin/alerts). 프로세스 메모리(Render 단일 인스턴스).
+LLM_ALERTS: dict = {"credit_depleted_at": None, "credit_key_suffix": None, "last_error_at": None, "last_error": None}
+
+
+def _mark_llm_error(msg: str, credit: bool = False, key_suffix: str | None = None) -> None:
+    from datetime import datetime as _dt
+    now = _dt.utcnow().isoformat(timespec="seconds")
+    LLM_ALERTS["last_error_at"] = now
+    LLM_ALERTS["last_error"] = (msg or "")[:300]
+    if credit:
+        LLM_ALERTS["credit_depleted_at"] = now
+        LLM_ALERTS["credit_key_suffix"] = key_suffix
+
+
+def clear_credit_alert() -> None:
+    LLM_ALERTS["credit_depleted_at"] = None
+    LLM_ALERTS["credit_key_suffix"] = None
+
+
 PHASE3A_MAX_TOKENS_HEAVY = 8192
 PHASE3A_MAX_TOKENS_LIGHT = 3000
 
@@ -579,7 +598,9 @@ async def _call_with_retry(
                     error_str[:200],
                 )
                 if _is_credit:
-                    # 크레딧 소진: 재시도 무의미 → 즉시 실패(명확한 메시지).
+                    # 크레딧 소진: 재시도 무의미 → 즉시 실패(명확한 메시지). ERROR 로그 + 관리자 배너 상태.
+                    logger.error("💳 GEMINI 선불 크레딧 소진(402) — 코치 턴이 전부 실패한다. AI Studio 충전 필요. %s", error_str[:160])
+                    _mark_llm_error(error_str, credit=True)
                     raise RuntimeError(
                         "GEMINI_CREDIT_DEPLETED: 선불 크레딧 소진 — 재시도 "
                         "생략(과금 충전 필요). " + error_str[:120])
@@ -1049,6 +1070,9 @@ class GeminiService:
 
         # (2026-09-22) FM_LLM_STUB=1: LLM 호출 없이 정형 답변 — DB·후처리 지연 측정용 리플레이(크레딧 소진 시에도 가능).
         #   턴마다 문장을 바꿔 앵무새·같은 질문 가드에 걸리지 않게 한다. 프로덕션에서는 절대 켜지 않는다.
+        if os.getenv("FM_LLM_STUB") == "error":
+            # 회귀 테스트용: LLM 호출 실패를 흉내낸다(402·429·타임아웃 공통 경로)
+            return {"reply": "", "state": {}, "event_metadata": None, "error": True, "error_kind": "stub"}
         if os.getenv("FM_LLM_STUB") == "1":
             _n = self.__dict__.setdefault("_stub_n", 0) + 1
             self._stub_n = _n
@@ -1076,6 +1100,8 @@ class GeminiService:
 
             # 파서는 유지: 모델이 습관적으로 JSON 을 내도 reply 만 뽑는다. state 는 더 이상 쓰지 않는다.
             reply, _ = _extract_reply_from_response(response_text)
+            if LLM_ALERTS.get("credit_depleted_at"):
+                clear_credit_alert()   # 성공 호출 = 충전됨
 
             return {
                 "reply": reply,
@@ -1085,6 +1111,9 @@ class GeminiService:
 
         except Exception as e:
             logger.error(f"Phase 3-A LLM 오류: {e}")
+            _is_credit_e = "GEMINI_CREDIT_DEPLETED" in str(e)
+            if not _is_credit_e:
+                _mark_llm_error(str(e))
             return {
                 "reply": (
                     "죄송합니다. 잠시 생각할 시간을 주시겠어요? "
@@ -1092,6 +1121,7 @@ class GeminiService:
                 ),
                 "state": {},
                 "event_metadata": None,
+                "error_kind": ("credit" if _is_credit_e else "llm"),
                 # H5: 호출 실패 사실을 명시 — 호출자(diagnoses)가 이 턴의 asked
                 #   원장 전진을 롤백하고 LLM_ERROR 로 태깅한다(앵커 미발화 허수 방지).
                 "error": True,
