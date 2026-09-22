@@ -383,6 +383,6 @@ def test_guard_fallback_avoids_repeating_anchor_source_contract():
     from diag_project.routes import diagnoses as d
     src = inspect.getsource(d._submit_message_phase3a)
     blk = src[src.index("# 8-i."):src.index("# 8-h.")]
-    assert "def _anchor_fallback()" in blk and ".limit(2)" in blk
+    assert "def _anchor_fallback()" in blk and "_recent_coach_texts" in blk
     # 교정 폴백은 전부 _anchor_fallback 을 지난다(직전 2턴에 나간 앵커 반복 방지)
     assert blk.count("template_anchor_bridged(_tgt_q, request.content)") == 2  # _anchor_fallback 내부 2곳뿐

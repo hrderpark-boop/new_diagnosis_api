@@ -1047,51 +1047,31 @@ class GeminiService:
             f"[Latest User Message]\n{user_message}"
         )
 
-        # 경량 모드(BEI 진입 전 턴: 라포·INTRO·CONFIRM·ALIGN 등):
-        # state·event_metadata 가 불필요 → JSON 봉투 생략하고 reply 텍스트만
-        # 생성하도록 지시 → 출력 토큰·지연 최소화.
-        if light_mode:
-            user_content += (
-                "\n\n🚨 [이번 턴 출력 규칙 — 최우선]\n"
-                "이번 턴은 JSON 을 만들지 마세요. state·event_metadata 도 "
-                "출력하지 마세요. 사용자에게 보여줄 한국어 reply 문장만 "
-                "그대로 출력하고 끝내세요. (제어 태그가 필요하면 문장 끝에 "
-                "그대로 붙이세요.)"
-            )
+        # (2026-09-22) 모든 코치 턴 텍스트 전용: JSON 봉투(state·event_metadata 자기보고) 폐기.
+        #   사건·STAR·탐침 종류·일시중지는 백엔드(event_tracker)가 결정한다. thinking 0, 출력 토큰 = 답변 문장만.
+        #   light_mode 인자는 호출자 호환용으로 남긴다(동작 동일).
+        user_content += (
+            "\n\n🚨 [출력 규칙 — 최우선]\n"
+            "JSON·state·event_metadata 를 만들지 마세요. 사용자에게 보여줄 한국어 답변 문장만 그대로 출력하고 끝내세요. "
+            "(제어 태그가 필요하면 문장 끝에 그대로 붙이세요.)"
+        )
 
         try:
             response_text = await self._generate_with_retry(
                 prompt=user_content,
                 system_instruction=system_prompt,
-                max_tokens=(
-                    PHASE3A_MAX_TOKENS_LIGHT if light_mode
-                    else PHASE3A_MAX_TOKENS_HEAVY
-                ),
-                # §1: light 턴은 thinking 0(중간 잘림·지연 방지), heavy 턴은
-                #   512 로 상한(기존 dynamic → 사고 과금 통제). 모델은 flash 유지.
-                thinking_budget=(0 if light_mode else None),
+                max_tokens=PHASE3A_MAX_TOKENS_LIGHT,
+                thinking_budget=0,
                 call_type=("coach_light" if light_mode else "coach_heavy"),
             )
 
-            # 강화된 파서로 reply / state 추출 (평문·JSON 모두 견고하게 처리)
-            reply, state = _extract_reply_from_response(response_text)
-
-            # 경량 모드: event_metadata 파싱 스킵 (항상 None)
-            event_metadata = None
-            if not light_mode:
-                # event_metadata: 전체 JSON 파싱이 성공해야만 추출
-                try:
-                    full = json.loads(response_text.strip())
-                    event_metadata = full.get("event_metadata")
-                    if full.get("state"):
-                        state = full["state"]
-                except (json.JSONDecodeError, ValueError):
-                    pass
+            # 파서는 유지: 모델이 습관적으로 JSON 을 내도 reply 만 뽑는다. state 는 더 이상 쓰지 않는다.
+            reply, _ = _extract_reply_from_response(response_text)
 
             return {
                 "reply": reply,
-                "state": state,
-                "event_metadata": event_metadata,
+                "state": {},
+                "event_metadata": None,
             }
 
         except Exception as e:

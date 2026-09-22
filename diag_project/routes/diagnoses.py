@@ -705,6 +705,15 @@ async def _submit_message_phase3a(
     db.add(user_msg)
     await db.commit()
 
+    # (2026-09-22) 전체 히스토리 1회 로드 — 직전 코치 문장(사건 슬롯·앵커 반복 방지)·한 자리 경과(일시중지 제안)에 쓴다.
+    history_messages = (await db.execute(
+        select(ChatMessage).where(ChatMessage.session_id == session.id).order_by(ChatMessage.created_at.asc())
+    )).scalars().all()
+    _recent_coach_texts: list[str] = [
+        (m.content or "") for m in history_messages if (m.role == MessageRole.MODEL or m.role == "model")
+    ][-2:][::-1]
+    _prev_coach_text = _recent_coach_texts[0] if _recent_coach_texts else ""
+
     # 🚦 A: 참여 이탈(disengagement) 추적. 중단 트리거는 '근거 부족'이 아니라
     #   '참여 이탈'(A-0) — 부재 진술처럼 성실히 설명한 경우(engaged)는 카운트
     #   하지 않는다. build_turn_state 가 이 store 를 읽어 ABORT_CONFIRM/
@@ -1168,8 +1177,8 @@ async def _submit_message_phase3a(
         )
         _tm["llm"] = _time.perf_counter() - _l0
         reply = llm_output["reply"]
-        llm_state = llm_output.get("state") or {}
-        event_metadata = llm_output.get("event_metadata")
+        llm_state = {}          # (2026-09-22) 자기보고 JSON 폐기 — 항상 빈 dict
+        event_metadata = None
         # H5: LLM 호출 실패 → 사과 폴백만 나가고 앵커는 발화되지 않았다. 이 턴의
         #   asked 원장 전진(apply_probe_turn)을 스냅샷으로 되돌려 '기록=발화'
         #   결합을 유지한다(넓이 게이트 허수 방지). 참여이탈 카운터 등 다른 키는
@@ -1194,8 +1203,11 @@ async def _submit_message_phase3a(
     # 8. 제어 태그 처리 (감사 위험 #4 해결)
     is_chapter_completed = "[CHAPTER_COMPLETE]" in reply
     is_session_paused = "[SESSION_PAUSE]" in reply
-    is_ready_for_intro = "[READY_FOR_INTRO]" in reply
-    is_chapter_starting = "[START_CHAPTER]" in reply
+    # (2026-09-22) READY_FOR_INTRO·START_CHAPTER·SUGGEST_PAUSE 는 LLM 마커가 아니라 백엔드가 결정한다
+    #   (코드 리뷰 2-d #8). 마커가 와도 무시하지 않고 OR 로 받되, 프롬프트는 더 이상 마커를 요구하지 않는다.
+    is_ready_for_intro = ("[READY_FOR_INTRO]" in reply
+                          or (instruction_used == "RAPPORT_BUILDING" and bool(state.get("force_ready_for_intro"))))
+    is_chapter_starting = "[START_CHAPTER]" in reply or instruction_used == "DIAGNOSIS_CONFIRM"
     is_diagnosis_complete = "[DIAGNOSIS_COMPLETE]" in reply
     # Core Rule 7/9: 코치가 능동적으로 세션을 중단하는 조기 종료 마커
     # (극심한 스트레스·거부감, 동문서답 3진 아웃). 일시중지로 처리해
@@ -1203,7 +1215,18 @@ async def _submit_message_phase3a(
     is_session_end_early = "[SESSION_END_EARLY]" in reply
     # Core Rule 7: 조기 종료 '제안' 마커 — 프론트가 '다음에 하기/계속
     # 진행하기' 버튼을 띄우도록 needs_user_decision 플래그로 변환된다.
-    is_suggest_pause = "[SUGGEST_PAUSE]" in reply
+    # 일시중지 제안: 한 자리 경과 시간·턴 수 기준(event_tracker.should_suggest_pause). LLM 은 제안하지 않는다.
+    from diag_project.services.event_tracker import should_suggest_pause as _ssp, sitting_stats as _sst
+    _sit_elapsed, _sit_n = _sst([m.created_at for m in history_messages if m.created_at], now=datetime.utcnow())
+    _last_sp_idx = max((i for i, m in enumerate(history_messages)
+                        if m.probe_type_used == "SUGGEST_PAUSE"), default=None)
+    _turns_since_sp = (len(history_messages) - 1 - _last_sp_idx) // 2 if _last_sp_idx is not None else None
+    _backend_pause_suggested = (system_override_text is None and not _llm_error and _ssp(
+        elapsed_min=_sit_elapsed, sitting_messages=_sit_n,
+        suggest_pause_count=state.get("suggest_pause_count", 0),
+        turns_since_last_suggest=_turns_since_sp, instruction_used=instruction_used,
+    ))
+    is_suggest_pause = "[SUGGEST_PAUSE]" in reply or _backend_pause_suggested
 
     # 🛡️ [방어 로직 — 최우선] 남은 역량(챕터)이 있으면 '전체 진단 종료'를 절대
     # 허용하지 않는다. LLM 이 [DIAGNOSIS_COMPLETE] 를 환각으로 내보내거나 로직이
@@ -1529,16 +1552,7 @@ async def _submit_message_phase3a(
             strip_transition_sentences, template_anchor_bridged, trim_lead_sentences, same_question_as_previous,
         )
         from diag_project.services.output_guard import is_question as is_question_sentence
-        _prev_coach_text = ""
-        _recent_coach_texts: list[str] = []
-        try:
-            _pq = await db.execute(
-                select(ChatMessage.content).where(ChatMessage.session_id == session.id)
-                .where(ChatMessage.role == MessageRole.MODEL).order_by(ChatMessage.created_at.desc()).limit(2))
-            _recent_coach_texts = [x or "" for x in _pq.scalars().all()]
-            _prev_coach_text = _recent_coach_texts[0] if _recent_coach_texts else ""
-        except Exception:
-            _prev_coach_text = ""
+        # _prev_coach_text / _recent_coach_texts 는 히스토리 로드 직후 계산됨(2026-09-22)
 
         def _anchor_fallback() -> str:
             """교정 폴백 문장: 현재 타겟 템플릿 앵커(연결 절). 그 앵커가 직전 2턴에 이미 나갔으면(리플레이 F 16·11턴 —
@@ -1759,8 +1773,17 @@ async def _submit_message_phase3a(
                 clean_reply, _before = enforce_exclamation_cap(_src, _ex_cap)
                 logger.info("❗ 느낌표 치환: %d → %d", _before, count_exclamations(clean_reply))
 
+    if needs_user_decision and _backend_pause_suggested and clean_reply:
+        clean_reply = (
+            f"{clean_reply.rstrip()}\n\n"
+            f"리더님, 한 자리에서 {int(_sit_elapsed)}분째 이어오고 있습니다. 오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. "
+            "이어가실지, 다음에 하실지 골라 주세요."
+        )
+
     # 9. 사건 생명주기 처리 + AI 메시지 저장
-    probe_type_used = llm_state.get("probe_type_used")
+    #   (2026-09-22) 탐침 종류는 LLM 자기보고가 아니라 instruction·문장 표지로(event_tracker.probe_type_for).
+    from diag_project.services.event_tracker import probe_type_for as _ptf
+    probe_type_used = None if system_override_text is not None else _ptf(instruction_used, clean_reply)
 
     # 사용자가 '계속' 동의(CHAPTER_CONTINUE_CONFIRMED)했을 때만 다음 챕터를
     # '시작됨'으로 표시해, 중간 CONFIRM 턴 없이 바로 다음 영역 합의(ALIGN)로
@@ -1806,9 +1829,13 @@ async def _submit_message_phase3a(
             db=db,
             session_id=session.id,
             chapter=chapter,
-            llm_state=llm_state,
-            event_metadata=event_metadata,
             user_message_text=request.content,
+            instruction_used=instruction_used,
+            prev_instruction=state.get("last_instruction"),
+            prev_coach_text=_prev_coach_text,
+            target_changed=bool(_cur_before is not None and current_target_sub
+                                and advanced_to_new_target(_cur_before, current_target_sub)),
+            mapped_target=(_cur_before or current_target_sub),
         )
 
     # START_CHAPTER 마커 메시지는 진단 전 단계라도 해당 챕터로 태깅.
@@ -1985,65 +2012,59 @@ async def _handle_event_lifecycle(
     db: AsyncSession,
     session_id: UUID,
     chapter: str,
-    llm_state: dict,
-    event_metadata: dict | None,
     user_message_text: str,
+    instruction_used: str | None,
+    prev_instruction: str | None,
+    prev_coach_text: str | None,
+    target_changed: bool,
+    mapped_target: str | None,
 ) -> UUID | None:
-    """LLM 신호를 기반으로 사건 생명주기 관리.
+    """사건 생명주기 — 백엔드 결정론 (2026-09-22, LLM 자기보고 폐기; 코드 리뷰 2-d 🟥 #1·#2·#5).
 
-    LLM 의 임시 ID ("evt_1") 는 신호로만 사용.
-    실제 DB UUID 는 이 함수가 생성/조회해서 반환.
+    직전 코치 턴의 instruction·문장과 사용자 발화만으로: 새 사건 생성(앵커·부재 폴백·정의 합의 뒤 첫 서술),
+    STAR 슬롯 채움(직전 질문이 결과 질문이면 R, 아니면 A→R→T 순), 완결(타겟 전진 또는 새 사건 시작).
+    mapped_subcompetency 는 원장 타겟(LLM 추정 아님). 단답·부재·회피·메타 턴은 슬롯을 채우지 않는다.
 
-    Returns:
-        진짜 event UUID (있으면) 또는 None
+    Returns: 이 턴이 속한 사건 UUID (없으면 None)
     """
-    llm_signals_active_event = bool(llm_state.get("current_event_id"))
-    turn_intent = llm_state.get("turn_intent", "")
-    star_coverage = llm_state.get("star_coverage") or {}
+    from diag_project.services.event_tracker import plan_event_update
 
     active_event = await get_active_event(db, session_id, chapter)
+    active_flags = None
+    if active_event:
+        active_flags = {
+            "situation": bool(active_event.situation), "task": bool(active_event.task),
+            "action": bool(active_event.action), "result": bool(active_event.result),
+        }
+    plan = plan_event_update(
+        user_text=user_message_text, instruction_used=instruction_used, prev_instruction=prev_instruction,
+        prev_coach_text=prev_coach_text, active=active_flags, target_changed=target_changed,
+    )
+    text = (user_message_text or "").strip()[:500]
 
-    # 케이스 1: LLM 이 사건 신호 없음 → 추적 안 함
-    if not llm_signals_active_event:
-        return None
+    async def _complete(ev) -> None:
+        await complete_event(db=db, event_id=ev.id, metadata={
+            "summary": (ev.situation or text)[:60],
+            "mapped_subcompetency": ev.mapped_subcompetency or mapped_target,
+        })
 
-    # 케이스 2: LLM 이 사건 신호 있음, DB 에 활성 사건 없음 → 새 사건 생성
-    if not active_event:
+    if plan.op == "new":
+        if active_event and plan.complete_active:
+            await _complete(active_event)
         existing = await get_chapter_events(db, session_id, chapter)
-        sequence_num = len(existing) + 1
-        new_event = await create_event(
-            db=db,
-            session_id=session_id,
-            chapter=chapter,
-            sequence_num=sequence_num,
-        )
-        if user_message_text:
-            await update_event_star(
-                db=db,
-                event_id=new_event.id,
-                situation=user_message_text[:500],
-            )
+        new_event = await create_event(db=db, session_id=session_id, chapter=chapter, sequence_num=len(existing) + 1)
+        new_event.mapped_subcompetency = mapped_target
+        await update_event_star(db=db, event_id=new_event.id, situation=text)
         await increment_probe_count(db, new_event.id)
         return new_event.id
 
-    # 케이스 3: LLM 이 사건 신호 있음, DB 에 활성 사건 있음 → STAR 갱신 + 탐침 카운트
-    update_kwargs: dict = {}
-    if user_message_text:
-        if not active_event.action and star_coverage.get("A"):
-            update_kwargs["action"] = user_message_text[:500]
-        elif not active_event.result and star_coverage.get("R"):
-            update_kwargs["result"] = user_message_text[:500]
-        elif not active_event.task and star_coverage.get("T"):
-            update_kwargs["task"] = user_message_text[:500]
-
-    if update_kwargs:
-        await update_event_star(db=db, event_id=active_event.id, **update_kwargs)
-
+    if active_event is None:
+        return None
+    if plan.op == "fill" and plan.slot:
+        await update_event_star(db=db, event_id=active_event.id, **{plan.slot: text})
     await increment_probe_count(db, active_event.id)
-
-    if turn_intent == "EVENT_COMPLETE" and event_metadata:
-        await complete_event(db=db, event_id=active_event.id, metadata=event_metadata)
-
+    if plan.complete_after:
+        await _complete(active_event)
     return active_event.id
 
 
