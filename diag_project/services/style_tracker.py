@@ -57,6 +57,9 @@ def _content_chunks(text: str) -> list[str]:
         if len(tok) < 2:
             continue
         base = _JOSA_RE.sub("", tok)
+        base2 = _JOSA_RE.sub("", base)          # '일들이요' → '일들이' → '일들' (조사 두 겹, 2026-09-22)
+        if len(base2) >= 2:
+            base = base2
         stem = _VERB_END.sub("", base)
         if len(stem) >= 2:
             base = stem
@@ -148,12 +151,14 @@ def compute_style_constraints(
         1 for i, r in enumerate(recent[:2])
         if is_recap_turn(r, users[i] if i < len(users) else "")
     )
+    # (2026-09-22, 4번) 되받기 '3턴 1회' 제한과 '네' 시작 금지는 폐지 — 가드로 자르지 않고 Layer1 대화 규칙 2 한 줄이
+    #   맡는다. 값은 관찰용(guard_log·리플레이 집계)으로만 남긴다.
     return {
         "recent_openers": openers,
         "ne_recap_prev": ne_prev,
         "recap_count_2": recap_2,
-        "forbid_ne_opening": ne_prev,
-        "forbid_recap": recap_2 >= 1,
+        "forbid_ne_opening": False,
+        "forbid_recap": False,
     }
 
 
@@ -257,11 +262,10 @@ def format_style_constraints(
             "인정은 사실 확인('그 결정을 내리셨군요', '쉽지 않은 자리였겠습니다')까지. "
             "시스템이 출력을 검사해 포함 문장을 지웁니다."
         )
-        # 4-c 되받기 구조: 겹치지 않게
+        # (2026-09-22) 되받기: 자르지 않는다. 한 줄 지시 + 페르소나별 반응 힌트만.
         lines.append(
-            "- **되받기 구조**: 질문 앞의 리드는 **한 문장**뿐입니다 — 되받기 허용 턴은 [요약 한 줄] + [질문], "
-            "금지 턴은 [연결 한 절이 든 질문 한 문장](직전 발화의 단어 하나를 다음 질문의 이유로). "
-            "요약 위에 인정·격려를 얹어 두 문장으로 만들지 마세요. 질문만 던지고 끝내는 것도 안 됩니다."
+            "- 리더님 말을 한 문장으로 되풀이하지 마세요. 짧게 받고 바로 이어서 물으세요. "
+            + _persona_reaction_hint(persona_name)
         )
         cap = exclamation_cap(persona_name, instruction)
         lines.append(
@@ -269,22 +273,6 @@ def format_style_constraints(
             + (" — 안내·설명 턴이라 0개" if cap == 0 and instruction in _EXPLAIN_INSTRUCTIONS
                and (persona_name or "").startswith("Michael") else "")
             + ". 시스템이 세어 초과분은 마침표로 바꿉니다. 에너지·강조는 느낌표가 아니라 단어로."
-        )
-    if sc.get("forbid_ne_opening"):
-        lines.append(
-            "- 직전 턴이 '네, ~하셨군요/~말씀이시군요'로 시작했습니다. **이번 턴은 "
-            "그 시작 금지** — 호응어 없이 바로 질문으로 들어가거나 다른 짧은 반응 "
-            "한 마디('그랬군요.', '아, 그 장면요.')로 시작하세요. "
-            "이렇게 시작하지 말 것: \"네, ~하셨군요\" / \"네, ~말씀 잘 들었습니다\""
-        )
-    if sc.get("forbid_recap"):
-        lines.append(
-            "- 최근 2턴 안에 리더님 답변을 요약하거나 리더님이 쓴 명사구를 그대로 복창한 "
-            "문장이 있었습니다. **이번 턴은 요약 되받기 금지(복창 포함)** — '네'를 빼고 '~하셨습니다' "
-            "평서문으로 바꿔도 같은 패턴입니다. 답변을 다시 정리하지 말고 (a) 바로 다음 "
-            "질문으로 들어가거나 (b) 연결 한 절을 붙인 뒤 질문하세요. "
-            "이렇게 시작하지 말 것: \"네, ~하셨군요. 그때 …?\" / \"~하셨다는 말씀, 잘 들었습니다.\" "
-            + _persona_reaction_hint(persona_name)
         )
     if not lines:
         return ""

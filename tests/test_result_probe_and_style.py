@@ -47,12 +47,12 @@ def test_noun_phrase_echo_counts_as_recap():
 
 
 def test_recap_limited_to_once_per_three_turns_with_user_context():
+    # (2026-09-22) 3턴 1회 제한 폐지 — forbid_recap 은 항상 False, recap_count_2 는 관찰용으로 남는다
     sc = compute_style_constraints([JESSICA_PLAIN, INSIGHT], [USER, USER])
-    assert sc["forbid_recap"] is True
+    assert sc["forbid_recap"] is False and sc["recap_count_2"] >= 1
     sc2 = compute_style_constraints([INSIGHT, PLAIN_Q], [USER, USER])
-    assert sc2["forbid_recap"] is False
-    # 구형 호출(사용자 발화 없이)도 그대로 동작
-    assert compute_style_constraints([JESSICA_PLAIN])["forbid_recap"] is True
+    assert sc2["forbid_recap"] is False and sc2["recap_count_2"] == 0
+    assert compute_style_constraints([JESSICA_PLAIN])["recap_count_2"] >= 1
 
 
 def test_persona_specific_hint_in_constraint_text():
@@ -60,15 +60,15 @@ def test_persona_specific_hint_in_constraint_text():
     j = format_style_constraints(sc, "Jessica (제시카)")
     e = format_style_constraints(sc, "Ella (엘라)")
     # 2026-09-17: 대체 문장은 '연결 한 절'(직전 발화 단어 하나를 다음 질문의 이유로) — 6명 공통, 톤만 다르다
-    assert "연결 한 절" in j and "간결" in j
-    assert "연결 한 절" in e and "부드럽게" in e
-    assert "복창" in j and "평서문" in j and "요약 되받기 금지" in j
+    # (2026-09-22) 되받기 금지 블록 폐지 — 한 줄 지시 + 페르소나 반응 힌트만
+    assert "되풀이하지" in j and "간결" in j
+    assert "되풀이하지" in e and "부드럽게" in e
+    assert "요약 되받기 금지" not in j and "그 시작 금지" not in j
     expect = {"Olivia (올리비아)": "다른 각도", "Daniel (다니엘)": "격식체",
               "Michael (마이클)": "추진감", "Lucas (루카스)": "요점"}
     for name, kw in expect.items():
         t = format_style_constraints(sc, name)
-        assert kw in t and "연결 한 절" in t and "한 어절" in t, name
-    assert "질문만 던지지 마세요" in format_style_constraints(sc, "Lucas (루카스)")
+        assert kw in t, name
 
 
 # ── 2) 결과(R) 탐침 강제 ──

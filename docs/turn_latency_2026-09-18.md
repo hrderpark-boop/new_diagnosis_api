@@ -79,3 +79,12 @@ Layer1 이 5k 기준의 **약 3배**. 매 턴 system_instruction 으로 통째�
 ## (d) Render
 - 콜드스타트 52초 관측(09-15 openapi 첫 응답 53초). Free 슬립이면 참가자에게 그대로 노출된다.
 - **파일럿 첫 참가자 전에 Instance Type 을 Starter 로** (docs/deploy_backend.md F 항목). 코드 변경 없음.
+
+## (e) 2026-09-22 구조 변경 — 자기보고 JSON 폐기 · 프롬프트 감축 · 가드 완화
+일관리 실세션(09-22) 진단: 14k 프롬프트 + 자기보고 JSON(필드 10개) + 22단계 절단이 "미숙·기계적·지루"와 15초 지연의 공통 원인.
+실측(guard_log): 일관리 16턴 LLM 1차 중앙값 15.5s(heavy: JSON+thinking) / 비LLM(decider+후처리+DB) 중앙값 4.7s.
+1. 자기보고 JSON 폐기(`event_tracker`): 출력 = 답변 문장만, thinking 0. 사건·STAR·탐침 종류·일시중지는 백엔드 결정론.
+2. Layer1 14,275 → light 1,361 / heavy 1,753 토큰(`docs/prompt_reduction_2026-09-22.md`).
+3. 가드 완화: 되받기 리드·전환 문장을 자르지 않는다. 남는 가드 = 칭찬·하위역량 이름 삭제, 느낌표 상한, 질문 없으면 템플릿 앵커,
+   직전 턴과 같은 질문 교체.
+리플레이 결과표는 `docs/prompt_reduction_2026-09-22.md` 하단. 남은 지연은 비LLM 4~5초(DB 왕복) — 다음 라운드(스트리밍과 함께 쿼리 수 축소).

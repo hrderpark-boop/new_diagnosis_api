@@ -1548,7 +1548,7 @@ async def _submit_message_phase3a(
     #   하드 교정의 두 가지 보장(사람관리 09-21 사고 — 교정이 연결 절·질문을 잘라 턴이 깨졌다):
     #     (1) 질문 보존: 어떤 교정도 질문을 없애지 않는다. 없애게 되면 그 교정을 건너뛰거나(칭찬·이름 구절)
     #         현재 타겟의 템플릿 앵커로 간다(전환 문장이 곧 질문인 경우).
-    #     (2) 연결 절 보존: "방금 말씀하신 '인정'과도 이어지는데요" 가 든 문장은 되받기로 안 지운다(trim_lead_sentences).
+    #     (2) (2026-09-22) 되받기 리드·전환 문장은 자르지 않는다 — 자른 문장이 어색하다(4번). 관찰 항목으로만 guard_log 에 남는다.
     #   프로브 턴이 끝까지 질문 없이 남으면 결과 질문 풀이 아니라 현재 타겟 템플릿 앵커(연결 절 포함).
     #   부재 폴백 턴(ABSENCE_PROBE)·템플릿 턴은 가드 대상 아님. 모든 결과는 guard_log 에 남는다.
     #   후처리 단계 전체 표: docs/postprocess_pipeline.md — 프롬프트 규칙을 추가할 때 이 표와 대조한다.
@@ -1556,7 +1556,7 @@ async def _submit_message_phase3a(
         from diag_project.services.output_guard import (
             TRANSITION_ALLOWED_INSTRUCTIONS, find_praise, find_sub_names, has_question, has_transition_claim,
             off_target_overlap, split_sentences, strip_praise, strip_sub_name_mentions,
-            strip_transition_sentences, template_anchor_bridged, trim_lead_sentences, same_question_as_previous,
+            template_anchor_bridged, same_question_as_previous,
         )
         from diag_project.services.output_guard import is_question as is_question_sentence
         # _prev_coach_text / _recent_coach_texts 는 히스토리 로드 직후 계산됨(2026-09-22)
@@ -1616,19 +1616,14 @@ async def _submit_message_phase3a(
                 if nm:
                     v["names_mention"] = nm
             if _is_probe:
+                # (2026-09-22, 4번) 되받기·'네' 시작·리드 겹침은 더 이상 위반이 아니다(자르지 않는다). 관찰용으로만 센다.
                 leads = []
                 for _s2 in split_sentences(txt):
                     if is_question_sentence(_s2):
                         break
                     leads.append(_s2)
-                if _sc.get("forbid_ne_opening") and txt.lstrip().startswith(("네,", "네.", "넵,", "예,")):
-                    v["ne_opening"] = True
-                # 되받기: 첫 리드가 요약 복창일 때만. 연결 절('말씀하신'+한 어절)은 is_recap_opening 이 걷어내고 판정.
-                if _sc.get("forbid_recap") and leads and (
-                        is_recap_turn(leads[0], request.content) or starts_with_ne_recap(leads[0])):
-                    v["recap"] = True
-                if len(leads) > 1:
-                    v["lead_stack"] = len(leads)
+                if leads and (is_recap_turn(leads[0], request.content) or starts_with_ne_recap(leads[0])):
+                    v["recap_obs"] = True
                 if not has_question(txt):
                     v["no_question"] = True
                 _sq = same_question_as_previous(txt, _prev_coach_text)
@@ -1640,12 +1635,11 @@ async def _submit_message_phase3a(
         _tm["violations"] = dict(_v)
         # (2026-09-18 A/B 측정) recap·lead_stack·praise·transition·ne_opening 은 재생성해도 대부분 그대로 남는다
         #   (19턴 중 recap 12 → 재생성 후 11 잔존) → 재생성 없이 바로 교정. 재생성은 문장 교체가 어색한
-        #   names·off_target 과, 출력 자체에 질문이 없는 no_question 에만. FM_REGEN_ALL=1 이면 전부 재생성(측정용).
+        #   names·off_target 과, 출력 자체에 질문이 없는 no_question·same_question 에만.
         _REGEN_KEYS = {"names", "off_target", "no_question", "same_question"}
-        import os as _os_rg
-        _need_regen = bool(_v) and (bool(set(_v) & _REGEN_KEYS) or _os_rg.getenv("FM_REGEN_ALL") == "1")
+        _need_regen = bool(set(_v) & _REGEN_KEYS)
         if _v and not _need_regen:
-            logger.info("🛡️ 출력 가드 위반(재생성 생략, 하드 교정): %s (instr=%s)", _v, instruction_used)
+            logger.info("🛡️ 출력 가드 위반(재생성 생략): %s (instr=%s)", _v, instruction_used)
         if _need_regen:
             logger.info("🛡️ 출력 가드 위반: %s (instr=%s) → 재생성 1회", _v, instruction_used)
             _notes = ["\n\n🚨 [시스템 — 재생성 지시] 방금 만든 응답에 다음 위반이 있습니다. 내용은 유지하되 고쳐 다시 쓰세요."]
@@ -1656,9 +1650,6 @@ async def _submit_message_phase3a(
             if "names" in _v or "off_target" in _v or "names_mention" in _v:
                 _notes.append("- 하위역량 이름을 말하지 말고, 이미 다룬 사건·주제를 다시 묻지 마세요."
                               + (f" 이번 앵커 질문 본문: {_tgt_q}" if (_tgt_q and _is_anchor) else ""))
-            if "ne_opening" in _v or "recap" in _v or "lead_stack" in _v:
-                _notes.append("- 질문 앞의 리드는 한 문장뿐입니다. '네,'로 시작하지 말고, 요약 되받기가 금지된 턴이면 "
-                              "연결 한 절(직전 발화의 단어 하나를 다음 질문의 이유로)로 시작하세요.")
             if "no_question" in _v:
                 _notes.append("- 응답에 질문이 없습니다. 반드시 리더님께 묻는 질문 한 문장으로 끝내세요.")
             if "same_question" in _v:
@@ -1682,9 +1673,14 @@ async def _submit_message_phase3a(
                     clean_reply = _g_reply
                     _v = _v2
         # 하드 교정(남은 위반) — 각 단계는 질문을 없애지 않는다.
-        if _v:
+        _OBS_ONLY = {"recap_obs", "transition"}
+        if _v and (set(_v) - _OBS_ONLY):
             _tm["hard"] = True
             logger.info("🛡️ 출력 가드 하드 교정: %s", _v)
+        elif _v:
+            _tm["hard"] = False
+            logger.info("🛡️ 출력 가드 관찰(교정 없음): %s", _v)
+        if _v and (set(_v) - _OBS_ONLY):
             if ("names" in _v or "off_target" in _v) and _tgt_q:
                 clean_reply = _anchor_fallback()
                 _v = {}
@@ -1700,19 +1696,7 @@ async def _submit_message_phase3a(
                 _c2, _n = strip_praise(clean_reply)   # 마지막 질문 문장은 보존하는 함수
                 if has_question(_c2) or not has_question(clean_reply):
                     clean_reply = _c2
-            if "transition" in _v:
-                _c2, _n = strip_transition_sentences(clean_reply)
-                if has_question(_c2) or not has_question(clean_reply) or not _is_probe:
-                    clean_reply = _c2
-                elif _tgt_q:
-                    # 전환 선언이 곧 질문("다음으로 넘어가도 될까요?")인 프로브 턴 → 현재 타겟 앵커
-                    clean_reply = _anchor_fallback()
-            if _is_probe and ("recap" in _v or "ne_opening" in _v or "lead_stack" in _v):
-                # 첫 질문 이후는 건드리지 않고, 연결 절 리드는 지우지 않는다. 리드가 다 지워지면 연결 절 템플릿을 앞에 붙인다.
-                clean_reply, _n = trim_lead_sentences(
-                    clean_reply, bool(_sc.get("forbid_recap")), request.content,
-                    forbid_ne=bool(_sc.get("forbid_ne_opening")),
-                )
+            # (2026-09-22, 4번) 전환 선언·되받기 리드는 자르지 않는다 — 자른 문장이 어색하다. 위반은 guard_log 에만 남는다.
             # 최종 보장: 프로브 턴에 질문이 없으면 현재 타겟 템플릿 앵커(결과 질문 풀 대체는 폐기 — 같은 문장 반복 사고).
             if _is_probe and not has_question(clean_reply.strip()) and _tgt_q:
                 clean_reply = _anchor_fallback()

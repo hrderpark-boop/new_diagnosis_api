@@ -166,52 +166,7 @@ def strip_praise(text: str) -> tuple[str, int]:
     return " ".join(kept), removed
 
 
-# ── 5) 되받기 정리: [한 줄] + [질문] ──
-def trim_lead_sentences(text: str, forbid_recap: bool, user_text: str | None, forbid_ne: bool = False) -> tuple[str, int]:
-    """첫 질문 앞의 '리드' 문장을 한 줄로 줄인다.
-
-    - forbid_recap: 리드 중 되받기(요약 표지·복창·'네' 시작) 문장을 지운다 → 대체 한 줄만 남음.
-    - 허용 턴: 리드가 2문장 이상이면 마지막 한 줄만 남긴다(요약 한 줄 + 질문).
-    - forbid_ne: 남은 첫 문장의 '네, ' 호응어를 뗀다.
-    질문이 없는 출력(안내·마무리)은 건드리지 않는다. (결과, 지운 문장 수)
-
-    질문 보존 보장(2026-09-21): 첫 질문 이후 문장은 절대 건드리지 않는다.
-    연결 절 보장(2026-09-21, 사람관리 세션 23·28 사고): 연결 절("방금 말씀하신 '인정'과도 이어지는데요")이 든
-    리드 문장은 되받기로 지우지 않고, 리드 2문장 중 하나를 고를 때도 연결 절 문장을 남긴다.
-    되받기를 지워 리드가 하나도 안 남으면 맨 질문 대신 연결 절 템플릿(직전 발화 어절 하나)을 앞에 붙인다.
-    """
-    sents = split_sentences(text)
-    qi = next((i for i, s in enumerate(sents) if is_question(s)), None)
-    if qi is None or qi == 0:
-        out = text
-        if forbid_ne and out.lstrip().startswith(("네,", "네.", "넵,", "예,")):
-            out = re.sub(r"^\s*(네|넵|예)\s*[,.]\s*", "", out, count=1)
-        return out, 0
-    leads, rest = sents[:qi], sents[qi:]
-    removed = 0
-    recap_removed = False
-    if forbid_recap:
-        kept = []
-        for s in leads:
-            if _BRIDGE_RE.search(s):
-                kept.append(s)  # 연결 절은 되받기가 아니다 — 절대 안 지움
-            elif starts_with_ne_recap(s) or is_recap_opening(s) or echoes_user(s, user_text):
-                removed += 1
-                recap_removed = True
-            else:
-                kept.append(s)
-        leads = kept
-    if len(leads) > 1:
-        bridged = [s for s in leads if _BRIDGE_RE.search(s)]
-        removed += len(leads) - 1
-        leads = [bridged[-1] if bridged else leads[-1]]
-    if leads and forbid_ne:
-        leads[0] = re.sub(r"^\s*(네|넵|예)\s*[,.]\s*", "", leads[0], count=1)
-    if not leads and recap_removed and not _BRIDGE_RE.search(rest[0]):
-        kw = bridge_keyword(user_text)
-        if kw:
-            rest = [f"{bridge_prefix(kw)}{_strip_lead_connector(rest[0])}"] + rest[1:]
-    return " ".join(leads + rest).strip(), removed
+# ── 5) (2026-09-22 폐지) 되받기 리드 삭제 trim_lead_sentences — 자른 문장이 어색하다. 되받기는 프롬프트 한 줄이 맡는다. ──
 
 
 def first_lead(text: str) -> str:

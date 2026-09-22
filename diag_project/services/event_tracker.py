@@ -25,7 +25,11 @@ NON_SUBSTANTIVE_INSTRUCTIONS = frozenset({
     "ABSENCE_PROBE", "AVOIDANCE_DETECTED", "META_QUESTION_FROM_USER", "DUPLICATE_CLAIM",
     "CROSS_CHAPTER_REDIRECT", "INVALID_INPUT", "PROMPT_INJECTION_DETECTED", "USER_REQUESTS_PAUSE",
     "AWAIT_NEXT_CHAPTER_CHOICE", "CHAPTER_CONTINUE_CONFIRMED", "NAME_RECONFIRM",
+    # 정의·안내·동의 턴의 답(역량 정의, "네, 다음으로 이어가 주세요")은 사건 서술이 아니다 (리플레이 H 에서 situation 오기록)
+    "COMPETENCY_ASK", "COMPETENCY_ALIGN", "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "RAPPORT_BUILDING",
+    "CHAPTER_READY_TO_END", "CHAPTER_OPENING",
 })
+_CONSENT_RE = re.compile(r"^(네|넵|예|좋습니다|알겠습니다)[,.!\s]*(다음|이어|계속|시작|편하게|말씀)")
 
 # 직전 코치 턴이 이 instruction 이었으면 사용자의 다음 서술은 '새 사건'의 시작이다.
 NEW_EVENT_AFTER = frozenset({
@@ -42,6 +46,8 @@ def is_substantive(user_text: str | None, instruction_used: str | None) -> bool:
     if instruction_used in NON_SUBSTANTIVE_INSTRUCTIONS:
         return False
     if len(t.replace(" ", "")) < SUBSTANTIVE_MIN_CHARS:
+        return False
+    if _CONSENT_RE.match(t):
         return False
     if detect_absence_statement(t):
         return False

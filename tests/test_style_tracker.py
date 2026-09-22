@@ -30,15 +30,16 @@ def test_pattern_detectors():
 
 def test_forbid_ne_when_previous_turn_started_with_ne():
     sc = compute_style_constraints([NE, PLAIN, PLAIN])   # 최신 순
-    assert sc["forbid_ne_opening"] is True
+    assert sc["ne_recap_prev"] is True and sc["forbid_ne_opening"] is False   # (2026-09-22) 금지 폐지, 관찰만
     sc2 = compute_style_constraints([PLAIN, NE, NE])
-    assert sc2["forbid_ne_opening"] is False
+    assert sc2["ne_recap_prev"] is False
 
 
 def test_recap_at_most_once_per_three_turns():
-    assert compute_style_constraints([RECAP, PLAIN])["forbid_recap"] is True
-    assert compute_style_constraints([PLAIN, RECAP])["forbid_recap"] is True
-    assert compute_style_constraints([PLAIN, PLAIN, RECAP])["forbid_recap"] is False
+    # (2026-09-22) 3턴 1회 제한 폐지 — 관찰 카운트만
+    assert compute_style_constraints([RECAP, PLAIN])["recap_count_2"] == 1
+    assert compute_style_constraints([PLAIN, RECAP])["recap_count_2"] == 1
+    assert compute_style_constraints([PLAIN, PLAIN, RECAP])["recap_count_2"] == 0
     assert compute_style_constraints([])["forbid_recap"] is False
 
 
@@ -69,7 +70,7 @@ def test_layer3_includes_persona_and_style_blocks():
     ))
     assert "[🎭 페르소나 유지] 당신은 Jessica (제시카)" in txt
     assert "[🎛 이번 턴 문체 제약" in txt
-    assert "그 시작 금지" in txt and "요약 되받기 금지" in txt
+    assert "되풀이하지" in txt and "요약 되받기 금지" not in txt   # (2026-09-22)
     # 블록은 Turn State 보다 앞에 온다
     assert txt.index("🎭") < txt.index("[Turn State]")
 

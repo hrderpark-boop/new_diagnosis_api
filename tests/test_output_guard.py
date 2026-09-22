@@ -112,17 +112,7 @@ def test_praise_ban_and_lead_rule_in_style_block_for_every_persona():
 def test_recap_markers_extended_and_lead_trimmed():
     assert is_recap_opening("네, 현장의 목소리를 경청하셨다는 말씀, 잘 들었습니다.")
     assert is_recap_opening("네, 새로운 협업 툴 도입 시 반발이 있었다는 말씀, 잘 알겠습니다.")
-    user = "현장의 피드백을 반영해 툴의 단계를 간소화했습니다."
-    t = ("네, 현장의 목소리를 경청하셨다는 말씀, 잘 들었습니다. 쉽지 않은 자리였겠습니다. "
-         "그때 무엇을 먼저 하셨습니까?")
-    out, n = G.trim_lead_sentences(t, forbid_recap=True, user_text=user, forbid_ne=True)
-    assert out == "쉽지 않은 자리였겠습니다. 그때 무엇을 먼저 하셨습니까?" and n == 1
-    # 허용 턴: 리드 2문장 → 마지막 한 줄만
-    out2, n2 = G.trim_lead_sentences("피드백을 반영하셨군요. 쉽지 않은 자리였겠습니다. 그다음은요?", False, user)
-    assert out2 == "쉽지 않은 자리였겠습니다. 그다음은요?" and n2 == 1
-    # 질문 없는 출력은 그대로
-    same, n3 = G.trim_lead_sentences("이 영역, 여기서 잘 매듭짓겠습니다.", True, user)
-    assert n3 == 0 and same.startswith("이 영역")
+    # (2026-09-22) 리드 삭제(trim_lead_sentences)는 폐지 — 판정 함수만 남는다(관찰용)
 
 
 # ── 5) 넓이 하한 ──
@@ -235,7 +225,7 @@ def test_style_tail_block_placed_before_latest_user_message():
     mid = format_turn_state_for_llm(st)
     tail = build_style_tail(st)
     assert "이번 턴 문체 제약" not in mid and "마지막 확인" in tail
-    assert "이렇게 시작하지 말 것" in tail and "네, ~하셨군요" in tail
+    assert "되풀이하지" in tail and "요약 되받기 금지" not in tail   # (2026-09-22) 자르지 않고 한 줄 지시만
     import inspect
     from diag_project.llm_service import GeminiService
     src = inspect.getsource(GeminiService.generate_phase3a_interaction)
@@ -259,41 +249,6 @@ def test_bridge_keyword_prefers_noun_over_verb_fragment():
 
 
 # ── 2026-09-21 사람관리 사고 재발 방지: 하드 교정의 질문·연결 절 보존 ──
-def test_trim_lead_keeps_bridge_sentence_when_recap_forbidden():
-    from diag_project.services.output_guard import trim_lead_sentences
-    user = "팀원들이 마음속으로 진심으로 인정하는지는 모르겠습니다."
-    txt = "방금 말씀하신 '인정'과도 이어지는데요. 그 인정을 확인하려고 무엇을 해보셨습니까?"
-    out, n = trim_lead_sentences(txt, forbid_recap=True, user_text=user)
-    assert out.startswith("방금 말씀하신 '인정'"), out
-    assert "무엇을 해보셨습니까?" in out
-
-
-def test_trim_lead_prefers_bridge_sentence_among_two_leads():
-    from diag_project.services.output_guard import trim_lead_sentences
-    txt = "그 부분이 눈에 들어옵니다. 방금 말씀하신 '지표'와도 이어지는데요. 그 기준은 누가 정했습니까?"
-    out, n = trim_lead_sentences(txt, forbid_recap=False, user_text="지표가 문제였죠.")
-    assert out.startswith("방금 말씀하신 '지표'"), out
-    assert n == 1
-
-
-def test_trim_lead_bridges_bare_question_after_recap_removed():
-    from diag_project.services.output_guard import trim_lead_sentences
-    user = "팀원들이 마음속으로 진심으로 인정하는지는 모르겠습니다."
-    txt = "팀원들이 마음속으로 진심으로 인정하는지 모르겠다고 하셨군요. 팀원들은 그것을 어떻게 받아들였습니까?"
-    out, n = trim_lead_sentences(txt, forbid_recap=True, user_text=user)
-    assert n == 1
-    assert "하셨군요" not in out
-    assert out.startswith("방금 말씀하신 '"), out          # 맨 질문이 아니라 연결 절 템플릿
-    assert out.endswith("어떻게 받아들였습니까?")
-
-
-def test_trim_lead_never_touches_sentences_after_first_question():
-    from diag_project.services.output_guard import trim_lead_sentences
-    txt = "그러셨군요. 그때 어떻게 하셨습니까? 결과는 어땠습니까?"
-    out, n = trim_lead_sentences(txt, forbid_recap=True, user_text="힘들었어요.")
-    assert "그때 어떻게 하셨습니까? 결과는 어땠습니까?" in out
-
-
 def test_strip_transition_keeps_text_when_only_transition_remains():
     from diag_project.services.output_guard import strip_transition_sentences, has_question
     txt = "네, 알겠습니다. 그럼 다음 챕터로 넘어가겠습니다."
@@ -314,7 +269,8 @@ def test_guard_block_source_contract_2026_09_21():
     assert 'instruction_used != "ABSENCE_PROBE"' in blk
     assert "질문 없는 출력 → 결과 질문 대체" not in blk           # 질문 없는 출력 → 풀 대체 폐기
     assert "template_anchor_bridged(_tgt_q, request.content)" in blk
-    assert "trim_lead_sentences(" in blk
+    assert "trim_lead_sentences(" not in blk          # (2026-09-22) 되받기 리드 삭제 폐지
+    assert "strip_transition_sentences(" not in blk   # 전환 문장 삭제 폐지 — 관찰만
 
 
 def test_bridge_keyword_skips_adjective_and_verb_fragments_and_picks_josa():
@@ -335,19 +291,6 @@ def test_strip_sub_name_mentions_leaves_partial_match_inside_long_quote():
     assert n2 >= 1 and out2.startswith("그때"), out2
     out3, n3 = strip_sub_name_mentions("변화관리 측면에서 그때 어떻게 하셨습니까?", ["변화관리(변화지향)"])
     assert n3 == 1 and out3.startswith("그때"), out3
-
-
-def test_trim_lead_no_double_bridge_and_strips_connector():
-    from diag_project.services.output_guard import trim_lead_sentences, template_anchor_bridged
-    user = "팀원이 마음의 짐을 털어낸 이후 활력이 돌아왔습니다."
-    txt = "네, 활력이 돌아왔군요. 방금 말씀하신 '활력'과도 이어지는 부분입니다만, 잘하는 팀원에게 어려운 일을 맡기신 경험이 있으셨습니까?"
-    out, n = trim_lead_sentences(txt, forbid_recap=True, user_text=user)
-    assert out.count("말씀하신") == 1, out
-    txt2 = "그러셨군요. 그 결에서 이어 여쭙니다만, 혹 지쳐서 손을 놓으려던 팀원을 다시 움직이게 하셨던 경험이 있으셨습니까?"
-    out2, _ = trim_lead_sentences(txt2, forbid_recap=True, user_text=user)
-    assert "그 결에서 이어 여쭙니다만" not in out2 and out2.startswith("방금 말씀하신 '"), out2
-    a = template_anchor_bridged("방금 말씀하신 '인정'과도 이어지는데요, 그때 어떻게 하셨습니까?", user)
-    assert a.count("말씀하신") == 1
 
 
 def test_same_question_as_previous_ignores_bridge_and_hedges():
