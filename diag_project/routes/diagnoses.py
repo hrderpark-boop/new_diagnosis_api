@@ -692,7 +692,7 @@ async def _submit_message_phase3a(
         logger.info("▶️ %s 세션 재개 → in_progress: %s", session.status, session.id)
         session.status = "in_progress"
         db.add(session)
-        await db.commit()
+        await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
 
     # 2. 현재 챕터 결정 (current_topic 한국어 → 영문 key)
     chapter = topic_to_chapter(session.current_topic)
@@ -705,7 +705,7 @@ async def _submit_message_phase3a(
         chapter=chapter,
     )
     db.add(user_msg)
-    await db.commit()
+    await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
 
     # (2026-09-22) 전체 히스토리 1회 로드 — 직전 코치 문장(사건 슬롯·앵커 반복 방지)·한 자리 경과(일시중지 제안)에 쓴다.
     history_messages = (await db.execute(
@@ -715,6 +715,10 @@ async def _submit_message_phase3a(
         (m.content or "") for m in history_messages if (m.role == MessageRole.MODEL or m.role == "model")
     ][-2:][::-1]
     _prev_coach_text = _recent_coach_texts[0] if _recent_coach_texts else ""
+    from diag_project.models.event import Event as _EventM
+    all_events = list((await db.execute(
+        select(_EventM).where(_EventM.session_id == session.id).order_by(_EventM.sequence_num)
+    )).scalars().all())
 
     # 🚦 A: 참여 이탈(disengagement) 추적. 중단 트리거는 '근거 부족'이 아니라
     #   '참여 이탈'(A-0) — 부재 진술처럼 성실히 설명한 경우(engaged)는 카운트
@@ -731,26 +735,10 @@ async def _submit_message_phase3a(
     }
     _last_probe = None
     if chapter:
-        _lp = await db.execute(
-            select(ChatMessage.instruction_used)
-            .where(ChatMessage.session_id == session.id)
-            .where(ChatMessage.role == MessageRole.MODEL)  # 코치 메시지 role=model
-            .order_by(ChatMessage.created_at.desc()).limit(1)
-        )
-        _last_probe = _lp.scalars().first()
-        # 🚨 V-7: 코치 메시지가 있어야 정상인 지점에서 None 이면 role 조회 오류
-        #   가능성(예: role 문자열 오타)을 조용히 넘기지 않고 경고한다.
-        if _last_probe is None:
-            _mc = await db.execute(
-                select(func.count()).select_from(ChatMessage)
-                .where(ChatMessage.session_id == session.id)
-                .where(ChatMessage.role == MessageRole.MODEL)
-            )
-            if (_mc.scalar() or 0) > 0:
-                logger.warning(
-                    "⚠️ 직전 코치 instruction 조회가 None 인데 코치 메시지는 "
-                    "존재 — role 조회 경로 점검 필요(세션 %s).", session.id,
-                )
+        # (2026-09-22) 스냅샷에서: 직전 코치 턴의 instruction (SQL 없음)
+        _last_model_snap = next((m for m in reversed(history_messages)
+                                 if (m.role == MessageRole.MODEL or m.role == "model")), None)
+        _last_probe = _last_model_snap.instruction_used if _last_model_snap else None
     if chapter and _last_probe in _BEI_PROBE_INSTR:
         from diag_project.services.avoidance_detector import (
             classify_engagement, detect_disengagement_refusal,
@@ -789,7 +777,7 @@ async def _submit_message_phase3a(
         _dstore["last_engagement"] = _eng
         session.self_assessment_data = _dstore
         _fm_eng(session, "self_assessment_data")
-        await db.commit()
+        await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
         logger.info(
             "🚦 참여상태 [%s] streak=%d cycles=%d awaiting=%s pending_abort=%s "
             "(%s len=%d sub=%s)", _eng,
@@ -801,7 +789,7 @@ async def _submit_message_phase3a(
         )
 
     # 4. Turn State 빌드
-    state = await build_turn_state(db, session.id, chapter)
+    state = await build_turn_state(db, session.id, chapter, messages=history_messages, events_all=all_events)
     _tm["decider"] = _time.perf_counter() - _tm["t0"]
 
     # 4-a. user 메시지 메타데이터 소급 기록 (ML 학습 데이터 구조화):
@@ -825,7 +813,7 @@ async def _submit_message_phase3a(
             session.self_assessment_data = _pc_store
             from sqlalchemy.orm.attributes import flag_modified as _fm_pc
             _fm_pc(session, "self_assessment_data")
-            await db.commit()
+            await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
             state["participant_context"] = _pc_store["participant_context"]
             logger.info("🧩 participant_context 저장: team_size=%s role='%s'", _m.group(1) if _m else None, _rt[:40])
     PRE_DIAGNOSIS_INSTRUCTIONS = {
@@ -879,7 +867,7 @@ async def _submit_message_phase3a(
         session.self_assessment_data = _store
         from sqlalchemy.orm.attributes import flag_modified as _flag_mod
         _flag_mod(session, "self_assessment_data")
-        await db.commit()
+        await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
         # 🔒 T2 기록=발화 결합(넓이 게이트 허수 방지): apply_probe_turn 이 '새'
         #   하위역량으로 타겟을 전진(record)시켰다면(=asked_subs 에 방금 1개 추가),
         #   그 턴의 instruction 을 앵커 발화형(STAR_COMPLETE_NEW_EVENT)으로
@@ -958,7 +946,7 @@ async def _submit_message_phase3a(
             session.self_assessment_data = _st_b
             from sqlalchemy.orm.attributes import flag_modified as _fm_b
             _fm_b(session, "self_assessment_data")
-            await db.commit()
+            await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
             current_target_sub = _cur_b
     state["current_target_sub"] = current_target_sub
     _turn_index = (
@@ -969,10 +957,10 @@ async def _submit_message_phase3a(
     user_msg.turn_index = _turn_index
     user_msg.instruction_used = instruction_used
     db.add(user_msg)
-    await db.commit()
+    await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
 
     # 5. 대화 이력 압축
-    compressed_history = await compress_conversation_history(db, session.id, chapter)
+    compressed_history = await compress_conversation_history(db, session.id, chapter, messages=history_messages, events_all=all_events)
 
     # 6. 3-Layer 프롬프트 조립
     # Layer 2: COMPETENCY_INTRO/ALIGN 단계에선 챕터 시작 스크립트가
@@ -1092,7 +1080,7 @@ async def _submit_message_phase3a(
         session.self_assessment_data = _store_ac
         from sqlalchemy.orm.attributes import flag_modified as _fm_ac
         _fm_ac(session, "self_assessment_data")
-        await db.commit()
+        await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
 
     # 🚦 A-4: 참여 이탈 중단 '확정' — 리포트 파이프라인을 아예 호출하지 않는다.
     #   원장(asked/evidence/measured/current_target/turns)은 전부 보존(일시정지).
@@ -1112,7 +1100,7 @@ async def _submit_message_phase3a(
         session.self_assessment_data = _store_ad
         from sqlalchemy.orm.attributes import flag_modified as _fm_ad
         _fm_ad(session, "self_assessment_data")
-        await db.commit()
+        await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
 
     if (not _is_aborted and not _is_warning and not _is_name_reconfirm
             and instruction_used == "RAPPORT_BUILDING"
@@ -1207,7 +1195,7 @@ async def _submit_message_phase3a(
                 )
             user_msg.instruction_used = "LLM_ERROR"
             db.add(user_msg)
-            await db.commit()
+            await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
 
     # 8. 제어 태그 처리 (감사 위험 #4 해결)
     is_chapter_completed = "[CHAPTER_COMPLETE]" in reply
@@ -1421,7 +1409,7 @@ async def _submit_message_phase3a(
             session.self_assessment_data = _st_om
             from sqlalchemy.orm.attributes import flag_modified as _fm_om
             _fm_om(session, "self_assessment_data")
-            await db.commit()
+            await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
 
     # 8-c. CHAPTER_OPENING 은 Step 7 에서 시스템이 전체 출력 (하이브리드 폐지).
     # build_chapter_opening_with_user_def 가 정의 + 첫 BEI 질문까지 포함하므로
@@ -1483,14 +1471,8 @@ async def _submit_message_phase3a(
     #   (상태 정체 + 사용자 '네' 단답 시 같은 요약을 반복하는 병목),
     #   반복 대신 대화를 앞으로 미는 진행 유도 질문으로 교체한다.
     if system_override_text is None and clean_reply:
-        _last_model_q = await db.execute(
-            select(ChatMessage)
-            .where(ChatMessage.session_id == session.id)
-            .where(ChatMessage.role == MessageRole.MODEL)
-            .order_by(ChatMessage.created_at.desc())
-            .limit(1)
-        )
-        _last_model_msg = _last_model_q.scalars().first()
+        _last_model_msg = next((m for m in reversed(history_messages)
+                                if (m.role == MessageRole.MODEL or m.role == "model")), None)
         if (_last_model_msg
                 and _last_model_msg.content
                 and _last_model_msg.content.strip() == clean_reply.strip()):
@@ -1838,6 +1820,7 @@ async def _submit_message_phase3a(
             target_changed=bool(_cur_before is not None and current_target_sub
                                 and advanced_to_new_target(_cur_before, current_target_sub)),
             mapped_target=(_cur_before or current_target_sub),
+            events_all=all_events,
         )
 
     # START_CHAPTER 마커 메시지는 진단 전 단계라도 해당 챕터로 태깅.
@@ -1880,7 +1863,7 @@ async def _submit_message_phase3a(
         turn_index=_turn_index,  # user 메시지와 동일 값 → ML 페어링 키
     )
     db.add(ai_msg)
-    await db.commit()
+    await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
 
     # 11. 챕터 전진 처리
     is_session_completed = False
@@ -1903,7 +1886,7 @@ async def _submit_message_phase3a(
             session.status = "completed"
             is_session_completed = True
         db.add(session)
-        await db.commit()
+        await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
 
     # 11-b. 일시중지: 세션을 '대기(paused)' 상태로 전환.
     #   비정상 챕터 전환 없이(위 전진 블록은 is_chapter_completed=False 라 스킵)
@@ -1912,7 +1895,7 @@ async def _submit_message_phase3a(
     if is_session_paused and session.status != "completed":
         session.status = "paused"
         db.add(session)
-        await db.commit()
+        await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
 
     # 11-c. 🚨 3-Strike 강제 종료: 세션 상태를 'aborted' 로 확정한다.
     #   재개 불가 — 완료도 일시중지도 아닌 '중단' 상태로 명확히 분리한다.
@@ -1920,7 +1903,7 @@ async def _submit_message_phase3a(
         session.status = "aborted"
         session.current_topic = "Aborted"
         db.add(session)
-        await db.commit()
+        await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
         logger.warning(
             "🛑 3-Strike Session Abort: session=%s (비생산 응답 %d회 누적)",
             session.id, state.get("session_deflection_count", 0),
@@ -1967,9 +1950,16 @@ async def _submit_message_phase3a(
         session.self_assessment_data = _gl_store
         from sqlalchemy.orm.attributes import flag_modified as _fm_gl
         _fm_gl(session, "self_assessment_data")
-        await db.commit()
     except Exception as _e:
         logger.warning("guard_log 기록 실패: %s", _e)
+    # (2026-09-22) 턴 끝 1회 커밋 — 사용자 메시지·코치 메시지·원장·사건·guard_log 가 한 트랜잭션. 실패하면 전부 되돌리고
+    #   503 으로 알린다(부분 저장 없음, 원장 보존 정책 A-4). 클라이언트는 같은 답변을 다시 보내면 된다.
+    try:
+        await db.commit()
+    except Exception as _ce:
+        logger.error("💥 턴 커밋 실패 → 롤백: session=%s instr=%s err=%s", str(session.id)[:8], instruction_used, _ce)
+        await db.rollback()
+        raise HTTPException(status_code=503, detail="저장에 실패했습니다. 같은 답변을 다시 보내 주세요.")
     logger.info("⏱ turn timing session=%s instr=%s decider=%.2fs llm=%.2fs regen=%d(%.2fs) post+db=%.2fs total=%.2fs sql=%d",
                 str(session.id)[:8], instruction_used, _tm["decider"], _tm["llm"], _tm["regen_n"], _tm["regen_s"],
                 max(0.0, _total - _tm["decider"] - _tm["llm"] - _tm["regen_s"]), _total, _sqlc.get())
@@ -2020,6 +2010,7 @@ async def _handle_event_lifecycle(
     prev_coach_text: str | None,
     target_changed: bool,
     mapped_target: str | None,
+    events_all: list | None = None,
 ) -> UUID | None:
     """사건 생명주기 — 백엔드 결정론 (2026-09-22, LLM 자기보고 폐기; 코드 리뷰 2-d 🟥 #1·#2·#5).
 
@@ -2031,7 +2022,12 @@ async def _handle_event_lifecycle(
     """
     from diag_project.services.event_tracker import plan_event_update
 
-    active_event = await get_active_event(db, session_id, chapter)
+    if events_all is not None:
+        _ch_events = [e for e in events_all if e.chapter == chapter]
+        active_event = max((e for e in _ch_events if not e.is_complete), key=lambda e: e.sequence_num, default=None)
+    else:
+        _ch_events = None
+        active_event = await get_active_event(db, session_id, chapter)
     active_flags = None
     if active_event:
         active_flags = {
@@ -2048,23 +2044,25 @@ async def _handle_event_lifecycle(
         await complete_event(db=db, event_id=ev.id, metadata={
             "summary": (ev.situation or text)[:60],
             "mapped_subcompetency": ev.mapped_subcompetency or mapped_target,
-        })
+        }, commit=False)
 
     if plan.op == "new":
         if active_event and plan.complete_active:
             await _complete(active_event)
-        existing = await get_chapter_events(db, session_id, chapter)
-        new_event = await create_event(db=db, session_id=session_id, chapter=chapter, sequence_num=len(existing) + 1)
+        existing = _ch_events if _ch_events is not None else await get_chapter_events(db, session_id, chapter)
+        new_event = await create_event(db=db, session_id=session_id, chapter=chapter, sequence_num=len(existing) + 1, commit=False)
         new_event.mapped_subcompetency = mapped_target
-        await update_event_star(db=db, event_id=new_event.id, situation=text)
-        await increment_probe_count(db, new_event.id)
+        await update_event_star(db=db, event_id=new_event.id, situation=text, commit=False)
+        await increment_probe_count(db, new_event.id, commit=False)
+        if events_all is not None:
+            events_all.append(new_event)
         return new_event.id
 
     if active_event is None:
         return None
     if plan.op == "fill" and plan.slot:
-        await update_event_star(db=db, event_id=active_event.id, **{plan.slot: text})
-    await increment_probe_count(db, active_event.id)
+        await update_event_star(db=db, event_id=active_event.id, commit=False, **{plan.slot: text})
+    await increment_probe_count(db, active_event.id, commit=False)
     if plan.complete_after:
         await _complete(active_event)
     return active_event.id

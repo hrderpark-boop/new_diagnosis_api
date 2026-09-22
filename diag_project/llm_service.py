@@ -1047,6 +1047,15 @@ class GeminiService:
             f"[Latest User Message]\n{user_message}"
         )
 
+        # (2026-09-22) FM_LLM_STUB=1: LLM 호출 없이 정형 답변 — DB·후처리 지연 측정용 리플레이(크레딧 소진 시에도 가능).
+        #   턴마다 문장을 바꿔 앵무새·같은 질문 가드에 걸리지 않게 한다. 프로덕션에서는 절대 켜지 않는다.
+        if os.getenv("FM_LLM_STUB") == "1":
+            _n = self.__dict__.setdefault("_stub_n", 0) + 1
+            self._stub_n = _n
+            _pool = ["그때 구체적으로 어떻게 하셨습니까?", "그 뒤로 달라진 게 있었습니까?", "팀원들은 그것을 어떻게 받아들였습니까?",
+                     "그 결정의 기준은 무엇이었습니까?", "지금 돌아보면 어떤 결과였습니까?", "가장 어려웠던 지점은 어디였습니까?"]
+            return {"reply": f"그러셨군요, {_n}번째 이야기군요. {_pool[_n % len(_pool)]}", "state": {}, "event_metadata": None}
+
         # (2026-09-22) 모든 코치 턴 텍스트 전용: JSON 봉투(state·event_metadata 자기보고) 폐기.
         #   사건·STAR·탐침 종류·일시중지는 백엔드(event_tracker)가 결정한다. thinking 0, 출력 토큰 = 답변 문장만.
         #   light_mode 인자는 호출자 호환용으로 남긴다(동작 동일).

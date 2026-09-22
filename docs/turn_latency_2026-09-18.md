@@ -88,3 +88,16 @@ Layer1 이 5k 기준의 **약 3배**. 매 턴 system_instruction 으로 통째�
 3. 가드 완화: 되받기 리드·전환 문장을 자르지 않는다. 남는 가드 = 칭찬·하위역량 이름 삭제, 느낌표 상한, 질문 없으면 템플릿 앵커,
    직전 턴과 같은 질문 교체.
 리플레이 결과표는 `docs/prompt_reduction_2026-09-22.md` 하단. 남은 지연은 비LLM 4~5초(DB 왕복) — 다음 라운드(스트리밍과 함께 쿼리 수 축소).
+
+## (f) 2026-09-22 DB 왕복 — 턴당 SQL 41 → 12
+실세션(일관리) 비LLM 4.7초의 정체: 턴마다 `chat_messages` 를 조건만 바꿔 22번 읽고(decider), 원장을 고칠 때마다 커밋(핸들러 16회 + 사건 4회).
+Render → Postgres 왕복 ~100ms × 41~46문 ≈ 4.7초.
+- 읽기: 턴 시작에 세션 메시지 전체·사건 전체를 **각 1회** 읽어(`history_messages`, `all_events`) decider(`build_turn_state(messages=, events_all=)`)·
+  압축기·사건 생명주기·앵무새 방어·직전 instruction 이 그 스냅샷에서 계산한다. SQL 0.
+- 쓰기: 중간 `commit()` 15곳을 `flush()`로 바꾸고 **턴 끝 1회 커밋**. 실패하면 롤백 + 503("같은 답변을 다시 보내 주세요") — 부분 저장 없음
+  (원장 보존 정책 A-4). `event_service.*(commit=False)`.
+- 측정(FM_SQL_COUNT=1 리스너, `⏱ … sql=N`): 재구성 전 리플레이 L 중앙값 41(최대 43) → 후 리플레이 M(FM_LLM_STUB=1, LLM 없이) 중앙값 12(최대 13),
+  비LLM 총 0.61초(로컬 sqlite). Render 예상: 12 × ~100ms ≈ 1.2~1.4초 (목표 1초 — 남은 12문은 세션·참가자 조회, 메시지·사건 SELECT 2,
+  flush 로 나가는 INSERT/UPDATE, COMMIT. 더 줄이려면 autoflush 억제·세션 UPDATE 병합).
+- 주의: `FM_SQL_COUNT` 리스너를 상시 등록하면 프로세스 종료가 30초 늦어진다 → 측정 모드에서만.
+- 발견: API 크레딧 소진(402) 시 LLM_ERROR 턴이 DIAGNOSIS_INTRO 를 완료로 기록하지 못해 온보딩에서 맴돈다(리플레이 M 1차). 별도 과제.

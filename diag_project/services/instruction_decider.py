@@ -758,28 +758,39 @@ async def build_turn_state(
     db: AsyncSession,
     session_id: UUID,
     chapter: str,
+    *,
+    messages: list | None = None,
+    events_all: list | None = None,
 ) -> dict:
     """매 턴마다 호출되어 Layer 3 state dict 생성.
 
-    DB에서 이 챕터의 모든 정보를 모아 LLM 호출 전 state 객체로 반환.
+    (2026-09-22) 턴 스냅샷: 호출자가 세션의 전체 메시지·사건을 한 번 읽어 넘기면 여기서는 SQL 을 내지 않는다
+    (이전엔 같은 chat_messages 를 조건만 바꿔 22번 읽었다 — Render→DB 왕복 4.7초의 주범). 넘기지 않으면 2번만 읽는다.
     """
+    if messages is None:
+        _mr = await db.execute(
+            select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc())
+        )
+        messages = list(_mr.scalars().all())
+    if events_all is None:
+        _er = await db.execute(select(Event).where(Event.session_id == session_id).order_by(Event.sequence_num))
+        events_all = list(_er.scalars().all())
+
+    def _is_model(m) -> bool:
+        return m.role == MessageRole.MODEL or m.role == "model"
+
+    def _is_user(m) -> bool:
+        return m.role == MessageRole.USER or m.role == "user"
+
+    _msgs = sorted(messages, key=lambda m: (m.created_at is None, m.created_at, m.turn_index or 0))
+    _model_msgs = [m for m in _msgs if _is_model(m)]
+    _ch_model = [m for m in _model_msgs if m.chapter == chapter]
+
     # 1. 사건 정보 수집
-    event_result = await db.execute(
-        select(Event)
-        .where(Event.session_id == session_id)
-        .where(Event.chapter == chapter)
-        .order_by(Event.sequence_num)
-    )
-    events = event_result.scalars().all()
+    events = [e for e in events_all if e.chapter == chapter]
 
     # 2. 이 챕터의 user 메시지 수 (turn_count)
-    msg_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == MessageRole.USER)
-    )
-    user_messages = msg_result.scalars().all()
+    user_messages = [m for m in _msgs if _is_user(m) and m.chapter == chapter]
     # 1-c: 최근 사용자 답변의 '실질 응답' 연속 수(engaged & 공백 제외 30자 이상).
     #   무수확 최후통첩은 이 값이 2 이상이면 발동하지 않는다(성실 응답자 추궁 금지).
     from diag_project.services.avoidance_detector import (
@@ -796,18 +807,7 @@ async def build_turn_state(
     turn_count = len(user_messages)
 
     # 2-b. 🚨 3-Strike: 세션 '전체'(챕터 무관)의 비생산 응답 누적 카운트.
-    #   남탓·욕설·비아냥·거부(detect_deflection)가 세션 통틀어 3회 도달하면
-    #   챕터 전환이 아니라 세션 자체를 강제 종료(Abort)한다.
-    all_user_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.USER)
-        .order_by(ChatMessage.created_at.asc())
-    )
-    all_user_msgs = list(all_user_result.scalars().all())
-    # 세션 강제 종료 누적 카운트: 남탓·비아냥·도발(deflection) + 재촉·시간불평
-    #   (rush) 을 함께 센다. 성실한 단답형의 단순 짧은 답변은 제외(챕터
-    #   Fail-Fast 가 처리). → "빨리 합시다"류 재촉도 종료 카운트에 포함.
+    all_user_msgs = [m for m in _msgs if _is_user(m)]
     session_deflection_count = sum(
         1 for m in all_user_msgs if detect_session_abort_signal(m.content)
     )
@@ -830,13 +830,7 @@ async def build_turn_state(
         coverage = None
 
     # 6. 이전 챕터 사건 (중복 검출용 메타데이터)
-    prev_result = await db.execute(
-        select(Event)
-        .where(Event.session_id == session_id)
-        .where(Event.chapter != chapter)
-        .where(Event.is_complete == True)  # noqa: E712
-    )
-    prev_events = prev_result.scalars().all()
+    prev_events = [e for e in events_all if e.chapter != chapter and e.is_complete]
 
     existing_for_check = [
         {
@@ -869,82 +863,30 @@ async def build_turn_state(
     contains_avoidance = check_avoidance(last_response)
 
     # 8. 반례 수행 여부 (probe_type_used == "CONTRARY" 인 assistant 메시지)
-    contrary_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.probe_type_used == "CONTRARY")
-    )
-    has_contrary = contrary_result.scalars().first() is not None
+    has_contrary = any(m.probe_type_used == "CONTRARY" for m in _ch_model)
 
     # 8-0. N턴 무수확 '최후통첩'을 이 챕터에서 이미 던졌는지 (probe 마커).
-    ultimatum_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.probe_type_used == "NO_YIELD_ULTIMATUM")
-    )
-    no_yield_ultimatum_given = ultimatum_result.scalars().first() is not None
+    no_yield_ultimatum_given = any(m.probe_type_used == "NO_YIELD_ULTIMATUM" for m in _ch_model)
 
     # 8-0b. 세션 강제 종료 '경고(Warning)'를 이미 1회 냈는지 (probe 마커).
     #   경고를 이미 줬다면 다음 회피 턴에서 곧바로 종료(재경고 루프 방지).
-    warning_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.probe_type_used == "ABORT_WARNING")
-    )
-    session_already_warned = warning_result.scalars().first() is not None
+    session_already_warned = any(m.probe_type_used == "ABORT_WARNING" for m in _model_msgs)
 
     # 8-0c. 이름 재확인(NAME_RECONFIRM)을 이미 1회 물었는지 (probe 마커).
     #   재확인 후에도 성함을 못 뽑으면 기본 호칭 '리더님'으로 폴백(재질문 X).
-    reconfirm_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.probe_type_used == "NAME_RECONFIRM")
-    )
-    name_reconfirm_asked = reconfirm_result.scalars().first() is not None
+    name_reconfirm_asked = any(m.probe_type_used == "NAME_RECONFIRM" for m in _model_msgs)
 
     # 8-a. 마커 1: 라포 완료 → 인트로 진입 ([READY_FOR_INTRO] 또는 하위호환 RAPPORT_COMPLETE)
-    rapport_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.probe_type_used.in_(["READY_FOR_INTRO", "RAPPORT_COMPLETE"]))
-    )
-    rapport_complete = rapport_result.scalars().first() is not None
+    rapport_complete = any(m.probe_type_used in ("READY_FOR_INTRO", "RAPPORT_COMPLETE") for m in _model_msgs)
 
     # 8-a2. 마커 2: 인트로 완료 (instruction_used == "DIAGNOSIS_INTRO" 인 model 메시지)
-    intro_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.instruction_used == "DIAGNOSIS_INTRO")
-    )
-    intro_done = intro_result.scalars().first() is not None
+    intro_done = any(m.instruction_used == "DIAGNOSIS_INTRO" for m in _model_msgs)
 
     # 8-a3. 마커 3: 챕터 시작 신호 (probe_type_used == "START_CHAPTER" 인 model 메시지)
-    chapter_started_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.probe_type_used == "START_CHAPTER")
-    )
-    chapter_started = chapter_started_result.scalars().first() is not None
+    chapter_started = any(m.probe_type_used == "START_CHAPTER" for m in _ch_model)
 
     # 8-a3b. 직전(가장 최근) AI 메시지 — 전환 예고 직후 판정(awaiting_next_chapter_choice)에 쓴다.
-    latest_model_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .order_by(ChatMessage.created_at.desc())
-        .limit(1)
-    )
-    latest_model_msg = latest_model_result.scalars().first()
+    latest_model_msg = _model_msgs[-1] if _model_msgs else None
     # 2026-09-16: 전환 예고(CHAPTER_READY_TO_END) 직후 = 프론트 '다음 챕터로 이동' 팝업 대기.
     #   정의 질문(definition_asked)이 나가기 전까지만 True. (아래 definition_asked 계산 뒤 확정)
     _after_transition = (
@@ -956,89 +898,36 @@ async def build_turn_state(
     # 8-a3c. 코치의 '조기 종료 제안(SUGGEST_PAUSE)' 누적 횟수.
     #   2-Strike 규칙: 제안은 최대 2회 — 2회를 넘기면 3번째부터는 제안이
     #   아니라 강제 종료(SESSION_END_EARLY)로 전환해야 한다.
-    suggest_pause_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.probe_type_used == "SUGGEST_PAUSE")
-    )
-    suggest_pause_count = len(list(suggest_pause_result.scalars().all()))
+    suggest_pause_count = sum(1 for m in _model_msgs if m.probe_type_used == "SUGGEST_PAUSE")
 
     # 8-a4. CONFIRM 턴 수 (DIAGNOSIS_CONFIRM 으로 저장된 model 메시지 수)
-    confirm_msg_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.instruction_used == "DIAGNOSIS_CONFIRM")
-    )
-    confirm_turn_count = len(list(confirm_msg_result.scalars().all()))
+    confirm_turn_count = sum(1 for m in _model_msgs if m.instruction_used == "DIAGNOSIS_CONFIRM")
 
     # 8-b. 라포 턴 수 (chapter=NULL 인 user 메시지 — 라포 완료 후 소급 변경된 것들)
-    rapport_turn_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.USER)
-        .where(ChatMessage.chapter == None)  # noqa: E711
-    )
-    rapport_messages = rapport_turn_result.scalars().all()
+    rapport_messages = [m for m in all_user_msgs if m.chapter is None]
     rapport_turn_count = len(rapport_messages)
 
     # 8-c. 이 챕터의 실제 BEI AI 메시지 수 (CHAPTER_OPENING 발화 판별용).
     # 진단 전 단계(INTRO/CONFIRM/ALIGN/INTRO)는 제외 — 아직 BEI 시작 전이므로.
     # ⚠️ DIAGNOSIS_CONFIRM 은 START_CHAPTER 마커 때문에 chapter 로 태깅되므로
     #    반드시 제외해야 CHAPTER_OPENING(첫 BEI 템플릿)이 정상 발화함.
-    chapter_msg_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.instruction_used.not_in([
-            "COMPETENCY_INTRO",
-            "COMPETENCY_ALIGN",
-            "DIAGNOSIS_CONFIRM",
-            "DIAGNOSIS_INTRO",
-            # 종결+전환 경계 메시지가 다음 챕터로 태깅되므로 제외해야
-            # 새 챕터의 CHAPTER_OPENING(첫 BEI)이 정상 발화함.
-            "CHAPTER_READY_TO_END",
-            # '계속' 확정 브릿지도 다음 챕터로 태깅됨 → 첫 BEI 판별에서 제외.
-            "CHAPTER_CONTINUE_CONFIRMED",
-        ]))
-    )
-    chapter_message_count = len(list(chapter_msg_result.scalars().all()))
+    _NON_BEI = {"COMPETENCY_INTRO", "COMPETENCY_ALIGN", "DIAGNOSIS_CONFIRM", "DIAGNOSIS_INTRO",
+                # 종결+전환 경계·'계속' 브릿지는 다음 챕터로 태깅되므로 제외해야 첫 BEI(CHAPTER_OPENING) 판별이 맞는다
+                "CHAPTER_READY_TO_END", "CHAPTER_CONTINUE_CONFIRMED"}
+    # SQL NOT IN 은 NULL 을 제외했으므로 instruction_used 가 None 인 행도 세지 않는다(동일 의미 유지)
+    chapter_message_count = sum(1 for m in _ch_model if m.instruction_used is not None and m.instruction_used not in _NON_BEI)
 
     # 8-d. 역량 합의 마커
-    competency_intro_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.instruction_used == "COMPETENCY_INTRO")
-    )
-    competency_intro_done = competency_intro_result.scalars().first() is not None
+    competency_intro_done = any(m.instruction_used == "COMPETENCY_INTRO" for m in _ch_model)
 
-    competency_align_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.instruction_used == "COMPETENCY_ALIGN")
-    )
-    competency_aligned = competency_align_result.scalars().first() is not None
+    competency_aligned = any(m.instruction_used == "COMPETENCY_ALIGN" for m in _ch_model)
 
     # 🐛 fix(1·5): 정의 '질문' 스텝은 챕터마다 1회여야 한다. 기존엔 첫 챕터의
     #   DIAGNOSIS_CONFIRM 에만 융합돼 있고, 2번째 챕터부터는 전환 브릿지의 조기
     #   START_CHAPTER 태깅 때문에 chapter_started 가 미리 True 가 되어 질문 스텝
     #   (474)이 도달 불가였다. → 챕터별 게이트: 이 챕터에 정의 질문(COMPETENCY_ASK)
     #   또는 (첫 챕터의) DIAGNOSIS_CONFIRM 이 이미 있었는지로 판정한다.
-    definition_asked_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.chapter == chapter)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .where(ChatMessage.instruction_used.in_(
-            ["COMPETENCY_ASK", "DIAGNOSIS_CONFIRM"]))
-    )
-    definition_asked = definition_asked_result.scalars().first() is not None
+    definition_asked = any(m.instruction_used in ("COMPETENCY_ASK", "DIAGNOSIS_CONFIRM") for m in _ch_model)
     awaiting_next_chapter_choice = bool(_after_transition and not definition_asked)
 
     # 8-e. 첫 세부 역량 이름 (CHAPTER_OPENING 가이드용) + 역량 framework
@@ -1099,36 +988,15 @@ async def build_turn_state(
     # #6 문체 반복 추적: 최근 코치 발화 3개의 '시작 패턴'을 계산해 LLM 에 제약으로
     #   준다("네, ~하셨군요" 연속 2턴 금지 / 요약 되받기 3턴 1회 이하).
     #   LLM 은 스스로 턴을 세지 못하므로 백엔드가 센다.
-    _recent_coach_res = await db.execute(
-        select(ChatMessage.content)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.MODEL)
-        .order_by(ChatMessage.created_at.desc())
-        .limit(3)
-    )
-    _recent_coach = [c or "" for c in _recent_coach_res.scalars().all()]
+    _recent_coach = [(m.content or "") for m in _model_msgs[-3:][::-1]]
     # 복창 판정용: 각 코치 발화 '직전'의 사용자 발화(최신 순). 이번 턴 user 메시지는
     #   아직 저장 전이므로 최신 3개가 직전 코치 턴들과 1:1 로 짝지어진다.
-    _recent_user_res = await db.execute(
-        select(ChatMessage.content)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.USER)
-        .order_by(ChatMessage.created_at.desc())
-        .limit(3)
-    )
-    _recent_user = [c or "" for c in _recent_user_res.scalars().all()]
+    _recent_user = [(m.content or "") for m in all_user_msgs[-3:][::-1]]
     from diag_project.services.style_tracker import compute_style_constraints
     style_constraints = compute_style_constraints(_recent_coach, _recent_user)
 
     # 직전 코치(assistant) 턴의 instruction — 2단 폴백이 '한 번만' 발동하도록.
-    _last_instr_res = await db.execute(
-        select(ChatMessage.instruction_used)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.role == MessageRole.MODEL)  # 코치 메시지 role=model
-        .order_by(ChatMessage.created_at.desc())
-        .limit(1)
-    )
-    last_instruction = _last_instr_res.scalars().first()
+    last_instruction = latest_model_msg.instruction_used if latest_model_msg else None
 
     # COMPETENCY_ALIGN 가이드용: 정의 + 세부역량 이름 목록
     if chapter_competency:

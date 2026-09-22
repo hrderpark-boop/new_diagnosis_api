@@ -50,29 +50,37 @@ async def compress_conversation_history(
     db: AsyncSession,
     session_id: UUID,
     chapter: str,
+    *,
+    messages: list | None = None,
+    events_all: list | None = None,
 ) -> list[dict]:
     """완료된 사건의 메시지를 요약으로 교체.
 
     Returns:
         LLM 에 전달할 message 리스트 [{role, content}, ...]
     """
-    # 1. 이 챕터의 모든 메시지 (시간순)
-    msg_result = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .where(ChatMessage.chapter == chapter)
-        .order_by(ChatMessage.created_at)
-    )
-    messages = list(msg_result.scalars().all())
-
-    # 2. 완료된 사건들 조회
-    event_result = await db.execute(
-        select(Event)
-        .where(Event.session_id == session_id)
-        .where(Event.chapter == chapter)
-        .where(Event.is_complete == True)  # noqa: E712
-    )
-    completed_events = list(event_result.scalars().all())
+    # (2026-09-22) 턴 스냅샷이 오면 SQL 없이 목록에서 고른다.
+    if messages is None:
+        msg_result = await db.execute(
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session_id)
+            .where(ChatMessage.chapter == chapter)
+            .order_by(ChatMessage.created_at)
+        )
+        messages = list(msg_result.scalars().all())
+    else:
+        messages = sorted([m for m in messages if m.chapter == chapter],
+                          key=lambda m: (m.created_at is None, m.created_at, m.turn_index or 0))
+    if events_all is None:
+        event_result = await db.execute(
+            select(Event)
+            .where(Event.session_id == session_id)
+            .where(Event.chapter == chapter)
+            .where(Event.is_complete == True)  # noqa: E712
+        )
+        completed_events = list(event_result.scalars().all())
+    else:
+        completed_events = [e for e in events_all if e.chapter == chapter and e.is_complete]
 
     completed_event_ids = {e.id for e in completed_events}
     events_by_id = {e.id: e for e in completed_events}

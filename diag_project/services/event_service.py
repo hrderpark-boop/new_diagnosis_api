@@ -19,6 +19,7 @@ async def create_event(
     session_id: UUID,
     chapter: str,
     sequence_num: int,
+    commit: bool = True,
 ) -> Event:
     """새 사건 시작."""
     event = Event(
@@ -28,8 +29,11 @@ async def create_event(
         started_at=datetime.utcnow(),
     )
     db.add(event)
-    await db.commit()
-    await db.refresh(event)
+    if commit:
+        await db.commit()
+        await db.refresh(event)
+    else:
+        await db.flush()   # id 확보만(턴 끝 1회 커밋)
     return event
 
 
@@ -40,6 +44,7 @@ async def update_event_star(
     task: str | None = None,
     action: str | None = None,
     result: str | None = None,
+    commit: bool = True,
 ) -> Event | None:
     """사건의 STAR 요소 업데이트. 자동으로 star_coverage 재계산."""
     event = await db.get(Event, event_id)
@@ -64,8 +69,9 @@ async def update_event_star(
     event.star_coverage = coverage
 
     db.add(event)
-    await db.commit()
-    await db.refresh(event)
+    if commit:
+        await db.commit()
+        await db.refresh(event)
     return event
 
 
@@ -73,6 +79,7 @@ async def complete_event(
     db: AsyncSession,
     event_id: UUID,
     metadata: dict,
+    commit: bool = True,
 ) -> Event | None:
     """사건 완료 + 메타데이터 저장 (Module 4용)."""
     event = await db.get(Event, event_id)
@@ -92,21 +99,24 @@ async def complete_event(
         event.mapped_subcompetency = _mapped
 
     db.add(event)
-    await db.commit()
-    await db.refresh(event)
+    if commit:
+        await db.commit()
+        await db.refresh(event)
     return event
 
 
 async def increment_probe_count(
     db: AsyncSession,
     event_id: UUID,
+    commit: bool = True,
 ) -> None:
     """탐침 횟수 증가."""
     event = await db.get(Event, event_id)
     if event:
         event.probe_count += 1
         db.add(event)
-        await db.commit()
+        if commit:
+            await db.commit()
 
 
 async def get_active_event(
