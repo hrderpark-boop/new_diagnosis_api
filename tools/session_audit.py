@@ -82,6 +82,24 @@ async def main():
         print(f"\n요약 [{ch}]: 코치 턴 {coach_n} | 재생성 {regen} | 하드 교정 {hard} ({hard / max(coach_n, 1):.0%}) | "
               f"칭찬 표현 {praise} | 느낌표 {excl} | 부재 폴백(ABSENCE_PROBE) {absence} | 연결 절 사용 {bridge} | "
               f"결과 질문 풀 문장 {pool} | 소요 {dur:.1f}분")
+        # (2026-09-23) DB 시간(total−llm)·리드 길이 분포·앵커 수
+        import statistics as _st
+        from collections import Counter as _Ctr
+        from diag_project.services.output_guard import split_sentences as _ss, is_question as _isq
+        _dbt = [g["total"] - g["llm"] for g in (gl.get((ch, m["turn_index"]), {}) for m in rows if m["role"] == "model")
+                if g.get("total") is not None and g.get("llm") is not None]
+        _leads = []
+        for m in rows:
+            if m["role"] != "model" or m["instruction_used"] in ("COMPETENCY_ALIGN", "CHAPTER_OPENING", "CHAPTER_READY_TO_END",
+                                                                  "AWAIT_NEXT_CHAPTER_CHOICE", "DIAGNOSIS_CONFIRM", "COMPETENCY_ASK"):
+                continue
+            _sents = _ss(m["content"] or ""); _qi = next((i for i, x in enumerate(_sents) if _isq(x)), None)
+            if _qi is not None:
+                _leads.append(_qi)
+        _anchors = [m["turn_index"] for m in rows if m["role"] == "model" and m["instruction_used"] in ("STAR_COMPLETE_NEW_EVENT", "COMPETENCY_ALIGN")]
+        print(f"DB·후처리 시간(total−llm): 중앙값 {(_st.median(_dbt) if _dbt else 0):.2f}s 최대 {(max(_dbt) if _dbt else 0):.2f}s (n={len(_dbt)}) | "
+              f"리드 문장 수 분포 {dict(sorted(_Ctr(_leads).items()))} 중앙값 {(_st.median(_leads) if _leads else '-')} | "
+              f"앵커 턴 {len(_anchors)} {_anchors} | asked_subs {len((sad.get('asked_subs') or {}).get(ch) or [])}")
 
 
 if __name__ == "__main__":
