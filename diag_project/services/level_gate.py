@@ -22,10 +22,28 @@ from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 
 logger = logging.getLogger(__name__)
 
-# 게이트 호출을 전역 직렬화 — 대역량 분석 5건이 병렬(gather)로 도는 동안
-# 게이트 LLM 호출까지 겹쳐 일부 키가 LLM_EMPTY_RESPONSE 를 반환하는 것을 막는다.
-# 한 번에 하나의 게이트 호출만 나가게 해 동시성 스파이크를 제거한다.
-_GATE_SEMAPHORE = asyncio.Semaphore(1)
+# 게이트 호출 동시성 상한. 과거엔 Semaphore(1) 로 전역 직렬화했다(심층분석 5건
+# 병렬 중 게이트까지 겹쳐 빈 응답이 나던 시기 — 이후 max_tokens 8192 로 원인
+# 해소). 2026-09-29 item6: outer 3회 병렬화로 게이트가 최대 15건이 되자 직렬
+# 게이트(건당 25~40초)가 리포트 시간의 대부분을 차지해, 상한을 env 로 연다.
+# 전체 분석 호출은 llm_service 의 ANALYSIS_CONCURRENCY 세마포어가 따로 묶는다.
+def _gate_concurrency() -> int:
+    try:
+        return max(1, int(os.getenv("GATE_CONCURRENCY", "15")))
+    except (TypeError, ValueError):
+        return 15
+
+
+_GATE_SEM_STATE: Dict[str, Any] = {"loop": None, "sem": None}
+
+
+def _gate_semaphore() -> asyncio.Semaphore:
+    """이벤트 루프마다 1개(모듈 import 시 생성하면 테스트 루프 교체에 깨진다)."""
+    loop = asyncio.get_running_loop()
+    if _GATE_SEM_STATE["loop"] is not loop:
+        _GATE_SEM_STATE["loop"] = loop
+        _GATE_SEM_STATE["sem"] = asyncio.Semaphore(_gate_concurrency())
+    return _GATE_SEM_STATE["sem"]
 
 
 def level_reference(competency_key: str, sub_name: str) -> Dict[int, str]:
@@ -84,6 +102,12 @@ def _build_gate_prompt(items: list) -> str:
 #   §3: 프로세스 내 in-mem(_GATE_CACHE) + 파일 영속(analysis_cache)의 2단.
 #   프롬프트를 바꾸면 GATE_PROMPT_VERSION 을 올려 캐시를 무효화한다.
 _GATE_CACHE: Dict[tuple, Dict[str, Any]] = {}
+# 진행 중인 게이트 판정(키 → Future[verdict|None]). outer run 이 순차일 땐 뒤 run
+# 이 앞 run 의 판정을 캐시로 재사용했다. 병렬이면 같은 (근거, 레벨) 후보가 동시에
+# 게이트로 들어올 수 있어, 먼저 나간 판정을 기다려 공유한다(중복 호출·판정 갈림
+# 방지). 실패(None)면 기다린 쪽이 직접 다시 판정한다 — 순차에서 pending 이
+# 캐시되지 않아 다음 run 이 재시도하던 것과 같다.
+_INFLIGHT: Dict[tuple, "asyncio.Future"] = {}
 GATE_MAX_RETRIES = 3  # 지수 백오프 재시도 횟수
 GATE_PROMPT_VERSION = "2026-08-17.v1"
 
@@ -130,6 +154,7 @@ async def gate_verify_levels(
     """
     out: Dict[str, Dict[str, Any]] = {}
     items = []
+    shared = []  # 다른 코루틴이 이미 판정 중인 후보 → 그 결과를 기다린다
     for sub, info in measured.items():
         ref = level_reference(competency_key, sub)
         claimed = info.get("claimed_level") or 1
@@ -148,10 +173,14 @@ async def gate_verify_levels(
             # 기준 서술이 없으면 판정 불가 → fail-closed(pending)
             out[sub] = _pending("레벨 기준 서술 없음")
             continue
-        items.append({"sub_name": sub, "evidence": info["evidence"],
-                      "claimed_level": claimed, "ref": ref, "ck": ck})
+        it = {"sub_name": sub, "evidence": info["evidence"],
+              "claimed_level": claimed, "ref": ref, "ck": ck}
+        if llm is not None and ck in _INFLIGHT:
+            shared.append((it, _INFLIGHT[ck]))
+            continue
+        items.append(it)
 
-    if not items:
+    if not items and not shared:
         return out
     if llm is None:
         # 🚨 fail-closed: 게이트 미가동 시 통과시키지 않고 pending 처리.
@@ -159,11 +188,55 @@ async def gate_verify_levels(
             out[it["sub_name"]] = _pending("LLM 게이트 미가동")
         return out
 
+    # 자기 배치를 먼저 '진행 중'으로 등록(await 전, 동기) → 동시에 들어온 다른
+    #   run 은 같은 후보를 다시 부르지 않고 이 판정을 기다린다.
+    _register(items)
+
+    async def _await_shared(it, fut):
+        return it, await asyncio.shield(fut)
+
+    # 자기 배치와 공유 대기를 함께 진행(자기 배치는 누구도 기다리지 않으므로
+    #   run 끼리 서로를 기다리는 교착이 없다).
+    jobs = [_judge_batch(competency_key, items, llm, out)] if items else []
+    res = await asyncio.gather(*jobs, *[_await_shared(it, f) for it, f in shared])
+    retry = []
+    for it, verdict in res[len(jobs):]:
+        if verdict is not None:
+            out[it["sub_name"]] = dict(verdict)
+        else:
+            retry.append(it)                        # 공유 판정 실패 → 직접 재판정
+    if retry:
+        _register(retry)
+        await _judge_batch(competency_key, retry, llm, out)
+    return out
+
+
+def _register(items: list) -> None:
+    loop = asyncio.get_running_loop()
+    for it in items:
+        fut = loop.create_future()
+        it["_fut"] = fut
+        _INFLIGHT.setdefault(it["ck"], fut)
+
+
+def _release(it: dict, verdict) -> None:
+    fut = it.pop("_fut", None)
+    if fut is None:
+        return
+    if _INFLIGHT.get(it["ck"]) is fut:
+        _INFLIGHT.pop(it["ck"], None)
+    if not fut.done():
+        fut.set_result(verdict)
+
+
+async def _judge_batch(competency_key: str, items: list, llm,
+                       out: Dict[str, Dict[str, Any]]) -> None:
+    """items 를 한 번의 LLM 호출로 판정해 out 에 기록(+캐시). 실패는 pending."""
     prompt = _build_gate_prompt(items)
 
     async def _call_gate():
-        # 전역 직렬화 + 지수 백오프 재시도(빈 응답/오류에 견딤).
-        async with _GATE_SEMAPHORE:
+        # 동시성 상한 + 지수 백오프 재시도(빈 응답/오류에 견딤).
+        async with _gate_semaphore():
             last = None
             for attempt in range(GATE_MAX_RETRIES):
                 try:
@@ -177,47 +250,52 @@ async def gate_verify_levels(
             raise RuntimeError(last or "게이트 응답 없음")
 
     try:
-        raw = await _call_gate()
-        raw = (raw or "").replace("```json", "").replace("```", "").strip()
-        res = json.loads(raw)
-        by_idx = {int(r.get("idx")): r for r in (res.get("results") or [])}
-    except Exception as e:  # noqa: BLE001
-        # 🚨 fail-closed: 응답 실패 시 measured 유지 금지 → 전 항목 pending.
-        logger.warning("레벨 게이트 판정 실패(%s) → pending(fail-closed)", e)
-        for it in items:
-            out[it["sub_name"]] = _pending(f"게이트 응답 실패: {e}")
-        return out
+        try:
+            raw = await _call_gate()
+            raw = (raw or "").replace("```json", "").replace("```", "").strip()
+            res = json.loads(raw)
+            by_idx = {int(r.get("idx")): r for r in (res.get("results") or [])}
+        except Exception as e:  # noqa: BLE001
+            # 🚨 fail-closed: 응답 실패 시 measured 유지 금지 → 전 항목 pending.
+            logger.warning("레벨 게이트 판정 실패(%s) → pending(fail-closed)", e)
+            for it in items:
+                out[it["sub_name"]] = _pending(f"게이트 응답 실패: {e}")
+            return
 
-    for i, it in enumerate(items, 1):
-        r = by_idx.get(i)
-        claimed = it["claimed_level"]
-        if not r:  # 판정 항목 누락 → pending
-            out[it["sub_name"]] = _pending("게이트 판정 항목 누락")
-            continue
-        sup = r.get("supported_level")
-        sup = int(sup) if isinstance(sup, (int, float)) else claimed
-        sup = max(0, min(sup, claimed))  # 강등/유지만, 상향 금지
-        verified = None if sup <= 0 else sup
-        verdict = {
-            "verified_level": verified,
-            "category": r.get("category", "구체행동"),
-            "reason": str(r.get("reason", ""))[:120],
-            "downgraded": verified is not None and verified < claimed,
-            "dropped": verified is None,
-            "pending": False,
-        }
-        out[it["sub_name"]] = verdict
-        _GATE_CACHE[it["ck"]] = dict(verdict)        # in-mem 저장
-        from diag_project.services import analysis_cache as _ac
-        _ac.set("level_gate", _persist_key(
-            competency_key, it["sub_name"], it["evidence"],
-            it["claimed_level"]), dict(verdict))     # 파일 영속
-        if verified is None:
-            logger.info("🚧 레벨게이트 탈락 [%s/%s] claimed=Lv.%s → 근거미달(%s)",
-                        competency_key, it["sub_name"], claimed,
-                        verdict["category"])
-        elif verified < claimed:
-            logger.info("🔽 레벨게이트 강등 [%s/%s] Lv.%s→Lv.%s (%s)",
-                        competency_key, it["sub_name"], claimed, verified,
-                        verdict["reason"])
-    return out
+        for i, it in enumerate(items, 1):
+            r = by_idx.get(i)
+            claimed = it["claimed_level"]
+            if not r:  # 판정 항목 누락 → pending
+                out[it["sub_name"]] = _pending("게이트 판정 항목 누락")
+                continue
+            sup = r.get("supported_level")
+            sup = int(sup) if isinstance(sup, (int, float)) else claimed
+            sup = max(0, min(sup, claimed))  # 강등/유지만, 상향 금지
+            verified = None if sup <= 0 else sup
+            verdict = {
+                "verified_level": verified,
+                "category": r.get("category", "구체행동"),
+                "reason": str(r.get("reason", ""))[:120],
+                "downgraded": verified is not None and verified < claimed,
+                "dropped": verified is None,
+                "pending": False,
+            }
+            out[it["sub_name"]] = verdict
+            _GATE_CACHE[it["ck"]] = dict(verdict)        # in-mem 저장
+            from diag_project.services import analysis_cache as _ac
+            _ac.set("level_gate", _persist_key(
+                competency_key, it["sub_name"], it["evidence"],
+                it["claimed_level"]), dict(verdict))     # 파일 영속
+            if verified is None:
+                logger.info("🚧 레벨게이트 탈락 [%s/%s] claimed=Lv.%s → 근거미달(%s)",
+                            competency_key, it["sub_name"], claimed,
+                            verdict["category"])
+            elif verified < claimed:
+                logger.info("🔽 레벨게이트 강등 [%s/%s] Lv.%s→Lv.%s (%s)",
+                            competency_key, it["sub_name"], claimed, verified,
+                            verdict["reason"])
+    finally:
+        # 기다리는 쪽에 판정 공유(pending 은 공유하지 않음 → None → 재판정).
+        for it in items:
+            v = out.get(it["sub_name"])
+            _release(it, None if (not v or v.get("pending")) else dict(v))

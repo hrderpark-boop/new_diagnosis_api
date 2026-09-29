@@ -30,7 +30,7 @@ def test_latest_edited_is_protected():
 
 
 def test_analyze_deletes_old_after_add_in_same_transaction():
-    src = inspect.getsource(R.analyze_session)
+    src = inspect.getsource(R._analyze_session)  # item6: 본문은 _analyze_session
     i_add = src.index("db.add(new_report)")
     i_del = src.index("await db.delete(_old)")
     assert i_add < i_del, "구 리포트 삭제는 새 리포트 add 이후여야 한다"

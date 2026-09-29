@@ -1,4 +1,5 @@
 import copy
+import time
 import uuid
 import json
 import logging
@@ -20,6 +21,7 @@ from diag_project.models.event import Event
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 from diag_project.llm_service import GeminiService
 from diag_project.services.auth import AdminContext, get_current_admin
+from diag_project.services import analysis_progress
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,37 @@ def _build_chapter_transcripts(
         transcripts[key] = body.strip() or "이 영역에 대한 대화 기록이 없습니다."
     return transcripts
 
+async def load_analysis_inputs(db: AsyncSession, session) -> Dict[str, Any]:
+    """analyze·챕터 사전분석(prewarm)·ETA 가 '같은 입력'을 쓰도록 한 곳에서 만든다
+    (입력이 같아야 캐시 키가 같다). DB 는 읽기만 한다.
+
+    반환: history([{role, parts, chapter}]), chapter_transcripts, asked_subs,
+          role_summary.
+    """
+    sid = session.id
+    messages = (await db.execute(
+        select(ChatMessage).where(ChatMessage.session_id == sid)
+        .order_by(ChatMessage.created_at.asc()))).scalars().all()
+    events = (await db.execute(
+        select(Event).where(Event.session_id == sid)
+        .order_by(Event.sequence_num.asc()))).scalars().all()
+    store = session.self_assessment_data or {}
+    return {
+        # chapter: A-2 — 대역량별 '전체 로그'를 그 챕터 끝까지로 자르는 데 쓴다.
+        "history": [{"role": m.role, "parts": m.content,
+                     "chapter": getattr(m, "chapter", None)}
+                    for m in messages],
+        # Map-Reduce: 역량별로 대화·사건을 결정론적으로 분리해 주입.
+        #  - 통짜 컨텍스트 주입(절단/날조) 방지, 라포 사담(chapter=None) 제외.
+        "chapter_transcripts": _build_chapter_transcripts(messages, events),
+        # 🔒 T1/T2: asked 원장을 영속 store(대화 제어와 동일 소스)에서 읽는다.
+        "asked_subs": _build_asked_subcompetencies(store),
+        # 2026-09-17: 온보딩 담당 업무 맥락(참고 플래그용, 점수 무관)
+        "role_summary": (store.get("participant_context") or {}).get(
+            "role_summary"),
+    }
+
+
 router = APIRouter(
     tags=["Reports"],
 )
@@ -152,6 +185,72 @@ async def get_all_reports(db: AsyncSession = Depends(get_db)):
             "created_at": r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else ""
         })
     return response_data
+
+# --------------------------------------------------------------------------
+# [0] 분석 진행 상태 (GET /{session_id}/progress) — item6
+# --------------------------------------------------------------------------
+@router.get("/{session_id}/progress")
+async def get_analysis_progress(session_id: str):
+    """analyze 진행 상태 {stage, done, total, label, started_at, elapsed_s}.
+
+    프로세스 메모리 상태라 DB 를 읽지 않는다(2초 폴링 부담 없음). 분석이 시작된
+    적 없거나 서버가 재시작됐으면 404 — 프론트는 리포트 폴링으로 폴백한다.
+    """
+    try:
+        uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+    snap = analysis_progress.get(session_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="No analysis in progress")
+    return snap
+
+
+# --------------------------------------------------------------------------
+# [0-b] 리포트 준비 예상 시간 (GET /{session_id}/estimate) — A-4
+# --------------------------------------------------------------------------
+@router.get("/{session_id}/estimate")
+async def get_analysis_estimate(session_id: str,
+                                db: AsyncSession = Depends(get_db)):
+    """완료 시 analyze 가 얼마나 걸릴지: 챕터 사전분석 캐시 상태로 계산(읽기 전용).
+
+    {cached_chapters, remaining_chapters, inflight_chapters, eta_seconds,
+     eta_label, chapters:[{key, name, cached, inflight}]}
+    """
+    try:
+        target_uuid = uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+    session = await db.get(DiagnosisSession, target_uuid)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    from diag_project.llm_service import (
+        GeminiService, _get_competency_keys, _get_key_to_korean_map,
+    )
+    from diag_project.services import report_prewarm
+    inp = await load_analysis_inputs(db, session)
+    names = _get_key_to_korean_map()
+    inflight = report_prewarm.inflight_elapsed(str(target_uuid))
+    chapters = []
+    for k in _get_competency_keys():
+        cached = GeminiService.chapter_deep_cached(
+            inp["history"], inp["chapter_transcripts"], inp["asked_subs"], k)
+        chapters.append({"key": k, "name": names.get(k, k), "cached": cached,
+                         "inflight": (not cached) and k in inflight})
+    n_cached = sum(1 for c in chapters if c["cached"])
+    n_inflight = sum(1 for c in chapters if c["inflight"])
+    remaining = len(chapters) - n_cached - n_inflight
+    eta = report_prewarm.estimate_seconds(
+        remaining, [inflight[c["key"]] for c in chapters if c["inflight"]])
+    return {
+        "cached_chapters": n_cached,
+        "remaining_chapters": len(chapters) - n_cached,
+        "inflight_chapters": n_inflight,
+        "eta_seconds": eta,
+        "eta_label": report_prewarm._label(eta),
+        "chapters": chapters,
+    }
+
 
 # --------------------------------------------------------------------------
 # [1] 개별 결과 조회 (GET /{session_id}) - 프론트엔드 호출용
@@ -413,16 +512,48 @@ def status_after_analyze(current_status: str | None, completed_count: int) -> st
 # --------------------------------------------------------------------------
 @router.post("/{session_id}/analyze", status_code=status.HTTP_201_CREATED)
 async def analyze_session(
-    session_id: str, 
+    session_id: str,
     db: AsyncSession = Depends(get_db),
     llm: GeminiService = Depends(GeminiService)
 ):
     logger.info(f"🧠 리포트 분석 요청: {session_id}")
-    
     try:
         session_uuid = uuid.UUID(session_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid UUID")
+    session_id = str(session_uuid)
+
+    # item6: 같은 세션 분석이 이미 진행 중이면 중복 실행(LLM ~33콜 × 2, 리포트
+    #   경합)을 막는다. 프론트는 409 를 받으면 진행 상태 폴링으로 넘어간다.
+    if analysis_progress.is_running(session_id):
+        raise HTTPException(status_code=409, detail={
+            "message": "Analysis already in progress",
+            "progress": analysis_progress.get(session_id),
+        })
+    from diag_project.llm_service import (
+        _ANALYSIS_OUTER_RUNS, _get_competency_keys, _get_key_to_korean_map,
+    )
+    progress = analysis_progress.start(
+        session_id, _get_competency_keys(), _ANALYSIS_OUTER_RUNS,
+        names=_get_key_to_korean_map())
+    _t_req = time.monotonic()
+    try:
+        out = await _analyze_session(session_id, session_uuid, db, llm,
+                                     progress, _t_req)
+    except HTTPException as e:
+        progress.fail(str(e.detail))
+        raise
+    except BaseException as e:  # noqa: BLE001 — 취소 포함: 상태를 끝내고 재전파
+        logger.exception("🚨 analyze 예외(%s) — %.1fs 경과", session_id,
+                         time.monotonic() - _t_req)
+        progress.fail(f"{type(e).__name__}: {e}")
+        raise
+    progress.stage("done")
+    return out
+
+
+async def _analyze_session(session_id, session_uuid, db, llm, progress,
+                           _t_req):
 
     session = await db.get(DiagnosisSession, session_uuid)
     if not session:
@@ -456,39 +587,23 @@ async def analyze_session(
     user = await db.get(Participant, session.user_id)
     user_name = user.name if user else "리더"
 
-    history_query = select(ChatMessage).where(ChatMessage.session_id == session_uuid).order_by(ChatMessage.created_at.asc())
-    history_res = await db.execute(history_query)
-    messages = history_res.scalars().all()
-
-    events_res = await db.execute(
-        select(Event).where(Event.session_id == session_uuid).order_by(Event.sequence_num.asc())
-    )
-    events = events_res.scalars().all()
-
-    formatted_history = [{"role": msg.role, "parts": msg.content} for msg in messages]
-
-    # Map-Reduce: 역량별로 대화·사건을 결정론적으로 분리해 주입.
-    #  - 통짜 컨텍스트 주입(절단/날조) 방지, 라포 사담(chapter=None) 제외.
-    chapter_transcripts = _build_chapter_transcripts(messages, events)
-
-    # 🔒 T1/T2: asked 원장을 영속 store(대화 제어와 동일 소스)에서 읽는다.
-    asked_subs = _build_asked_subcompetencies(session.self_assessment_data or {})
-    _asked_total = sum(len(v) for v in asked_subs.values())
+    _inp = await load_analysis_inputs(db, session)
+    _asked_total = sum(len(v) for v in _inp["asked_subs"].values())
     logger.info(
         "🧭 asked 원장(탐색률): %d / 26 | 대역량별 %s",
-        _asked_total, {k: len(v) for k, v in asked_subs.items()},
+        _asked_total, {k: len(v) for k, v in _inp["asked_subs"].items()},
     )
 
     # AI 분석 실행 (chapter_transcripts 제공 시 챕터별 Map 호출 → Reduce)
-    # 2026-09-17: 온보딩 담당 업무 맥락(참고 플래그용, 점수 무관)
-    _pctx = (session.self_assessment_data or {}).get("participant_context") or {}
     analysis_result = await llm.generate_diagnosis_result(
-        history=formatted_history,
+        history=_inp["history"],
         user_name=user_name,
-        chapter_transcripts=chapter_transcripts,
-        asked_subcompetencies=asked_subs,
-        role_summary=_pctx.get("role_summary"),
+        chapter_transcripts=_inp["chapter_transcripts"],
+        asked_subcompetencies=_inp["asked_subs"],
+        role_summary=_inp["role_summary"],
+        progress=progress,
     )
+    progress.stage("saving")
     if not analysis_result:
         raise HTTPException(status_code=500, detail="AI 분석 결과를 생성하지 못했습니다.")
 
@@ -598,8 +713,9 @@ async def analyze_session(
     await db.commit()
 
     logger.info(
-        "✅ 리포트 생성 완료: %s (완료역량 %d/5, status=%s)",
+        "✅ 리포트 생성 완료: %s (완료역량 %d/5, status=%s) ⏱️ total %.1fs",
         new_report.id, _completed_count, session.status,
+        time.monotonic() - _t_req,
     )
     return {
         "status": "success",

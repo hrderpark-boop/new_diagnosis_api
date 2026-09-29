@@ -222,11 +222,15 @@ async def _strength_gate_pass(item: dict, llm) -> bool:
         "이며, 시스템·조직 차원의 혁신(Lv.4)이 아니다.\n"
         '출력(JSON): {"match": true|false, "reason": "판정 근거 한 줄"}'
     )
+    import time as _time
+    _t0 = _time.monotonic()
     try:
         raw = await llm._generate_with_retry(
             prompt, max_tokens=4096, json_mode=True,
             temperature=0, call_type="dtrack_gate",  # T-1: 판정 결정론
         )
+        logger.info("⏱️ dgate[%s] %.1fs", item["sub_name"],
+                    _time.monotonic() - _t0)
     except Exception as e:  # noqa: BLE001
         # 🚨 V-1#4: '빈 응답/오류로 미검증'(fail-closed) 과 '판단에 의한 차단'을
         #   로그에서 구분한다. 이건 판단이 아니라 게이트가 못 돈 것이다.

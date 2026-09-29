@@ -4,6 +4,7 @@ import os
 import re
 import random
 import asyncio
+import time
 from datetime import datetime
 from google import genai
 from google.genai import types as genai_types
@@ -64,6 +65,58 @@ def _outer_env() -> int:
 
 
 _ANALYSIS_OUTER_RUNS = _outer_env()
+
+
+# 2026-09-29 item6: outer run 병렬화. 과거엔 outer 3회를 순차로 돌려(각 run =
+#   심층 5 병렬 + 게이트 순차) 리포트 1건이 수 분 이상 걸렸다. 이제 (대역량 ×
+#   outer) 15 단위를 한 번에 gather 하고, 분석 LLM 호출(심층·게이트) 전체를
+#   ANALYSIS_CONCURRENCY 세마포어로 묶어 동시 호출 수를 제한한다(프로세스 전역 —
+#   동시에 두 세션이 분석돼도 합산 상한). 429 는 _generate_with_retry 가 처리.
+#   기본 15 = 한 세션의 15 단위가 한 번에(실측: 순차 462s → 상한 8: 183s).
+#   pro 요율 한도(RPM 150·TPM 2M, tier1) 대비 15콜×입력 ~16k 토큰은 여유.
+#   ANALYSIS_OUTER_PARALLEL=0 이면 기존 순차 경로.
+def _concurrency_env() -> int:
+    try:
+        return max(1, int(os.getenv("ANALYSIS_CONCURRENCY", "15")))
+    except (TypeError, ValueError):
+        return 15
+
+
+_ANALYSIS_CONCURRENCY = _concurrency_env()
+_OUTER_PARALLEL = os.getenv("ANALYSIS_OUTER_PARALLEL", "1") != "0"
+_SEM_STATE: dict = {"loop": None, "sem": None}
+
+
+# A-2: 진행 중인 심층분석 호출(캐시 키 → Future[raw|None]). 챕터 종료 사전분석과
+#   완료 시 analyze 가 같은 키를 동시에 부르면 한 번만 호출하고 결과를 공유한다.
+_DEEP_INFLIGHT: dict = {}
+DEEP_TRANSCRIPT_CAP = 16000  # 심층분석 프롬프트의 '전체 대화 로그' 상한(앞부분)
+
+
+def _deep_cache_keys(competency_key: str, relevant_utterances: str,
+                     full_transcript: str, asked_subs, outer_idx: int) -> list:
+    """심층분석 결과 캐시 키(표본별). 입력이 같으면 같은 키 → 재분석 0콜.
+
+    §3/E-2b/S-1: 프롬프트 버전·대역량·챕터 발언·전체 로그(앞 16000자)·온도·
+    thinking·표본 수·outer_idx·질문된 하위역량이 키. 사전분석(prewarm)·
+    캐시 상태 조회(ETA)도 이 함수로 같은 키를 만든다.
+    """
+    from diag_project.services import analysis_cache as _ac
+    base = (
+        _ANALYSIS_PROMPT_VERSION, competency_key,
+        relevant_utterances, full_transcript[:DEEP_TRANSCRIPT_CAP],
+        _TEMP_KEY, _DEEP_TB_KEY, _SAMPLES_KEY, f"o{outer_idx}",
+        "|".join(sorted(asked_subs or [])))
+    return [_ac.make_key(*base, f"s{i}") for i in range(_ANALYSIS_SAMPLES)]
+
+
+def _analysis_semaphore() -> asyncio.Semaphore:
+    """분석 LLM 호출 동시성 상한. 이벤트 루프마다 1개(테스트의 루프 교체 대비)."""
+    loop = asyncio.get_running_loop()
+    if _SEM_STATE["loop"] is not loop:
+        _SEM_STATE["loop"] = loop
+        _SEM_STATE["sem"] = asyncio.Semaphore(_ANALYSIS_CONCURRENCY)
+    return _SEM_STATE["sem"]
 
 
 def _aggregate_sub_samples(per_sample: list, sub_indicators: list,
@@ -1357,7 +1410,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [전체 대화 로그 (맥락 보완 + 누락 발화 탐색용)]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{full_transcript[:16000]}
+{full_transcript[:DEEP_TRANSCRIPT_CAP]}
 
 🚨 [채점 정확도 — 매우 중요]
 - 위 '분석 대상 발언'이 부실하거나 "대화 기록이 없습니다" 여도, 곧바로
@@ -1380,23 +1433,40 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             #   _ANALYSIS_SAMPLES 회 실행한다. temp=0 이어도 dynamic thinking 으로
             #   표본 간 편차가 생겨 '탐지 합집합'이 의미를 갖는다. 표본 인덱스가
             #   키에 있어 각 표본은 독립 저장·재현되고, 로직만 고친 재분석은 0콜.
-            _base_key = (
-                _ANALYSIS_PROMPT_VERSION, competency_key,
-                relevant_utterances, full_transcript[:16000],
-                _TEMP_KEY, _DEEP_TB_KEY, _SAMPLES_KEY, f"o{outer_idx}",
-                "|".join(_asked_focus))  # …/S-1: outer_idx 로 outer run 캐시 분리
+            #   …/S-1: outer_idx 로 outer run 캐시 분리(_deep_cache_keys).
             _samples: list = []
             _last_err = None
-            for _i in range(_ANALYSIS_SAMPLES):
-                _ck = _ac.make_key(*_base_key, f"s{_i}")
+            for _i, _ck in enumerate(_deep_cache_keys(
+                    competency_key, relevant_utterances, full_transcript,
+                    _asked_set, outer_idx)):
                 raw = _ac.get("deep_analysis", _ck)
                 if raw is None:
-                    raw = await self._generate_with_retry(
-                        prompt, max_tokens=16384, json_mode=True,
-                        model=ANALYSIS_MODEL, temperature=_JUDGMENT_TEMPERATURE,
-                        thinking_budget=_DEEP_TB, call_type="deep_analysis",
-                    )
-                    _ac.set("deep_analysis", _ck, raw)
+                    # A-2: 챕터 종료 사전분석(prewarm)이 같은 키를 계산 중이면
+                    #   다시 부르지 않고 그 결과를 기다린다(실패면 직접 호출).
+                    _shared = _DEEP_INFLIGHT.get(_ck)
+                    if _shared is not None:
+                        raw = await asyncio.shield(_shared)
+                if raw is None:
+                    _own = asyncio.get_running_loop().create_future()
+                    _DEEP_INFLIGHT.setdefault(_ck, _own)
+                    try:
+                        async with _analysis_semaphore():
+                            _t_deep = time.monotonic()
+                            raw = await self._generate_with_retry(
+                                prompt, max_tokens=16384, json_mode=True,
+                                model=ANALYSIS_MODEL,
+                                temperature=_JUDGMENT_TEMPERATURE,
+                                thinking_budget=_DEEP_TB,
+                                call_type="deep_analysis",
+                            )
+                        logger.info("⏱️ deep[%s·o%d] %.1fs", competency_key,
+                                    outer_idx, time.monotonic() - _t_deep)
+                        _ac.set("deep_analysis", _ck, raw)
+                    finally:
+                        if _DEEP_INFLIGHT.get(_ck) is _own:
+                            _DEEP_INFLIGHT.pop(_ck, None)
+                        if not _own.done():
+                            _own.set_result(raw)
                 try:
                     _samples.append(json.loads(
                         raw.replace("```json", "").replace("```", "").strip()))
@@ -1619,11 +1689,18 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         async def _gate_llm(_p):
             # gemini-2.5-pro 는 thinking 모델 — 토큰 예산이 작으면 사고 토큰이
             # 이를 소진해 출력이 비어(→ pending) 버린다. 넉넉히 8192.
-            return await self._generate_with_retry(
-                _p, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL,
-                temperature=_JUDGMENT_TEMPERATURE, thinking_budget=_GATE_TB,
-                call_type="level_gate",
-            )
+            async with _analysis_semaphore():
+                _t_gate = time.monotonic()
+                try:
+                    return await self._generate_with_retry(
+                        _p, max_tokens=8192, json_mode=True,
+                        model=ANALYSIS_MODEL,
+                        temperature=_JUDGMENT_TEMPERATURE,
+                        thinking_budget=_GATE_TB, call_type="level_gate",
+                    )
+                finally:
+                    logger.info("⏱️ gate-call %.1fs",
+                                time.monotonic() - _t_gate)
 
         for ckey, result in competency_results.items():
             parsed = result.get("_parsed")
@@ -1638,7 +1715,10 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             }
             gate = {}
             if candidates:
+                _t_g = time.monotonic()
                 gate = await gate_verify_levels(ckey, candidates, _gate_llm)
+                logger.info("⏱️ gate[%s] %.1fs (후보 %d, 대기 포함)", ckey,
+                            time.monotonic() - _t_g, len(candidates))
             result["level_gate"] = gate
             self._finalize_ledger(result, ckey, gate=gate)
             # 내부 파싱 캐시는 저장 payload 에서 제거(원문은 sub_ledger 에 있음)
@@ -1838,9 +1918,79 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                         len(cluster), ", ".join(subs),
                     )
 
+    def _fallback_for_exception(self, key: str, exc: BaseException) -> Dict:
+        """심층분석 코루틴이 예외로 끝났을 때의 error-fallback(원인 태깅)."""
+        _es = str(exc).lower()
+        _rsn = ("크레딧소진" if ("credit_depleted" in _es
+                or "prepayment credit" in _es)
+                else "429_RPM" if "per minute" in _es
+                else "타임아웃" if "timeout" in _es
+                else type(exc).__name__)
+        logger.error("%s 분석 예외(원인=%s): %s", key, _rsn, exc)
+        sub_names = ([ind["name"] for ind in
+                     COMPETENCY_FRAMEWORK[key]["indicators"].values()]
+                     if key in COMPETENCY_FRAMEWORK else [])
+        return self._build_error_fallback(sub_names, reason=_rsn)
+
+    async def _analyze_unit(
+        self, key: str, relevant_utterances: str, full_transcript: str,
+        asked_subs: set, outer_idx: int, role_summary: str | None,
+        progress=None,
+    ) -> Dict:
+        """(대역량, outer run) 1 단위 = 심층분석 → 그 대역량의 레벨 게이트.
+
+        게이트는 대역량별로 독립(캐시 키에 대역량 포함)이라, 5건 전부를 기다렸다
+        순차로 돌리던 것과 결과가 같다. 심층분석이 끝난 대역량부터 바로 게이트로
+        넘겨(파이프라인) 다른 대역량의 심층분석과 겹치게 한다.
+        """
+        try:
+            result = await self._analyze_single_competency(
+                competency_key=key, relevant_utterances=relevant_utterances,
+                full_transcript=full_transcript, asked_subs=asked_subs,
+                outer_idx=outer_idx, role_summary=role_summary)
+        except Exception as e:  # noqa: BLE001 — 한 단위 실패가 전체를 막지 않게
+            result = self._fallback_for_exception(key, e)
+        if progress is not None:
+            progress.deep_done(key, outer_idx)
+        await self._run_level_gate({key: result})
+        if progress is not None:
+            progress.unit_done(key, outer_idx)
+        return result
+
+    @staticmethod
+    def _chapter_inputs(history, chapter_transcripts):
+        """챕터 태그 경로의 입력: (대역량→챕터 발언, 대역량→전체 로그).
+
+        A-2: 대역량 X 의 '전체 대화 로그'는 X 챕터의 마지막 메시지까지의 대화다
+        (history 항목에 chapter 가 있을 때). 그래야 X 가 끝난 시점의 사전분석과
+        완료 시 분석의 입력(=캐시 키)이 같아 재사용된다 — 이후 챕터 대화가 늘어도
+        X 의 입력은 그대로. 프롬프트는 어차피 앞 16000자만 쓰므로, X 종료까지의
+        대화가 16000자 이상이면 과거(전체 대화 앞 16000자)와 입력이 동일하다.
+        chapter 정보가 없거나 X 메시지가 없으면 전체 대화(과거 동작).
+        """
+        lines = [
+            f"{m.get('role', '')}: {m.get('parts', m.get('content', ''))}"
+            for m in history]
+        full = "\n".join(lines)
+        last_idx: Dict[str, int] = {}
+        for i, m in enumerate(history):
+            ch = m.get("chapter")
+            if ch:
+                last_idx[ch] = i
+
+        def chapter_data(key: str) -> str:
+            return (chapter_transcripts.get(key)
+                    or "이 영역에 대한 대화 기록이 없습니다.")
+
+        def full_for(key: str) -> str:
+            i = last_idx.get(key)
+            return full if i is None else "\n".join(lines[:i + 1])
+        return chapter_data, full_for
+
     async def _analyze_all_once(
         self, history, chapter_transcripts, asked_subcompetencies,
         competency_keys, outer_idx: int = 0, role_summary: str | None = None,
+        progress=None,
     ) -> Dict[str, Dict]:
         """분석 파이프라인 1회(outer run): Map(역량별 심층분석 5) + 레벨 게이트.
 
@@ -1849,16 +1999,10 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         """
         _asked = asked_subcompetencies or {}
         if chapter_transcripts is not None:
-            def _chapter_data(key: str) -> str:
-                return chapter_transcripts.get(key) or "이 영역에 대한 대화 기록이 없습니다."
-            _full = "\n".join(
-                f"{m.get('role', '')}: {m.get('parts', m.get('content', ''))}"
-                for m in history)
-            tasks = [
-                self._analyze_single_competency(
-                    competency_key=key, relevant_utterances=_chapter_data(key),
-                    full_transcript=_full, asked_subs=_asked.get(key) or set(),
-                    outer_idx=outer_idx, role_summary=role_summary)
+            _chapter_data, _full_for = self._chapter_inputs(
+                history, chapter_transcripts)
+            units = [
+                (key, _chapter_data(key), _full_for(key), role_summary)
                 for key in competency_keys]
         else:
             # 🚨 §5 레거시 폴백: 프로덕션(analyze_session)은 항상
@@ -1869,37 +2013,105 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             chat_transcript = "\n".join(
                 f"{msg['role']}: {msg['parts']}" for msg in history)
             utt = await self._extract_utterances_by_competency(chat_transcript)
-            tasks = [
-                self._analyze_single_competency(
-                    competency_key=key,
-                    relevant_utterances=utt.get(key, "관련 발언 없음"),
-                    full_transcript=chat_transcript,
-                    asked_subs=_asked.get(key) or set(), outer_idx=outer_idx)
+            units = [
+                (key, utt.get(key, "관련 발언 없음"), chat_transcript, None)
                 for key in competency_keys]
 
-        logger.info("🔍 STEP 2(Map): 역량별 심층 분석 중 (병렬 5회)...")
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        cr: Dict[str, Dict] = {}
-        for key, result in zip(competency_keys, results):
-            if isinstance(result, Exception):
-                _es = str(result).lower()
-                _rsn = ("크레딧소진" if ("credit_depleted" in _es
-                        or "prepayment credit" in _es)
-                        else "429_RPM" if "per minute" in _es
-                        else "타임아웃" if "timeout" in _es
-                        else type(result).__name__)
-                logger.error("%s 분석 예외(원인=%s): %s", key, _rsn, result)
-                sub_names = ([ind["name"] for ind in
-                             COMPETENCY_FRAMEWORK[key]["indicators"].values()]
-                             if key in COMPETENCY_FRAMEWORK else [])
-                cr[key] = self._build_error_fallback(sub_names, reason=_rsn)
-            else:
-                cr[key] = result
+        logger.info("🔍 STEP 2(Map): 역량별 심층 분석 → 게이트 (병렬 %d)",
+                    len(units))
+        results = await asyncio.gather(*[
+            self._analyze_unit(key, rel, full, _asked.get(key) or set(),
+                               outer_idx, rs, progress)
+            for key, rel, full, rs in units])
+        return dict(zip(competency_keys, results))
 
-        # 🚧 T-A: 레벨 게이트 순차 후처리 (fail-closed). gate_status·measured 확정.
-        logger.info("🚧 레벨 게이트 후처리(순차) 시작...")
-        await self._run_level_gate(cr)
-        return cr
+    async def _analyze_outer_parallel(
+        self, history, chapter_transcripts, asked_subcompetencies,
+        competency_keys, n_outer: int, role_summary: str | None = None,
+        progress=None,
+    ) -> List[Dict[str, Dict]]:
+        """outer run N회를 동시에: (대역량 × outer) 단위를 한 번에 gather.
+
+        단위 순서는 대역량 우선(c0·o0, c0·o1, c0·o2, c1·o0 …) — 세마포어가 FIFO
+        라 대역량이 하나씩 '3회 모두 완료'로 넘어가 진행 표시(i/5)가 고르게 오른다.
+        반환은 순차 경로와 같은 [outer0 결과, outer1 결과, …] (대역량 순서 동일)
+        이라 merge_outer_runs 입력이 순서까지 같다.
+        """
+        _asked = asked_subcompetencies or {}
+        _chapter_data, _full_for = self._chapter_inputs(
+            history, chapter_transcripts)
+        units = [(k, o) for k in competency_keys for o in range(n_outer)]
+        logger.info("🔁 outer run %d회 병렬 — %d 단위, 동시 LLM 상한 %d",
+                    n_outer, len(units), _ANALYSIS_CONCURRENCY)
+        results = await asyncio.gather(*[
+            self._analyze_unit(k, _chapter_data(k), _full_for(k),
+                               _asked.get(k) or set(), o, role_summary,
+                               progress)
+            for k, o in units])
+        by_unit = dict(zip(units, results))
+        return [{k: by_unit[(k, o)] for k in competency_keys}
+                for o in range(n_outer)]
+
+    async def prewarm_chapter(
+        self, history, chapter_transcripts, asked_subcompetencies,
+        chapter: str, role_summary: str | None = None,
+    ) -> None:
+        """A-2: 한 챕터의 심층분석(outer 전부) + 레벨 게이트를 미리 돌려 캐시에
+        채운다. 완료 시 analyze 는 같은 입력 → 같은 캐시 키로 0콜 재사용한다.
+        반환값 없음(결과는 analysis_cache 에만). 실패는 캐시에 남지 않는다."""
+        _chapter_data, _full_for = self._chapter_inputs(
+            history, chapter_transcripts)
+        _asked = asked_subcompetencies or {}
+        await asyncio.gather(*[
+            self._analyze_unit(chapter, _chapter_data(chapter),
+                               _full_for(chapter),
+                               _asked.get(chapter) or set(), o, role_summary)
+            for o in range(_ANALYSIS_OUTER_RUNS)])
+
+    @classmethod
+    def chapter_deep_cached(cls, history, chapter_transcripts,
+                            asked_subcompetencies, chapter: str) -> bool:
+        """A-4: 이 챕터의 심층분석이 outer 전부 캐시에 있는가(ETA 계산용)."""
+        from diag_project.services import analysis_cache as _ac
+        _chapter_data, _full_for = cls._chapter_inputs(
+            history, chapter_transcripts)
+        asked = (asked_subcompetencies or {}).get(chapter) or set()
+        for o in range(_ANALYSIS_OUTER_RUNS):
+            for ck in _deep_cache_keys(chapter, _chapter_data(chapter),
+                                       _full_for(chapter), asked, o):
+                if _ac.get("deep_analysis", ck) is None:
+                    return False
+        return True
+
+    async def _build_recommendation(self, competency_results, history):
+        """🎯 Level-Up 교육 추천 — 26개 하위 점수를 레벨화하고, BEI 언급빈도
+        정규화 산식으로 성장 과제 3(A~C) + 강점 활용 1(D) 을 도출한다.
+        transcript 는 BEI 언급빈도(classification_keywords) 계산에 사용.
+        실패는 None(추천 실패가 리포트를 막지 않게)."""
+        try:
+            from diag_project.services.course_recommender import (
+                build_course_recommendation,
+            )
+            _transcript = "\n".join(
+                f"{m.get('role', '')}: {m.get('parts', m.get('content', ''))}"
+                for m in (history or [])
+            )
+            _t_r = time.monotonic()
+            recommendation = await build_course_recommendation(
+                competency_results, transcript=_transcript, llm=self,
+            )
+            logger.info("⏱️ recommend(D-gate) %.1fs", time.monotonic() - _t_r)
+            if recommendation:
+                _st = recommendation.get("strength")
+                logger.info(
+                    "🎯 Level-Up 추천: 성장 %d개 + 강점 %s",
+                    len(recommendation.get("growth", [])),
+                    _st["sub_competency"] if _st else "(D게이트 미통과)",
+                )
+            return recommendation
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"교육과정 추천 생성 실패(무시): {e}")
+            return None
 
     async def generate_diagnosis_result(
         self,
@@ -1908,8 +2120,11 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         chapter_transcripts: Dict[str, str] | None = None,
         asked_subcompetencies: Dict[str, set] | None = None,
         role_summary: str | None = None,
+        progress=None,
     ) -> Dict[str, Any]:
         """
+        progress: analysis_progress.AnalysisProgress | None — 단계별 진행 기록.
+
         Map-Reduce 채점:
         - Map: 역량(챕터)별로 분리된 대화·사건만 각각 gemini-2.5-pro 에 주입해
           병렬로 5번 개별 분석. (통짜 컨텍스트 절단/날조 방지)
@@ -1934,22 +2149,41 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 "⚠️ inner union(ANALYSIS_SAMPLES=%d) 활성 — I-2 로 비활성 권장. "
                 "outer 교집합과 이중으로 표본을 늘리지 말 것.", _ANALYSIS_SAMPLES)
         _n_outer = _ANALYSIS_OUTER_RUNS
-        if _n_outer > 1:
-            # 순차 실행: 각 run 은 5-wide(기존과 동일). 병렬(3×5=15-wide)은
-            #   구조상 가능하나 pro RPM 스파이크 위험이 커 순차로 둔다(검증된 설정).
-            logger.info("🔁 outer run %d회 독립 실행 → 교집합 병합", _n_outer)
+        if progress is not None:
+            progress.start_analyze()
+        _t_map = time.monotonic()
+        if (_n_outer > 1 and _OUTER_PARALLEL
+                and chapter_transcripts is not None):
+            # item6: outer 3회 × 대역량 5 = 15 단위를 동시에(세마포어 상한).
+            #   각 run 은 outer_idx 로 캐시가 분리된 독립 실행이라 순서 무관 —
+            #   결과는 outer 순서대로 모아 병합(순차와 동일 입력).
+            _outer_results = await self._analyze_outer_parallel(
+                history, chapter_transcripts, asked_subcompetencies,
+                competency_keys, _n_outer, role_summary=role_summary,
+                progress=progress)
+            from diag_project.services.outer_merge import merge_outer_runs
+            competency_results = merge_outer_runs(_outer_results, _n_outer)
+        elif _n_outer > 1:
+            # 순차 경로(ANALYSIS_OUTER_PARALLEL=0 또는 레거시 입력).
+            logger.info("🔁 outer run %d회 순차 실행 → 교집합 병합", _n_outer)
             _outer_results = []
             for _o in range(_n_outer):
                 logger.info("🔁 outer run %d/%d", _o + 1, _n_outer)
+                _t_o = time.monotonic()
                 _outer_results.append(await self._analyze_all_once(
                     history, chapter_transcripts, asked_subcompetencies,
-                    competency_keys, outer_idx=_o, role_summary=role_summary))
+                    competency_keys, outer_idx=_o, role_summary=role_summary,
+                    progress=progress))
+                logger.info("⏱️ outer[%d] %.1fs", _o, time.monotonic() - _t_o)
             from diag_project.services.outer_merge import merge_outer_runs
             competency_results = merge_outer_runs(_outer_results, _n_outer)
         else:
             competency_results = await self._analyze_all_once(
                 history, chapter_transcripts, asked_subcompetencies,
-                competency_keys, outer_idx=0, role_summary=role_summary)
+                competency_keys, outer_idx=0, role_summary=role_summary,
+                progress=progress)
+        logger.info("⏱️ map(심층+게이트, outer %d) %.1fs", _n_outer,
+                    time.monotonic() - _t_map)
 
         # 🔎 T-A 감사 신호(로그 전용): 병합 결과 기준. 동일 STAR 사건이 3+
         #   하위역량에 매핑되고 레벨 방향이 엇갈리면 경고(레벨 인플레 감시).
@@ -1958,9 +2192,23 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         except Exception as _ae:  # noqa: BLE001
             logger.debug("다중매핑 감사 스킵: %s", _ae)
 
+        # 🎯 Level-Up 교육 추천(D게이트 포함)은 종합 요약과 서로 독립(둘 다
+        #   competency_results 를 읽기만 한다) → item6: 요약과 동시에 돌린다.
+        _rec_task = asyncio.ensure_future(
+            self._build_recommendation(competency_results, history))
+
         # STEP 3: 종합 요약
         logger.info("📊 STEP 3: 종합 리더십 프로파일 생성 중...")
-        summary = await self._generate_comprehensive_summary(user_name, competency_results)
+        if progress is not None:
+            progress.stage("summary")
+        _t_s = time.monotonic()
+        try:
+            summary = await self._generate_comprehensive_summary(
+                user_name, competency_results)
+        except BaseException:
+            _rec_task.cancel()
+            raise
+        logger.info("⏱️ summary %.1fs", time.monotonic() - _t_s)
 
         # 🔒 P0-1/T1: 측정 커버리지 (분모 26). 측정률(measured)은 화면 노출,
         #   탐색률(asked)은 내부 지표(로그·관리자 뷰)로만 산출한다.
@@ -2078,30 +2326,11 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             "coverage": _cov,
         }
 
-        # 🎯 Level-Up 교육 추천 — 26개 하위 점수를 레벨화하고, BEI 언급빈도
-        #    정규화 산식으로 성장 과제 3(A~C) + 강점 활용 1(D) 을 도출한다.
-        #    transcript 는 BEI 언급빈도(classification_keywords) 계산에 사용.
-        try:
-            from diag_project.services.course_recommender import (
-                build_course_recommendation,
-            )
-            _transcript = "\n".join(
-                f"{m.get('role', '')}: {m.get('parts', m.get('content', ''))}"
-                for m in (history or [])
-            )
-            recommendation = await build_course_recommendation(
-                competency_results, transcript=_transcript, llm=self,
-            )
-            if recommendation:
-                final_result["course_recommendation"] = recommendation
-                _st = recommendation.get("strength")
-                logger.info(
-                    "🎯 Level-Up 추천: 성장 %d개 + 강점 %s",
-                    len(recommendation.get("growth", [])),
-                    _st["sub_competency"] if _st else "(D게이트 미통과)",
-                )
-        except Exception as e:  # noqa: BLE001 — 추천 실패가 리포트를 막지 않게
-            logger.error(f"교육과정 추천 생성 실패(무시): {e}")
+        if progress is not None and not _rec_task.done():
+            progress.stage("recommend")
+        recommendation = await _rec_task
+        if recommendation:
+            final_result["course_recommendation"] = recommendation
 
         # §8 계측: 이 재분석의 호출/토큰/추정비용 요약을 리포트에 부착 + 로그.
         _usage = USAGE_METER.summary()
