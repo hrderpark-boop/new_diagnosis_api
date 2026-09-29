@@ -1517,6 +1517,19 @@ async def _submit_message_phase3a(
             f"여기까지 충분히 들었습니다. 이제 '{chapter_to_topic(_next_ch)}'로 이어가 보겠습니다."
             if _next_ch else final_closing_message((state.get("coach_persona") or {}).get("name"))
         )
+        if not _next_ch:
+            # (2026-09-29, A-4) 리포트 예상 시간: 이미 사전분석된(또는 진행 중인) 이전 챕터 수로 계산. 실패하면 문구 없이.
+            try:
+                from diag_project.routes.reports import load_analysis_inputs
+                from diag_project.llm_service import GeminiService as _GS, _get_competency_keys as _gck
+                from diag_project.services.report_prewarm import estimate_label, inflight_elapsed
+                _inp = await load_analysis_inputs(db, session)
+                _infl = inflight_elapsed(str(session.id))
+                _n_ready = sum(1 for _k in _gck() if _k != chapter and (
+                    _k in _infl or _GS.chapter_deep_cached(_inp["history"], _inp["chapter_transcripts"], _inp["asked_subs"], _k)))
+                wrap_up = f"{wrap_up} 리포트는 {estimate_label(_n_ready)} 정도면 준비됩니다."
+            except Exception as _ee:
+                logger.warning("리포트 예상 시간 계산 실패(문구 생략): %s", _ee)
         if _next_ch:
             # 전환 '예고'까지만. 다음 역량의 정의 질문(COMPETENCY_ASK)은 리더님이
             # 팝업으로 확인한 뒤 다음 턴의 첫 발화가 된다. (과거엔 '?' 가 없으면
@@ -2120,6 +2133,15 @@ async def _submit_message_phase3a(
         logger.error("💥 턴 커밋 실패 → 롤백: session=%s instr=%s err=%s", str(session.id)[:8], instruction_used, _ce)
         await db.rollback()
         raise HTTPException(status_code=503, detail="저장에 실패했습니다. 같은 답변을 다시 보내 주세요.")
+    # (2026-09-29, A-2) 챕터가 닫힌 턴이면 그 챕터의 심층분석+게이트를 백그라운드로 미리 돌려 캐시에 채운다.
+    #   반드시 커밋 '뒤'(마지막 발화까지 포함돼야 완료 시 캐시가 맞는다). 실패는 모듈이 조용히 삼킨다.
+    if instruction_used == "CHAPTER_READY_TO_END" and chapter:
+        try:
+            from diag_project.services.report_prewarm import schedule_chapter_prewarm
+            schedule_chapter_prewarm(str(session.id), chapter)
+            logger.info("🔥 챕터 사전분석 예약: [%s] session=%s", chapter, str(session.id)[:8])
+        except Exception as _pe:
+            logger.warning("챕터 사전분석 예약 실패(무시): %s", _pe)
     logger.info("⏱ turn timing session=%s instr=%s decider=%.2fs llm=%.2fs regen=%d(%.2fs) post+db=%.2fs total=%.2fs sql=%d",
                 str(session.id)[:8], instruction_used, _tm["decider"], _tm["llm"], _tm["regen_n"], _tm["regen_s"],
                 max(0.0, _total - _tm["decider"] - _tm["llm"] - _tm["regen_s"]), _total, _sqlc.get())

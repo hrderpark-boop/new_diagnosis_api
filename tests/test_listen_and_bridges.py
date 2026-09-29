@@ -132,3 +132,13 @@ def test_align_body_questions_removed_keep_layout():
     t = "정의입니다.\n· 갈등관리\n· 신뢰형성\n말씀하신 것과 크게 다르지 않지요?\n\n'본질'에서 출발해 보겠습니다."
     out, n = drop_question_sentences(t)
     assert n == 1 and "?" not in out and "\n· 갈등관리\n· 신뢰형성" in out and out.endswith("보겠습니다.")
+
+
+def test_prewarm_scheduled_after_commit_and_eta_in_final_closing():
+    import inspect
+    from diag_project.routes import diagnoses as d
+    src = inspect.getsource(d._submit_message_phase3a)
+    i_commit = src.index("await db.commit()\n    except Exception as _ce:")
+    i_prewarm = src.index("schedule_chapter_prewarm(str(session.id), chapter)")
+    assert i_commit < i_prewarm                                   # 커밋 뒤에 예약
+    assert "estimate_label(_n_ready)" in src and "정도면 준비됩니다" in src
