@@ -100,7 +100,7 @@ def test_record_before_llm_and_llm_cannot_change():
         # asked 는 오직 store 원장에서만 읽는다 — LLM 응답 무시
         return T.asked_for_chapter(store, "people_management")
 
-    asked = asyncio.get_event_loop().run_until_complete(pipeline())
+    asked = asyncio.run(pipeline())
     ck("기록이 LLM 호출 '이전'", call_order == ["record", "llm"], str(call_order))
     ck("LLM 응답이 asked 를 못 바꿈", asked == ["권한위임"], str(asked))
 

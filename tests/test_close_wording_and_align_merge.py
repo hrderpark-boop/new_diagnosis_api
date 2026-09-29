@@ -117,5 +117,5 @@ def test_decider_skips_chapter_opening_when_merged():
 
 def test_align_guide_forbids_confirmation_question():
     g = L3._get_instruction_guide("COMPETENCY_ALIGN", _state(False))
-    assert "확인 질문 없이 끝내기" in g
+    assert "다리 한 문장으로 끝내기" in g and "물음표·확인 요청으로 끝내지 마세요" in g  # (2026-09-29)
     assert "탐색 전환 예고" not in g

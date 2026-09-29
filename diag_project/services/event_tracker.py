@@ -158,3 +158,23 @@ def should_suggest_pause(
         return False
     coach_turns = sitting_messages // 2
     return elapsed_min >= PAUSE_SUGGEST_AFTER_MIN or coach_turns >= PAUSE_SUGGEST_AFTER_TURNS
+
+
+# ── 태도 진술 (2026-09-29): 사건이 아니라 태도로 답함 — "뒷끝 없어요", "그러려니 해요" ──
+_ATT_TIME_RE = re.compile(r"(지난|작년|올해|어제|최근|당시|예전|처음|\d+\s*(월|주|년|일|번)|날|번째)")
+_ATT_PERSON_RE = re.compile(r"(팀원|직원|동료|상사|부하|고객|대리|과장|차장|부장|팀장|본부장|님|씨|누구|김\S|박\S)")
+_ATT_ACTION_RE = re.compile(r"(했|하셨|시켰|만들|정했|줬|주었|말했|얘기했|불러|모아|보냈|바꿨|옮겼|맡겼|물어|확인했|정리했|거절|취소|안\s*했)")
+ATTITUDE_MAX_CHARS = 30
+
+
+def is_attitude_statement(user_text: str | None) -> bool:
+    """30자 미만이고 시점·인물·행동이 없는 답 — STAR 탐침이 맞지 않는 '태도 진술'."""
+    t = (user_text or "").strip()
+    if not t or len(t.replace(" ", "")) >= ATTITUDE_MAX_CHARS:
+        return False
+    if _ATT_TIME_RE.search(t) or _ATT_PERSON_RE.search(t) or _ATT_ACTION_RE.search(t):
+        return False
+    return True
+
+
+ATTITUDE_TRIGGER_QUESTION = "그렇게 생각하시게 된 계기가 된 일이 하나 있으셨을까요?"

@@ -125,7 +125,7 @@ def off_target_overlap(text: str, asked_questions: list[str], min_hits: int = 3)
     return False, ""
 
 
-def template_anchor(question: str, lead: str = "이 경험은 여기서 정리하겠습니다. 이제 다른 관점으로 여쭤볼게요.") -> str:
+def template_anchor(question: str, lead: str = "다른 이야기를 하나 여쭤볼게요.") -> str:
     return f"{lead} {question}".strip()
 
 
@@ -161,9 +161,17 @@ def strip_praise(text: str) -> tuple[str, int]:
         qs = [s for s in sents if is_question(s)]
         base = qs[-1] if qs else sents[-1]
         base = _PRAISE_RE.sub("", base)
-        base = re.sub(r"\s{2,}", " ", base).strip(" ,")
+        base = re.sub(r"[ \t]{2,}", " ", base).strip(" ,")
         return base, removed
-    return " ".join(kept), removed
+    # (2026-09-29) 문장을 제자리에서 지운다 — 다시 이어 붙이면 문단·목록 줄바꿈이 사라진다(ALIGN 서식 파손)
+    out = text
+    for x in sents:
+        if _PRAISE_RE.search(x):
+            out = out.replace(x, "", 1)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out, removed
 
 
 # ── 5) (2026-09-22 폐지) 되받기 리드 삭제 trim_lead_sentences — 자른 문장이 어색하다. 되받기는 프롬프트 한 줄이 맡는다. ──
@@ -238,7 +246,7 @@ def strip_sub_name_mentions(text: str, names: list[str]) -> tuple[str, int]:
         if k:
             n += k
             t = t2
-    t = re.sub(r"\s{2,}", " ", t).strip()
+    t = re.sub(r"[ \t]{2,}", " ", t).strip()
     return t, n
 
 
@@ -265,3 +273,224 @@ def same_question_as_previous(text: str, prev_coach_text: str | None) -> str | N
 
 def has_question(text: str) -> bool:
     return any(is_question(x) for x in split_sentences(text))
+
+
+# ── 2026-09-29 자기관리 재주행: 지시어 허공·억지 다리·정의→앵커 다리 ──
+_NP_STOP = {"리더", "자신", "저", "제", "저희", "우리", "팀원", "팀원들", "아무도", "다들", "요즘", "그냥", "정말", "진짜",
+            "사실", "원래", "오히려", "모두", "다", "뭐", "그거", "이거", "그게", "이게", "그런것", "그런거", "경우", "때"}
+# 감정·상태 형용사 어간 — '서운했죠'의 '서운'은 사건 명사가 아니다(결과 질문 대상 X)
+_NP_EMOTION = {"서운", "답답", "속상", "섭섭", "힘들", "불편", "미안", "당황", "억울", "뿌듯", "행복", "피곤", "귀찮", "심란", "허탈", "민망"}
+# 가벼운 목적어('신경을 쓰다', '생각을 하다') — 핵심 명사가 아니다
+_NP_LIGHT = {"신경", "생각", "말", "얘기", "일", "것", "거", "마음", "노력"}
+_NP_VERB_NOUN_RE = re.compile(r"^(.{2,6}?)(하자고|하자|하고|해서|했는데|했고|했어요|했죠|하는|하기|하려고|하셨|했|하면)$")
+_NP_OBJ_RE = re.compile(r"^(.{2,8}?)(을|를)$")
+_NP_SUBJ_RE = re.compile(r"^(.{2,8}?)(이|가|은|는)$")
+
+
+def _np_tokens(text: str) -> list[str]:
+    return [t for t in re.split(r"[\s,.!?…~\"'‘’“”()\[\]/·*-]+", text or "") if t]
+
+
+def key_noun_phrase(user_text: str | None) -> str:
+    """직전 사용자 발화의 핵심 명사구 하나(2~12자). '회식하자고' → '회식', '일관성이 가장 중요' → '일관성'.
+    결과 질문·정의 다리에 넣는 용도 — 대명사만으로 가리키지 않게."""
+    toks = _np_tokens(user_text)
+    if not toks:
+        return ""
+    # 1) '… 가장 중요/핵심' 앞의 주어 명사 (정의 답변)
+    for i, t in enumerate(toks):
+        if t.startswith(("중요", "핵심")) and i > 0:
+            j = i - 1
+            if toks[j] == "가장" and j > 0:
+                j -= 1
+            m = _NP_SUBJ_RE.match(toks[j])
+            if m and m.group(1) not in _NP_STOP:
+                return m.group(1)
+    # 2) 목적어(을/를) — 마지막 것, 앞 어절이 명사 수식이면 붙인다
+    objs = []
+    for i, t in enumerate(toks):
+        m = _NP_OBJ_RE.match(t)
+        if m and m.group(1) not in _NP_STOP and m.group(1) not in _NP_LIGHT:
+            np_ = m.group(1)
+            if i > 0 and len(toks[i - 1]) <= 4 and not re.search(r"(다|요|고|서|며|면|는|은|을|를|이|가|에|게|도|만|죠|니)$", toks[i - 1]) \
+                    and toks[i - 1] not in _NP_STOP:
+                np_ = f"{toks[i - 1]} {np_}"
+            objs.append(np_)
+    if objs:
+        return objs[-1][:12]
+    # 3) 명사+하다 동사('회식하자고')
+    for t in toks:
+        m = _NP_VERB_NOUN_RE.match(t)
+        if m and m.group(1) not in _NP_STOP and m.group(1) not in _NP_EMOTION:
+            return m.group(1)
+    # 4) 주어·주제(이/가/은/는)
+    for t in toks:
+        m = _NP_SUBJ_RE.match(t)
+        if m and m.group(1) not in _NP_STOP and not re.search(r"(하|되|있|없|같)$", m.group(1)):
+            return m.group(1)
+    return ""
+
+
+def result_fallback_question(user_text: str | None, prev_user_text: str | None = None) -> str:
+    """결과 질문 폴백 — 직전 발화의 명사구를 채운다(없으면 그 앞 발화 — 같은 사건의 서술). 대명사만으로 가리키지 않는다."""
+    np_ = key_noun_phrase(user_text) or key_noun_phrase(prev_user_text)
+    if np_:
+        return f"'{np_}' 이후로는 어떻게 됐습니까?"
+    return "방금 말씀하신 일 이후로는 어떻게 됐습니까?"
+
+
+_DEMONSTRATIVE_RE = re.compile(r"(그것|그걸|그게|그거|그럴\s*(때|땐)|그런\s*(때|땐)|그러실\s*(때|땐)|그렇게\s*하(니|시니|셨을\s*(때|땐))|그때는|그땐|그\s*일)")
+
+
+_GENERIC_Q = {"어떻게", "어떠셨", "어떠셨습니까", "어땠", "어땠어요", "어떠셨어요", "받아들였", "받아들였나요", "하셨", "하셨습니까",
+              "느끼셨", "느끼셨습니까", "드셨", "되셨", "있으셨", "있으셨을까요", "계셨", "리더님", "리더님께서는", "리더님께서",
+              "혹시", "그때", "그때는", "그것", "그걸", "그게", "그거", "그럴", "그런", "그렇게", "팀원", "팀원들", "생각", "마음",
+              "어떤", "무엇", "무엇을", "보셨", "하시니", "하시나요", "되었", "됐", "됐습니까", "했", "했습니까"}
+
+
+def has_bare_demonstrative(question: str, user_text: str | None) -> bool:
+    """질문이 대명사로만 대상을 가리키는가 — 인용('…')도, 직전 사용자 발화의 내용 어절도, 문장 자체의 구체 어절(2개 이상)도 없이
+    '그것/그럴 때'만 있다. ('크게 실패한 뒤 … 그때는'처럼 문장 안에 대상이 있으면 대명사 단독이 아니다.)"""
+    if not _DEMONSTRATIVE_RE.search(question or ""):
+        return False
+    if re.search(r"['‘\"“][^'’\"”]{2,}['’\"”]", question):
+        return False
+    user_chunks = {c for c in _content_chunks(user_text or "") if len(c) >= 2}
+    q_chunks = [c for c in _content_chunks(question) if len(c) >= 2]
+    if user_chunks & set(q_chunks):
+        return False
+    own_specific = [c for c in q_chunks if c not in _GENERIC_Q and not _DEMONSTRATIVE_RE.fullmatch(c)]
+    return len(own_specific) < 2
+
+
+def bare_demonstrative_questions(text: str, user_text: str | None) -> list[str]:
+    return [s for s in split_sentences(text or "") if is_question(s) and has_bare_demonstrative(s, user_text)]
+
+
+def _josa(word: str, with_final: str, without_final: str) -> str:
+    ch = (word or "")[-1:]
+    if ch and "가" <= ch <= "힣" and (ord(ch) - 0xAC00) % 28:
+        return with_final
+    return without_final
+
+
+# 정의 제시 → 첫 앵커 사이 기본 다리(페르소나별 3개). {kw} = 리더 정의의 핵심 단어.
+ALIGN_BRIDGE_POOL = {
+    "Daniel": ["'{kw}'{i_ga} 시험받았던 장면부터 여쭤보겠습니다.", "말씀하신 '{kw}'{eul_reul} 실제 장면에서 확인해 보고 싶습니다.",
+               "'{kw}'{i_ga} 흔들릴 뻔했던 순간부터 들어보겠습니다."],
+    "Ella": ["'{kw}'{i_ga} 시험받았던 장면부터 천천히 들어볼게요.", "말씀하신 '{kw}', 실제로 어떤 순간에 드러났는지 궁금해요.",
+             "'{kw}'{eul_reul} 지켜내기 어려웠던 순간부터 여쭤볼게요."],
+    "Jessica": ["'{kw}'{i_ga} 시험받은 장면부터 보겠습니다.", "'{kw}', 실제 장면으로 확인해 보죠.", "'{kw}'{i_ga} 흔들린 순간부터 짚어보겠습니다."],
+    "Olivia": ["'{kw}'{eul_reul} 다른 각도에서 비춰볼 장면부터 여쭤볼게요.", "'{kw}'{i_ga} 시험받았던 순간을 함께 돌아보고 싶어요.",
+               "말씀하신 '{kw}', 그게 드러난 한 장면부터 들어볼게요."],
+    "Michael": ["'{kw}'{i_ga} 시험받았던 현장부터 바로 가 보겠습니다.", "'{kw}', 실제로 부딪혔던 장면부터 짚어보죠.",
+                "'{kw}'{eul_reul} 지켜낸 순간부터 들어보겠습니다."],
+    "Lucas": ["'{kw}'{i_ga} 시험받은 장면부터 보겠습니다.", "'{kw}', 실제 사례로 확인하겠습니다.", "'{kw}'{i_ga} 드러난 장면 하나부터요."],
+}
+_DEFAULT_BRIDGES = ["'{kw}'{i_ga} 시험받았던 장면부터 여쭤볼게요.", "말씀하신 '{kw}'{eul_reul} 실제 장면에서 확인해 보고 싶어요.",
+                    "'{kw}'{i_ga} 흔들릴 뻔했던 순간부터 들어볼게요."]
+
+
+_NO_KW_BRIDGES = ["이제 실제 장면에서부터 하나씩 여쭤볼게요.", "지금부터는 실제 있었던 장면으로 들어가 보겠습니다.",
+                  "직접 겪으신 장면 하나에서 출발해 보겠습니다."]
+
+
+def align_default_bridge(persona_name: str | None, definition_text: str | None, pos: int = 0) -> str:
+    kw = key_noun_phrase(definition_text)
+    if not kw:
+        return _NO_KW_BRIDGES[pos % len(_NO_KW_BRIDGES)]
+    key = (persona_name or "").split(" ")[0]
+    pool = ALIGN_BRIDGE_POOL.get(key) or _DEFAULT_BRIDGES
+    tpl = pool[pos % len(pool)]
+    return tpl.format(kw=kw, i_ga=_josa(kw, "이", "가"), eul_reul=_josa(kw, "을", "를"))
+
+
+def align_has_bridge(text: str) -> bool:
+    """정의·목록 블록 뒤에 평서문 1문장 이상이 있는가(마지막 '· ' 목록 줄 이후)."""
+    lines = (text or "").rstrip().split("\n")
+    last_list = max((i for i, l in enumerate(lines) if l.strip().startswith("·")), default=None)
+    tail = "\n".join(lines[last_list + 1:]) if last_list is not None else ""
+    sents = [s for s in split_sentences(tail) if s.strip() and not s.strip().startswith("·")]
+    return any(not is_question(s) for s in sents)
+
+
+_FRAME_LEAD_RE = re.compile(r"^\s*(먼저 하나 여쭤볼게요\.|가볍게 시작해 볼게요\.|실제 있었던 일로 시작해 볼게요\.|바로 여쭤볼게요\.|"
+                            r"이 영역은 이 질문부터요\.)\s*")
+
+
+def strip_frame_lead(anchor: str) -> str:
+    """앵커 프레임의 자체 리드('먼저 하나 여쭤볼게요.')를 뗀다 — 다리 문장과 이중 도입 방지."""
+    return _FRAME_LEAD_RE.sub("", anchor or "", count=1)
+
+
+def anchor_overlap(text: str, anchor_q: str) -> int:
+    """출력 질문들과 이번 앵커 질문이 공유하는 내용 어절 수(2자 이상)."""
+    qs = " ".join(x for x in split_sentences(text or "") if is_question(x))
+    a = {c for c in _content_chunks(anchor_q or "") if len(c) >= 2}
+    return len(a & set(_content_chunks(qs)))
+
+
+ANCHOR_TRANSITIONS = ["다른 이야기를 하나 여쭤볼게요.", "이번엔 조금 다른 장면입니다."]
+
+
+def followup_from_user(user_text: str | None) -> str:
+    """대명사 단독 질문의 잔존 교체문(결과 강제 턴이 아닐 때) — 리더가 쓴 말을 받아 한 걸음 더 묻는다."""
+    np_ = key_noun_phrase(user_text)
+    if not np_:
+        t = re.sub(r"\s+", " ", (user_text or "").strip())[:14].rstrip(" .,!?")
+        np_ = t
+    if not np_:
+        return "방금 말씀하신 장면을 조금 더 구체적으로 들려주시겠어요?"
+    return f"'{np_}'{_josa(np_, '이라고', '라고')} 하신 부분을 조금 더 구체적으로 들려주시겠어요?"
+
+
+# 앵커 턴의 상투적 다리("그런 경험처럼,") — 주제가 이어지지 않는데 붙는 군말. 떼고 전환 문장으로.
+_FILLER_BRIDGE_RE = re.compile(r"((그런|이런|그|이|방금 말씀하신|앞서 말씀하신)\s*(경험|말씀|이야기|사례)(처럼|과\s*같이|의\s*결에서|에\s*이어)|^(이처럼|그처럼))\s*,?\s*(혹시\s*)?")
+
+
+def strip_filler_bridge(text: str) -> tuple[str, bool]:
+    """앵커 질문 앞의 '그런 경험처럼,' 류 군말 다리를 떼고, 질문 앞에 전환 문장이 없으면 붙인다."""
+    sents = split_sentences(text or "")
+    out, hit = [], False
+    for x in sents:
+        if is_question(x) and _FILLER_BRIDGE_RE.search(x):
+            y = _FILLER_BRIDGE_RE.sub("", x, count=1).strip()
+            if y:
+                out.append(y); hit = True
+                continue
+        out.append(x)
+    if not hit:
+        return text, False
+    qi = next((i for i, x in enumerate(out) if is_question(x)), None)
+    if qi is not None and not any(t in " ".join(out[:qi]) for t in ("다른 이야기", "다른 장면", "조금 다른")):
+        out = out[:qi] + ["다른 이야기를 하나 여쭤볼게요."] + out[qi:]
+        if qi >= 1:
+            out = [out[0]] + out[qi:]   # 리드 1문장 + 전환 + 질문
+    return " ".join(out).strip(), True
+
+
+def ensure_align_list(text: str, sub_names: list[str]) -> tuple[str, bool]:
+    """ALIGN 출력에 하위역량 목록('· ' 줄)이 없으면 첫 문단 뒤에 넣는다(목록은 competencies 값 그대로)."""
+    if not sub_names or any(l.strip().startswith("·") for l in (text or "").split("\n")):
+        return text, False
+    block = "\n".join(f"· {n}" for n in sub_names)
+    paras = (text or "").rstrip().split("\n\n")
+    head = paras[:2] if len(paras) >= 2 else paras
+    tail = paras[2:] if len(paras) >= 2 else []
+    return "\n\n".join(head + [block] + tail).strip(), True
+
+
+def drop_question_sentences(text: str) -> tuple[str, int]:
+    """본문의 물음표 문장을 지운다 — 줄 단위로 처리해 목록·문단 줄바꿈을 보존. ALIGN 본문 — 질문은 뒤에 붙는 앵커 하나뿐."""
+    n = 0
+    lines = []
+    for line in (text or "").split("\n"):
+        sents = split_sentences(line)
+        kept = [x for x in sents if not is_question(x)]
+        n += len(sents) - len(kept)
+        if sents and not kept:
+            continue          # 질문뿐인 줄은 통째로 뺀다
+        lines.append(" ".join(kept) if len(kept) != len(sents) else line)
+    out = "\n".join(lines)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out, n
