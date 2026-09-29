@@ -32,6 +32,29 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# (2026-09-29) 전역 예외 → JSON 500 + error_id. 이 미들웨어를 CORS 보다 '먼저' 등록해야 CORS 가 바깥에서 감싸
+#   5xx 응답에도 Access-Control-* 헤더가 붙는다(이전엔 처리 안 된 예외가 ServerErrorMiddleware 로 새어 헤더 없는
+#   500 → 브라우저에 'CORS error' 로 위장). 로그와 응답의 error_id 로 대조한다.
+import uuid as _uuid
+import traceback as _tb
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.responses import JSONResponse
+
+
+class _ErrorIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        try:
+            return await call_next(request)
+        except Exception as exc:  # noqa: BLE001 — 최후 방어선
+            error_id = _uuid.uuid4().hex[:12]
+            logger.error("💥 unhandled error_id=%s %s %s → %s: %s\n%s", error_id, request.method, request.url.path,
+                         type(exc).__name__, exc, _tb.format_exc())
+            return JSONResponse(status_code=500, content={
+                "detail": "서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.", "error_id": error_id})
+
+
+app.add_middleware(_ErrorIdMiddleware)
+
 # CORS 설정 — 화이트리스트만 허용 (와일드카드 금지)
 # config.py 의 CORS_ALLOWED_ORIGINS: 공식 프론트 도메인 + 로컬 개발용 두 곳.
 # 명시적 origin 목록이므로 allow_credentials=True 도 스펙상 안전.
