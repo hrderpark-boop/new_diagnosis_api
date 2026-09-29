@@ -36,6 +36,7 @@ app = FastAPI(
 #   5xx 응답에도 Access-Control-* 헤더가 붙는다(이전엔 처리 안 된 예외가 ServerErrorMiddleware 로 새어 헤더 없는
 #   500 → 브라우저에 'CORS error' 로 위장). 로그와 응답의 error_id 로 대조한다.
 import uuid as _uuid
+import os as _os_sc
 import traceback as _tb
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import JSONResponse
@@ -43,14 +44,19 @@ from fastapi.responses import JSONResponse
 
 class _ErrorIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
+        from diag_project.services.ops_monitor import record_5xx
         try:
-            return await call_next(request)
+            response = await call_next(request)
         except Exception as exc:  # noqa: BLE001 — 최후 방어선
             error_id = _uuid.uuid4().hex[:12]
             logger.error("💥 unhandled error_id=%s %s %s → %s: %s\n%s", error_id, request.method, request.url.path,
                          type(exc).__name__, exc, _tb.format_exc())
+            record_5xx(request.url.path, 500, error_id)
             return JSONResponse(status_code=500, content={
                 "detail": "서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.", "error_id": error_id})
+        if response.status_code >= 500:
+            record_5xx(request.url.path, response.status_code)   # 처리된 5xx(예: 턴 커밋 실패 503)도 센다
+        return response
 
 
 app.add_middleware(_ErrorIdMiddleware)
@@ -86,6 +92,11 @@ async def on_startup():
     logger.info("🚀 Application startup: Initializing database...")
     await init_db()
     logger.info("✅ Database initialized.")
+    # (2026-09-29) 쓰기 경로 합성 점검 — 기동 60초 뒤 첫 실행, 이후 하루 1회. FM_SYNTHETIC_CHECK=0 이면 끔.
+    if _os_sc.getenv("FM_SYNTHETIC_CHECK", "1") != "0":
+        import asyncio as _aio
+        from diag_project.services.ops_monitor import synthetic_loop
+        _aio.get_event_loop().create_task(synthetic_loop())
     # 🧭 재발 방지: 어느 대화 흐름으로 뜨는지 기동 시 명시 출력.
     #   (박기진 사고: USE_PHASE3A 오파싱/오설정이 조용히 레거시로 새는 것을 막는다.)
     import os as _os

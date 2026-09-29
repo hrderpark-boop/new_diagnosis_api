@@ -69,7 +69,7 @@ POST /reports/{sid}/analyze
 | M18 | Medium | `tests/` | 스크립트형 테스트, fixture 부재 | pytest 순수화 + testpaths | ⏭ |
 | M19 | Medium | 프론트 전반 | `any` 71곳, ESLint 71 error | 응답 타입 정의 후 치환 | ⏭ |
 | M20 | Medium | `config.py` | 미사용 GEMINI_API_KEY, CORS env 포맷 | 정리 | ⏭ |
-| M21 | Medium | 모델/`admin.stats_daily` | naive/aware datetime 혼재 | UTC 통일 | ⏭ |
+| M21 | **High(09-29 승격)** | 모델 전체/`admin.stats_daily` | naive/aware datetime 혼재. 09-22~09-29 프로덕션 쓰기 불가 사고의 뿌리(sqlmodel≥0.0.45 가 naive 쓰기 거부) | 모델 전체 timezone-aware(UTC)로 전환 + DB 컬럼 `timestamptz` 마이그레이션 + sqlmodel 최신화. 현재는 sqlmodel==0.0.27 고정(임시) | ⏭ **2단계 첫 항목** |
 | M22 | Medium | `reports.py analyze 상태 전이` | aborted/paused 를 in_progress 로 부활 | 상태 전이 표 명시 | ✅ |
 | M23 | Medium | `layer3_state.py:173`, `layer1_system.py:861` | Ella 예시/폴백 잠재 누출 | 변수화 | ⏭ |
 | L1~L13 | Low | (검토 보고서 참조) | 소속 동기화 대소문자, report_by_pid 임의, 죽은 설정/분기, 로그 중복 등 | 정리 | ⏭ |
@@ -152,6 +152,9 @@ LLM 응답이 나온 뒤 "조건 X면 덧붙임/교체/무시"로 동작하는 �
 - #11: 죽은 경로 삭제(프론트 `awaitingContinue` 포함) 또는 실제 대기 상태로 복원 — 2026-09-16 의 `awaiting_next_chapter_choice` 가 그 자리를 대신하고 있다.
 
 ## 3. 진행 순서
+
+> 2026-09-29: **2단계(파일럿 후)의 첫 항목은 M21** — `requirements.txt` 의 sqlmodel==0.0.27 고정은 임시 조치다. 순서: (1) 모델 `datetime.now/utcnow` → `datetime.now(timezone.utc)` (2) DB `timestamp` → `timestamptz`(값은 UTC 로 간주해 변환) (3) naive 비교 지점(`sitting_stats`·`stats_daily`·리포트 날짜) 점검 (4) sqlmodel 최신 + `tests/test_dependency_pins.py` 의 naive 쓰기 테스트를 aware 쓰기 테스트로 교체 (5) 같은 fixture 리플레이 + Render 와 같은 Python 3.12 환경 재현.
+
 
 1. 1단계(파일럿 차단): C1, C3, H1, H2, H3(+M16, M22), H4, H5, H6, H7, M4, M14 — 항목별 커밋.
 2. (B) 인증: C2·C4 포함, 프론트 먼저 → 백엔드, AUTH_ENFORCED 킬스위치.

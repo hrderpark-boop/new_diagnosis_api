@@ -290,12 +290,22 @@ async def admin_login(body: AdminLoginRequest, db: AsyncSession = Depends(get_db
 async def admin_alerts(ctx: AdminContext = Depends(get_current_admin)):
     """운영 알림 — 관리자 페이지 상단 배너용 (2026-09-22). Gemini 크레딧 소진(402)·마지막 LLM 오류."""
     from diag_project.llm_service import LLM_ALERTS
+    from diag_project.services.ops_monitor import alerts_snapshot
     return {
         "gemini_credit_depleted": bool(LLM_ALERTS.get("credit_depleted_at")),
         "credit_depleted_at": LLM_ALERTS.get("credit_depleted_at"),
         "last_llm_error_at": LLM_ALERTS.get("last_error_at"),
         "last_llm_error": LLM_ALERTS.get("last_error"),
+        # (2026-09-29) 5xx 최근 1시간·합성 쓰기 점검 결과
+        **alerts_snapshot(),
     }
+
+
+@router.post("/health/synthetic-check")
+async def admin_synthetic_check(ctx: AdminContext = Depends(get_current_admin)):
+    """쓰기 경로 합성 점검을 지금 실행(INSERT 후 rollback — 데이터 남기지 않음)."""
+    from diag_project.services.ops_monitor import run_synthetic_write_check
+    return await run_synthetic_write_check()
 
 
 @router.get("/auth/me", response_model=AdminMeResponse)
