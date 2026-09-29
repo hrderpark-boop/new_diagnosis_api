@@ -153,6 +153,11 @@ LLM 응답이 나온 뒤 "조건 X면 덧붙임/교체/무시"로 동작하는 �
 
 ## 3. 진행 순서
 
+> 2026-09-29 다음 라운드(조건부) — **evidence 재선택**: 게이트가 evidence 를 '태도'로 거절하면 같은 사용자 턴 텍스트 안에서만
+> 행동 문장을 1회 다시 고른다(프롬프트: "이 발화에서 리더가 실제로 한 행동을 서술한 문장만 고르라. 결심·판단·상황 서술 제외").
+> 재선택도 거절되면 미확보 확정. 검증: 420f1341 리플레이에서 조직관리 변화관리·성과관리 실행력이 측정으로 바뀌고,
+> 일관리 5개는 그대로 미확보여야 한다(바뀌면 재선택이 너무 관대한 것).
+
 > 2026-09-29: **2단계(파일럿 후)의 첫 항목은 M21** — `requirements.txt` 의 sqlmodel==0.0.27 고정은 임시 조치다. 순서: (1) 모델 `datetime.now/utcnow` → `datetime.now(timezone.utc)` (2) DB `timestamp` → `timestamptz`(값은 UTC 로 간주해 변환) (3) naive 비교 지점(`sitting_stats`·`stats_daily`·리포트 날짜) 점검 (4) sqlmodel 최신 + `tests/test_dependency_pins.py` 의 naive 쓰기 테스트를 aware 쓰기 테스트로 교체 (5) 같은 fixture 리플레이 + Render 와 같은 Python 3.12 환경 재현.
 
 
