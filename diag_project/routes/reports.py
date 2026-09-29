@@ -111,8 +111,10 @@ async def load_analysis_inputs(db: AsyncSession, session) -> Dict[str, Any]:
     store = session.self_assessment_data or {}
     return {
         # chapter: A-2 — 대역량별 '전체 로그'를 그 챕터 끝까지로 자르는 데 쓴다.
+        #   instruction: G — 챕터 앵커 전달 판정(COMPETENCY_ALIGN 포함).
         "history": [{"role": m.role, "parts": m.content,
-                     "chapter": getattr(m, "chapter", None)}
+                     "chapter": getattr(m, "chapter", None),
+                     "instruction": getattr(m, "instruction_used", None)}
                     for m in messages],
         # Map-Reduce: 역량별로 대화·사건을 결정론적으로 분리해 주입.
         #  - 통짜 컨텍스트 주입(절단/날조) 방지, 라포 사담(chapter=None) 제외.
@@ -313,6 +315,25 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db)):
 
     # 🚨 프론트엔드가 요구하는 새로운 JSON 포맷을 그대로 살려서 반환
     saved_scores = report.scores or {}
+    details = saved_scores.get("details", {})
+    coverage = saved_scores.get("coverage")
+    # F: 과거에 저장된 리포트도 읽을 때 측정 0 대역량 서술을 중립화한다(DB 는 그대로).
+    #   관리자 교정본은 사람이 확정한 문구라 건드리지 않는다.
+    if not report.is_human_edited and isinstance(details, dict):
+        from diag_project.services.report_ledger import neutralize_unmeasured
+        details = copy.deepcopy(details)
+        neutralize_unmeasured(details)
+    # B: 과거 리포트엔 composite_mode 가 없다 → measured_total 로 채운다(표시 전용).
+    if isinstance(coverage, dict) and "composite_mode" not in coverage:
+        from diag_project.services.scoring import composite_mode
+        _mt = coverage.get("measured_total", coverage.get("measured")) or 0
+        coverage = dict(coverage)
+        coverage["composite_mode"] = composite_mode(_mt)
+        if coverage["composite_mode"] != "official":
+            coverage["composite_badge"] = "참고치"
+            coverage["composite_note"] = (
+                f"26개 지표 중 {_mt}개가 확인되었습니다. "
+                "남은 지표는 다음 세션에서 이어볼 수 있습니다.")
     return {
         "user_name": user_name,
         "coach_name": coach_name,
@@ -320,12 +341,12 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db)):
         "total_score": report.total_score,
         "summary": report.summary,
         "radar_chart": saved_scores.get("radar_chart", saved_scores),
-        "details": saved_scores.get("details", {}),
+        "details": details,
         "top_keywords": saved_scores.get("top_keywords", []),
         # 🎯 맞춤형 교육과정 추천(성장 처방전) — 프론트 최하단 섹션 렌더용.
         "course_recommendation": saved_scores.get("course_recommendation"),
         # 🔒 P0-1: 측정 커버리지 (측정 n / 26) — 상단 노출용.
-        "coverage": saved_scores.get("coverage"),
+        "coverage": coverage,
         "created_at": report.created_at.strftime("%Y-%m-%d") if report.created_at else datetime.now().strftime("%Y-%m-%d")
     }
 

@@ -1787,10 +1787,18 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         competency_results: Dict[str, Dict],
     ) -> Dict[str, Any]:
         """STEP 3: 5개 역량 결과를 종합하여 아키타입·사각지대·IDP 생성"""
-        scores_summary = "\n".join([
-            f"- {_get_key_to_korean_map().get(k, k)}: {v.get('score', 0)}점 | 강점: {v.get('strength_point', '-')} | 개선: {v.get('growth_point', '-')} | Gap: {v.get('gap_analysis', '-')}"
-            for k, v in competency_results.items()
-        ])
+        def _summary_line(k, v):
+            name = _get_key_to_korean_map().get(k, k)
+            if v.get("unmeasured"):
+                # F: 측정 0 대역량 — 평가 재료를 주지 않는다(칭찬·단정 방지).
+                return (f"- {name}: 미측정(이번 세션에서 확인되지 않음) — 이 역량에 "
+                        "대한 강점·평가·단정 서술 금지")
+            return (f"- {name}: {v.get('score', 0)}점 | 강점: "
+                    f"{v.get('strength_point', '-')} | 개선: "
+                    f"{v.get('growth_point', '-')} | Gap: "
+                    f"{v.get('gap_analysis', '-')}")
+        scores_summary = "\n".join(
+            _summary_line(k, v) for k, v in competency_results.items())
 
         # 🔒 P0-1/P0-3: 미측정(None) 대역량은 종합·레이더에서 제외. radar 는
         #   미측정 축을 None 으로 보존(프론트가 '미측정' 표시). 종합은 measured 만 평균.
@@ -2192,6 +2200,20 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         except Exception as _ae:  # noqa: BLE001
             logger.debug("다중매핑 감사 스킵: %s", _ae)
 
+        # G: 원장 asked 지만 앵커가 실제로 전달되지 않았고 근거 후보도 0 → '미탐색'.
+        # F: 측정 0 대역량의 평가 서술(코멘트·강점·개선·Gap) 결정론적 중립화.
+        #   종합 요약·추천보다 '먼저' 적용해 요약 프롬프트가 미측정 대역량을
+        #   칭찬하는 서술을 보지 않게 한다.
+        from diag_project.services.report_ledger import (
+            mark_not_explored, neutralize_unmeasured,
+        )
+        _ne = mark_not_explored(competency_results, history)
+        if _ne:
+            logger.info("🧭 미탐색(앵커 미전달) 재분류: %s", _ne)
+        _um = neutralize_unmeasured(competency_results)
+        if _um:
+            logger.info("🧭 측정 0 대역량 서술 중립화: %s", _um)
+
         # 🎯 Level-Up 교육 추천(D게이트 포함)은 종합 요약과 서로 독립(둘 다
         #   competency_results 를 읽기만 한다) → item6: 요약과 동시에 돌린다.
         _rec_task = asyncio.ensure_future(
@@ -2237,6 +2259,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         #   (docs/code_review_2026-09-02.md §0)
         from diag_project.services.scoring import (
             composite_shown as _composite_shown, COMPOSITE_MIN_MEASURED,
+            composite_mode,
         )
         _none_comps = sum(
             1 for v in competency_results.values() if v.get("score") is None
@@ -2257,7 +2280,20 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         #   measured_total 은 파일럿 분포 수집을 위해 '항상' 메타에 기록한다.
         _cov["measured_total"] = _measured_total
         _cov["composite_min_measured"] = COMPOSITE_MIN_MEASURED
+        # B(2026-09-29): 종합 점수·레이더는 '항상' 보인다. composite_shown 은 이제
+        #   숨김 게이트가 아니라 정식/참고치 구분 플래그(임계 18 유지).
         _cov["composite_shown"] = _composite_shown(_measured_total)
+        _cov["composite_mode"] = composite_mode(_measured_total)
+        _cov["composite_badge"] = (
+            None if _cov["composite_mode"] == "official" else "참고치")
+        _cov["composite_note"] = (
+            None if _cov["composite_mode"] == "official" else
+            f"26개 지표 중 {_measured_total}개가 확인되었습니다. "
+            "남은 지표는 다음 세션에서 이어볼 수 있습니다.")
+        # G: 원장 asked 였지만 앵커가 전달되지 않은 '미탐색' 수(탐색률에서 제외됨).
+        _cov["not_explored"] = sum(
+            int(v.get("not_explored_count") or 0)
+            for v in competency_results.values())
         # qualifying 은 정보용으로만 남긴다(발행 게이트 아님 — V-6 로 물러남).
         _cov["qualifying_competencies"] = sum(1 for c in _comp_stable if c >= 2)
         _cov["none_competencies"] = _none_comps
@@ -2331,6 +2367,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         recommendation = await _rec_task
         if recommendation:
             final_result["course_recommendation"] = recommendation
+        # F: 저장 직전 한 번 더(멱등) — 이후 단계가 서술을 되살리지 않았음을 보장.
+        neutralize_unmeasured(final_result["details"])
 
         # §8 계측: 이 재분석의 호출/토큰/추정비용 요약을 리포트에 부착 + 로그.
         _usage = USAGE_METER.summary()

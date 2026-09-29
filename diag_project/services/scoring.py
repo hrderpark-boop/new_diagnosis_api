@@ -170,8 +170,15 @@ COMPOSITE_MIN_MEASURED = int(_os.getenv("COMPOSITE_MIN_MEASURED", "18"))
 
 def composite_shown(measured_total: int,
                     threshold: int = COMPOSITE_MIN_MEASURED) -> bool:
-    """종합 섹션을 표시할지 — measured_total ≥ threshold 일 때만 True.
+    """종합 점수가 '정식'인가 — measured_total ≥ threshold 일 때만 True.
 
-    False 여도 '실패/미달'이 아니라 '확인된 근거 중심 리포트'가 기본 출력이다.
+    B(2026-09-29): 이름은 호환을 위해 유지하지만 의미는 '정식/참고치 구분'이다.
+    종합 점수·레이더는 항상 보이고, False 면 '참고치' 배지만 붙는다(숨김 금지).
     """
     return int(measured_total or 0) >= threshold
+
+
+def composite_mode(measured_total: int,
+                   threshold: int = COMPOSITE_MIN_MEASURED) -> str:
+    """종합 점수 표기 모드: 'official'(정식) | 'reference'(참고치)."""
+    return "official" if composite_shown(measured_total, threshold) else "reference"

@@ -106,6 +106,9 @@ def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
                     for r in run_results)
         m = classify_sub(rows, n_runs)
         cls = m["class"]
+        # G: 근거 후보가 나온 run 수(게이트 탈락 포함) — '미탐색' 판정용.
+        cand_runs = sum(1 for r in rows
+                        if r and r.get("gate_status") not in (None, "n_a"))
         if cls in class_counts:
             class_counts[cls] += 1
 
@@ -127,7 +130,7 @@ def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
             "asked": asked, "measured": m["measured"], "level": level,
             "score": score, "evidence": disp_ev, "status": status,
             "gate_status": gate_status, "borderline": m["borderline"],
-            "stability": cls,
+            "stability": cls, "candidate_runs": cand_runs,
         }
 
     base["sub_ledger"] = sub_ledger
