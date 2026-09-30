@@ -334,7 +334,42 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db)):
             coverage["composite_note"] = (
                 f"26개 지표 중 {_mt}개가 확인되었습니다. "
                 "남은 지표는 다음 세션에서 이어볼 수 있습니다.")
+    # (2026-09-30) '스스로 보는 나' vs '대화에 드러난 나' + 그룹 평균 — 표시·비교 전용(점수·추천 계산 무관)
+    from diag_project.services.self_view import build_self_view, group_average
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK as _CF_SV
+    _order_sv = list(_CF_SV.keys())
+    _names_sv = {k: v.get("name", k) for k, v in _CF_SV.items()}
+    _self_scores = ((session_res.self_assessment_data or {}).get("scores") if session_res else None) or None
+    self_view = build_self_view(_self_scores, details, _names_sv, _order_sv)
+    _group_details: list = []
+    try:
+        _gc = participant_info.get("group_code")
+        if _gc:
+            # 리포트는 완주(completed) 시에만 생성된다 → 리포트 존재 = 완료. user_id 로 참가자와 직접 조인(같은 GUID 타입).
+            _rows = (await db.execute(
+                select(DiagnosisReport, DiagnosisReport.user_id)
+                .join(Participant, Participant.id == DiagnosisReport.user_id)
+                .where(Participant.group_code == _gc)
+                .order_by(DiagnosisReport.created_at.desc())
+            )).all()
+            _seen = set()
+            for _rep, _uid in _rows:      # 참가자당 최신 리포트 1건
+                if _uid in _seen:
+                    continue
+                _seen.add(_uid)
+                _group_details.append(((_rep.scores or {}).get("details")) or {})
+    except Exception as _ge:
+        logger.warning("그룹 평균 조회 실패(비교 생략): %s", _ge)
+    group_comparison = group_average(_group_details, _order_sv)
+
     return {
+        "self_assessment": ({"scores": _self_scores, "self_average": self_view.get("self_average")} if _self_scores else None),
+        "self_view": self_view,
+        "group_comparison": group_comparison,
+        # 아키타입·IDP 는 저장돼 있었지만 응답에 빠져 있었다(02 섹션이 비어 보이던 원인). blind_spot 은 내보내지 않는다 —
+        #   '사각지대' 프레이밍 대신 self_view(스스로 보는 나 / 대화에 드러난 나)를 쓴다.
+        "archetype": saved_scores.get("archetype"),
+        "idp": saved_scores.get("idp") or [],
         "user_name": user_name,
         "coach_name": coach_name,
         "participant": participant_info,
