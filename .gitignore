@@ -53,3 +53,5 @@ package-lock.json
 simulate_test.py
 test_logs/
 .analysis_cache/
+
+.pytest_local.db

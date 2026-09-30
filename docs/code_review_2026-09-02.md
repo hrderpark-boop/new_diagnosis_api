@@ -57,7 +57,7 @@ POST /reports/{sid}/analyze
 | M6 | Medium | `llm_service._generate_with_retry` | 키 로테이션×재시도 폭주, 결정적 오류도 재시도 | 429/503 만 재시도, 총 상한 시간 | ⏭ |
 | M7 | Medium | `llm_service:770` | "사용자:" 절단이 JSON 응답에도 적용 | 평문 호출에만 적용 | ⏭ |
 | M8 | Medium | `course_recommender._strength_gate_pass` | flash·미캐시 | pro 통일 + 캐시 | ⏭ |
-| M9 | Medium | `analysis_cache`, `level_gate._GATE_CACHE` | 파일 전체 재기록, 무한 성장 | 메모리 캐시/DB | ⏭ |
+| M9 | Medium→**High(09-30)** | `analysis_cache`, `level_gate._GATE_CACHE` | 파일 전체 재기록, 무한 성장, **배포마다 초기화 → 챕터 사전분석 캐시 소실** | DB 테이블로 이관(transcript_hash·sub_key·prompt_version 키 유지). 그때까지 파일럿 규칙 P-5b(세션 시간 배포 금지) | ⏭ 2단계(M21 다음) |
 | M10 | Medium | `GeminiService` | 요청마다 생성, 호출마다 Client | 싱글턴 | ⏭ |
 | M11 | Medium | `build_turn_state` | 턴당 ~16 쿼리 | 1회 로드 후 집계 | ⏭ |
 | M12 | Medium | `admin.list_reports/stats` | scores 전체 JSON 페이로드 | 요약만 반환 | ⏭ |
