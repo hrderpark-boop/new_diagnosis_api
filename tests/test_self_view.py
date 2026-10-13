@@ -2,7 +2,7 @@
 import inspect
 
 from diag_project.services.self_view import (
-    MSG_HIGH, MSG_LOW, MSG_MATCH, MSG_SKIPPED, MSG_UNMEASURED, build_self_view, group_average,
+    MSG_HIGH, MSG_LOW, MSG_MATCH, MSG_REFERENCE, MSG_SKIPPED, MSG_UNMEASURED, build_self_view, group_average,
 )
 
 ORDER = ["organization_management", "performance_management", "people_management", "work_management", "self_management"]
@@ -65,3 +65,14 @@ def test_self_view_does_not_mutate_details():
     build_self_view({"organization_management": 5, "self_management": 1}, d, NAMES, ORDER)
     build_self_view({"organization_management": 1, "self_management": 5}, d, NAMES, ORDER)
     assert d == before
+
+
+def test_reference_chapter_is_not_judged_and_excluded_from_summary():
+    """참고치 챕터(is_reference — 대역량 배지와 같은 조건)는 해석을 단정하지 않고 요약 선정에서도 뺀다. 420f1341 자기관리가 이 경우."""
+    d = _details(organization_management=4.0, self_management=1.0, people_management=4.1)
+    d["self_management"]["is_reference"] = True
+    sv = build_self_view({"organization_management": 3.0, "self_management": 3.0, "people_management": 3.0}, d, NAMES, ORDER)
+    by = {r["key"]: r for r in sv["rows"]}
+    assert by["self_management"]["kind"] == "reference" and by["self_management"]["interpretation"] == MSG_REFERENCE
+    assert by["self_management"]["diff"] == 2.0            # 수치는 그대로 보여주되 단정하지 않는다
+    assert "자기관리" not in sv["summary"] and "사람관리" in sv["summary"]

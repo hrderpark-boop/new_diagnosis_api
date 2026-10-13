@@ -15,6 +15,7 @@ MSG_HIGH = "스스로 높게 보는 영역 — 대화에서는 그만큼 드러�
 MSG_LOW = "스스로 낮게 보는 영역 — 대화에서는 더 분명하게 드러났습니다"
 MSG_MATCH = "인식과 드러남이 일치하는 영역"
 MSG_UNMEASURED = "이번 세션에서 확인되지 않아 비교할 수 없습니다"
+MSG_REFERENCE = "참고치 — 근거가 적어 차이를 단정하지 않습니다"
 MSG_SKIPPED = "자가진단을 건너뛰어 비교할 수 없습니다"
 
 
@@ -56,11 +57,16 @@ def build_self_view(self_scores: dict | None, details: dict | None, names: dict[
                          "kind": "unmeasured", "interpretation": MSG_UNMEASURED})
             continue
         diff = round(s - m, 1)
+        # 참고치 챕터(대역량 배지와 같은 조건: details[ch].is_reference)는 차이를 단정하지 않는다 — 요약 선정에서도 제외
+        if bool(((details or {}).get(k) or {}).get("is_reference")):
+            rows.append({"key": k, "name": names.get(k, k), "self": round(s, 1), "measured": round(m, 1), "diff": diff,
+                         "kind": "reference", "interpretation": MSG_REFERENCE})
+            continue
         kind = "self_higher" if diff >= DIFF_THRESHOLD else "self_lower" if diff <= -DIFF_THRESHOLD else "match"
         rows.append({"key": k, "name": names.get(k, k), "self": round(s, 1), "measured": round(m, 1), "diff": diff,
                      "kind": kind,
                      "interpretation": MSG_HIGH if kind == "self_higher" else MSG_LOW if kind == "self_lower" else MSG_MATCH})
-    comparable = [r for r in rows if r["diff"] is not None]
+    comparable = [r for r in rows if r["diff"] is not None and r["kind"] != "reference"]
     top = sorted([r for r in comparable if abs(r["diff"]) >= DIFF_THRESHOLD], key=lambda r: -abs(r["diff"]))[:2]
     if top:
         parts = [f"{r['name']}{_josa(r['name'], '을', '를')} 스스로는 {r['self']:.1f}점으로 보셨지만 대화에서는 {r['measured']:.1f}점이 확인되었습니다"
