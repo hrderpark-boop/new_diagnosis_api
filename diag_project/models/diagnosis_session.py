@@ -57,6 +57,10 @@ class DiagnosisSession(SQLModel, table=True):
         sa_column=Column(JSON().with_variant(postgresql.JSONB, "postgresql"), nullable=True),
     )
 
+    # (2026-10-15) 세션에 고정된 LLM provider('gemini'|'claude'). 생성 시 고객사(companies.llm_provider,
+    #   null 이면 환경 기본값)에서 결정되고 이후 바뀌지 않는다. null(구 세션)은 호출 시점 환경 기본값.
+    llm_provider: Optional[str] = Field(default=None, max_length=20)
+
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 

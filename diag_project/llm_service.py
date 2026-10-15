@@ -97,7 +97,8 @@ DEEP_TRANSCRIPT_CAP = 16000  # 심층분석 프롬프트의 '전체 대화 로�
 
 
 def _deep_cache_keys(competency_key: str, relevant_utterances: str,
-                     full_transcript: str, asked_subs, outer_idx: int) -> list:
+                     full_transcript: str, asked_subs, outer_idx: int,
+                     provider: str | None = None) -> list:
     """심층분석 결과 캐시 키(표본별). 입력이 같으면 같은 키 → 재분석 0콜.
 
     §3/E-2b/S-1: 프롬프트 버전·대역량·챕터 발언·전체 로그(앞 16000자)·온도·
@@ -109,7 +110,9 @@ def _deep_cache_keys(competency_key: str, relevant_utterances: str,
         _ANALYSIS_PROMPT_VERSION, competency_key,
         relevant_utterances, full_transcript[:DEEP_TRANSCRIPT_CAP],
         _TEMP_KEY, _DEEP_TB_KEY, _SAMPLES_KEY, f"o{outer_idx}",
-        "|".join(sorted(asked_subs or [])))
+        "|".join(sorted(asked_subs or [])),
+        # (2026-10-15) provider 성분: gemini 는 빈 튜플(기존 캐시 보존), claude 는 별도 캐시.
+        *_provider.cache_key_parts(provider))
     return [_ac.make_key(*base, f"s{i}") for i in range(_ANALYSIS_SAMPLES)]
 
 
@@ -626,12 +629,15 @@ async def _call_with_retry(
     call_fn,
     max_retries: int = 3,
     backoff_seconds: float = 2.0,
+    provider: str | None = None,
 ):
     """LLM 호출 + 503 backoff 재시도.
 
     503 / UNAVAILABLE 에러 시 backoff 후 재시도, 최대 max_retries 번.
     다른 에러는 즉시 raise (재시도 없음).
+    provider: 이 호출의 provider(None 이면 환경 기본값). claude 전용 오류 판정에만 쓴다.
     """
+    _is_claude_call = (provider or _provider.provider_name()) == _provider.CLAUDE
     last_error = None
     for attempt in range(max_retries):
         try:
@@ -655,9 +661,9 @@ async def _call_with_retry(
                        or "per_minute" in _low)
             # (2026-10-15) claude 분기 전용 판정 — gemini(기본)에서는 둘 다 항상 False(동작 0 변화).
             #   Anthropic 은 크레딧 소진을 400 'credit balance is too low' 로, 과부하를 529 overloaded 로 준다.
-            _is_claude_credit = _provider.is_claude() and any(
+            _is_claude_credit = _is_claude_call and any(
                 p in _low for p in _provider.CREDIT_DEPLETED_PHRASES)
-            _is_claude_overloaded = _provider.is_claude() and (
+            _is_claude_overloaded = _is_claude_call and (
                 "529" in error_str or "overloaded" in _low)
             if _is_claude_credit:
                 # Gemini 402 와 같은 즉시 실패 경로. 마커 문자열(GEMINI_CREDIT_DEPLETED)은 호출자가
@@ -739,6 +745,10 @@ class GeminiService:
         raw_keys = os.environ.get("GEMINI_API_KEYS", "")
         self.available_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 
+        # (2026-10-15) 세션에 고정된 provider(bind_provider). None 이면 환경 기본값(LLM_PROVIDER).
+        #   Depends(GeminiService) 호환을 위해 __init__ 인자는 두지 않는다.
+        self._provider: str | None = None
+
         # (2026-10-15) LLM_PROVIDER=claude: ANTHROPIC_API_KEY 만 필수(GEMINI_API_KEYS 불필요).
         #   기본값 gemini 는 아래 기존 검사를 그대로 탄다.
         if _provider.is_claude():
@@ -750,6 +760,23 @@ class GeminiService:
                 "GEMINI_API_KEYS 환경 변수가 설정되지 않았습니다. "
                 ".env 파일에 'GEMINI_API_KEYS=your-api-key' 를 추가하세요."
             )
+
+    def bind_provider(self, name: str | None) -> "GeminiService":
+        """세션에 고정된 provider 로 이 인스턴스를 묶는다(None/구 세션 → 환경 기본값).
+
+        claude 로 묶일 때 ANTHROPIC_API_KEY/SDK 가 없으면 즉시 RuntimeError(조용한 폴백 없음).
+        """
+        p = _provider.resolve_session(name)
+        if p == _provider.CLAUDE:
+            _provider.validate_provider_config(p)
+        self._provider = p
+        return self
+
+    def provider(self) -> str:
+        return getattr(self, "_provider", None) or _provider.provider_name()
+
+    def is_claude(self) -> bool:
+        return self.provider() == _provider.CLAUDE
 
     async def _generate_with_retry(
         self,
@@ -766,7 +793,7 @@ class GeminiService:
     ) -> str:
         # (2026-10-15) provider 분기 — 호출 계층에서만. 기본값 gemini 는 아래 기존 본문 그대로.
         #   json_schema 는 claude 구조화 출력 전용이며 gemini 경로는 참조하지 않는다.
-        if _provider.is_claude():
+        if self.is_claude():
             return await self._generate_claude(
                 prompt, max_tokens=max_tokens, system_instruction=system_instruction,
                 json_mode=json_mode, json_schema=json_schema, model=model,
@@ -843,7 +870,8 @@ class GeminiService:
                         config=genai_types.GenerateContentConfig(**_cfg),
                     )
 
-                response = await _call_with_retry(_do_call, max_retries=3)
+                response = await _call_with_retry(_do_call, max_retries=3,
+                                                  provider=_provider.GEMINI)
 
                 # 🚨 D-1: 잘린 응답 감지 — thinking 모델이 max_tokens 를 소진하면
                 #   finish_reason=MAX_TOKENS 로 출력이 잘린다(빈 응답보다 위험:
@@ -927,7 +955,8 @@ class GeminiService:
             client = _provider.get_client(LLM_HTTP_TIMEOUT_MS)
             return await client.messages.create(**_req)
 
-        response = await _call_with_retry(_do_call, max_retries=3)
+        response = await _call_with_retry(_do_call, max_retries=3,
+                                          provider=_provider.CLAUDE)
 
         # D-1 과 동일: max_tokens 로 잘린 응답은 깨진 JSON 위험 → 경고(상향 신호).
         if getattr(response, "stop_reason", None) == "max_tokens":
@@ -1535,7 +1564,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             _last_err = None
             for _i, _ck in enumerate(_deep_cache_keys(
                     competency_key, relevant_utterances, full_transcript,
-                    _asked_set, outer_idx)):
+                    _asked_set, outer_idx, provider=self.provider())):
                 raw = _ac.get("deep_analysis", _ck)
                 if raw is None:
                     # A-2: 챕터 종료 사전분석(prewarm)이 같은 키를 계산 중이면
@@ -1815,7 +1844,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             gate = {}
             if candidates:
                 _t_g = time.monotonic()
-                gate = await gate_verify_levels(ckey, candidates, _gate_llm)
+                gate = await gate_verify_levels(ckey, candidates, _gate_llm,
+                                                provider=self.provider())
                 logger.info("⏱️ gate[%s] %.1fs (후보 %d, 대기 포함)", ckey,
                             time.monotonic() - _t_g, len(candidates))
             result["level_gate"] = gate
@@ -1957,7 +1987,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             #   → 추천/렌더링만 고친 재분석이 요약까지 0콜이 되게 한다.
             from diag_project.services import analysis_cache as _ac
             _sk = _ac.make_key(_ANALYSIS_PROMPT_VERSION, "summary", prompt,
-                               _TEMP_KEY, _SUMMARY_TB_KEY)
+                               _TEMP_KEY, _SUMMARY_TB_KEY,
+                               *_provider.cache_key_parts(self.provider()))
             raw = _ac.get("summary", _sk)
             if raw is None:
                 raw = await self._generate_with_retry(
@@ -2178,15 +2209,17 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 
     @classmethod
     def chapter_deep_cached(cls, history, chapter_transcripts,
-                            asked_subcompetencies, chapter: str) -> bool:
-        """A-4: 이 챕터의 심층분석이 outer 전부 캐시에 있는가(ETA 계산용)."""
+                            asked_subcompetencies, chapter: str,
+                            provider: str | None = None) -> bool:
+        """A-4: 이 챕터의 심층분석이 outer 전부 캐시에 있는가(ETA 계산용). provider=세션 고정값."""
         from diag_project.services import analysis_cache as _ac
         _chapter_data, _full_for = cls._chapter_inputs(
             history, chapter_transcripts)
         asked = (asked_subcompetencies or {}).get(chapter) or set()
         for o in range(_ANALYSIS_OUTER_RUNS):
             for ck in _deep_cache_keys(chapter, _chapter_data(chapter),
-                                       _full_for(chapter), asked, o):
+                                       _full_for(chapter), asked, o,
+                                       provider=provider):
                 if _ac.get("deep_analysis", ck) is None:
                     return False
         return True

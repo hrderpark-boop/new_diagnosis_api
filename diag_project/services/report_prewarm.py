@@ -103,7 +103,9 @@ async def prewarm_chapter_analysis(session_id: str, chapter: str) -> None:
                 logger.warning("사전분석 스킵 — 세션 없음 %s", session_id)
                 return
             inp = await load_analysis_inputs(db, session)
-        llm = GeminiService()
+            _session_provider = session.llm_provider
+        # (2026-10-15) 사전분석도 세션 고정 provider 로(완료 시 analyze 와 같은 캐시 키).
+        llm = GeminiService().bind_provider(_session_provider)
         # 이미 캐시돼 있으면 심층·게이트 모두 캐시 적중이라 0콜로 끝난다.
         await llm.prewarm_chapter(
             inp["history"], inp["chapter_transcripts"], inp["asked_subs"],

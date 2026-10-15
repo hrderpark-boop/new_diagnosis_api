@@ -87,6 +87,9 @@ _LIGHT_MIGRATIONS = [
     "ALTER TABLE diagnosis_reports ADD COLUMN ai_original JSON",
     "ALTER TABLE diagnosis_reports ADD COLUMN edited_at TIMESTAMP",
     "ALTER TABLE diagnosis_reports ADD COLUMN edited_by VARCHAR(255)",
+    # (2026-10-15) 고객사별 LLM provider + 세션 고정값(null = 환경 기본값)
+    "ALTER TABLE companies ADD COLUMN llm_provider VARCHAR(20)",
+    "ALTER TABLE diagnosis_sessions ADD COLUMN llm_provider VARCHAR(20)",
 ]
 
 

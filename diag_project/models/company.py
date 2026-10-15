@@ -21,6 +21,9 @@ class CompanyBase(SQLModel):
     code: str = Field(unique=True, index=True, max_length=50, description="고객사 코드")
     contact_email: Optional[str] = Field(default=None, max_length=255)
     is_active: bool = Field(default=True)
+    # (2026-10-15) 고객사별 LLM provider('gemini'|'claude'). null 이면 환경변수(LLM_PROVIDER) 기본값.
+    #   세션 생성 시 diagnosis_sessions.llm_provider 에 복사·고정된다(세션 중간에 바뀌지 않음).
+    llm_provider: Optional[str] = Field(default=None, max_length=20)
 
 
 class Company(CompanyBase, table=True):

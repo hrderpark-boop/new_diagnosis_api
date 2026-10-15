@@ -18,6 +18,7 @@ from diag_project.models.diagnosis_session import DiagnosisSession, ChatMessage,
 from diag_project.models.coach_persona import CoachPersona
 from diag_project.models.participant import Participant
 from diag_project.llm_service import GeminiService
+from diag_project import llm_provider as _llm_provider
 from diag_project.data.coaches_persona import COACHES_PERSONA
 from diag_project.services.chapter_translator import (
     topic_to_chapter,
@@ -395,6 +396,15 @@ async def start_diagnosis(
     # 코치 페르소나 조회 (알 수 없는 coach_id면 400 반환)
     persona, opening = _resolve_persona(request.coach_id, user_name, visit_count)
 
+    # (2026-10-15) 세션 LLM provider 고정: 참가자 소속 고객사(companies.llm_provider)에서 결정,
+    #   null 이면 환경 기본값(LLM_PROVIDER). 이후 환경·고객사 설정이 바뀌어도 이 세션은 바뀌지 않는다.
+    _company_provider = None
+    if user and user.company_id:
+        from diag_project.models.company import Company as _Company
+        _company = await db.get(_Company, user.company_id)
+        _company_provider = _company.llm_provider if _company else None
+    _session_provider = _llm_provider.resolve_for_company(_company_provider)
+
     # DB 저장
     new_session = DiagnosisSession(
         id=uuid.uuid4(),
@@ -403,9 +413,11 @@ async def start_diagnosis(
         diagnosis_template_id=request.template_id,
         status="in_progress",
         current_topic="General",
+        llm_provider=_session_provider,
         created_at=datetime.now(),
         updated_at=datetime.now()
     )
+    llm.bind_provider(_session_provider)
     db.add(new_session)
     await db.commit()
     await db.refresh(new_session)
@@ -642,6 +654,8 @@ async def _submit_message_phase3a(
     session = await db.get(DiagnosisSession, request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    # (2026-10-15) 이 턴의 LLM provider = 세션 고정값(구 세션 null → 환경 기본값)
+    llm.bind_provider(session.llm_provider)
 
     # 1-a. 🛡️ [무한 루프 차단 — 최우선] 완료된 세션은 상태 머신에 절대 재진입 금지.
     #   가드가 없으면 topic_to_chapter("Completed") 가 fallback 으로 '첫 챕터'를
@@ -1526,7 +1540,8 @@ async def _submit_message_phase3a(
                 _inp = await load_analysis_inputs(db, session)
                 _infl = inflight_elapsed(str(session.id))
                 _n_ready = sum(1 for _k in _gck() if _k != chapter and (
-                    _k in _infl or _GS.chapter_deep_cached(_inp["history"], _inp["chapter_transcripts"], _inp["asked_subs"], _k)))
+                    _k in _infl or _GS.chapter_deep_cached(_inp["history"], _inp["chapter_transcripts"], _inp["asked_subs"], _k,
+                                                           provider=session.llm_provider)))
                 wrap_up = f"{wrap_up} 리포트는 {estimate_label(_n_ready)} 정도면 준비됩니다."
             except Exception as _ee:
                 logger.warning("리포트 예상 시간 계산 실패(문구 생략): %s", _ee)

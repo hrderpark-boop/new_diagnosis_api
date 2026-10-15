@@ -236,7 +236,8 @@ async def get_analysis_estimate(session_id: str,
     chapters = []
     for k in _get_competency_keys():
         cached = GeminiService.chapter_deep_cached(
-            inp["history"], inp["chapter_transcripts"], inp["asked_subs"], k)
+            inp["history"], inp["chapter_transcripts"], inp["asked_subs"], k,
+            provider=session.llm_provider)
         chapters.append({"key": k, "name": names.get(k, k), "cached": cached,
                          "inflight": (not cached) and k in inflight})
     n_cached = sum(1 for c in chapters if c["cached"])
@@ -614,6 +615,8 @@ async def _analyze_session(session_id, session_uuid, db, llm, progress,
     session = await db.get(DiagnosisSession, session_uuid)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    # (2026-10-15) 분석도 세션에 고정된 provider 로(캐시 키·모델 모두).
+    llm.bind_provider(session.llm_provider)
 
     # H1: 기존 리포트는 '새 리포트 저장이 성공한 뒤, 같은 트랜잭션에서' 삭제한다.
     #   과거엔 분석 시작 전에 삭제·커밋해 LLM 실패/503/예외 시 리포트가 사라졌다.

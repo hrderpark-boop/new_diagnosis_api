@@ -12,6 +12,15 @@ import pytest
 os.environ.setdefault("GEMINI_API_KEYS", "dummy")
 
 from diag_project import llm_provider as P  # noqa: E402
+
+
+def _run(coro):
+    """asyncio.run 대신 — 다른 테스트 파일(test_level_gate 등)이 get_event_loop() 를 쓰므로
+    현재 루프를 비워 두지 않는다(3.12+ 에서 'no current event loop' 유발)."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
+
 from diag_project import llm_schemas as S  # noqa: E402
 from diag_project import llm_service as LS  # noqa: E402
 
@@ -29,6 +38,7 @@ def test_default_provider_is_gemini_and_needs_no_anthropic_key(monkeypatch):
 def test_gemini_path_never_touches_claude(monkeypatch):
     """기본값에서 _generate_with_retry 는 claude 분기로 들어가지 않는다(가짜 _generate_claude 가 호출되면 실패)."""
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEYS", "dummy")   # 전체 스위트에서는 .env 의 실제 키가 먼저 로드될 수 있다
     svc = LS.GeminiService()
     assert svc.available_keys == ["dummy"]
 
@@ -39,7 +49,7 @@ def test_gemini_path_never_touches_claude(monkeypatch):
     # Gemini 본문은 실제 키가 없으니 '모든 API 키 시도 실패' 로 끝나야 한다(claude 분기 AssertionError 가 아님).
     monkeypatch.setattr(LS, "_call_with_retry", _fail_fast)
     with pytest.raises(Exception) as ei:
-        asyncio.run(svc._generate_with_retry("p", call_type="coach_light", json_schema={"type": "object"}))
+        _run(svc._generate_with_retry("p", call_type="coach_light", json_schema={"type": "object"}))
     assert "모든 API 키 시도 실패" in str(ei.value)
 
 
@@ -215,7 +225,7 @@ def test_generate_claude_coach_turn_end_to_end(monkeypatch):
                                                   usage=(1200, 40, 0)))
     LS.USAGE_METER.reset()
     svc = LS.GeminiService()
-    out = asyncio.run(svc._generate_with_retry(
+    out = _run(svc._generate_with_retry(
         "p", system_instruction="sys", max_tokens=LS.PHASE3A_MAX_TOKENS_LIGHT,
         thinking_budget=0, call_type="coach_light"))
     assert out == "그때 어떻게 하셨습니까?"              # 'User:' 꼬리 제거는 Gemini 와 동일
@@ -232,7 +242,7 @@ def test_generate_claude_analysis_structured_json(monkeypatch):
     payload = {"results": [{"idx": 1, "supported_level": 2, "category": "구체행동", "reason": "r"}]}
     fm = _fake_client(monkeypatch, response=_resp([("thinking", ""), ("text", json.dumps(payload, ensure_ascii=False))]))
     svc = LS.GeminiService()
-    raw = asyncio.run(svc._generate_with_retry(
+    raw = _run(svc._generate_with_retry(
         "p", max_tokens=8192, json_mode=True, model=LS.ANALYSIS_MODEL, temperature=0.0,
         thinking_budget=None, call_type="level_gate", json_schema=S.level_gate_schema()))
     assert json.loads(raw) == payload
@@ -249,7 +259,7 @@ def test_generate_claude_empty_response_raises(monkeypatch):
     monkeypatch.setattr(LS.asyncio, "sleep", _no_sleep)
     svc = LS.GeminiService()
     with pytest.raises(ValueError, match="LLM_EMPTY_RESPONSE"):
-        asyncio.run(svc._generate_with_retry("p", call_type="coach_light", thinking_budget=0))
+        _run(svc._generate_with_retry("p", call_type="coach_light", thinking_budget=0))
 
 
 async def _no_sleep(_s):
@@ -272,7 +282,7 @@ def test_claude_credit_depleted_fails_immediately(monkeypatch):
         raise RuntimeError("Error code: 400 - {'error': {'message': 'Your credit balance is too low to access the Anthropic API.'}}")
 
     with pytest.raises(RuntimeError, match="GEMINI_CREDIT_DEPLETED"):
-        asyncio.run(LS._call_with_retry(_call, max_retries=3))
+        _run(LS._call_with_retry(_call, max_retries=3))
     assert slept == []                                  # 재시도 대기 없이 즉시 실패
     assert LS.LLM_ALERTS["credit_depleted_at"]          # 관리자 배너 상태 세팅
     LS.clear_credit_alert()
@@ -289,7 +299,7 @@ def test_claude_overloaded_is_retried(monkeypatch):
             raise RuntimeError("Error code: 529 - {'error': {'type': 'overloaded_error'}}")
         return "ok"
 
-    assert asyncio.run(LS._call_with_retry(_call, max_retries=3)) == "ok"
+    assert _run(LS._call_with_retry(_call, max_retries=3)) == "ok"
     assert n["c"] == 3
 
 
@@ -304,5 +314,86 @@ def test_gemini_ignores_claude_only_error_phrases(monkeypatch):
         raise RuntimeError("Error code: 529 overloaded")
 
     with pytest.raises(RuntimeError):
-        asyncio.run(LS._call_with_retry(_call, max_retries=3))
+        _run(LS._call_with_retry(_call, max_retries=3))
     assert n["c"] == 1
+
+
+# ── 고객사·세션별 provider(2026-10-15 ■4) + 캐시 키(■3) ──────────────────────────
+
+def test_resolve_for_company_null_means_env_default(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    assert P.resolve_for_company(None) == "gemini"
+    assert P.resolve_for_company("") == "gemini"
+    assert P.resolve_for_company("claude") == "claude"
+    assert P.resolve_for_company(" Claude ") == "claude"
+    assert P.resolve_for_company("openai") == "gemini"      # 모르는 값 → 환경 기본값(경고)
+    monkeypatch.setenv("LLM_PROVIDER", "claude")
+    assert P.resolve_for_company(None) == "claude"
+    assert P.resolve_for_company("gemini") == "gemini"      # 고객사 명시값이 환경값보다 우선
+
+
+def test_normalize_company_provider_rejects_unknown():
+    assert P.normalize_company_provider(None) is None
+    assert P.normalize_company_provider("  ") is None
+    assert P.normalize_company_provider("CLAUDE") == "claude"
+    with pytest.raises(ValueError):
+        P.normalize_company_provider("openai")
+
+
+def test_cache_key_parts_preserve_gemini_keys(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    assert P.cache_key_parts(None) == ()
+    assert P.cache_key_parts("gemini") == ()
+    assert P.cache_key_parts("claude") == ("provider:claude",)
+    # deep 캐시 키: gemini 는 provider 인자 유무와 같다(기존 캐시 보존), claude 는 다르다(별도 캐시)
+    base = ("org", "u", "t", set(), 0)
+    assert LS._deep_cache_keys(*base) == LS._deep_cache_keys(*base, provider="gemini")
+    assert LS._deep_cache_keys(*base) != LS._deep_cache_keys(*base, provider="claude")
+    from diag_project.services import level_gate as LG
+    assert LG._persist_key("org", "s", ["e"], 2) == LG._persist_key("org", "s", ["e"], 2, "gemini")
+    assert LG._persist_key("org", "s", ["e"], 2) != LG._persist_key("org", "s", ["e"], 2, "claude")
+    assert LG._cache_key("org", "s", ["e"], 2) == LG._cache_key("org", "s", ["e"], 2, "gemini")
+    assert LG._cache_key("org", "s", ["e"], 2) != LG._cache_key("org", "s", ["e"], 2, "claude")
+
+
+def test_bind_provider_fixes_session_provider_over_env(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)             # 환경 기본값 gemini
+    monkeypatch.setenv("GEMINI_API_KEYS", "dummy")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    svc = LS.GeminiService()
+    assert svc.provider() == "gemini"
+    svc.bind_provider("claude")
+    assert svc.provider() == "claude" and svc.is_claude()
+
+    seen = {}
+
+    async def _fake_claude(self, prompt, **kw):
+        seen["kw"] = kw
+        return "ok"
+
+    monkeypatch.setattr(LS.GeminiService, "_generate_claude", _fake_claude)
+    assert _run(svc._generate_with_retry("p", call_type="coach_light", thinking_budget=0)) == "ok"
+    assert seen["kw"]["call_type"] == "coach_light"
+    # 구 세션(null) → 환경 기본값으로 되돌아간다
+    svc.bind_provider(None)
+    assert svc.provider() == "gemini"
+
+
+def test_bind_provider_claude_without_key_fails(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEYS", "dummy")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    svc = LS.GeminiService()
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        svc.bind_provider("claude")
+
+
+def test_models_and_migrations_have_llm_provider():
+    from diag_project.models.company import Company
+    from diag_project.models.diagnosis_session import DiagnosisSession
+    from diag_project import database as DB
+    assert "llm_provider" in Company.model_fields
+    assert "llm_provider" in DiagnosisSession.model_fields
+    ddl = " ".join(DB._LIGHT_MIGRATIONS)
+    assert "ALTER TABLE companies ADD COLUMN llm_provider" in ddl
+    assert "ALTER TABLE diagnosis_sessions ADD COLUMN llm_provider" in ddl

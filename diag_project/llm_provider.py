@@ -1,7 +1,8 @@
 """LLM provider 선택 계층 (2026-10-15).
 
-LLM_PROVIDER=gemini(기본) | claude.
-  - 기본값(gemini)이면 이 모듈은 provider_name() 조회 외에 아무 일도 하지 않는다 —
+LLM_PROVIDER=gemini(기본) | claude 가 프로세스 기본값. 고객사(companies.llm_provider)별로 다른 provider 를 줄 수 있고,
+세션 생성 시 그 값이 diagnosis_sessions.llm_provider 에 고정된다(세션 중간에 바뀌지 않음, null 이면 환경 기본값).
+  - 기본값(gemini)이면 이 모듈은 provider 조회 외에 아무 일도 하지 않는다 —
     GeminiService._generate_with_retry 의 기존 Gemini 본문이 그대로 돈다(동작 0 변화).
   - claude 이면 코치 턴(CHAT_MODEL 계열) → claude-haiku-5-5, 분석·서술(ANALYSIS_MODEL) → claude-sonnet-5-5.
 프롬프트 텍스트는 두 provider 가 공유하고, provider 별 차이는 요청 조립(build_request)·응답 해석(extract_text)
@@ -12,7 +13,9 @@ Claude 5.5 세대 API 제약 (platform.claude.com 문서, 2026-10-15 확인):
       → Gemini 의 thinking_budget None/양수(dynamic·고정 예산) = adaptive, thinking_budget 0 = thinking 끔.
   - thinking 끄기: Haiku 5.5 는 {"type":"disabled"}(effort high 이하에서만), Sonnet 5.5 는 disabled 를 거부하므로
     {"type":"between_tools"}(도구 없이 쓰면 '생각 없이 텍스트만'과 같다). effort xhigh/max 에서는 둘 다 400 → adaptive 로 둔다.
+    (platform.claude.com/docs/en/models/sonnet-5-5/migration-guide#turn-off-up-front-thinking)
   - temperature/top_p/top_k 는 기본값 외 전부 400 → 보내지 않는다(판정 호출의 temperature=0 결정론은 Claude 에선 불가).
+    (platform.claude.com/docs/en/models/haiku-5-5/migration-guide#remove-sampling-parameters)
   - JSON 은 output_config.format={"type":"json_schema","schema":...}(구조화 출력). 스키마가 없는 json_mode 호출은
     프롬프트 지시만으로 JSON 을 받는다(기존 관용 파서가 처리).
   - max_tokens 는 thinking 토큰을 포함한다 → adaptive 호출은 CLAUDE_ADAPTIVE_MAX_TOKENS(기본 32000) 하한을 둔다.
@@ -27,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 GEMINI = "gemini"
 CLAUDE = "claude"
-_VALID_PROVIDERS = (GEMINI, CLAUDE)
+VALID_PROVIDERS = (GEMINI, CLAUDE)
 
 DEFAULT_CHAT_MODEL = "claude-haiku-5-5"       # 코치 턴(실시간)
 DEFAULT_ANALYSIS_MODEL = "claude-sonnet-5-5"  # 분석·서술(리포트)
@@ -39,6 +42,7 @@ CREDIT_DEPLETED_PHRASES = ("credit balance is too low",)
 
 
 def provider_name() -> str:
+    """프로세스 기본 provider(LLM_PROVIDER). 세션에 고정된 값이 없을 때의 폴백."""
     return ((os.getenv("LLM_PROVIDER") or GEMINI).strip().lower()) or GEMINI
 
 
@@ -46,30 +50,73 @@ def is_claude() -> bool:
     return provider_name() == CLAUDE
 
 
-def validate_provider_config() -> str:
-    """기동 단계 검증. 잘못된 값·키 누락·SDK 미설치는 명확한 RuntimeError 로 기동을 막는다.
+def validate_provider_config(name: Optional[str] = None) -> str:
+    """provider 설정 검증. name 생략 시 환경 기본값(기동 단계 검증).
 
-    gemini(기본)일 때는 아무것도 검사하지 않는다(기존과 동일 — GEMINI_API_KEYS 는 서비스 생성 시 검사).
+    잘못된 값·키 누락·SDK 미설치는 명확한 RuntimeError. gemini 는 아무것도 검사하지 않는다
+    (기존과 동일 — GEMINI_API_KEYS 는 서비스 생성 시 검사).
     """
-    p = provider_name()
-    if p not in _VALID_PROVIDERS:
+    p = (name or provider_name()).strip().lower()
+    if p not in VALID_PROVIDERS:
         raise RuntimeError(
             f"LLM_PROVIDER={p!r} 는 지원하지 않는 값입니다. 'gemini'(기본) 또는 'claude' 로 설정하세요."
         )
     if p == CLAUDE:
         if not (os.getenv("ANTHROPIC_API_KEY") or "").strip():
             raise RuntimeError(
-                "LLM_PROVIDER=claude 인데 ANTHROPIC_API_KEY 환경변수가 없습니다. "
-                "Render Environment(또는 로컬 .env)에 ANTHROPIC_API_KEY 를 등록하거나 LLM_PROVIDER 를 gemini 로 되돌리세요."
+                "LLM provider 가 claude 인데 ANTHROPIC_API_KEY 환경변수가 없습니다. "
+                "Render Environment(또는 로컬 .env)에 ANTHROPIC_API_KEY 를 등록하거나 provider 를 gemini 로 되돌리세요."
             )
         try:
             import anthropic  # noqa: F401
         except ImportError as e:  # pragma: no cover - 설치 환경 의존
             raise RuntimeError(
-                "LLM_PROVIDER=claude 에는 anthropic SDK 가 필요합니다 — requirements.txt 의 anthropic 을 설치하세요."
+                "LLM provider claude 에는 anthropic SDK 가 필요합니다 — requirements.txt 의 anthropic 을 설치하세요."
             ) from e
     return p
 
+
+# ── 고객사·세션별 provider ──────────────────────────────────────────────────────
+
+def normalize_company_provider(value: Optional[str]) -> Optional[str]:
+    """관리자 입력(companies.llm_provider) 정규화. 빈 값 → None(환경 기본값). 모르는 값 → ValueError."""
+    v = (value or "").strip().lower()
+    if not v:
+        return None
+    if v not in VALID_PROVIDERS:
+        raise ValueError(f"llm_provider 는 {'/'.join(VALID_PROVIDERS)} 중 하나여야 합니다(입력: {value!r})")
+    return v
+
+
+def resolve_for_company(company_value: Optional[str]) -> str:
+    """세션 생성 시 고정할 provider: 고객사 값이 있으면 그것, 없으면(null) 환경 기본값.
+
+    모르는 값은 경고 후 환경 기본값(세션 생성이 설정 오타로 막히지 않게).
+    """
+    v = (company_value or "").strip().lower()
+    if v in VALID_PROVIDERS:
+        return v
+    if v:
+        logger.warning("companies.llm_provider=%r 는 알 수 없는 값 — 환경 기본값(%s) 사용", company_value, provider_name())
+    return provider_name()
+
+
+def resolve_session(session_value: Optional[str]) -> str:
+    """세션에 고정된 provider(없는 구 세션은 환경 기본값)."""
+    v = (session_value or "").strip().lower()
+    return v if v in VALID_PROVIDERS else provider_name()
+
+
+def cache_key_parts(provider: Optional[str]) -> Tuple[str, ...]:
+    """분석 캐시 키에 끼울 provider 성분. gemini 는 빈 튜플 → 기존 gemini 캐시 키가 그대로 보존된다.
+
+    claude 는 ("provider:claude",) → 별도 캐시가 생긴다(_ANALYSIS_PROMPT_VERSION 을 올릴 필요 없음).
+    """
+    p = resolve_session(provider)
+    return () if p == GEMINI else (f"provider:{p}",)
+
+
+# ── 요청 조립 ─────────────────────────────────────────────────────────────────
 
 def chat_model() -> str:
     return (os.getenv("CLAUDE_CHAT_MODEL") or DEFAULT_CHAT_MODEL).strip()

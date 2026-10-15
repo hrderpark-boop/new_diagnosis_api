@@ -49,10 +49,26 @@ effort 를 지정하지 않으면 모델 기본(Haiku `medium`, Sonnet `high`). 
 
 프롬프트의 JSON 템플릿을 바꾸면 스키마도 함께 바꾼다(`tests/test_llm_provider.py::test_schemas_are_claude_compatible` 가 제약 위반을 잡는다).
 
+## 고객사·세션별 provider (■4)
+
+- `companies.llm_provider`(nullable): 관리자 고객사 등록(POST /admin/companies, 프론트 고객사 페이지 select)에서 지정. null = 환경 기본값.
+- 세션 생성(`POST /diagnoses/start`)에서 참가자 소속 고객사의 값을 `resolve_for_company` 로 풀어
+  `diagnosis_sessions.llm_provider` 에 **고정**한다. 이후 환경변수·고객사 설정이 바뀌어도 그 세션은 바뀌지 않는다.
+- 턴(`submit_message`)·분석(`/reports/{id}/analyze`)·사전분석(report_prewarm)·ETA(`chapter_deep_cached`)는 모두
+  `GeminiService.bind_provider(session.llm_provider)` 로 세션 값을 쓴다. null(구 세션) → 환경 기본값.
+- 관리자 참가자 목록: 최근 세션의 provider 배지, 보관 세션 행에도 표시. 고객사 목록: LLM 열.
+- 등록 도구 `tools/register_companies.py`: CNC-PILOT·G-TEST(null), **CNC-CLAUDE(claude)**. 운영 DB 쓰기이므로 운영자가 실행한다.
+
+## 분석 캐시 키 (■3)
+
+캐시 키에 provider 성분을 넣되 gemini 는 **빈 성분**(`cache_key_parts("gemini") == ()`)이라 기존 gemini 캐시 키가 그대로 보존되고,
+claude 는 `"provider:claude"` 가 붙어 별도 캐시가 생긴다. `_ANALYSIS_PROMPT_VERSION` 은 올리지 않는다.
+적용 지점: deep(`_deep_cache_keys`)·summary(`_sk`)·level_gate(`_cache_key`·`_persist_key`).
+
 ## 전환 절차
 
 1. Render Environment 에 `ANTHROPIC_API_KEY` 추가 → 2. `LLM_PROVIDER=claude` → 3. 재배포(기동 로그 `🧠 LLM provider: claude` 확인).
 되돌리기는 `LLM_PROVIDER` 삭제(또는 `gemini`). 파일럿 규칙 P-5b(세션 시간 배포 금지)는 그대로 적용.
 
-알려진 차이: (1) 판정 호출 결정론(temperature 0) 불가 → outer 3회 교집합이 더 중요해진다. (2) 분석 캐시 키에 provider 가 들어가지
-않으므로 provider 전환 직후에는 `_ANALYSIS_PROMPT_VERSION` 을 올려 캐시를 무효화할 것(그래야 Claude 결과로 재분석된다).
+알려진 차이: 판정 호출 결정론(temperature 0) 불가 → outer 3회 교집합이 더 중요해진다.
+(분석 캐시는 provider 별로 분리되므로 전환 시 버전 상향이 필요 없다 — ■3.)

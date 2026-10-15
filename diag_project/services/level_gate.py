@@ -112,18 +112,26 @@ GATE_MAX_RETRIES = 3  # 지수 백오프 재시도 횟수
 GATE_PROMPT_VERSION = "2026-08-17.v1"
 
 
-def _cache_key(competency_key: str, sub: str, evidence, claimed: int) -> tuple:
-    return (competency_key, sub, "|".join(evidence or []), int(claimed or 1))
+def _cache_key(competency_key: str, sub: str, evidence, claimed: int,
+               provider: str | None = None) -> tuple:
+    # (2026-10-15) provider 성분: gemini 는 빈 튜플(기존 키 보존), claude 는 별도 키.
+    from diag_project import llm_provider as _lp
+    return (competency_key, sub, "|".join(evidence or []), int(claimed or 1),
+            *_lp.cache_key_parts(provider))
 
 
-def _persist_key(competency_key: str, sub: str, evidence, claimed: int) -> str:
+def _persist_key(competency_key: str, sub: str, evidence, claimed: int,
+                 provider: str | None = None) -> str:
     from diag_project.services import analysis_cache as _ac
+    from diag_project import llm_provider as _lp
     # T-1: temperature·thinkingBudget 을 키에 포함(파라미터 다르면 캐시 갈림).
     #   현재 게이트는 temp=0·thinking=dynamic.
+    # (2026-10-15) provider 성분(gemini 빈 튜플 → 기존 gemini 캐시 그대로, claude 는 별도 캐시).
     return _ac.make_key(GATE_PROMPT_VERSION, competency_key, sub,
                         "|".join(evidence or []), int(claimed or 1),
                         os.getenv("ANALYSIS_TEMPERATURE", "temp0"),
-                        f"tb{os.getenv('GATE_TB', 'dyn')}")
+                        f"tb{os.getenv('GATE_TB', 'dyn')}",
+                        *_lp.cache_key_parts(provider))
 
 
 def _pending(reason: str) -> Dict[str, Any]:
@@ -141,6 +149,7 @@ async def gate_verify_levels(
     competency_key: str,
     measured: Dict[str, Dict[str, Any]],
     llm,
+    provider: str | None = None,
 ) -> Dict[str, Dict[str, Any]]:
     """측정 후보 하위역량들의 레벨을 배치 검증 (fail-closed).
 
@@ -158,12 +167,12 @@ async def gate_verify_levels(
     for sub, info in measured.items():
         ref = level_reference(competency_key, sub)
         claimed = info.get("claimed_level") or 1
-        ck = _cache_key(competency_key, sub, info.get("evidence"), claimed)
+        ck = _cache_key(competency_key, sub, info.get("evidence"), claimed, provider)
         if ck in _GATE_CACHE:                       # in-mem 적중
             out[sub] = dict(_GATE_CACHE[ck])
             continue
         from diag_project.services import analysis_cache as _ac
-        _pk = _persist_key(competency_key, sub, info.get("evidence"), claimed)
+        _pk = _persist_key(competency_key, sub, info.get("evidence"), claimed, provider)
         _persisted = _ac.get("level_gate", _pk)
         if _persisted is not None:                  # 파일 캐시 적중
             _GATE_CACHE[ck] = dict(_persisted)
@@ -197,7 +206,7 @@ async def gate_verify_levels(
 
     # 자기 배치와 공유 대기를 함께 진행(자기 배치는 누구도 기다리지 않으므로
     #   run 끼리 서로를 기다리는 교착이 없다).
-    jobs = [_judge_batch(competency_key, items, llm, out)] if items else []
+    jobs = [_judge_batch(competency_key, items, llm, out, provider)] if items else []
     res = await asyncio.gather(*jobs, *[_await_shared(it, f) for it, f in shared])
     retry = []
     for it, verdict in res[len(jobs):]:
@@ -207,7 +216,7 @@ async def gate_verify_levels(
             retry.append(it)                        # 공유 판정 실패 → 직접 재판정
     if retry:
         _register(retry)
-        await _judge_batch(competency_key, retry, llm, out)
+        await _judge_batch(competency_key, retry, llm, out, provider)
     return out
 
 
@@ -230,7 +239,8 @@ def _release(it: dict, verdict) -> None:
 
 
 async def _judge_batch(competency_key: str, items: list, llm,
-                       out: Dict[str, Dict[str, Any]]) -> None:
+                       out: Dict[str, Dict[str, Any]],
+                       provider: str | None = None) -> None:
     """items 를 한 번의 LLM 호출로 판정해 out 에 기록(+캐시). 실패는 pending."""
     prompt = _build_gate_prompt(items)
 
@@ -285,7 +295,7 @@ async def _judge_batch(competency_key: str, items: list, llm,
             from diag_project.services import analysis_cache as _ac
             _ac.set("level_gate", _persist_key(
                 competency_key, it["sub_name"], it["evidence"],
-                it["claimed_level"]), dict(verdict))     # 파일 영속
+                it["claimed_level"], provider), dict(verdict))  # 파일 영속
             if verified is None:
                 logger.info("🚧 레벨게이트 탈락 [%s/%s] claimed=Lv.%s → 근거미달(%s)",
                             competency_key, it["sub_name"], claimed,

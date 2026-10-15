@@ -86,6 +86,8 @@ class CompanyCreateRequest(BaseModel):
     name: str
     code: str
     contact_email: Optional[str] = None
+    # (2026-10-15) 고객사별 LLM provider('gemini'|'claude'). 생략/빈 값 → null(환경 기본값).
+    llm_provider: Optional[str] = None
 
 
 class AdminCreateRequest(BaseModel):
@@ -432,6 +434,7 @@ async def list_participants(
         lambda: {
             "total": 0, "completed": 0, "last_status": "미시작",
             "last_at": None, "last_topic": None, "last_session_id": None,
+            "last_provider": None,
         }
     )
     # 4(b) 관리자 복원: 참여자별 abandoned(보관) 세션 목록 — [복원] 버튼용
@@ -453,6 +456,7 @@ async def list_participants(
                 stat["last_status"] = s.status
                 stat["last_topic"] = s.current_topic
                 stat["last_session_id"] = s.id
+                stat["last_provider"] = s.llm_provider
 
     # 행동 태그용: 사용자 발화 길이를 참여자별로 배치 집계 (단일 쿼리, N+1 없음)
     user_len_by_pid: Dict[UUID, List[int]] = defaultdict(list)
@@ -503,6 +507,7 @@ async def list_participants(
                 "id": str(x.id), "coach_name": cname, "current_topic": x.current_topic,
                 "created_at": x.created_at, "updated_at": x.updated_at,
                 "message_count": msg_count_by_sid.get(x.id, 0),
+                "llm_provider": x.llm_provider,
             })
         return out
 
@@ -534,6 +539,8 @@ async def list_participants(
                 "last_session_id": (
                     str(stat["last_session_id"]) if stat["last_session_id"] else None
                 ),
+                # (2026-10-15) 최근 세션에 고정된 LLM provider(null = 환경 기본값/구 세션)
+                "llm_provider": stat["last_provider"],
                 "report_id": report_by_pid.get(p.id),
                 # 4(b): 보관(abandoned) 세션 — 관리자가 [복원] 으로 되살릴 수 있다
                 "abandoned_sessions": _abandoned_rows(p.id),
@@ -1271,6 +1278,7 @@ async def list_companies(
             "code": c.code,
             "contact_email": c.contact_email,
             "is_active": c.is_active,
+            "llm_provider": c.llm_provider,
             "participant_count": p_counts.get(c.id, 0),
             "created_at": c.created_at,
         }
@@ -1295,15 +1303,23 @@ async def create_company(
     if exists:
         raise HTTPException(status_code=409, detail="이미 존재하는 고객사 코드입니다.")
 
+    try:
+        from diag_project.llm_provider import normalize_company_provider
+        _llm_provider = normalize_company_provider(body.llm_provider)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     company = Company(
         name=body.name.strip(),
         code=_code,
         contact_email=body.contact_email,
+        llm_provider=_llm_provider,
     )
     db.add(company)
     await db.commit()
     await db.refresh(company)
-    return {"id": str(company.id), "name": company.name, "code": company.code}
+    return {"id": str(company.id), "name": company.name, "code": company.code,
+            "llm_provider": company.llm_provider}
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)
