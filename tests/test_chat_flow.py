@@ -1,11 +1,11 @@
 # tests/test_chat_flow.py
 
 from fastapi.testclient import TestClient
-from diag_project.main import app
 
-client = TestClient(app)
 
-def test_chat_flow_with_seed_data():
+# (2026-10-16) 모듈 수준 TestClient(app) 제거 — startup 없이 요청해 sqlite 에 테이블이 없던 원인.
+#   conftest 의 client(startup 실행) + seed_data(seed.py 적재) fixture 를 쓴다.
+def test_chat_flow_with_seed_data(client: TestClient, seed_data):
     print("\n🚀 [테스트 시작] 시드 데이터 기반 채팅 흐름 점검")
 
     # 1. 로그인 (seed.py에 있는 계정 사용)

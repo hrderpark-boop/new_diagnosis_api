@@ -5,7 +5,7 @@
   · 고득점형 : D트랙 정상 생성·게이트 통과·상한 클램프
   · 저커버리지: 셧다운 발동·ZeroDivision 방어
 
-실행: python tests/test_recommendation_profiles.py
+실행: pytest tests/test_recommendation_profiles.py  (2026-10-16 pytest 형식으로 전환 — 모듈 수준 asyncio.run·sys.exit 제거)
 """
 import asyncio
 import os
@@ -101,37 +101,36 @@ LOW = _details({
     "self_management": {"자기인식": _sub("s", "자기인식", 1, measured=False)},
 })
 
-P = [0, 0]
+
+def _run(coro):
+    """현재 루프를 비워 두지 않는 실행 헬퍼(다른 테스트 파일의 get_event_loop() 호환)."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
 
 
-def ck(label, ok, extra=""):
-    print(f"  [{'PASS' if ok else 'FAIL'}] {label} {extra}")
-    P[0] += ok
-    P[1] += (not ok)
-
-
-async def main():
-    print("=== 혼합형 ===")
-    rec = await build_course_recommendation(MIXED, llm=MockLLM(match=True))
+def test_mixed_profile_recommendation():
+    rec = _run(build_course_recommendation(MIXED, llm=MockLLM(match=True)))
     subs = [g["sub_competency"] for g in rec["growth"]]
     strength = rec.get("strength")
-    ck("권한위임 추천 포함", "권한위임" in subs, f"성장={subs}")
-    ck("D트랙 강점 정상 생성", strength is not None and strength["track"] == "D",
-       strength["sub_competency"] if strength else "없음")
+    assert "권한위임" in subs, f"권한위임 추천 누락: 성장={subs}"
+    assert strength is not None and strength["track"] == "D", "D트랙 강점이 생성돼야 한다"
     from collections import Counter
     cats = Counter([g["category"] for g in rec["growth"]] +
                    ([strength["category"]] if strength else []))
-    ck("대역량 max2 준수", all(v <= 2 for v in cats.values()), dict(cats))
+    assert all(v <= 2 for v in cats.values()), f"대역량 max2 위반: {dict(cats)}"
     bodies = [(g["course"], g["subtitle"], g["reason_overview"]) for g in rec["growth"]]
-    ck("추천 카드 본문 완전 동일 쌍 없음", len(bodies) == len(set(bodies)))
+    assert len(bodies) == len(set(bodies)), "추천 카드 본문이 완전히 같은 쌍이 있다"
 
-    print("=== 고득점형 ===")
-    rec2 = await build_course_recommendation(HIGH, llm=MockLLM(match=True))
-    ck("D트랙 정상 생성(게이트 통과)", rec2.get("strength") is not None)
+
+def test_high_profile_recommendation_and_clamp():
+    rec2 = _run(build_course_recommendation(HIGH, llm=MockLLM(match=True)))
+    assert rec2.get("strength") is not None, "D트랙이 게이트를 통과해 생성돼야 한다"
     # 상한 클램프: Lv4 하위(4.0)+가점이 5.0 넘지 않음
-    ck("대역량 최종 clamp[1,5]", competency_final_score(4.0, 0.9, 0.9) == 5.0)
+    assert competency_final_score(4.0, 0.9, 0.9) == 5.0
 
-    print("=== 저커버리지형 ===")
+
+def test_low_coverage_shutdown_and_zero_division_guard():
     m_low = sum(1 for c in LOW.values()
                 for e in c["sub_ledger"].values() if e["measured"])
     none_comps = sum(
@@ -139,13 +138,5 @@ async def main():
         if competency_behavior_score(
             [e["score"] for e in c["sub_ledger"].values()]) is None
     )
-    ck("셧다운 발동(measured<11 또는 None≥3)",
-       score_shutdown(none_comps, m_low, 26) is True, f"measured={m_low} None대역량={none_comps}")
-    ck("ZeroDivision 방어(전량 미측정 대역량 None)",
-       competency_behavior_score([None, None]) is None)
-
-    print(f"\n=== T6 결과: {P[0]} PASS / {P[1]} FAIL ===")
-    sys.exit(1 if P[1] else 0)
-
-
-asyncio.run(main())
+    assert score_shutdown(none_comps, m_low, 26) is True, f"measured={m_low} None대역량={none_comps}"
+    assert competency_behavior_score([None, None]) is None
