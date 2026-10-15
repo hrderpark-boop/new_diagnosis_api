@@ -16,6 +16,8 @@ asyncpg==0.31.0
 
 # LLM
 google-genai==1.55.0
+# (2026-10-15) LLM_PROVIDER=claude 분기용. 기본값 gemini 에서는 import 되지 않는다.
+anthropic==1.14.0
 httpx==0.28.1
 
 # Settings & config

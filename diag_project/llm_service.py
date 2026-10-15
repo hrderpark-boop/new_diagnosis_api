@@ -11,6 +11,9 @@ from google.genai import types as genai_types
 from typing import List, Dict, Any, Optional
 from diag_project.models.coach_persona import CoachPersona
 from diag_project.config import settings
+# (2026-10-15) LLM provider 계층 — LLM_PROVIDER=gemini(기본)이면 아래 Gemini 경로가 그대로 돈다.
+from diag_project import llm_provider as _provider
+from diag_project import llm_schemas as _schemas
 
 # ✅ Framework 데이터 로드
 try:
@@ -212,6 +215,13 @@ _PRICE = {
         "in": 1.25, "out": 10.0, "in_hi": 2.50, "out_hi": 15.0},
     "models/gemini-2.5-flash": {
         "in": 0.30, "out": 2.50, "in_hi": 0.30, "out_hi": 2.50},
+    # (2026-10-15) LLM_PROVIDER=claude 요율(USD/1M, platform.claude.com 가격표 기준). Haiku 5.5 는 입력
+    #   100k 초과 시 상위 요율(0.50/2.50)이지만 경계는 _HI_TIER_TOKENS(200k)를 그대로 쓰므로
+    #   100k~200k 구간은 과소 추정이다(계측 목적상 허용).
+    "claude-haiku-5-5": {
+        "in": 0.10, "out": 0.50, "in_hi": 0.50, "out_hi": 2.50},
+    "claude-sonnet-5-5": {
+        "in": 2.00, "out": 10.0, "in_hi": 2.00, "out_hi": 10.0},
 }
 
 
@@ -643,6 +653,21 @@ async def _call_with_retry(
             _is_rpm = ("per minute" in _low or "perminute" in _low
                        or "requests_per_minute" in _low
                        or "per_minute" in _low)
+            # (2026-10-15) claude 분기 전용 판정 — gemini(기본)에서는 둘 다 항상 False(동작 0 변화).
+            #   Anthropic 은 크레딧 소진을 400 'credit balance is too low' 로, 과부하를 529 overloaded 로 준다.
+            _is_claude_credit = _provider.is_claude() and any(
+                p in _low for p in _provider.CREDIT_DEPLETED_PHRASES)
+            _is_claude_overloaded = _provider.is_claude() and (
+                "529" in error_str or "overloaded" in _low)
+            if _is_claude_credit:
+                # Gemini 402 와 같은 즉시 실패 경로. 마커 문자열(GEMINI_CREDIT_DEPLETED)은 호출자가
+                #   error_kind=credit 판정에 그대로 쓰므로 provider 와 무관하게 유지한다.
+                logger.error("💳 CLAUDE 크레딧 소진 — 코치 턴이 전부 실패한다. Anthropic Console 충전 필요. %s",
+                             error_str[:160])
+                _mark_llm_error(error_str, credit=True)
+                raise RuntimeError(
+                    "GEMINI_CREDIT_DEPLETED: [claude] 선불 크레딧 소진 — 재시도 "
+                    "생략(과금 충전 필요). " + error_str[:120])
             if is_rate_limited:
                 logger.warning(
                     "⚠️ 429 종류=%s | quota: %s",
@@ -660,7 +685,8 @@ async def _call_with_retry(
             if (is_rate_limited
                     or "503" in error_str
                     or "UNAVAILABLE" in error_str
-                    or "LLM_EMPTY_RESPONSE" in error_str):
+                    or "LLM_EMPTY_RESPONSE" in error_str
+                    or _is_claude_overloaded):
                 last_error = e
                 if attempt < max_retries - 1:
                     # 429(쿼터/RPM 초과)는 분당 윈도우가 풀릴 때까지 길게 대기
@@ -713,6 +739,12 @@ class GeminiService:
         raw_keys = os.environ.get("GEMINI_API_KEYS", "")
         self.available_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 
+        # (2026-10-15) LLM_PROVIDER=claude: ANTHROPIC_API_KEY 만 필수(GEMINI_API_KEYS 불필요).
+        #   기본값 gemini 는 아래 기존 검사를 그대로 탄다.
+        if _provider.is_claude():
+            _provider.validate_provider_config()
+            return
+
         if not self.available_keys:
             raise RuntimeError(
                 "GEMINI_API_KEYS 환경 변수가 설정되지 않았습니다. "
@@ -730,7 +762,17 @@ class GeminiService:
         thinking_budget: int | None = None,
         call_type: str = "unknown",
         temperature: float = 0.7,
+        json_schema: Optional[Dict[str, Any]] = None,
     ) -> str:
+        # (2026-10-15) provider 분기 — 호출 계층에서만. 기본값 gemini 는 아래 기존 본문 그대로.
+        #   json_schema 는 claude 구조화 출력 전용이며 gemini 경로는 참조하지 않는다.
+        if _provider.is_claude():
+            return await self._generate_claude(
+                prompt, max_tokens=max_tokens, system_instruction=system_instruction,
+                json_mode=json_mode, json_schema=json_schema, model=model,
+                thinking_budget=thinking_budget, call_type=call_type,
+            )
+
         if not self.available_keys:
             raise Exception("사용 가능한 API 키가 없습니다.")
 
@@ -854,6 +896,60 @@ class GeminiService:
                 continue
 
         raise Exception(f"모든 API 키 시도 실패. 마지막 오류: {last_error}")
+
+    async def _generate_claude(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int,
+        system_instruction: str | None,
+        json_mode: bool,
+        json_schema: Optional[Dict[str, Any]],
+        model: str | None,
+        thinking_budget: int | None,
+        call_type: str,
+    ) -> str:
+        """(2026-10-15) LLM_PROVIDER=claude 호출 경로. 프롬프트는 Gemini 와 같고 요청 조립·응답 해석만 다르다.
+
+        - 코치 턴(model None/flash) → claude-haiku-5-5, 분석(ANALYSIS_MODEL) → claude-sonnet-5-5.
+        - thinking_budget 0 → thinking 끔, None/양수 → adaptive(Claude 5.5 는 extended thinking 미지원).
+        - json_mode+json_schema → 구조화 출력(output_config.format). temperature 는 보내지 않는다(400).
+        - 재시도·크레딧 판정은 Gemini 와 같은 _call_with_retry, 계측은 USAGE_METER 공유.
+        """
+        req = _provider.build_request(
+            prompt=prompt, system_instruction=system_instruction, max_tokens=max_tokens,
+            json_mode=json_mode, json_schema=json_schema, model=model,
+            thinking_budget=thinking_budget, analysis_marker=ANALYSIS_MODEL,
+        )
+        model_name = req["model"]
+
+        async def _do_call(_req=req):
+            client = _provider.get_client(LLM_HTTP_TIMEOUT_MS)
+            return await client.messages.create(**_req)
+
+        response = await _call_with_retry(_do_call, max_retries=3)
+
+        # D-1 과 동일: max_tokens 로 잘린 응답은 깨진 JSON 위험 → 경고(상향 신호).
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            logger.warning("⚠️ 잘린 응답(stop_reason=max_tokens, max_tokens=%d, model=%s) — 토큰 상향 필요.",
+                           req["max_tokens"], model_name)
+
+        try:
+            _in, _out, _think = _provider.usage_counts(response)
+            USAGE_METER.record(call_type, model_name, _in, _out, _think)
+            if call_type.startswith("coach"):
+                logger.info("📥 입력토큰[%s] %d (model=%s)", call_type, _in, model_name)
+        except Exception:  # noqa: BLE001
+            pass
+
+        text = _provider.extract_text(response)
+        if not text or not text.strip():
+            raise ValueError("LLM_EMPTY_RESPONSE (claude)")
+        if "User:" in text:
+            text = text.split("User:")[0]
+        if "사용자:" in text:
+            text = text.split("사용자:")[0]
+        return text.strip()
 
     # -------------------------------------------------------------------------
     # 1. 첫 인사
@@ -1207,6 +1303,7 @@ class GeminiService:
             raw = await self._generate_with_retry(
                 prompt, max_tokens=8192, json_mode=True, model=ANALYSIS_MODEL,
                 call_type="evidence_extract",
+                json_schema=_schemas.evidence_extract_schema(_get_competency_keys()),
             )
             return _safe_parse_json(raw)
         except Exception as e:
@@ -1458,6 +1555,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                                 temperature=_JUDGMENT_TEMPERATURE,
                                 thinking_budget=_DEEP_TB,
                                 call_type="deep_analysis",
+                                json_schema=_schemas.deep_analysis_schema(sub_indicators),
                             )
                         logger.info("⏱️ deep[%s·o%d] %.1fs", competency_key,
                                     outer_idx, time.monotonic() - _t_deep)
@@ -1697,6 +1795,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                         model=ANALYSIS_MODEL,
                         temperature=_JUDGMENT_TEMPERATURE,
                         thinking_budget=_GATE_TB, call_type="level_gate",
+                        json_schema=_schemas.level_gate_schema(),
                     )
                 finally:
                     logger.info("⏱️ gate-call %.1fs",
@@ -1865,6 +1964,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                     prompt, max_tokens=8192, json_mode=True,
                     model=ANALYSIS_MODEL, temperature=_JUDGMENT_TEMPERATURE,
                     thinking_budget=_SUMMARY_TB, call_type="summary",
+                    json_schema=_schemas.summary_schema(),
                 )
                 _ac.set("summary", _sk, raw)
             raw = raw.replace("```json", "").replace("```", "").strip()

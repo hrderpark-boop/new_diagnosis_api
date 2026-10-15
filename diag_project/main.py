@@ -89,6 +89,11 @@ async def on_startup():
     #   기본값으로 뜨면 어드민 JWT 를 누구나 위조할 수 있으므로 fail-closed.
     from diag_project.config import require_secret_key
     require_secret_key()
+    # (2026-10-15) LLM provider 검증 — LLM_PROVIDER=claude 인데 ANTHROPIC_API_KEY/SDK 가 없으면 여기서 기동 실패.
+    #   기본값 gemini 는 검사 없음(기존과 동일). 어느 provider 로 뜨는지 기동 로그에 명시한다.
+    from diag_project.llm_provider import validate_provider_config
+    _llm_provider = validate_provider_config()
+    logger.info("🧠 LLM provider: %s", _llm_provider)
     logger.info("🚀 Application startup: Initializing database...")
     await init_db()
     logger.info("✅ Database initialized.")

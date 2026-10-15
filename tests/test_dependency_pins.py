@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CORE = ("fastapi", "starlette", "uvicorn", "sqlmodel", "SQLAlchemy", "asyncpg", "google-genai", "pydantic")
+CORE = ("fastapi", "starlette", "uvicorn", "sqlmodel", "SQLAlchemy", "asyncpg", "google-genai", "anthropic", "pydantic")
 
 
 def test_core_requirements_are_exact_pins():
