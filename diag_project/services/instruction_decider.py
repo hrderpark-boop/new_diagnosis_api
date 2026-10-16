@@ -526,14 +526,18 @@ def decide_instruction(state: dict) -> InstructionType:
     if not intro_done:
         return "DIAGNOSIS_INTRO"
 
-    # §7-1: 온보딩 하드 캡 — 온보딩(라포+인트로+컨펌)이 상한을 넘으면 미확보
-    #   정보(호칭 등)는 기본값으로 두고 즉시 역량 합의(→ BEI)로 전환한다.
-    #   같은 온보딩 질문(DIAGNOSIS_CONFIRM)이 무한 반복되던 경로를 차단한다
-    #   (투머치토커 라포 71턴·asked 0 사고 재발 방지). 이 검사가 아래 CONFIRM
-    #   루프보다 먼저 와야 캡이 실제로 작동한다.
+    # §7-1: 온보딩 하드 캡 — 라포가 상한을 넘으면 항의·일시중지·메타 분기를 건너뛰고
+    #   곧바로 정의 질문(DIAGNOSIS_CONFIRM)으로 간다. 미확보 정보(호칭 등)는 기본값.
+    #   (2026-10-16 kjpark 사고) 과거엔 '라포 + 현재 메시지(turn_count=1)' 합이 6 이면
+    #   COMPETENCY_ALIGN 으로 직행해 정의 질문이 통째로 빠졌다 — 정상 온보딩(이름·일상·
+    #   담당업무·기대·진단_대화 5턴 + 인트로)에서도 발동하는 off-by-one 이었다.
+    #   · 비교는 rapport_turn_count 만(현재 메시지 +1 제외).
+    #   · 목적지는 항상 DIAGNOSIS_CONFIRM. 정의 질문 없이 ALIGN 이 나가는 경로는 없다.
+    #   · CONFIRM 무한 반복(투머치토커 71턴 사고)은 CONFIRM 이 START_CHAPTER 로 태깅돼
+    #     다음 턴 chapter_started=True 가 되는 것으로 이미 막힌다.
     ONBOARDING_HARD_CAP = 6
-    if not chapter_started and turn_count_total >= ONBOARDING_HARD_CAP:
-        return "COMPETENCY_ALIGN"
+    if not chapter_started and rapport_turn_count >= ONBOARDING_HARD_CAP:
+        return "DIAGNOSIS_CONFIRM"
 
     # Step 5: 해당 역량 평소 생각/정의 묻기 (챕터별)
     # 챕터 2+ 는 직전 영역과 브리지하며 진입 (CONFIRM 가이드가 분기).
@@ -575,7 +579,8 @@ def decide_instruction(state: dict) -> InstructionType:
             return "COMPETENCY_ASK"
 
         # 4-1: 역량 합의 (사용자 답변 반영 + 공식 정의 + 하위역량 목록)
-        if not competency_aligned:
+        #   불변식: 이 챕터에서 정의 질문(definition_asked)이 나간 뒤에만 ALIGN. (4-0 이 먼저 걸러주지만 명시)
+        if not competency_aligned and state.get("definition_asked", False):
             return "COMPETENCY_ALIGN"
 
         # 4-2: 챕터 오프닝 (첫 BEI 질문). #2: ALIGN 턴이 첫 앵커를 이미 품었으면
