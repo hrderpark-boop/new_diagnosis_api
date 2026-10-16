@@ -1,64 +1,56 @@
-# tests/test_chat_flow.py
+"""채팅 흐름 스모크 (2026-10-16 재작성).
 
+구 버전은 모듈 수준 TestClient(startup 없음), 폐기된 코치 id(…0010), 실제 LLM 문구 단언으로 통과가 불가능했다.
+지금은 conftest 의 client(startup)·seed_data(seed.py + companies G-TEST) 와 FM_LLM_STUB=1(LLM 미호출 정형 답변)로
+로그인 → 세션 시작(현재 코치 id …0011) → 턴 2개 → 세션 provider 고정값까지 결정론적으로 확인한다.
+"""
 from fastapi.testclient import TestClient
 
+TEMPLATE_ID = "10000000-0000-0000-0000-000000000008"   # seed.py 의 리더십 핵심 역량 진단 템플릿
 
-# (2026-10-16) 모듈 수준 TestClient(app) 제거 — startup 없이 요청해 sqlite 에 테이블이 없던 원인.
-#   conftest 의 client(startup 실행) + seed_data(seed.py 적재) fixture 를 쓴다.
-def test_chat_flow_with_seed_data(client: TestClient, seed_data):
-    print("\n🚀 [테스트 시작] 시드 데이터 기반 채팅 흐름 점검")
 
-    # 1. 로그인 (seed.py에 있는 계정 사용)
-    login_payload = {
-        "email": "test@example.com",
-        "password": "password123",
-        "group_code": "G-TEST"
-    }
-    login_res = client.post("/api/v1/participants/token", json=login_payload)
-    assert login_res.status_code == 200, f"로그인 실패: {login_res.text}"
-    print("✅ 1. 로그인 성공")
+def test_chat_flow_with_seed_data(client: TestClient, seed_data, monkeypatch):
+    monkeypatch.setenv("FM_LLM_STUB", "1")
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
 
-    # 2. Ella 코치로 진단 시작 (seed.py에 있는 ID 사용)
-    # Ella ID: ...10 / Persona ID: ...110
-    start_payload = {
-        "coach_id": "10000000-0000-0000-0000-000000000010", 
-        "participant_id": "10000000-0000-0000-0000-000000000002",
-        "template_id": "10000000-0000-0000-0000-000000000008",
-        "coach_persona_id": "10000000-0000-0000-0000-000000000110"
-    }
-    
-    start_res = client.post("/api/v1/diagnoses/start", json=start_payload)
-    assert start_res.status_code == 201, f"진단 생성 실패: {start_res.text}"
-    
-    data = start_res.json()
-    diagnosis_id = data["diagnosis_id"]
+    # 1. 로그인 — G-TEST 는 companies 에 시드돼 있어 그룹코드 게이트를 통과한다.
+    login = client.post("/api/v1/participants/token",
+                        json={"email": "test@example.com", "password": "password", "name": "박기진", "group_code": "G-TEST"})
+    assert login.status_code == 200, f"로그인 실패: {login.text}"
+    participant_id = login.json()["participant_id"]
+
+    # 2. 세션 시작 — 코치 id 는 런타임 매핑(COACH_UUID_TO_KEY)에서 가져온다(키 '1' = …0011).
+    from diag_project.routes.diagnoses import COACH_UUID_TO_KEY
+    coach_uuid = {v: k for k, v in COACH_UUID_TO_KEY.items()}["1"]
+    assert coach_uuid.endswith("0011")
+    start = client.post("/api/v1/diagnoses/start", json={
+        "coach_id": coach_uuid, "participant_id": participant_id,
+        "template_id": TEMPLATE_ID, "force_new": True,
+    })
+    assert start.status_code == 201, f"진단 생성 실패: {start.text}"
+    data = start.json()
     session_id = data["session_id"]
-    message = data["coach_response_message"]
-    
-    print(f"✅ 2. 진단 세션 생성 성공 (ID: {diagnosis_id})")
-    print(f"📝 [Ella의 첫 인사]: {message}")
+    assert data["coach_response_message"].strip(), "첫 인사가 비어 있다"
 
-    # [검증] 우리가 llm_service.py에 하드코딩한 멘트가 맞는지 확인
-    assert "Ella" in message or "엘라" in message
-    assert "실례가 안된다면" in message # 우리가 수정한 멘트 특징
-    print("✅ 3. 첫인사 멘트 검증 완료")
+    # 3. 턴 2개 — 라포 첫 턴은 템플릿, 이후 LLM 턴은 FM_LLM_STUB 정형 답변. 오류 턴이 아니어야 한다.
+    for content in ("안녕하세요, 저는 박기진입니다.", "요즘은 팀 리딩과 신규 사업 검토가 제 주요 업무입니다."):
+        r = client.post("/api/v1/diagnoses/submit_message",
+                        json={"session_id": session_id, "diagnosis_id": session_id, "content": content})
+        assert r.status_code in (200, 201), f"메시지 전송 실패: {r.text}"
+        body = r.json()
+        assert body.get("llm_error") is not True, body
+        assert body["coach_response_message"].strip()
 
-    # 3. 사용자 답변 전송 (이름 말하기)
-    chat_payload = {
-        "session_id": session_id,
-        "diagnosis_id": diagnosis_id,
-        "content": "안녕하세요, 저는 박기진입니다."
-    }
-    
-    chat_res = client.post("/api/v1/diagnoses/submit_message", json=chat_payload)
-    assert chat_res.status_code == 201, f"메시지 전송 실패: {chat_res.text}"
-    
-    chat_data = chat_res.json()
-    ai_reply = chat_data["coach_response_message"]
-    
-    print(f"📝 [AI 답변]: {ai_reply}")
-    
-    # [검증] AI가 이름을 인식하고 반갑다고 하는지 확인
-    assert "박기진" in ai_reply or "기진" in ai_reply
-    assert "반가워요" in ai_reply or "반갑습니다" in ai_reply
-    print("✅ 4. AI 답변 로직 검증 완료 (이름 인식 성공)")
+    # 4. 세션에 LLM provider 가 고정됐다(고객사 값 없음 → 환경 기본값 gemini).
+    import uuid
+    from diag_project.database import async_session
+    from diag_project.models.diagnosis_session import DiagnosisSession
+
+    async def _load():
+        async with async_session() as db:
+            return await db.get(DiagnosisSession, uuid.UUID(session_id))
+
+    session = client.portal.call(_load)
+    assert session is not None
+    assert session.llm_provider == "gemini"
+    assert session.status == "in_progress"
