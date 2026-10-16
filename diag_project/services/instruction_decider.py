@@ -303,6 +303,23 @@ def _force_rapport_category(rapport_turn_count: int) -> str:
         return "진단_대화"
 
 
+def extract_expectation_answer(msgs: list) -> str | None:
+    """(2026-10-16) INTRO 턴에 주입할 '기대 질문 답변'을 메시지 열에서 찾는다.
+
+    라포 순서는 결정론: 담당 업무 질문(probe ROLE_ASK) → user(담당 업무 답) → model(기대 질문) → user(기대 답).
+    즉 ROLE_ASK 모델 메시지 뒤 두 번째 user 메시지가 기대 답변이다. 마커가 없으면 None(→ 가이드가 paraphrase 를 생략).
+    """
+    seq = sorted(msgs, key=lambda m: (m.created_at is None, m.created_at, getattr(m, "turn_index", None) or 0))
+    idx = next((i for i, m in enumerate(seq)
+                if (m.role == MessageRole.MODEL or m.role == "model") and m.probe_type_used == "ROLE_ASK"), None)
+    if idx is None:
+        return None
+    users_after = [m for m in seq[idx + 1:] if (m.role == MessageRole.USER or m.role == "user")]
+    if len(users_after) < 2:
+        return None
+    return (users_after[1].content or "").strip() or None
+
+
 def is_user_consent(text: str | None) -> bool:
     """사용자 답변이 동의/진행 의사인지 판단.
 
@@ -1126,6 +1143,8 @@ async def build_turn_state(
         "pending_abort": pending_abort,
         "user_name": user_name,
         "chapter_framework": chapter_framework_state,
+        # (2026-10-16) INTRO 가이드 변수: 리더가 '기대' 질문에 실제로 한 답(없으면 None → paraphrase 생략)
+        "expectation_answer": extract_expectation_answer(_msgs),
     }
 
     # 9-d. 시간 정보 (라포 단계 LLM 자연스러운 응답 위해)
