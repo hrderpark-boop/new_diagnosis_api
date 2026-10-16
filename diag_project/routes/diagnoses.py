@@ -1641,8 +1641,12 @@ async def _submit_message_phase3a(
             TRANSITION_ALLOWED_INSTRUCTIONS, find_praise, find_sub_names, has_question, has_transition_claim,
             off_target_overlap, split_sentences, strip_praise, strip_sub_name_mentions,
             template_anchor, cap_lead_sentences, same_question_as_previous,
+            find_revisit_greeting, strip_revisit_greeting,
         )
         from diag_project.services.output_guard import is_question as is_question_sentence
+        # (2026-10-16) 재방문 인사 가드는 같은 자리 안에서만. 자리가 바뀐 뒤 첫 턴(재개: 이번 자리 메시지가 방금 저장한
+        #   사용자 메시지 하나뿐)에는 "다시 뵙게 되어" 가 정당하므로 제외한다.
+        _resumed_sitting = (_sit_n <= 1 and len(history_messages) > 1)
         # _prev_coach_text / _recent_coach_texts 는 히스토리 로드 직후 계산됨(2026-09-22)
 
         def _anchor_fallback() -> str:
@@ -1685,6 +1689,10 @@ async def _submit_message_phase3a(
             pr = find_praise(txt)
             if pr:
                 v["praise"] = pr
+            if not _resumed_sitting:
+                rv = find_revisit_greeting(txt)
+                if rv:
+                    v["revisit"] = rv
             if instruction_used not in TRANSITION_ALLOWED_INSTRUCTIONS and has_transition_claim(txt):
                 v["transition"] = True
             if _is_anchor:
@@ -1737,6 +1745,8 @@ async def _submit_message_phase3a(
                 _notes.append(f"- 평가적 칭찬 금지: {', '.join(_v['praise'])} 같은 표현을 빼세요. 인정은 사실 확인('그 결정을 내리셨군요')까지.")
             if "transition" in _v:
                 _notes.append("- 이번 턴은 영역을 마치거나 다음 챕터로 넘어가는 턴이 아닙니다. 전환·마무리 선언 문장을 빼고 질문으로 이어가세요.")
+            if "revisit" in _v:
+                _notes.append(f"- 첫 세션(같은 자리)입니다. {', '.join(_v['revisit'])} 같은 재방문·재회 인사를 빼세요.")
             if "names" in _v or "off_target" in _v or "names_mention" in _v:
                 _notes.append("- 하위역량 이름을 말하지 말고, 이미 다룬 사건·주제를 다시 묻지 마세요."
                               + (f" 이번 앵커 질문 본문: {_tgt_q}" if (_tgt_q and _is_anchor) else ""))
@@ -1795,6 +1805,11 @@ async def _submit_message_phase3a(
                 _c2, _n = strip_praise(clean_reply)   # 마지막 질문 문장은 보존하는 함수
                 if has_question(_c2) or not has_question(clean_reply):
                     clean_reply = _c2
+            if "revisit" in _v:
+                _c2, _n = strip_revisit_greeting(clean_reply)   # 재방문 인사 문장 제거(질문 보존)
+                if _c2.strip() and (has_question(_c2) or not has_question(clean_reply)):
+                    clean_reply = _c2
+                    logger.info("🛡️ 재방문 인사 %d문장 제거", _n)
             if "bare_ref" in _v and _is_probe:
                 from diag_project.services.output_guard import bare_demonstrative_questions as _bdq2, result_fallback_question as _rfq2
                 from diag_project.services.output_guard import followup_from_user as _ffu

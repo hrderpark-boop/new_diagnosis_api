@@ -174,6 +174,44 @@ def strip_praise(text: str) -> tuple[str, int]:
     return out, removed
 
 
+# ── 4-b) (2026-10-16) 재방문·재회 인사 금지 — 같은 자리(sitting) 안의 모든 LLM 턴 ──
+#   gemini 리플레이: 첫 세션 INTRO 턴에 "네, 다시 뵙게 되어서 저도 반갑습니다." 가 나왔다. 프롬프트 금지만으로는 새고,
+#   가드 목록에 없어 guard_log 에도 남지 않았다. 자리가 바뀐 뒤 첫 턴(재개)은 호출자가 제외한다.
+BANNED_REVISIT = [
+    "다시 뵙게 되", "다시 뵙", "다시 만나 뵙", "다시 만나게 되", "다시 만나서", "다시 만나니", "또 뵙", "또 만나",
+    "오랜만", "다시 찾아주", "다시 와 주", "다시 오신", "돌아오신 것을 환영", "재방문", "지난번에 이어", "지난 시간에 이어",
+]
+_REVISIT_RE = re.compile("|".join(re.escape(p) for p in sorted(set(BANNED_REVISIT), key=len, reverse=True)))
+
+
+def find_revisit_greeting(text: str) -> list[str]:
+    return sorted(set(m.group(0) for m in _REVISIT_RE.finditer(text or "")))
+
+
+def strip_revisit_greeting(text: str) -> tuple[str, int]:
+    """재방문 인사가 든 문장을 제자리에서 지운다. 전부 지워지면 마지막 질문(또는 마지막 문장)에서 구절만 걷어내 남긴다."""
+    sents = split_sentences(text)
+    if not sents:
+        return text, 0
+    hit = [s for s in sents if _REVISIT_RE.search(s)]
+    if not hit:
+        return text, 0
+    if len(hit) == len(sents):
+        qs = [s for s in sents if is_question(s)]
+        base = qs[-1] if qs else sents[-1]
+        base = _REVISIT_RE.sub("", base)
+        base = re.sub(r"^(네|예|음|아),?\s*", "", base.strip())
+        base = re.sub(r"[ \t]{2,}", " ", base).strip(" ,")
+        return base, len(hit)
+    out = text
+    for x in hit:
+        out = out.replace(x, "", 1)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out, len(hit)
+
+
 # ── 5) (2026-09-22 폐지) 되받기 리드 삭제 trim_lead_sentences — 자른 문장이 어색하다. 되받기는 프롬프트 한 줄이 맡는다. ──
 
 
