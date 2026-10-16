@@ -1165,15 +1165,9 @@ async def _submit_message_phase3a(
             current_ampm_phrase=state.get("current_ampm_phrase", "오늘"),
             is_hostile=_hostile,
         )
-    elif (not _is_aborted and not _is_warning and not _is_name_reconfirm
-            and instruction_used == "RAPPORT_BUILDING"
-            and state.get("rapport_turn_count", 0) == 1):
-        # 6(2026-09-17) 라포 2턴 — 담당 업무 질문(템플릿). 답변은 다음 턴에 participant_context 로 저장.
-        _ack = "그러시군요. " if not detect_deflection(request.content) else "네, 리더님. "
-        system_override_text = (
-            f"{_ack}어떤 일을 맡고 계신지도 간단히 알려주시겠어요? "
-            "팀 규모나 주로 하시는 업무 정도면 됩니다."
-        )
+    # (2026-10-16) 라포 2턴(담당 업무 질문)은 더 이상 템플릿이 아니다 — light LLM 호출(카테고리 '담당업무' 가이드).
+    #   템플릿 "그러시군요. 어떤 일을 맡고 계신지도…" 는 직전 답변("금요일이라 일이 잘 안되네요")의 감정·판단을
+    #   받을 수 없었다. 이름 턴(라포 1턴)만 템플릿으로 남긴다. ROLE_ASK 마커는 아래에서 카테고리 기준으로 붙는다.
     elif instruction_used == "CHAPTER_OPENING":
         # 챕터 도입 — 첫 BEI 앵커 질문. item4: LLM 대신 백엔드 '템플릿 풀'로
         #   문장 틀을 챕터마다 다르게 골라(무반복·결정론) '시점+인물+행동·은유금지'
@@ -1985,9 +1979,10 @@ async def _submit_message_phase3a(
     elif _is_name_reconfirm:
         # 이름 재확인 턴 — 다음 턴에 '이미 되물음'을 판별해 재질문을 막는 마커.
         probe_type_used = "NAME_RECONFIRM"
-    elif (instruction_used == "RAPPORT_BUILDING" and system_override_text is not None
-            and state.get("rapport_turn_count", 0) == 1):
+    elif instruction_used == "RAPPORT_BUILDING" and state.get("rapport_turn_count", 0) == 1:
         # 6(2026-09-17) 담당 업무 질문 턴 — 다음 턴에 답변을 participant_context 로 저장하는 근거 마커.
+        #   (2026-10-16) 템플릿이 아니라 LLM 턴이 됐으므로 system_override_text 조건을 뺀다. 카테고리(rapport_turn_count==1)
+        #   가 곧 '담당업무' 턴이다. 가이드가 이 턴의 [READY_FOR_INTRO] 를 금지하므로 위 READY_FOR_INTRO 분기에 가려지지 않는다.
         probe_type_used = "ROLE_ASK"
 
     # 진단 전 단계는 사건 생명주기 스킵

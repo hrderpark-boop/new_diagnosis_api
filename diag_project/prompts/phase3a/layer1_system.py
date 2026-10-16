@@ -67,6 +67,16 @@ LAYER1_HEAVY_EXTRA = """
 - 바꾸는 것은 문장이지 순서가 아니다. 이번 턴의 타겟·앵커·탐침 종류는 지시문을 따른다.
 """
 
+# (2026-10-16) light 모드(라포·INTRO·CONFIRM·ALIGN·META)용 듣기 축약 절. heavy 의 '따라가기(듣기)' 절은 BEI 전용이라
+#   라포 턴에는 들어가지 않았고, 그 결과 "금요일이라 일이 잘 안되네요" 가 "그러시군요" 로 넘어갔다(kjpark 세션).
+#   LAYER1_LIGHT 상수 자체는 바꾸지 않고(크기·기존 테스트 유지) build_layer1_with_persona 의 light 모드에서만 덧붙인다.
+LAYER1_LISTEN_LITE = """
+# 듣기 (축약)
+- 리더가 감정(피곤하다·일이 잘 안된다·서운했다)이나 판단(요즘 다들 그러니까)을 말하면, 다음 문장은 거기서 출발한다:
+  리더가 쓴 말을 넣어 한 문장으로 받고(위로·평가·해석 없이), 그다음에 지시문의 질문으로 이어간다. 지시문의 예시 문장보다 우선한다.
+- 받는 문장은 하나, 질문도 하나. '그것·그럴 때'만으로 가리키지 않는다. 리더가 말하지 않은 사정을 보태지 않는다.
+"""
+
 # 하위호환: 기존 상수명(테스트·도구가 참조). heavy 전체.
 LAYER1_SYSTEM_PROMPT = LAYER1_LIGHT + LAYER1_HEAVY_EXTRA
 
@@ -93,7 +103,7 @@ def build_layer1_with_persona(
         "페르소나의 말투로 바꿔 쓰세요.** 어느 코치든 같은 톤이 나오면 실패입니다.\n"
     )
     return (
-        (LAYER1_LIGHT if mode == "light" else LAYER1_SYSTEM_PROMPT)
+        ((LAYER1_LIGHT + LAYER1_LISTEN_LITE) if mode == "light" else LAYER1_SYSTEM_PROMPT)
         + f"\n\n{separator}\n"
         + "## 코치 페르소나 (이 톤을 반드시 유지)\n\n"
         + persona_prompt
