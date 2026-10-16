@@ -15,10 +15,12 @@ import sys
 import anthropic
 
 CASES = [
-    ("1 Haiku disabled + temperature=0", dict(model="claude-haiku-5-5", thinking={"type": "disabled"}, temperature=0.0)),
+    # anthropic SDK 1.14 은 temperature 키워드 자체를 제거했다(TypeError) → API 응답을 보기 위해 extra_body 로 실어 보낸다.
+    ("1 Haiku disabled + temperature=0", dict(model="claude-haiku-5-5", thinking={"type": "disabled"}, extra_body={"temperature": 0.0})),
     ("2 Haiku disabled (temperature 생략)", dict(model="claude-haiku-5-5", thinking={"type": "disabled"})),
     ("3 Sonnet disabled", dict(model="claude-sonnet-5-5", thinking={"type": "disabled"})),
-    ("4 Sonnet between_tools + temperature=0", dict(model="claude-sonnet-5-5", thinking={"type": "between_tools"}, temperature=0.0)),
+    ("4 Sonnet between_tools + temperature=0", dict(model="claude-sonnet-5-5", thinking={"type": "between_tools"}, extra_body={"temperature": 0.0})),
+    ("6 Sonnet between_tools (temperature 생략)", dict(model="claude-sonnet-5-5", thinking={"type": "between_tools"})),
     ("5 Sonnet adaptive (temperature 생략)", dict(model="claude-sonnet-5-5")),
 ]
 
@@ -35,7 +37,7 @@ def main() -> int:
             print(f"  200  {label:<42} stop={r.stop_reason} text={text[:20]!r}")
         except anthropic.APIStatusError as e:
             msg = str(getattr(e, "message", e))
-            print(f"  {e.status_code}  {label:<42} {msg[:140]}")
+            print(f"  {e.status_code}  {label:<42} {msg[:220]}")
         except Exception as e:  # noqa: BLE001
             print(f"  ERR  {label:<42} {type(e).__name__}: {str(e)[:140]}")
     return 0
