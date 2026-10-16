@@ -293,9 +293,14 @@ async def admin_alerts(ctx: AdminContext = Depends(get_current_admin)):
     """운영 알림 — 관리자 페이지 상단 배너용 (2026-09-22). Gemini 크레딧 소진(402)·마지막 LLM 오류."""
     from diag_project.llm_service import LLM_ALERTS
     from diag_project.services.ops_monitor import alerts_snapshot
+    from diag_project import llm_provider as _lp
     return {
         "gemini_credit_depleted": bool(LLM_ALERTS.get("credit_depleted_at")),
         "credit_depleted_at": LLM_ALERTS.get("credit_depleted_at"),
+        # (2026-10-16) Claude API 키 존재 여부(값 노출 없음) + 프로세스 기본 provider — 배너 "Claude API 키 미설정" 용.
+        #   gemini 기본값에서는 기동 검증이 키를 보지 않으므로 여기서 미리 드러낸다.
+        "anthropic_key_configured": _lp.anthropic_key_configured(),
+        "llm_provider_default": _lp.provider_name(),
         "last_llm_error_at": LLM_ALERTS.get("last_error_at"),
         "last_llm_error": LLM_ALERTS.get("last_error"),
         # (2026-09-29) 5xx 최근 1시간·합성 쓰기 점검 결과

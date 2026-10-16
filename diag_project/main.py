@@ -133,4 +133,6 @@ app.include_router(self_eval.router, prefix="/api/v1")
 # 헬스 체크
 @app.get("/")
 async def root():
-    return {"message": "Diagnosis API is running"}
+    # (2026-10-16) 배포 확인용 커밋 표식 — Render 가 주입하는 RENDER_GIT_COMMIT 앞 7자(없으면 빈 문자열).
+    return {"message": "Diagnosis API is running",
+            "commit": (os.getenv("RENDER_GIT_COMMIT") or "")[:7]}

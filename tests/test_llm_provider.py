@@ -397,3 +397,26 @@ def test_models_and_migrations_have_llm_provider():
     ddl = " ".join(DB._LIGHT_MIGRATIONS)
     assert "ALTER TABLE companies ADD COLUMN llm_provider" in ddl
     assert "ALTER TABLE diagnosis_sessions ADD COLUMN llm_provider" in ddl
+
+
+# ── /admin/alerts 의 Claude 키 존재 플래그(2026-10-16) ────────────────────────────
+
+def test_anthropic_key_configured_flag(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert P.anthropic_key_configured() is False
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "   ")
+    assert P.anthropic_key_configured() is False
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    assert P.anthropic_key_configured() is True
+
+
+def test_admin_alerts_exposes_key_flag_without_value(client, auth_headers, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret-value-must-not-leak")
+    r = client.get("/api/v1/admin/alerts", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["anthropic_key_configured"] is True
+    assert body["llm_provider_default"] in ("gemini", "claude")
+    assert "sk-secret" not in r.text                      # 값 노출 없음
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert client.get("/api/v1/admin/alerts", headers=auth_headers).json()["anthropic_key_configured"] is False

@@ -46,6 +46,11 @@ def provider_name() -> str:
     return ((os.getenv("LLM_PROVIDER") or GEMINI).strip().lower()) or GEMINI
 
 
+def anthropic_key_configured() -> bool:
+    """ANTHROPIC_API_KEY 존재 여부만(값은 절대 노출하지 않음). /admin/alerts 배너용."""
+    return bool((os.getenv("ANTHROPIC_API_KEY") or "").strip())
+
+
 def is_claude() -> bool:
     return provider_name() == CLAUDE
 
