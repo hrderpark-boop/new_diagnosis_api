@@ -65,21 +65,21 @@ def test_align_with_definition_keeps_quote_instruction_and_labels_examples():
 
 
 # ── INTRO ──
-def test_intro_without_expectation_omits_paraphrase_and_fabricated_examples():
+def test_intro_without_expectation_is_system_only_no_consolation():
     for exp in (None, "없어요", "별로 기대하고 오지 않았어요"):
         g = _guide("DIAGNOSIS_INTRO", last_user_response="네", expectation_answer=exp)
-        assert "paraphrase 하는 문장을 쓰지 마세요" in g, exp
-        assert "객관적으로 파악하고 싶으신" not in g, exp
-        assert "강점과 약점을 균형 있게" not in g, exp
-        assert "아직 명확하지 않으신 게 자연스러워요" in g, exp
-        assert "다시 뵙게 되어" in g                # 재방문 인사 금지 명시
+        assert "시스템 안내만" in g and "LLM 호출 없음" in g, exp
+        assert "객관적으로 파악하고 싶으신" not in g and "강점과 약점을 균형 있게" not in g, exp
+        assert "괜찮" not in g and "자연스러워요" not in g, exp        # 위로 문장 제거
 
 
-def test_intro_with_expectation_injects_actual_answer_and_labels_examples():
+def test_intro_with_expectation_receives_one_sentence_only():
     g = _guide("DIAGNOSIS_INTRO", last_user_response="네", expectation_answer="저의 리더십 역량을 파악하고 싶어요")
     assert "실제로 하신 답**: '저의 리더십 역량을 파악하고 싶어요'" in g
-    assert "paraphrase 하는 문장을 쓰지 마세요" not in g
-    assert g.count(L.EXAMPLE_LABEL) >= 2
+    assert "되받기 한 문장" in g and "두 문장 이상" in g
+    assert "다시 뵙게 되어" in g                       # 재방문 인사 금지 명시
+    assert "괜찮습니다' 류" in g                       # 위로 금지
+    assert g.count(L.EXAMPLE_LABEL) >= 1
 
 
 # ── CROSS_CHAPTER ──

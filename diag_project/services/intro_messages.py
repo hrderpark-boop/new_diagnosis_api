@@ -63,6 +63,12 @@ def _select_acknowledgment(user_answer: str | None) -> str:
     return random.choice(_ACKNOWLEDGMENT_PATTERNS["long"])
 
 
+# (2026-10-19) 라포 2·3턴의 질문은 백엔드 고정 문장. LLM 은 직전 발화 되받기 한 문장만 쓴다.
+#   역할 질문에 '오늘' 금지 — 담당 업무는 오늘 일과와 다르다.
+RAPPORT_ROLE_QUESTION = "평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다."
+RAPPORT_EXPECTATION_QUESTION = "이번 진단에서 기대하시는 것이 있으세요?"
+
+
 def build_diagnosis_intro_message(user_name: str = "리더님") -> str:
     """[DEPRECATED] 작업 24 이후 build_intro_anchor_section + LLM 호응 사용.
 

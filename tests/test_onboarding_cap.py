@@ -38,6 +38,7 @@ def _onboarding_state(rapport_turns: int, turn_count: int = 0, **over) -> dict:
 
 def test_confirm_before_cap():
     assert decide_instruction(_onboarding_state(3)) == "DIAGNOSIS_CONFIRM"
+    assert decide_instruction(_onboarding_state(4, turn_count=1)) == "DIAGNOSIS_CONFIRM"   # 정상 온보딩(2026-10-19 이후)
 
 
 def test_normal_onboarding_with_current_message_counted():
@@ -47,7 +48,7 @@ def test_normal_onboarding_with_current_message_counted():
 
 
 def test_cap_destination_is_always_confirm():
-    for t in (6, 8, 20, 71):
+    for t in (5, 6, 8, 20, 71):
         ins = decide_instruction(_onboarding_state(t))
         assert ins == "DIAGNOSIS_CONFIRM", f"라포 {t}턴 → {ins}"
         ins = decide_instruction(_onboarding_state(t, turn_count=1))

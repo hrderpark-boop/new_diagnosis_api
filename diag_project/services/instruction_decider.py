@@ -289,18 +289,15 @@ def _force_rapport_category(rapport_turn_count: int) -> str:
     (현재 user 메시지는 아직 chapter=None 아님 → 직접 인덱스로 사용).
 
     0 → 일상 (시간대 활용, 첫 AI 라포 응답 — 시스템 템플릿)
-    1 → 담당업무 (2026-09-17: "어떤 일을 맡고 계신지" — 시스템 템플릿, LLM 미호출)
-    2 → 기대 (감사 + 의미 부여 + 답하기 쉬운 기대 질문)
-    3+ → 진단_대화 (마무리, 사용자 시작 의지 확인)
+    1 → 담당업무 (LLM 되받기 1문장 + 백엔드 역할 질문 RAPPORT_ROLE_QUESTION)
+    2+ → 기대 (LLM 되받기 1문장 + 백엔드 기대 질문 RAPPORT_EXPECTATION_QUESTION, READY_FOR_INTRO 는 백엔드가 확정)
+    (2026-10-19) 진단_대화 턴 삭제 — 기대 답변 다음 턴은 바로 DIAGNOSIS_INTRO.
     """
     if rapport_turn_count == 0:
         return "일상"
     elif rapport_turn_count == 1:
         return "담당업무"
-    elif rapport_turn_count == 2:
-        return "기대"
-    else:
-        return "진단_대화"
+    return "기대"
 
 
 def extract_expectation_answer(msgs: list) -> str | None:
@@ -523,7 +520,7 @@ def decide_instruction(state: dict) -> InstructionType:
     rapport_turn_count = state.get("rapport_turn_count", 0)
     turn_count_total = state.get("turn_count", 0) + rapport_turn_count
     ONBOARDING_MAX_TURNS = 8
-    RAPPORT_MAX_TURNS = 5  # 무한 라포 방지 안전장치
+    RAPPORT_MAX_TURNS = 4  # 무한 라포 방지 안전장치 (2026-10-19: 진단_대화 삭제로 정상 라포는 3턴에 끝난다)
 
     # Step 1-0: 이름 재확인 (Fallback) — 첫 발화에서 명확한 성함을 못 뽑았고
     #   아직 재확인을 안 했다면, 임의 명사를 이름으로 부르지 말고 1회에 한해
@@ -552,7 +549,7 @@ def decide_instruction(state: dict) -> InstructionType:
     #   · 목적지는 항상 DIAGNOSIS_CONFIRM. 정의 질문 없이 ALIGN 이 나가는 경로는 없다.
     #   · CONFIRM 무한 반복(투머치토커 71턴 사고)은 CONFIRM 이 START_CHAPTER 로 태깅돼
     #     다음 턴 chapter_started=True 가 되는 것으로 이미 막힌다.
-    ONBOARDING_HARD_CAP = 6
+    ONBOARDING_HARD_CAP = 5   # (2026-10-19) 진단_대화 턴 삭제로 정상 온보딩은 CONFIRM 시점 rapport_turn_count=4
     if not chapter_started and rapport_turn_count >= ONBOARDING_HARD_CAP:
         return "DIAGNOSIS_CONFIRM"
 
@@ -1157,11 +1154,9 @@ async def build_turn_state(
     # 9-e. 라포 카테고리 강제 결정 (가이드 약속이 아닌 시스템 명령)
     state["forced_rapport_category"] = _force_rapport_category(rapport_turn_count)
 
-    # 9-f. 무한 루프 방지 안전장치 (라포 3턴 이상 + 동의 신호 → [READY_FOR_INTRO] 강제)
-    force_ready_for_intro = False
-    last_rapport_response = rapport_messages[-1].content if rapport_messages else None
-    if rapport_turn_count >= 3 and is_user_consent(last_rapport_response):
-        force_ready_for_intro = True
+    # 9-f. (2026-10-19) READY_FOR_INTRO 는 백엔드가 확정한다 — 기대 질문을 붙이는 턴(rapport_turn_count>=2)이면
+    #   라포 완료. 기대 답변 다음 턴은 바로 DIAGNOSIS_INTRO(사이의 진단_대화 턴 삭제). LLM 마커·동의 판정에 기대지 않는다.
+    force_ready_for_intro = rapport_turn_count >= 2
     state["force_ready_for_intro"] = force_ready_for_intro
 
     # 9-g. 무수확 강제 전환 플래그 (READY_TO_END 가이드가 문구를 바꾸도록):

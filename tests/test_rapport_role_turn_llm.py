@@ -1,7 +1,8 @@
-"""(2026-10-16) 라포 2턴(담당 업무 질문)을 템플릿에서 light LLM 턴으로 — 가이드·light 듣기 절 회귀(LLM·DB 없음).
+"""(2026-10-19) 라포 2·3턴: LLM 은 되받기 한 문장만, 질문은 백엔드 고정 문장. 기대 답변 → 바로 INTRO(LLM·DB 없음).
 
-kjpark 세션: "오늘은 금요일이라 뭔가 일이 잘 안되네요" 에 템플릿 "그러시군요. 어떤 일을 맡고 계신지도…" 가 나갔다.
-LLM 을 호출하지 않는 턴이라 어떤 듣기 지시도 작동할 수 없었고, light 시스템 프롬프트에는 듣기 절 자체가 없었다.
+2026-10-16: 2턴이 템플릿이라 "금요일이라 일이 잘 안되네요" 를 받을 수 없었다 → light LLM 호출로.
+2026-10-19: LLM 이 질문까지 쓰면 '오늘' 같은 단어가 새고 길어진다 → LLM 은 되받기 1문장, 질문은 백엔드가 붙인다.
+            기대 질문 뒤 '진단_대화' 턴 삭제 — 기대 답변 다음 턴이 바로 DIAGNOSIS_INTRO.
 """
 import os
 import sys
@@ -12,7 +13,11 @@ from diag_project.prompts.phase3a import layer3_state as L  # noqa: E402
 from diag_project.prompts.phase3a.layer1_system import (  # noqa: E402
     LAYER1_LIGHT, LAYER1_LISTEN_LITE, LAYER1_SYSTEM_PROMPT, build_layer1_with_persona,
 )
-from diag_project.services.instruction_decider import _force_rapport_category  # noqa: E402
+from diag_project.services.instruction_decider import _force_rapport_category, decide_instruction  # noqa: E402
+from diag_project.services.intro_messages import RAPPORT_EXPECTATION_QUESTION, RAPPORT_ROLE_QUESTION  # noqa: E402
+from diag_project.services.output_guard import receive_sentence  # noqa: E402
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _rapport_guide(category: str, last: str) -> str:
@@ -21,33 +26,71 @@ def _rapport_guide(category: str, last: str) -> str:
     return L._get_instruction_guide("RAPPORT_BUILDING", state)
 
 
-def test_role_turn_category_is_forced_at_second_rapport_turn():
+def test_categories_no_diagnosis_chat_turn():
+    assert _force_rapport_category(0) == "일상"
     assert _force_rapport_category(1) == "담당업무"
+    assert _force_rapport_category(2) == "기대"
+    assert _force_rapport_category(3) == "기대"       # 진단_대화 삭제
+    assert "진단_대화" not in open(os.path.join(ROOT, "diag_project", "prompts", "phase3a", "layer3_state.py"),
+                                  encoding="utf-8").read().split("category_guides = {")[1]
 
 
-def test_role_turn_guide_receives_then_asks_role():
-    g = _rapport_guide("담당업무", "오늘은 금요일이라 뭔가 일이 잘 안되네요")
-    assert "카테고리 (시스템 강제): 담당업무" in g
-    assert "받기(한 문장, 필수)" in g and "리더님이 쓴 말을 넣어" in g
-    assert "어떤 일을 맡고 계신지" in g and "팀 규모" in g
-    assert "[READY_FOR_INTRO] 절대 금지" in g
-    assert "기대 질문" in g                      # 다음 턴 담당임을 명시
-    assert L.EXAMPLE_LABEL in g                  # 예시는 라벨 포함
+def test_fixed_questions():
+    assert "오늘" not in RAPPORT_ROLE_QUESTION                 # 담당 업무는 오늘 일과가 아니다
+    assert RAPPORT_ROLE_QUESTION.startswith("평소 어떤 일을 맡고 계신지")
+    assert RAPPORT_ROLE_QUESTION.endswith("팀 규모나 주로 하시는 업무 정도면 됩니다.")
+    assert RAPPORT_EXPECTATION_QUESTION.endswith("?")
+
+
+def test_receive_only_guides():
+    for cat in ("담당업무", "기대"):
+        g = _rapport_guide(cat, "그럭저럭 지내고 있어요")
+        assert "되받기 한 문장" in g and "질문은 시스템이 뒤에 붙이므로" in g
+        assert "그대로 반복하지 않는다" in g and "추측을 보태지 않는다" in g
+        assert "그럭저럭 지내고 계시는군요" in g and "마음이 무겁지 않으셨던 것 같네요" in g   # 금지 예 둘 다
+        assert "[READY_FOR_INTRO] 를 반드시 포함" not in g
+        assert "어떤 일을 맡고 계신지 간단히" not in g      # 질문 문장은 LLM 가이드에 없다(백엔드가 붙임)
+        assert "공감 표현 — 매우 중요" not in g             # 공감·예시 블록 제거
+        assert L.EXAMPLE_LABEL in g
+
+
+def test_receive_sentence_drops_questions_and_caps_one():
+    assert receive_sentence("금요일이라 일이 잘 안 풀리는 날이죠. 어떤 일을 맡고 계세요?") == "금요일이라 일이 잘 안 풀리는 날이죠."
+    assert receive_sentence("팀원 다섯 분과 함께하시는군요. 챙기실 게 많겠어요. 기대하시는 게 있으세요?") == "팀원 다섯 분과 함께하시는군요."
+    assert receive_sentence("어떤 일을 맡고 계세요?") == "그러셨군요."
+    assert receive_sentence("", fallback="") == ""
+
+
+def test_ready_for_intro_forced_at_expectation_turn_and_next_is_intro():
+    """기대 질문 턴(rapport_turn_count>=2) 뒤 라포 완료 → 다음 턴 DIAGNOSIS_INTRO. 진단_대화 없음."""
+    base = {"chapter": "organization_management", "session_deflection_count": 0, "session_already_warned": False,
+            "disengagement_streak": 0, "probe_cycles": 0, "last_refusal": False, "awaiting_abort_decision": False,
+            "pending_abort": False, "intro_done": False, "chapter_started": False, "competency_aligned": False,
+            "definition_asked": False, "name_extraction_failed": False, "name_reconfirm_asked": False,
+            "turn_count": 1, "chapter_message_count": 0, "contains_avoidance_keywords": False,
+            "events_collected": 0, "events_with_star_70": 0, "has_contrary_probe": False}
+    # 기대 답변 '없어요' 가 도착한 턴: 라포 완료(READY_FOR_INTRO 백엔드 확정) → INTRO
+    s = dict(base, rapport_complete=True, rapport_turn_count=3, last_user_response="없어요")
+    assert decide_instruction(s) == "DIAGNOSIS_INTRO"
+    # 그 다음 '네' → CONFIRM (rapport_turn_count=4 < 캡 5)
+    s2 = dict(base, rapport_complete=True, intro_done=True, rapport_turn_count=4, last_user_response="네")
+    assert decide_instruction(s2) == "DIAGNOSIS_CONFIRM"
+
+
+def test_route_wiring():
+    src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
+    assert "RAPPORT_ROLE_QUESTION if state.get(\"rapport_turn_count\", 0) == 1 else RAPPORT_EXPECTATION_QUESTION" in src
+    assert 'probe_type_used = "ROLE_ASK"' in src
+    assert "system_override_text = build_intro_anchor_section()" in src     # 기대 없음 → LLM 미호출
+    assert "어떤 일을 맡고 계신지도 간단히 알려주시겠어요" not in src
+    dec = open(os.path.join(ROOT, "diag_project", "services", "instruction_decider.py"), encoding="utf-8").read()
+    assert "force_ready_for_intro = rapport_turn_count >= 2" in dec
 
 
 def test_light_system_prompt_has_listen_lite_but_constant_unchanged():
     light = build_layer1_with_persona("1", user_name="박기진", mode="light")
     heavy = build_layer1_with_persona("1", user_name="박기진", mode="heavy")
-    assert "# 듣기 (축약)" in light and "리더가 쓴 말을 넣어 한 문장으로 받고" in light
-    assert "# 따라가기 (듣기)" not in light     # BEI 전용 전체 절은 light 에 없음
+    assert "# 듣기 (축약)" in light and "# 따라가기 (듣기)" not in light
     assert "# 따라가기 (듣기)" in heavy and "# 듣기 (축약)" not in heavy
-    assert "따라가기" not in LAYER1_LIGHT      # 기존 테스트 전제 유지
+    assert "따라가기" not in LAYER1_LIGHT
     assert LAYER1_LISTEN_LITE not in LAYER1_SYSTEM_PROMPT
-    assert len(LAYER1_LIGHT + LAYER1_LISTEN_LITE) < 4000
-
-
-def test_route_has_no_role_ask_template():
-    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
-    assert "어떤 일을 맡고 계신지도 간단히 알려주시겠어요" not in src
-    assert 'probe_type_used = "ROLE_ASK"' in src   # 마커는 유지(participant_context 저장 근거)

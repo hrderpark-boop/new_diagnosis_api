@@ -172,7 +172,7 @@ def test_rapport_role_turn_and_context_state():
     import inspect
     from diag_project.routes import diagnoses as D
     src = inspect.getsource(D)
-    assert "ROLE_ASK" in src and "participant_context" in src and "어떤 일을 맡고 계신지" in src
+    assert "ROLE_ASK" in src and "participant_context" in src and "RAPPORT_ROLE_QUESTION" in src
 
 
 def test_praise_list_covers_wrapup_phrases_and_wrapup_is_template():

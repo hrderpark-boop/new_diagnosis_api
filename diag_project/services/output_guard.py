@@ -212,6 +212,18 @@ def strip_revisit_greeting(text: str) -> tuple[str, int]:
     return out, len(hit)
 
 
+# ── 4-c) (2026-10-19) 라포 2·3턴 / INTRO: LLM 출력에서 '되받기 한 문장'만 취한다 ──
+#   질문은 백엔드 고정 문장이 붙는다(기록=발화 결합과 같은 방식). LLM 이 질문을 써도 여기서 제거된다.
+def receive_sentence(text: str, fallback: str = "그러셨군요.") -> str:
+    """질문 문장을 버리고 첫 평서문 하나만 돌려준다. 남는 게 없으면 fallback."""
+    for s in split_sentences((text or "").strip()):
+        s = s.strip()
+        if not s or is_question(s):
+            continue
+        return s
+    return fallback
+
+
 # ── 5) (2026-09-22 폐지) 되받기 리드 삭제 trim_lead_sentences — 자른 문장이 어색하다. 되받기는 프롬프트 한 줄이 맡는다. ──
 
 

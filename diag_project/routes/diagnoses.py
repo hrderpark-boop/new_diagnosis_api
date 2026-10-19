@@ -50,6 +50,7 @@ from diag_project.services.intro_messages import (
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
+from diag_project.prompts.phase3a.layer3_state import expectation_usable as _expectation_usable
 from diag_project.services.traversal import (
     advanced_to_new_target, is_result_probe_text,
 )
@@ -1168,6 +1169,12 @@ async def _submit_message_phase3a(
     # (2026-10-16) 라포 2턴(담당 업무 질문)은 더 이상 템플릿이 아니다 — light LLM 호출(카테고리 '담당업무' 가이드).
     #   템플릿 "그러시군요. 어떤 일을 맡고 계신지도…" 는 직전 답변("금요일이라 일이 잘 안되네요")의 감정·판단을
     #   받을 수 없었다. 이름 턴(라포 1턴)만 템플릿으로 남긴다. ROLE_ASK 마커는 아래에서 카테고리 기준으로 붙는다.
+    #   (2026-10-19) 2·3턴 LLM 출력은 되받기 한 문장만, 질문은 8-0 에서 백엔드 고정 문장을 붙인다.
+    elif (instruction_used == "DIAGNOSIS_INTRO"
+            and not _expectation_usable(state.get("expectation_answer"))):
+        # (2026-10-19) 기대 답변이 없거나('없어요'·'모르겠어요'·동의만) 기대라 할 내용이 없으면 받는 문장 없이
+        #   바로 안내 — LLM 미호출. '괜찮습니다, 뚜렷하지 않으셔도' 류 위로 문장은 INTRO 에서 제거.
+        system_override_text = build_intro_anchor_section()
     elif instruction_used == "CHAPTER_OPENING":
         # 챕터 도입 — 첫 BEI 앵커 질문. item4: LLM 대신 백엔드 '템플릿 풀'로
         #   문장 틀을 챕터마다 다르게 골라(무반복·결정론) '시점+인물+행동·은유금지'
@@ -1428,15 +1435,25 @@ async def _submit_message_phase3a(
         is_session_end_early or needs_user_decision or is_session_paused
     )
 
-    # 8-a. DIAGNOSIS_INTRO 하이브리드: LLM 호응 + 시스템 진단 안내 본문 합치기
-    if instruction_used == "DIAGNOSIS_INTRO" and not _suppress_mechanical_text:
-        llm_acknowledgment = clean_reply
-        # 후처리 #1: 빈 응답일 때만 폴백. 과거의 '"죄송합니다" 포함' 조건은
-        #   사과가 들어간 정상 응답(META 가이드가 권장)까지 통째로 날렸다.
-        if not llm_acknowledgment.strip():
-            llm_acknowledgment = "말씀 감사합니다."
+    # 8-0. (2026-10-19) 라포 2·3턴: LLM 은 직전 발화 되받기 한 문장만, 질문은 백엔드 고정 문장을 이어 붙인다
+    #   (기록=발화 결합과 같은 방식). LLM 이 질문을 쓰면 receive_sentence 가 버린다.
+    if (instruction_used == "RAPPORT_BUILDING" and system_override_text is None and not _llm_error
+            and not _suppress_mechanical_text and state.get("rapport_turn_count", 0) >= 1):
+        from diag_project.services.intro_messages import RAPPORT_EXPECTATION_QUESTION, RAPPORT_ROLE_QUESTION
+        from diag_project.services.output_guard import receive_sentence as _recv_sent
+        _recv = _recv_sent(clean_reply)
+        _fixed_q = RAPPORT_ROLE_QUESTION if state.get("rapport_turn_count", 0) == 1 else RAPPORT_EXPECTATION_QUESTION
+        if _recv != clean_reply.strip():
+            logger.info("✂️ 라포 되받기 1문장만 유지(%d자 → %d자)", len(clean_reply), len(_recv))
+        clean_reply = f"{_recv} {_fixed_q}"
+
+    # 8-a. DIAGNOSIS_INTRO 하이브리드: LLM 되받기 한 문장 + 시스템 진단 안내 본문 합치기
+    #   (2026-10-19) 기대 답변이 없으면 위에서 system_override_text(안내만)로 처리되어 여기 오지 않는다.
+    if instruction_used == "DIAGNOSIS_INTRO" and not _suppress_mechanical_text and system_override_text is None:
+        from diag_project.services.output_guard import receive_sentence as _recv_sent_i
+        llm_acknowledgment = _recv_sent_i(clean_reply, fallback="")
         anchor_section = build_intro_anchor_section()
-        clean_reply = f"{llm_acknowledgment}\n\n{anchor_section}"
+        clean_reply = f"{llm_acknowledgment}\n\n{anchor_section}".strip() if llm_acknowledgment else anchor_section
 
     # 8-b. COMPETENCY_ALIGN — 과제2: 하드코딩 'framework 목록' 강제 병합 폐지.
     #   정의·하위역량을 프롬프트 변수로 주입(layer3)하고 LLM 이 대화체로
