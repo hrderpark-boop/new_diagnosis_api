@@ -20,6 +20,8 @@ def ck(label, ok, extra=""):
     print(f"  [{'PASS' if ok else 'FAIL'}] {label} {extra}")
     P[0] += ok
     P[1] += (not ok)
+    # (2026-10-19) pytest 에서도 실패가 드러나도록 — 이전엔 print·카운터만이라 항상 PASS 였다.
+    assert ok, f"{label} {extra}".strip()
 
 
 def test_error_fallback_marked():
