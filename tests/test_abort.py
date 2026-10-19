@@ -163,18 +163,18 @@ def test_recommendation_gating():
             return 0
         return len(r.get("growth", [])) + (1 if r.get("strength") else 0)
 
-    loop = asyncio.get_event_loop()
-    r0 = loop.run_until_complete(run(0))
+    # (2026-10-19) get_event_loop() 재사용 금지 — 앞선 파일의 asyncio.run() 뒤에는 루프가 없어 순서 의존 실패(3.13).
+    r0 = asyncio.run(run(0))
     ck("measured 0 → 추천 없음(None)", r0 is None)
-    r2 = loop.run_until_complete(run(2))
+    r2 = asyncio.run(run(2))
     ck("measured 2 → 추천 없음(None)", r2 is None)
-    r3 = loop.run_until_complete(run(3))
+    r3 = asyncio.run(run(3))
     ck("measured 3 → 카드 발행 & ≤3", r3 is not None and _ncards(r3) <= 3,
        f"(={_ncards(r3)})")
-    r6 = loop.run_until_complete(run(6))
+    r6 = asyncio.run(run(6))
     ck("measured 6 → 카드 ≤4(전역 상한)", r6 is not None and _ncards(r6) <= 4,
        f"(={_ncards(r6)})")
-    r12 = loop.run_until_complete(run(12))
+    r12 = asyncio.run(run(12))
     ck("measured 12 → 카드 ≤4(전역 상한)", r12 is not None and _ncards(r12) <= 4,
        f"(={_ncards(r12)})")
 

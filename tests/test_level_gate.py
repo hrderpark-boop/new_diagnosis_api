@@ -41,7 +41,8 @@ def ck(label, ok, extra=""):
 
 
 def _run_async(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # (2026-10-19) get_event_loop() 재사용 금지 — 앞선 파일의 asyncio.run() 이 루프를 비우면 3.13 에서 예외(순서 의존). 3.14 는 항상 예외.
+    return asyncio.run(coro)
 
 
 def test_level_reference_lookup():

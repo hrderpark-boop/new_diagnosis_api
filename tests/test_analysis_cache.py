@@ -57,13 +57,13 @@ def test_gate_cache_second_run_zero_calls():
 
     m = {"갈등관리": {"evidence": ["두 팀원 직접 통합 조율한 사례"],
                   "claimed_level": 3}}
-    loop = asyncio.get_event_loop()
-    r1 = loop.run_until_complete(
+    # (2026-10-19) get_event_loop() 재사용 금지 — 앞선 파일의 asyncio.run() 뒤에는 루프가 없어 순서 의존 실패(3.13).
+    r1 = asyncio.run(
         gate_verify_levels("people_management", m, counting_llm))
     n1 = calls["n"]
     # in-mem 비우고 2회차 — 파일 캐시에서 반환되어야(0콜)
     LG._GATE_CACHE.clear()
-    r2 = loop.run_until_complete(
+    r2 = asyncio.run(
         gate_verify_levels("people_management", m, counting_llm))
     n2 = calls["n"] - n1
     ck("1회차 LLM 호출 발생", n1 == 1, f"(n1={n1})")
