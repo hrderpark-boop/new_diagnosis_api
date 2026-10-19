@@ -15,7 +15,7 @@ from diag_project.prompts.phase3a.layer1_system import (  # noqa: E402
 )
 from diag_project.services.instruction_decider import _force_rapport_category, decide_instruction  # noqa: E402
 from diag_project.services.intro_messages import RAPPORT_EXPECTATION_QUESTION, RAPPORT_ROLE_QUESTION  # noqa: E402
-from diag_project.services.output_guard import receive_sentence  # noqa: E402
+from diag_project.services.output_guard import echoes_user, receive_sentence  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -47,7 +47,8 @@ def test_receive_only_guides():
         g = _rapport_guide(cat, "그럭저럭 지내고 있어요")
         assert "되받기 한 문장" in g and "질문은 시스템이 뒤에 붙이므로" in g
         assert "그대로 반복하지 않는다" in g and "추측을 보태지 않는다" in g
-        assert "그럭저럭 지내고 계시는군요" in g and "마음이 무겁지 않으셨던 것 같네요" in g   # 금지 예 둘 다
+        assert "(반복)" in g and "(추측)" in g                 # 금지 예 둘 다(입력과 겹치지 않는 문장)
+        assert "그럭저럭" not in g                            # 2026-10-19: 금지 예가 입력과 겹쳐 복사됐던 문장 제거
         assert "[READY_FOR_INTRO] 를 반드시 포함" not in g
         assert "어떤 일을 맡고 계신지 간단히" not in g      # 질문 문장은 LLM 가이드에 없다(백엔드가 붙임)
         assert "공감 표현 — 매우 중요" not in g             # 공감·예시 블록 제거
@@ -59,6 +60,21 @@ def test_receive_sentence_drops_questions_and_caps_one():
     assert receive_sentence("팀원 다섯 분과 함께하시는군요. 챙기실 게 많겠어요. 기대하시는 게 있으세요?") == "팀원 다섯 분과 함께하시는군요."
     assert receive_sentence("어떤 일을 맡고 계세요?") == "그러셨군요."
     assert receive_sentence("", fallback="") == ""
+
+
+def test_echo_guard_detects_verbatim_repeat():
+    assert echoes_user("그럭저럭 지내고 계시는군요.", "그럭저럭 지내고 있어요")          # '그럭저럭지내고' 6자+
+    assert echoes_user("네, 오늘 하루도 평소처럼 업무를 보고 계시는군요.", "오늘 하루요? 원래 하던 일을 하고 있지요") is False
+    assert echoes_user("원래 하던 일을 하고 계셨군요.", "오늘 하루요? 원래 하던 일을 하고 있지요")   # '원래하던일을하고'
+    assert not echoes_user("그러시군요.", "그럭저럭 지내고 있어요")
+    assert not echoes_user("회의로 꽉 찬 오전이셨네요.", "오전에 회의가 많았어요")
+    assert not echoes_user("바쁘셨군요.", "바빴어요")                                   # 6자 미만 발화는 판정 안 함
+
+
+def test_echo_guard_wired_and_logged():
+    src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
+    assert "_echoes(_recv, request.content)" in src and '_recv = "그러셨군요."' in src
+    assert '"echo": int(_tm.get("echo") or 0)' in src
 
 
 def test_ready_for_intro_forced_at_expectation_turn_and_next_is_intro():

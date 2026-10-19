@@ -1440,11 +1440,34 @@ async def _submit_message_phase3a(
     if (instruction_used == "RAPPORT_BUILDING" and system_override_text is None and not _llm_error
             and not _suppress_mechanical_text and state.get("rapport_turn_count", 0) >= 1):
         from diag_project.services.intro_messages import RAPPORT_EXPECTATION_QUESTION, RAPPORT_ROLE_QUESTION
+        from diag_project.services.output_guard import echoes_user as _echoes
         from diag_project.services.output_guard import receive_sentence as _recv_sent
         _recv = _recv_sent(clean_reply)
         _fixed_q = RAPPORT_ROLE_QUESTION if state.get("rapport_turn_count", 0) == 1 else RAPPORT_EXPECTATION_QUESTION
         if _recv != clean_reply.strip():
             logger.info("✂️ 라포 되받기 1문장만 유지(%d자 → %d자)", len(clean_reply), len(_recv))
+        # (2026-10-19) 되받기 반복 가드: 리더 발화의 연속 6자 이상을 그대로 담으면 1회 재생성, 그래도 겹치면 "그러시군요.".
+        #   횟수는 guard_log 의 echo 항목(1=재생성으로 해결, 2=대체)으로 남긴다.
+        if _echoes(_recv, request.content):
+            _tm["echo"] = 1
+            logger.info("🔁 라포 되받기가 리더 발화를 반복: %r → 재생성 1회", _recv[:40])
+            try:
+                _e_regen = await _timed_regen(
+                    system_prompt=system_prompt, chapter_context=chapter_context,
+                    turn_state_text=turn_state_text + (
+                        "\n\n🚨 [시스템 — 재생성 지시] 방금 만든 되받기가 리더님이 쓴 말을 그대로 반복했습니다. "
+                        "리더님 단어를 한 글자도 그대로 가져오지 말고, 뜻만 받아 다른 말로 한 문장으로 다시 쓰세요."),
+                    compressed_history=compressed_history, user_message=request.content, light_mode=True)
+                _e_recv = _recv_sent(_MARKER_RE.sub("", _e_regen.get("reply") or ""), fallback="")
+            except Exception as _e:
+                logger.error("🔁 되받기 재생성 실패: %s", _e)
+                _e_recv = ""
+            if _e_recv and not _echoes(_e_recv, request.content):
+                _recv = _e_recv
+            else:
+                _tm["echo"] = 2
+                _recv = "그러셨군요."
+                logger.info("🔁 재생성 후에도 반복 → '그러셨군요.' 대체")
         clean_reply = f"{_recv} {_fixed_q}"
 
     # 8-a. DIAGNOSIS_INTRO 하이브리드: LLM 되받기 한 문장 + 시스템 진단 안내 본문 합치기
@@ -2158,6 +2181,8 @@ async def _submit_message_phase3a(
             "v": sorted((_tm.get("violations") or {}).keys()), "regen": _tm["regen_n"],
             "route": state.get("route_reason"),
             "hard": bool(_tm.get("hard")), "llm": round(_tm["llm"], 1), "total": round(_total, 1), "sql": _sqlc.get(),
+            # (2026-10-19) 라포 되받기 반복 가드: 0=미발동, 1=재생성으로 해결, 2=재생성 후에도 반복 → "그러셨군요." 대체
+            "echo": int(_tm.get("echo") or 0),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

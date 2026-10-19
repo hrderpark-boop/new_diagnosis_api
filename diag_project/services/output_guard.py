@@ -224,6 +224,19 @@ def receive_sentence(text: str, fallback: str = "그러셨군요.") -> str:
     return fallback
 
 
+def _compact(text: str) -> str:
+    return re.sub(r"[\s.,!?~'\"“”‘’…·]+", "", text or "")
+
+
+def echoes_user(receive: str, user_text: str | None, n: int = 6) -> bool:
+    """(2026-10-19) 되받기 문장이 리더 발화의 연속 n자 이상(공백·문장부호 제외)을 그대로 담으면 True(반복).
+    claude 가 금지 예 '그럭저럭 지내고 계시는군요' 를 그대로 냈다 — 프롬프트만으로는 막지 못해 백엔드 가드로."""
+    r, u = _compact(receive), _compact(user_text or "")
+    if len(u) < n or not r:
+        return False
+    return any(u[i:i + n] in r for i in range(len(u) - n + 1))
+
+
 # ── 5) (2026-09-22 폐지) 되받기 리드 삭제 trim_lead_sentences — 자른 문장이 어색하다. 되받기는 프롬프트 한 줄이 맡는다. ──
 
 
