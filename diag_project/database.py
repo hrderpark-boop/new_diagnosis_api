@@ -116,7 +116,8 @@ async def init_db():
             # 이미 존재하면 무시
             pass
 
-    logger.info(f"✅ Database initialized at: {DATABASE_URL}")
+    from diag_project.db_guard import mask_db_url
+    logger.info("✅ Database initialized at: %s", mask_db_url(DATABASE_URL))   # (2026-10-19) 비밀번호 마스킹
 
 # ── (2026-09-22) 요청당 SQL 문 수 계측 — 턴 지연의 비LLM 부분(DB 왕복) 측정용 ──
 import contextvars as _cv

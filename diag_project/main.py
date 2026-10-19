@@ -94,7 +94,12 @@ async def on_startup():
     from diag_project.llm_provider import validate_provider_config
     _llm_provider = validate_provider_config()
     logger.info("🧠 LLM provider: %s", _llm_provider)
-    logger.info("🚀 Application startup: Initializing database...")
+    # (2026-10-19) 운영 DB 가드 — ENV=production(또는 Render 의 RENDER=true)이 아닌데 DATABASE_URL 이 Supabase 를
+    #   가리키면 기동 거부. ALLOW_PROD_DB=1 일 때만 예외. 로그에는 호스트·db 이름만 남긴다.
+    from diag_project.database import DATABASE_URL as _db_url
+    from diag_project.db_guard import check_db_allowed, mask_db_url
+    check_db_allowed(_db_url)
+    logger.info("🚀 Application startup: Initializing database... (%s)", mask_db_url(_db_url))
     await init_db()
     logger.info("✅ Database initialized.")
     # (2026-09-29) 쓰기 경로 합성 점검 — 기동 60초 뒤 첫 실행, 이후 하루 1회. FM_SYNTHETIC_CHECK=0 이면 끔.
