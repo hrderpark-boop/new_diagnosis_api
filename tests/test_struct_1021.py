@@ -69,6 +69,10 @@ def test_foreign_quote_guard():
     bad = G.foreign_quotes(out, user, exempt=["조직관리", "비전 제시 및 공유"])
     assert bad == ["효과적"]
     assert G.strip_quote_marks(out, bad).count("'효과적'") == 0 and "'효율적으로 관리'" in G.strip_quote_marks(out, bad)
+    # 어미 차이는 리더 말로 인정(리플레이: '…내야 한다' vs 발화 '…내야 하니까요', '…하는 것' vs '…하는 거요')
+    user2 = "조직을 효율적으로 관리하는 거요. 한정된 자원으로 결과를 내야 하니까요"
+    assert G.foreign_quotes("'한정된 자원으로 결과를 내야 한다'는 말씀과 '조직을 효율적으로 관리하는 것'이라는 관점", user2) == []
+    assert G.foreign_quotes("'조직의 방향을 세우고 구성원의 참여를 이끌어내는 능력'으로 봅니다", user2) == ["조직의 방향을 세우고 구성원의 참여를 이끌어내는 능력"]
 
 
 def test_transition_guide_two_sentences_no_question_anchor_by_system():
@@ -102,6 +106,7 @@ def test_one_question_and_moment_form():
     assert G.keep_last_question("그러셨군요. 그때 어떻게 하셨어요?") == ("그러셨군요. 그때 어떻게 하셨어요?", 0)
     assert G.fix_moment_question("팀원이 흔들린다고 알아채신 순간이 있었을까요?") == ("팀원이 흔들린다고 알아채신 장면은 언제였을까요?", 1)
     assert G.fix_moment_question("그 결정은 언제였을까요?")[1] == 0
+    assert G.fix_moment_question("외부 강사를 다시 찾자는 이야기가 나왔던 순간도 있었을까요?")[0].endswith("나왔던 장면은 언제였을까요?")
 
 
 def test_route_wires_probe_quality_and_transition_glue():

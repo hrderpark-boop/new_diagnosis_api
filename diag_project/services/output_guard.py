@@ -274,7 +274,7 @@ def keep_last_question(text: str) -> tuple[str, int]:
     return out, len(qs) - 1
 
 
-_MOMENT_Q_RE = re.compile(r"순간(이|은|들이)\s*(있었|있으셨|있었던|있으셨던)(을까요|나요|어요|습니까|나요)\s*\?")
+_MOMENT_Q_RE = re.compile(r"순간(이|은|도|들이|들도)\s*(있었|있으셨|있었던|있으셨던)(을까요|나요|어요|습니까)\s*\?")
 
 
 def fix_moment_question(text: str) -> tuple[str, int]:
@@ -293,9 +293,31 @@ def foreign_quotes(text: str, user_text: str | None, exempt: list[str] | None = 
         c = _compact(span)
         if not c or c in ex or any(c in e or e in c for e in ex if len(e) >= 2):
             continue
-        if c not in u:
+        if not _quote_from_user(c, u):
             out.append(span)
     return out
+
+
+def _quote_from_user(c: str, u: str) -> bool:
+    """인용구(압축)가 리더 발화(압축)에서 왔는가. 어미 차이('…하는 것' vs '…하는 거요', '…한다' vs '…하니까요')는 허용:
+    끝 1~3자를 뗀 접두가 발화에 있거나, 발화와의 최장 공통 부분 문자열이 인용구의 60% 이상이면 리더 말로 본다."""
+    if not c or not u:
+        return False
+    if c in u:
+        return True
+    if len(c) < 4:
+        return False
+    for k in (1, 2, 3):
+        if len(c) - k >= 4 and c[:-k] in u:
+            return True
+    best = 0
+    for i in range(len(c)):
+        for j in range(i + best + 1, len(c) + 1):
+            if c[i:j] in u:
+                best = j - i
+            else:
+                break
+    return best >= max(4, int(len(c) * 0.6))
 
 
 def strip_quote_marks(text: str, spans: list[str]) -> str:
