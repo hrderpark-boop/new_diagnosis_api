@@ -1174,7 +1174,8 @@ async def _submit_message_phase3a(
             and not _expectation_usable(state.get("expectation_answer"))):
         # (2026-10-19) 기대 답변이 없거나('없어요'·'모르겠어요'·동의만) 기대라 할 내용이 없으면 받는 문장 없이
         #   바로 안내 — LLM 미호출. '괜찮습니다, 뚜렷하지 않으셔도' 류 위로 문장은 INTRO 에서 제거.
-        system_override_text = build_intro_anchor_section()
+        from diag_project.services.intro_messages import RAPPORT_INTRO_BRIDGE_NO_EXPECTATION
+        system_override_text = f"{RAPPORT_INTRO_BRIDGE_NO_EXPECTATION}\n\n{build_intro_anchor_section()}"
     elif instruction_used == "CHAPTER_OPENING":
         # 챕터 도입 — 첫 BEI 앵커 질문. item4: LLM 대신 백엔드 '템플릿 풀'로
         #   문장 틀을 챕터마다 다르게 골라(무반복·결정론) '시점+인물+행동·은유금지'
@@ -1435,19 +1436,35 @@ async def _submit_message_phase3a(
         is_session_end_early or needs_user_decision or is_session_paused
     )
 
-    # 8-0. (2026-10-19) 라포 2·3턴: LLM 은 직전 발화 되받기 한 문장만, 질문은 백엔드 고정 문장을 이어 붙인다
-    #   (기록=발화 결합과 같은 방식). LLM 이 질문을 쓰면 receive_sentence 가 버린다.
+    # (2026-10-21) 앵커 렌더링(ANCHOR_RENDER=dict|llm) — ALIGN 앵커·전환 턴 앵커 공통. 결과 모드는 guard_log 에 남긴다.
+    async def _render_anchor_for(sub_name: str | None) -> tuple[str, str]:
+        from diag_project.data.competencies import find_sub_key_by_name as _fsk_ar
+        from diag_project.services.anchor_render import render_anchor
+        _k = _fsk_ar(chapter, sub_name) if (chapter and sub_name) else None
+        return await render_anchor(
+            llm, _k, recent_turns=[_prev_coach_text, request.content or ""],
+            role_summary=(state.get("participant_context") or {}).get("role_summary"), pos=0,
+        )
+
+    # 8-0. 라포 2·3·4턴 — LLM 은 되받기만, 질문은 백엔드 고정 문장(기록=발화 결합과 같은 방식). (2026-10-19 → 10-21 개편)
+    #   count 1 스몰톡: 되받기 1~2문장 + 리더 발화에서 나온 되물음 1개 허용(고정 질문 없음)
+    #   count 2 담당업무: 되받기 1문장 + RAPPORT_ROLE_QUESTION
+    #   count 3 기대: 역할 반응 1문장 + RAPPORT_EXPECTATION_QUESTION (READY_FOR_INTRO 는 백엔드 확정)
+    #   되받기 반복 가드(연속 4자): 1회 재생성, 그래도 겹치면 "그러셨군요.". guard_log echo 1/2.
     if (instruction_used == "RAPPORT_BUILDING" and system_override_text is None and not _llm_error
             and not _suppress_mechanical_text and state.get("rapport_turn_count", 0) >= 1):
         from diag_project.services.intro_messages import RAPPORT_EXPECTATION_QUESTION, RAPPORT_ROLE_QUESTION
         from diag_project.services.output_guard import echoes_user as _echoes
-        from diag_project.services.output_guard import receive_sentence as _recv_sent
-        _recv = _recv_sent(clean_reply)
-        _fixed_q = RAPPORT_ROLE_QUESTION if state.get("rapport_turn_count", 0) == 1 else RAPPORT_EXPECTATION_QUESTION
+        from diag_project.services.output_guard import receive_sentence as _recv_sent, receive_sentences as _recv_multi
+        _rc = state.get("rapport_turn_count", 0)
+        _smalltalk = _rc == 1
+
+        def _take(txt: str) -> str:
+            return _recv_multi(txt, max_statements=2, allow_question=True) if _smalltalk else _recv_sent(txt)
+
+        _recv = _take(clean_reply)
         if _recv != clean_reply.strip():
-            logger.info("✂️ 라포 되받기 1문장만 유지(%d자 → %d자)", len(clean_reply), len(_recv))
-        # (2026-10-19) 되받기 반복 가드: 리더 발화의 연속 6자 이상을 그대로 담으면 1회 재생성, 그래도 겹치면 "그러시군요.".
-        #   횟수는 guard_log 의 echo 항목(1=재생성으로 해결, 2=대체)으로 남긴다.
+            logger.info("✂️ 라포 되받기 정리(%d자 → %d자)", len(clean_reply), len(_recv))
         if _echoes(_recv, request.content):
             _tm["echo"] = 1
             logger.info("🔁 라포 되받기가 리더 발화를 반복: %r → 재생성 1회", _recv[:40])
@@ -1456,9 +1473,9 @@ async def _submit_message_phase3a(
                     system_prompt=system_prompt, chapter_context=chapter_context,
                     turn_state_text=turn_state_text + (
                         "\n\n🚨 [시스템 — 재생성 지시] 방금 만든 되받기가 리더님이 쓴 말을 그대로 반복했습니다. "
-                        "리더님 단어를 한 글자도 그대로 가져오지 말고, 뜻만 받아 다른 말로 한 문장으로 다시 쓰세요."),
+                        "리더님 단어를 그대로 가져오지 말고, 뜻만 받아 다른 말로 다시 쓰세요."),
                     compressed_history=compressed_history, user_message=request.content, light_mode=True)
-                _e_recv = _recv_sent(_MARKER_RE.sub("", _e_regen.get("reply") or ""), fallback="")
+                _e_recv = _take(_MARKER_RE.sub("", _e_regen.get("reply") or ""))
             except Exception as _e:
                 logger.error("🔁 되받기 재생성 실패: %s", _e)
                 _e_recv = ""
@@ -1468,7 +1485,11 @@ async def _submit_message_phase3a(
                 _tm["echo"] = 2
                 _recv = "그러셨군요."
                 logger.info("🔁 재생성 후에도 반복 → '그러셨군요.' 대체")
-        clean_reply = f"{_recv} {_fixed_q}"
+        if _smalltalk:
+            clean_reply = _recv
+        else:
+            _fixed_q = RAPPORT_ROLE_QUESTION if _rc == 2 else RAPPORT_EXPECTATION_QUESTION
+            clean_reply = f"{_recv} {_fixed_q}"
 
     # 8-a. DIAGNOSIS_INTRO 하이브리드: LLM 되받기 한 문장 + 시스템 진단 안내 본문 합치기
     #   (2026-10-19) 기대 답변이 없으면 위에서 system_override_text(안내만)로 처리되어 여기 오지 않는다.
@@ -1492,6 +1513,31 @@ async def _submit_message_phase3a(
                 f"네, 리더님 말씀 잘 들었습니다. 그 결을 이어서 '{_nm}' "
                 f"경험을 조금 더 구체적으로 들여다볼게요."
             )
+        # (2026-10-21) 인용 가드: '…' 인용구가 리더 정의(이번 발화)에 없으면 따옴표를 떼고 재생성 1회. 역량·하위역량 이름은 예외.
+        from diag_project.services.output_guard import foreign_quotes as _fq, strip_quote_marks as _sqm
+        _exempt_q = [COMPETENCY_FRAMEWORK.get(chapter, {}).get("name", "")] + list(state.get("all_subcompetencies") or [])
+        _bad_q = _fq(clean_reply, request.content, exempt=_exempt_q)
+        if _bad_q:
+            _tm["quote"] = 1
+            logger.info("🔒 ALIGN 인용 가드: 리더 정의에 없는 인용 %s → 따옴표 제거 후 재생성 1회", _bad_q)
+            try:
+                _q_regen = await _timed_regen(
+                    system_prompt=system_prompt, chapter_context=chapter_context,
+                    turn_state_text=turn_state_text + (
+                        "\n\n🚨 [시스템 — 재생성 지시] 방금 응답이 리더님이 하지 않은 말(" + ", ".join(_bad_q)
+                        + ")을 따옴표로 인용했습니다. 리더님 정의에 실제로 있는 어절만 인용하고, 없으면 인용 없이 다시 쓰세요."),
+                    compressed_history=compressed_history, user_message=request.content, light_mode=True)
+                _q_reply = _MARKER_RE.sub("", _q_regen.get("reply") or "").strip()
+            except Exception as _e:
+                logger.error("🔒 인용 재생성 실패: %s", _e)
+                _q_reply = ""
+            _bad_q2 = _fq(_q_reply, request.content, exempt=_exempt_q) if _q_reply else list(_bad_q)
+            if _q_reply and not _bad_q2:
+                clean_reply = _q_reply
+            else:
+                _tm["quote"] = 2
+                clean_reply = _sqm(_q_reply or clean_reply, _bad_q2 or _bad_q)
+                logger.info("🔒 재생성 후에도 외부 인용 → 따옴표 제거")
         # #2(2026-09-07): 정의 제시 → 빈 줄 → 첫 앵커 질문을 한 메시지로. "들어가
         #   볼까요?" → "네" 확인 턴(정보 없음) 제거. 타겟(asked)은 위 프로브 스텝에서
         #   LLM 호출 이전에 기록됐고, 여기서는 출력만 조립한다. 브릿지 리드 없이
@@ -1509,6 +1555,11 @@ async def _submit_message_phase3a(
                 first_subcompetency_name=current_target_sub,
                 bridge_context=None,
             )
+            # (2026-10-21) ANCHOR_RENDER=llm 이면 렌더링 질문으로(판정 불합격·실패는 사전 문장 폴백). dict 모드는 그대로.
+            _ar_q, _ar_mode = await _render_anchor_for(current_target_sub)
+            _tm["anchor_render"] = _ar_mode
+            if _ar_mode == "llm":
+                _anchor = _ar_q
             # (2026-09-29) 정의 블록 뒤·앵커 앞 다리 한 문장 보장. LLM 이 안 썼으면 페르소나 기본 다리({kw}=정의 핵심 단어).
             #   앵커 프레임의 자체 리드('먼저 하나 여쭤볼게요.')는 이중 도입이 되므로 뗀다.
             from diag_project.services.output_guard import align_has_bridge, align_default_bridge, strip_frame_lead, ensure_align_list
@@ -1561,10 +1612,21 @@ async def _submit_message_phase3a(
         )
         # 5(2026-09-17) 마무리 총평 금지: LLM 문장을 쓰지 않고 고정 문구만.
         from diag_project.services.intro_messages import final_closing_message
-        wrap_up = (
-            f"여기까지 충분히 들었습니다. 이제 '{chapter_to_topic(_next_ch)}'로 이어가 보겠습니다."
-            if _next_ch else final_closing_message((state.get("coach_persona") or {}).get("name"))
-        )
+        if _next_ch:
+            # (2026-10-21) '여기까지 충분히 들었습니다' 대신 들은 것 요약 2문장(LLM, 사실만) + 고정 다리.
+            #   질문·칭찬·상태 누설 문장은 걷어내고 두 문장으로 자른다. 남는 게 없으면 중립 문장.
+            from diag_project.services.intro_messages import chapter_end_bridge
+            from diag_project.services.output_guard import drop_question_sentences as _dqs_e, split_sentences as _ss_e
+            from diag_project.services.output_guard import strip_praise as _sp_e, strip_state_leak as _ssl_e
+            _sum, _ = _dqs_e(clean_reply)
+            _sum, _ = _sp_e(_sum)
+            _sum, _ = _ssl_e(_sum)
+            _sum = " ".join([x.strip() for x in _ss_e(_sum) if x.strip()][:2]).strip()
+            if not _sum:
+                _sum = "이 영역에서 들려주신 이야기는 여기서 정리하겠습니다."
+            wrap_up = f"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch))}"
+        else:
+            wrap_up = final_closing_message((state.get("coach_persona") or {}).get("name"))
         if not _next_ch:
             # (2026-09-29, A-4) 리포트 예상 시간: 이미 사전분석된(또는 진행 중인) 이전 챕터 수로 계산. 실패하면 문구 없이.
             try:
@@ -1681,8 +1743,9 @@ async def _submit_message_phase3a(
             TRANSITION_ALLOWED_INSTRUCTIONS, find_praise, find_sub_names, has_question, has_transition_claim,
             off_target_overlap, split_sentences, strip_praise, strip_sub_name_mentions,
             template_anchor, cap_lead_sentences, same_question_as_previous,
-            find_revisit_greeting, strip_revisit_greeting,
+            find_revisit_greeting, strip_revisit_greeting, find_state_leak, strip_state_leak,
         )
+        _guard_replaced = False   # (2026-10-21) 교정이 응답을 템플릿 앵커로 통째 교체했는가 — 8-j 앵커 접착이 건너뛴다
         from diag_project.services.output_guard import is_question as is_question_sentence
         # (2026-10-16) 재방문 인사 가드는 같은 자리 안에서만. 자리가 바뀐 뒤 첫 턴(재개: 이번 자리 메시지가 방금 저장한
         #   사용자 메시지 하나뿐)에는 "다시 뵙게 되어" 가 정당하므로 제외한다.
@@ -1733,15 +1796,16 @@ async def _submit_message_phase3a(
                 rv = find_revisit_greeting(txt)
                 if rv:
                     v["revisit"] = rv
+            sl = find_state_leak(txt)
+            if sl:
+                v["state_leak"] = sl        # (2026-10-21) '새로운 사례를 들려주셨네요'·'충분히 들었습니다' 류 상태 누설
             if instruction_used not in TRANSITION_ALLOWED_INSTRUCTIONS and has_transition_claim(txt):
                 v["transition"] = True
             if _is_anchor:
                 nm = find_sub_names(txt, _all_names)
                 if nm:
                     v["names"] = nm
-                from diag_project.services.output_guard import anchor_overlap as _aov
-                if _tgt_q and _aov(txt, _tgt_q) == 0:
-                    v["anchor_missing"] = True
+                # (2026-10-21) anchor_missing 폐지 — 앵커 질문은 LLM 이 아니라 시스템이 붙인다(8-j).
                 off, oq = off_target_overlap(txt, _asked_qs)
                 if off:
                     v["off_target"] = oq
@@ -1749,7 +1813,8 @@ async def _submit_message_phase3a(
                 nm = find_sub_names(txt, _all_names)
                 if nm:
                     v["names_mention"] = nm
-            if _is_probe:
+            if _is_probe and not _is_anchor:
+                # (2026-10-21) 전환 턴(_is_anchor)은 LLM 이 질문을 쓰지 않으므로 질문 검사 제외 — 앵커는 8-j 가 붙인다.
                 # (2026-09-22, 4번) 되받기·'네' 시작·리드 겹침은 더 이상 위반이 아니다(자르지 않는다). 관찰용으로만 센다.
                 leads = []
                 for _s2 in split_sentences(txt):
@@ -1828,6 +1893,7 @@ async def _submit_message_phase3a(
         if _v and (set(_v) - _OBS_ONLY):
             if ("names" in _v or "off_target" in _v) and _tgt_q:
                 clean_reply = _anchor_fallback()
+                _guard_replaced = True
                 _v = {}
             if "anchor_missing" in _v and _tgt_q:
                 from diag_project.services.output_guard import ANCHOR_TRANSITIONS as _ATR
@@ -1836,6 +1902,7 @@ async def _submit_message_phase3a(
             if "same_question" in _v and chapter:
                 # 재생성 후에도 직전 턴과 같은 질문 → 타겟 앵커(직전 2턴에 없을 때) 또는 결과 질문(풀)으로 한 걸음 전진.
                 clean_reply = _anchor_fallback()
+                _guard_replaced = True
                 logger.info("🛡️ 직전 턴과 같은 질문 → 교체: %s", clean_reply[:60])
             if "names_mention" in _v:
                 _c2, _n = strip_sub_name_mentions(clean_reply, _all_names)
@@ -1850,6 +1917,11 @@ async def _submit_message_phase3a(
                 if _c2.strip() and (has_question(_c2) or not has_question(clean_reply)):
                     clean_reply = _c2
                     logger.info("🛡️ 재방문 인사 %d문장 제거", _n)
+            if "state_leak" in _v:
+                _c2, _n = strip_state_leak(clean_reply)   # 상태 누설 문장 제거(질문 보존)
+                if _c2.strip() and (has_question(_c2) or not has_question(clean_reply)):
+                    clean_reply = _c2
+                    logger.info("🛡️ 상태 누설 %d문장 제거", _n)
             if "bare_ref" in _v and _is_probe:
                 from diag_project.services.output_guard import bare_demonstrative_questions as _bdq2, result_fallback_question as _rfq2
                 from diag_project.services.output_guard import followup_from_user as _ffu
@@ -1859,8 +1931,9 @@ async def _submit_message_phase3a(
                     logger.info("🧹 대명사 단독 질문 교체: %s", _bq[:40])
             # (2026-09-22, 4번) 전환 선언·되받기 리드는 자르지 않는다 — 자른 문장이 어색하다. 위반은 guard_log 에만 남는다.
             # 최종 보장: 프로브 턴에 질문이 없으면 현재 타겟 템플릿 앵커(결과 질문 풀 대체는 폐기 — 같은 문장 반복 사고).
-            if _is_probe and not has_question(clean_reply.strip()) and _tgt_q:
+            if _is_probe and not _is_anchor and not has_question(clean_reply.strip()) and _tgt_q:
                 clean_reply = _anchor_fallback()
+                _guard_replaced = True
                 logger.info("🛡️ 질문 없는 출력 → 현재 타겟 템플릿 앵커(직전 2턴에 있으면 결과 질문)")
 
         # (2026-09-29) 앵커 턴의 상투적 다리('그런 경험처럼,') 제거 → 전환 문장
@@ -1869,6 +1942,78 @@ async def _submit_message_phase3a(
             clean_reply, _fb_hit = _sfb(clean_reply)
             if _fb_hit:
                 logger.info("🌉✂️ 앵커 군말 다리 제거 → 전환 문장")
+
+        # (2026-10-21) 탐침 품질 — 프로브 턴(전환 턴 제외): 한 턴 한 질문(마지막만) · 시점 문형 · 의미 반복 flash 판정 1회
+        if _is_probe and not _is_anchor and not _llm_error and not _guard_replaced:
+            from diag_project.services.output_guard import fix_moment_question as _fmq, keep_last_question as _klq
+            clean_reply, _n_q = _klq(clean_reply)
+            if _n_q:
+                _tm["one_q"] = _n_q
+                logger.info("✂️ 한 턴 한 질문: 앞선 질문 %d문장 제거", _n_q)
+            clean_reply, _n_m = _fmq(clean_reply)
+            if _n_m:
+                _tm["moment"] = _n_m
+            _new_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
+            _prev_qs = [x for t in _recent_coach_texts for x in split_sentences(t) if is_question_sentence(x)]
+            if _new_q and _prev_qs:
+                from diag_project.services.llm_judge import same_question_as_recent as _sqr
+                if await _sqr(llm, _new_q, _prev_qs) is True:
+                    _tm["semrep"] = 1
+                    logger.info("🔁 의미 반복 판정: %r → 재생성 1회", _new_q[:50])
+                    _r_txt = ""
+                    try:
+                        _r_out = await _timed_regen(
+                            system_prompt=system_prompt, chapter_context=chapter_context,
+                            turn_state_text=turn_state_text + (
+                                "\n\n🚨 [시스템 — 재생성 지시] 방금 질문이 직전 턴에서 이미 물은 것과 같은 것을 묻고 있습니다. "
+                                "같은 대상·시점·행동을 다시 묻지 말고, 리더님이 방금 답한 내용에서 한 걸음 더 들어가는 다른 질문 하나로 다시 쓰세요."),
+                            compressed_history=compressed_history, user_message=request.content, light_mode=True)
+                        _r_txt = _MARKER_RE.sub("", _r_out.get("reply") or "").strip()
+                    except Exception as _e:
+                        logger.error("🔁 의미 반복 재생성 실패: %s", _e)
+                    _r_txt, _ = _klq(_r_txt)
+                    _r_txt, _ = _fmq(_r_txt)
+                    _r_q = next((x for x in reversed(split_sentences(_r_txt)) if is_question_sentence(x)), "")
+                    if _r_q and await _sqr(llm, _r_q, _prev_qs) is not True:
+                        clean_reply = _r_txt
+                    else:
+                        _tm["semrep"] = 2
+                        clean_reply = _anchor_fallback()
+                        logger.info("🔁 재생성 후에도 의미 반복 → 다음 앵커: %s", clean_reply[:60])
+
+        # 8-j. (2026-10-21) 전환 턴(STAR_COMPLETE_NEW_EVENT) 앵커 접착 — LLM 본문(되받기+다리, 질문 제거, 최대 2문장) + 시스템 앵커 1개.
+        #   본문이 전환 문장뿐('이번엔 조금 다른 장면입니다' 단독)이면 재생성 1회, 그래도면 전환 문장만. 모드·폴백은 guard_log.
+        if _is_anchor and not _llm_error and not _guard_replaced:
+            from diag_project.services.output_guard import ANCHOR_TRANSITIONS as _ATR_j
+            from diag_project.services.output_guard import drop_question_sentences as _dqs_j, is_transition_only as _ito
+
+            def _body_of(txt: str) -> str:
+                _b, _ = _dqs_j(txt)
+                return " ".join([x.strip() for x in split_sentences(_b) if x.strip()][:2])
+
+            _body = _body_of(clean_reply)
+            if _ito(_body):
+                _tm["bridge"] = 1
+                logger.info("🌉 전환 턴 본문이 전환 문장뿐(되받기 없음) → 재생성 1회")
+                _b2 = ""
+                try:
+                    _b_out = await _timed_regen(
+                        system_prompt=system_prompt, chapter_context=chapter_context,
+                        turn_state_text=turn_state_text + (
+                            "\n\n🚨 [시스템 — 재생성 지시] 되받기 없이 전환 문장만 냈습니다. 방금 리더님 답변의 핵심 사실 한 문장을 먼저 쓰고, "
+                            "그 뒤에 다리 한 문장. 질문은 쓰지 마세요."),
+                        compressed_history=compressed_history, user_message=request.content, light_mode=True)
+                    _b2 = _body_of(_MARKER_RE.sub("", _b_out.get("reply") or ""))
+                except Exception as _e:
+                    logger.error("🌉 전환 재생성 실패: %s", _e)
+                if _b2 and not _ito(_b2):
+                    _body = _b2
+                else:
+                    _tm["bridge"] = 2
+                    _body = _ATR_j[0]
+            _ar_q, _ar_mode = await _render_anchor_for(current_target_sub)
+            _tm["anchor_render"] = _ar_mode
+            clean_reply = f"{_body} {_ar_q}".strip()
 
         # (2026-09-29) 태도 진술 계기 질문 턴: '계기'를 묻지 않았으면 질문 문장을 계기 질문으로(리드 1문장 유지)
         if state.get("attitude_trigger") and "계기" not in clean_reply:
@@ -2034,8 +2179,9 @@ async def _submit_message_phase3a(
     elif _is_name_reconfirm:
         # 이름 재확인 턴 — 다음 턴에 '이미 되물음'을 판별해 재질문을 막는 마커.
         probe_type_used = "NAME_RECONFIRM"
-    elif instruction_used == "RAPPORT_BUILDING" and state.get("rapport_turn_count", 0) == 1:
+    elif instruction_used == "RAPPORT_BUILDING" and state.get("rapport_turn_count", 0) == 2:
         # 6(2026-09-17) 담당 업무 질문 턴 — 다음 턴에 답변을 participant_context 로 저장하는 근거 마커.
+        #   (2026-10-21) 스몰톡 턴이 앞에 들어가 담당업무 턴은 rapport_turn_count==2.
         #   (2026-10-16) 템플릿이 아니라 LLM 턴이 됐으므로 system_override_text 조건을 뺀다. 카테고리(rapport_turn_count==1)
         #   가 곧 '담당업무' 턴이다. 가이드가 이 턴의 [READY_FOR_INTRO] 를 금지하므로 위 READY_FOR_INTRO 분기에 가려지지 않는다.
         probe_type_used = "ROLE_ASK"
@@ -2183,6 +2329,12 @@ async def _submit_message_phase3a(
             "hard": bool(_tm.get("hard")), "llm": round(_tm["llm"], 1), "total": round(_total, 1), "sql": _sqlc.get(),
             # (2026-10-19) 라포 되받기 반복 가드: 0=미발동, 1=재생성으로 해결, 2=재생성 후에도 반복 → "그러셨군요." 대체
             "echo": int(_tm.get("echo") or 0),
+            # (2026-10-21) quote: ALIGN 외부 인용(1 재생성 해결/2 따옴표 제거) · semrep: 의미 반복(1 재생성/2 다음 앵커) ·
+            #   bridge: 전환 턴 되받기 없음(1 재생성/2 전환 문장만) · one_q: 제거한 앞선 질문 수 · moment: 시점 문형 교정 수 ·
+            #   anchor: 앵커 렌더링 모드(dict/llm/fallback)
+            "quote": int(_tm.get("quote") or 0), "semrep": int(_tm.get("semrep") or 0),
+            "bridge": int(_tm.get("bridge") or 0), "one_q": int(_tm.get("one_q") or 0),
+            "moment": int(_tm.get("moment") or 0), "anchor": _tm.get("anchor_render"),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

@@ -168,7 +168,7 @@ def test_absence_keywords_extended():
 
 
 def test_rapport_role_turn_and_context_state():
-    assert ID._force_rapport_category(1) == "담당업무" and ID._force_rapport_category(2) == "기대"
+    assert ID._force_rapport_category(1) == "스몰톡" and ID._force_rapport_category(2) == "담당업무"
     import inspect
     from diag_project.routes import diagnoses as D
     src = inspect.getsource(D)
@@ -181,7 +181,7 @@ def test_praise_list_covers_wrapup_phrases_and_wrapup_is_template():
     import inspect
     from diag_project.routes import diagnoses as D
     src = inspect.getsource(D)
-    assert "여기까지 충분히 들었습니다. 이제 '{chapter_to_topic(_next_ch)}'로 이어가 보겠습니다." in src
+    assert "chapter_end_bridge(chapter_to_topic(_next_ch))" in src   # (2026-10-21) 요약 2문장 + 고정 다리
     # ALIGN 은 리드 교정 대상에서 제외(정의·목록이 지워지던 버그)
     assert 'instruction_used not in ("COMPETENCY_ALIGN", "CHAPTER_OPENING")' in src
 

@@ -28,9 +28,10 @@ def _rapport_guide(category: str, last: str) -> str:
 
 def test_categories_no_diagnosis_chat_turn():
     assert _force_rapport_category(0) == "일상"
-    assert _force_rapport_category(1) == "담당업무"
-    assert _force_rapport_category(2) == "기대"
-    assert _force_rapport_category(3) == "기대"       # 진단_대화 삭제
+    assert _force_rapport_category(1) == "스몰톡"      # (2026-10-21) 스몰톡 받기 턴
+    assert _force_rapport_category(2) == "담당업무"
+    assert _force_rapport_category(3) == "기대"
+    assert _force_rapport_category(4) == "기대"       # 진단_대화 삭제
     assert "진단_대화" not in open(os.path.join(ROOT, "diag_project", "prompts", "phase3a", "layer3_state.py"),
                                   encoding="utf-8").read().split("category_guides = {")[1]
 
@@ -45,7 +46,7 @@ def test_fixed_questions():
 def test_receive_only_guides():
     for cat in ("담당업무", "기대"):
         g = _rapport_guide(cat, "그럭저럭 지내고 있어요")
-        assert "되받기 한 문장" in g and "질문은 시스템이 뒤에 붙이므로" in g
+        assert ("되받기 한 문장" in g or "반응 한 문장" in g) and "시스템이 뒤에 붙이므로" in g
         assert "그대로 반복하지 않는다" in g and "추측을 보태지 않는다" in g
         assert "(반복)" in g and "(추측)" in g                 # 금지 예 둘 다(입력과 겹치지 않는 문장)
         assert "그럭저럭" not in g                            # 2026-10-19: 금지 예가 입력과 겹쳐 복사됐던 문장 제거
@@ -64,7 +65,8 @@ def test_receive_sentence_drops_questions_and_caps_one():
 
 def test_echo_guard_detects_verbatim_repeat():
     assert echoes_user("그럭저럭 지내고 계시는군요.", "그럭저럭 지내고 있어요")          # '그럭저럭지내고' 6자+
-    assert echoes_user("네, 오늘 하루도 평소처럼 업무를 보고 계시는군요.", "오늘 하루요? 원래 하던 일을 하고 있지요") is False
+    assert echoes_user("네, 오늘 하루도 평소처럼 업무를 보고 계시는군요.", "오늘 하루요? 원래 하던 일을 하고 있지요")   # (2026-10-21) 4자 '오늘하루' 반복
+    assert not echoes_user("평소대로 보내셨군요.", "오늘 하루요? 원래 하던 일을 하고 있지요")
     assert echoes_user("원래 하던 일을 하고 계셨군요.", "오늘 하루요? 원래 하던 일을 하고 있지요")   # '원래하던일을하고'
     assert not echoes_user("그러시군요.", "그럭저럭 지내고 있어요")
     assert not echoes_user("회의로 꽉 찬 오전이셨네요.", "오전에 회의가 많았어요")
@@ -86,21 +88,21 @@ def test_ready_for_intro_forced_at_expectation_turn_and_next_is_intro():
             "turn_count": 1, "chapter_message_count": 0, "contains_avoidance_keywords": False,
             "events_collected": 0, "events_with_star_70": 0, "has_contrary_probe": False}
     # 기대 답변 '없어요' 가 도착한 턴: 라포 완료(READY_FOR_INTRO 백엔드 확정) → INTRO
-    s = dict(base, rapport_complete=True, rapport_turn_count=3, last_user_response="없어요")
+    s = dict(base, rapport_complete=True, rapport_turn_count=4, last_user_response="없어요")
     assert decide_instruction(s) == "DIAGNOSIS_INTRO"
-    # 그 다음 '네' → CONFIRM (rapport_turn_count=4 < 캡 5)
-    s2 = dict(base, rapport_complete=True, intro_done=True, rapport_turn_count=4, last_user_response="네")
+    # 그 다음 '네' → CONFIRM (rapport_turn_count=5 < 캡 6)
+    s2 = dict(base, rapport_complete=True, intro_done=True, rapport_turn_count=5, last_user_response="네")
     assert decide_instruction(s2) == "DIAGNOSIS_CONFIRM"
 
 
 def test_route_wiring():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
-    assert "RAPPORT_ROLE_QUESTION if state.get(\"rapport_turn_count\", 0) == 1 else RAPPORT_EXPECTATION_QUESTION" in src
+    assert "RAPPORT_ROLE_QUESTION if _rc == 2 else RAPPORT_EXPECTATION_QUESTION" in src
     assert 'probe_type_used = "ROLE_ASK"' in src
-    assert "system_override_text = build_intro_anchor_section()" in src     # 기대 없음 → LLM 미호출
+    assert "RAPPORT_INTRO_BRIDGE_NO_EXPECTATION}\\n\\n{build_intro_anchor_section()}" in src   # 기대 없음 → 고정 다리 + 안내
     assert "어떤 일을 맡고 계신지도 간단히 알려주시겠어요" not in src
     dec = open(os.path.join(ROOT, "diag_project", "services", "instruction_decider.py"), encoding="utf-8").read()
-    assert "force_ready_for_intro = rapport_turn_count >= 2" in dec
+    assert "force_ready_for_intro = rapport_turn_count >= 3" in dec
 
 
 def test_light_system_prompt_has_listen_lite_but_constant_unchanged():

@@ -228,13 +228,130 @@ def _compact(text: str) -> str:
     return re.sub(r"[\s.,!?~'\"“”‘’…·]+", "", text or "")
 
 
-def echoes_user(receive: str, user_text: str | None, n: int = 6) -> bool:
+_QUOTE_SPAN_RE = re.compile(r"['‘’\"“”]([^'‘’\"“”\n]{1,40})['‘’\"“”]")
+_QUOTE_HANDLE_RE = re.compile(r"(\S+?)(이라|라)(는\s*말씀|고\s*하|\s*하)")
+
+
+def echoes_user(receive: str, user_text: str | None, n: int = 4) -> bool:
     """(2026-10-19) 되받기 문장이 리더 발화의 연속 n자 이상(공백·문장부호 제외)을 그대로 담으면 True(반복).
-    claude 가 금지 예 '그럭저럭 지내고 계시는군요' 를 그대로 냈다 — 프롬프트만으로는 막지 못해 백엔드 가드로."""
-    r, u = _compact(receive), _compact(user_text or "")
+    (2026-10-21) n 6 → 4. 되물음(질문 문장)과 인용 손잡이("'그럭저럭'이라 하시니", "~라는 말씀")는 반복으로 치지 않는다
+    — 리더 발화에서 나온 되물음은 허용이기 때문. 평서문(되받기)만 검사한다."""
+    stmts = [s for s in split_sentences(receive or "") if not is_question(s)]
+    body = " ".join(stmts)
+    body = _QUOTE_SPAN_RE.sub(" ", body)
+    body = _QUOTE_HANDLE_RE.sub(" ", body)
+    r, u = _compact(body), _compact(user_text or "")
     if len(u) < n or not r:
         return False
     return any(u[i:i + n] in r for i in range(len(u) - n + 1))
+
+
+def receive_sentences(text: str, max_statements: int = 2, allow_question: bool = True,
+                      fallback: str = "그러셨군요.") -> str:
+    """(2026-10-21) 라포 스몰톡 턴: 평서문 최대 max_statements + 되물음 최대 1(마지막 질문)."""
+    sents = [s.strip() for s in split_sentences((text or "").strip()) if s.strip()]
+    stmts = [s for s in sents if not is_question(s)][:max_statements]
+    qs = [s for s in sents if is_question(s)]
+    out = list(stmts)
+    if allow_question and qs:
+        out.append(qs[-1])
+    if not out:
+        return fallback
+    return " ".join(out)
+
+
+def keep_last_question(text: str) -> tuple[str, int]:
+    """(2026-10-21) 한 턴 한 질문: 물음표 문장이 2개 이상이면 마지막 하나만 남긴다(평서문은 유지)."""
+    sents = split_sentences(text or "")
+    qs = [s for s in sents if is_question(s)]
+    if len(qs) < 2:
+        return text, 0
+    out = text
+    for q in qs[:-1]:
+        out = out.replace(q, "", 1)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out, len(qs) - 1
+
+
+_MOMENT_Q_RE = re.compile(r"순간(이|은|들이)\s*(있었|있으셨|있었던|있으셨던)(을까요|나요|어요|습니까|나요)\s*\?")
+
+
+def fix_moment_question(text: str) -> tuple[str, int]:
+    """(2026-10-21) 시점 질문 문형: '…순간이 있었을까요?' 금지 → '…장면은 언제였을까요?'."""
+    new, n = _MOMENT_Q_RE.subn("장면은 언제였을까요?", text or "")
+    return new, n
+
+
+def foreign_quotes(text: str, user_text: str | None, exempt: list[str] | None = None) -> list[str]:
+    """(2026-10-21) 출력의 '…' 인용구 중 리더 발화(user_text)에 없는 것. 역량·챕터 이름 등 exempt 는 제외."""
+    u = _compact(user_text or "")
+    ex = {_compact(e) for e in (exempt or []) if e}
+    out = []
+    for m in _QUOTE_SPAN_RE.finditer(text or ""):
+        span = m.group(1).strip()
+        c = _compact(span)
+        if not c or c in ex or any(c in e or e in c for e in ex if len(e) >= 2):
+            continue
+        if c not in u:
+            out.append(span)
+    return out
+
+
+def strip_quote_marks(text: str, spans: list[str]) -> str:
+    """해당 인용구의 따옴표만 뗀다(본문은 유지)."""
+    out = text or ""
+    for sp in spans:
+        out = re.sub(r"['‘’\"“”]" + re.escape(sp) + r"['‘’\"“”]", sp, out)
+    return out
+
+
+# ── (2026-10-21) 상태 누설 문구 — 백엔드 상태('새 사례 확보', '충분히 들었다')를 리더에게 말하는 문장 ──
+BANNED_STATE_LEAK = [
+    "새로운 사례를 들려주", "새 사례를 들려주", "새로운 경험을 들려주", "새로운 사건", "사례를 하나 더 확보",
+    "사례가 확보", "사례를 확보", "충분히 들었습니다", "충분히 여쭤", "여기까지 충분히", "사례가 수집", "데이터가 수집",
+    "사례로 기록", "하나의 사례로", "또 다른 사례를 들려주", "새로운 사례",
+]
+_STATE_LEAK_RE = re.compile("|".join(re.escape(p) for p in sorted(set(BANNED_STATE_LEAK), key=len, reverse=True)))
+
+
+def find_state_leak(text: str) -> list[str]:
+    return sorted(set(m.group(0) for m in _STATE_LEAK_RE.finditer(text or "")))
+
+
+def strip_state_leak(text: str) -> tuple[str, int]:
+    """누설 문장을 제자리에서 지운다. 전부 지워지면 마지막 질문(또는 마지막 문장)에서 구절만 걷어낸다."""
+    sents = split_sentences(text)
+    if not sents:
+        return text, 0
+    hit = [s for s in sents if _STATE_LEAK_RE.search(s)]
+    if not hit:
+        return text, 0
+    if len(hit) == len(sents):
+        qs = [s for s in sents if is_question(s)]
+        base = qs[-1] if qs else sents[-1]
+        base = _STATE_LEAK_RE.sub("", base)
+        base = re.sub(r"[ \t]{2,}", " ", base).strip(" ,")
+        return base, len(hit)
+    out = text
+    for x in hit:
+        out = out.replace(x, "", 1)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out, len(hit)
+
+
+_TRANSITION_ONLY_RE = re.compile(r"^(다른 이야기를 하나 여쭤볼게요|이번엔 조금 다른 장면입니다|이번에는 조금 다른 (장면|이야기)입니다|"
+                                 r"다른 장면으로 넘어가 볼게요|조금 다른 이야기를 여쭤볼게요)[.!]?$")
+
+
+def is_transition_only(text: str) -> bool:
+    """(2026-10-21) 전환 턴 본문이 '이번엔 조금 다른 장면입니다' 같은 전환 문장뿐(되받기 없음)인가."""
+    stmts = [s.strip() for s in split_sentences(text or "") if not is_question(s)]
+    if not stmts:
+        return True
+    return all(_TRANSITION_ONLY_RE.match(s) for s in stmts)
 
 
 # ── 5) (2026-09-22 폐지) 되받기 리드 삭제 trim_lead_sentences — 자른 문장이 어색하다. 되받기는 프롬프트 한 줄이 맡는다. ──

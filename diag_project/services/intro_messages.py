@@ -67,6 +67,13 @@ def _select_acknowledgment(user_answer: str | None) -> str:
 #   역할 질문에 '오늘' 금지 — 담당 업무는 오늘 일과와 다르다.
 RAPPORT_ROLE_QUESTION = "평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다."
 RAPPORT_EXPECTATION_QUESTION = "이번 진단에서 기대하시는 것이 있으세요?"
+# (2026-10-21) 기대 "없어요"·"아니요": 위로 없이 고정 다리 한 문장 뒤 안내.
+RAPPORT_INTRO_BRIDGE_NO_EXPECTATION = "네, 그러면 제가 오늘 흐름부터 설명드릴게요."
+
+
+def chapter_end_bridge(next_topic: str) -> str:
+    """(2026-10-21) 챕터 종료: 들은 것 요약(LLM, 사실만) 뒤에 붙는 고정 다리."""
+    return f"이제 '{next_topic}'로 이어가 보겠습니다."
 
 
 def build_diagnosis_intro_message(user_name: str = "리더님") -> str:

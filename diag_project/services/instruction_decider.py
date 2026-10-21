@@ -289,13 +289,16 @@ def _force_rapport_category(rapport_turn_count: int) -> str:
     (현재 user 메시지는 아직 chapter=None 아님 → 직접 인덱스로 사용).
 
     0 → 일상 (시간대 활용, 첫 AI 라포 응답 — 시스템 템플릿)
-    1 → 담당업무 (LLM 되받기 1문장 + 백엔드 역할 질문 RAPPORT_ROLE_QUESTION)
-    2+ → 기대 (LLM 되받기 1문장 + 백엔드 기대 질문 RAPPORT_EXPECTATION_QUESTION, READY_FOR_INTRO 는 백엔드가 확정)
+    1 → 스몰톡 (2026-10-21: LLM 되받기 1~2문장 + 리더 발화에서 나온 가벼운 되물음 1개 허용. 고정 질문 없음)
+    2 → 담당업무 (LLM 되받기 1문장 + 백엔드 역할 질문 RAPPORT_ROLE_QUESTION)
+    3+ → 기대 (LLM 역할 반응 1문장 + 백엔드 기대 질문 RAPPORT_EXPECTATION_QUESTION, READY_FOR_INTRO 는 백엔드가 확정)
     (2026-10-19) 진단_대화 턴 삭제 — 기대 답변 다음 턴은 바로 DIAGNOSIS_INTRO.
     """
     if rapport_turn_count == 0:
         return "일상"
     elif rapport_turn_count == 1:
+        return "스몰톡"
+    elif rapport_turn_count == 2:
         return "담당업무"
     return "기대"
 
@@ -520,7 +523,7 @@ def decide_instruction(state: dict) -> InstructionType:
     rapport_turn_count = state.get("rapport_turn_count", 0)
     turn_count_total = state.get("turn_count", 0) + rapport_turn_count
     ONBOARDING_MAX_TURNS = 8
-    RAPPORT_MAX_TURNS = 4  # 무한 라포 방지 안전장치 (2026-10-19: 진단_대화 삭제로 정상 라포는 3턴에 끝난다)
+    RAPPORT_MAX_TURNS = 5  # 무한 라포 방지 안전장치 (2026-10-21: 스몰톡 턴 추가로 정상 라포는 4턴에 끝난다)
 
     # Step 1-0: 이름 재확인 (Fallback) — 첫 발화에서 명확한 성함을 못 뽑았고
     #   아직 재확인을 안 했다면, 임의 명사를 이름으로 부르지 말고 1회에 한해
@@ -549,7 +552,7 @@ def decide_instruction(state: dict) -> InstructionType:
     #   · 목적지는 항상 DIAGNOSIS_CONFIRM. 정의 질문 없이 ALIGN 이 나가는 경로는 없다.
     #   · CONFIRM 무한 반복(투머치토커 71턴 사고)은 CONFIRM 이 START_CHAPTER 로 태깅돼
     #     다음 턴 chapter_started=True 가 되는 것으로 이미 막힌다.
-    ONBOARDING_HARD_CAP = 5   # (2026-10-19) 진단_대화 턴 삭제로 정상 온보딩은 CONFIRM 시점 rapport_turn_count=4
+    ONBOARDING_HARD_CAP = 6   # (2026-10-21) 스몰톡 턴 추가로 정상 온보딩은 CONFIRM 시점 rapport_turn_count=5
     if not chapter_started and rapport_turn_count >= ONBOARDING_HARD_CAP:
         return "DIAGNOSIS_CONFIRM"
 
@@ -1156,7 +1159,7 @@ async def build_turn_state(
 
     # 9-f. (2026-10-19) READY_FOR_INTRO 는 백엔드가 확정한다 — 기대 질문을 붙이는 턴(rapport_turn_count>=2)이면
     #   라포 완료. 기대 답변 다음 턴은 바로 DIAGNOSIS_INTRO(사이의 진단_대화 턴 삭제). LLM 마커·동의 판정에 기대지 않는다.
-    force_ready_for_intro = rapport_turn_count >= 2
+    force_ready_for_intro = rapport_turn_count >= 3   # (2026-10-21) 기대 질문 턴은 rapport_turn_count==3
     state["force_ready_for_intro"] = force_ready_for_intro
 
     # 9-g. 무수확 강제 전환 플래그 (READY_TO_END 가이드가 문구를 바꾸도록):
