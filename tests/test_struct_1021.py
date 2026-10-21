@@ -107,6 +107,7 @@ def test_one_question_and_moment_form():
     assert G.fix_moment_question("팀원이 흔들린다고 알아채신 순간이 있었을까요?") == ("팀원이 흔들린다고 알아채신 장면은 언제였을까요?", 1)
     assert G.fix_moment_question("그 결정은 언제였을까요?")[1] == 0
     assert G.fix_moment_question("외부 강사를 다시 찾자는 이야기가 나왔던 순간도 있었을까요?")[0].endswith("나왔던 장면은 언제였을까요?")
+    assert G.fix_moment_question("예상과 다르게 흘러갔던 순간은 없었을까요?")[0].endswith("흘러갔던 장면은 언제였을까요?")   # g_llm 11턴
 
 
 def test_route_wires_probe_quality_and_transition_glue():

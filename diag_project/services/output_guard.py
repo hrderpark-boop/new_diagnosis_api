@@ -274,7 +274,7 @@ def keep_last_question(text: str) -> tuple[str, int]:
     return out, len(qs) - 1
 
 
-_MOMENT_Q_RE = re.compile(r"순간(이|은|도|들이|들도)\s*(있었|있으셨|있었던|있으셨던)(을까요|나요|어요|습니까)\s*\?")
+_MOMENT_Q_RE = re.compile(r"순간(이|은|도|들이|들도)\s*(있었|있으셨|있었던|있으셨던|없었|없으셨)(을까요|나요|어요|습니까)\s*\?")
 
 
 def fix_moment_question(text: str) -> tuple[str, int]:
