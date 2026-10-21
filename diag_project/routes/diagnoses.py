@@ -1456,6 +1456,8 @@ async def _submit_message_phase3a(
         from diag_project.services.intro_messages import RAPPORT_EXPECTATION_QUESTION, RAPPORT_ROLE_QUESTION
         from diag_project.services.output_guard import echoes_user as _echoes
         from diag_project.services.output_guard import receive_sentence as _recv_sent, receive_sentences as _recv_multi
+        from diag_project.services.output_guard import is_question as is_question_g, replace_statements as _repl_stmts
+        from diag_project.services.output_guard import split_sentences as split_sentences_g
         _rc = state.get("rapport_turn_count", 0)
         _smalltalk = _rc == 1
 
@@ -1465,6 +1467,14 @@ async def _submit_message_phase3a(
         _recv = _take(clean_reply)
         if _recv != clean_reply.strip():
             logger.info("✂️ 라포 되받기 정리(%d자 → %d자)", len(clean_reply), len(_recv))
+        if _smalltalk:
+            # (2026-10-21) 되물음이 일·업무·역할·팀을 물으면(다음 턴 담당) 되물음을 지우고 되받기 1~2문장으로 끝낸다.
+            from diag_project.services.output_guard import smalltalk_followup_ok as _sf_ok
+            _q_last = next((x for x in reversed(split_sentences_g(_recv)) if is_question_g(x)), "")
+            if _q_last and not _sf_ok(_q_last):
+                _tm["work_q"] = 1
+                _recv = _recv_multi(_recv, max_statements=2, allow_question=False)
+                logger.info("✂️ 스몰톡 되물음이 업무·역할 질문 → 삭제: %r", _q_last[:40])
         if _echoes(_recv, request.content):
             _tm["echo"] = 1
             logger.info("🔁 라포 되받기가 리더 발화를 반복: %r → 재생성 1회", _recv[:40])
@@ -1483,8 +1493,8 @@ async def _submit_message_phase3a(
                 _recv = _e_recv
             else:
                 _tm["echo"] = 2
-                _recv = "그러셨군요."
-                logger.info("🔁 재생성 후에도 반복 → '그러셨군요.' 대체")
+                _recv = _repl_stmts(_recv, "그러셨군요.")   # (2026-10-21) 평서문만 대체, 되물음 보존
+                logger.info("🔁 재생성 후에도 반복 → 평서문만 '그러셨군요.' 대체")
         if _smalltalk:
             clean_reply = _recv
         else:
@@ -2335,6 +2345,7 @@ async def _submit_message_phase3a(
             "quote": int(_tm.get("quote") or 0), "semrep": int(_tm.get("semrep") or 0),
             "bridge": int(_tm.get("bridge") or 0), "one_q": int(_tm.get("one_q") or 0),
             "moment": int(_tm.get("moment") or 0), "anchor": _tm.get("anchor_render"),
+            "work_q": int(_tm.get("work_q") or 0),   # (2026-10-21) 스몰톡 되물음이 업무·역할 질문이라 삭제됨
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

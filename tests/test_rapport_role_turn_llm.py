@@ -64,8 +64,8 @@ def test_receive_sentence_drops_questions_and_caps_one():
 
 
 def test_echo_guard_detects_verbatim_repeat():
-    assert echoes_user("그럭저럭 지내고 계시는군요.", "그럭저럭 지내고 있어요")          # '그럭저럭지내고' 6자+
-    assert echoes_user("네, 오늘 하루도 평소처럼 업무를 보고 계시는군요.", "오늘 하루요? 원래 하던 일을 하고 있지요")   # (2026-10-21) 4자 '오늘하루' 반복
+    assert echoes_user("그럭저럭 지내고 계시는군요.", "그럭저럭 지내고 있어요")          # 명사구+서술부
+    assert not echoes_user("네, 오늘 하루도 평소처럼 업무를 보고 계시는군요.", "오늘 하루요? 원래 하던 일을 하고 있지요")   # 명사구만
     assert not echoes_user("평소대로 보내셨군요.", "오늘 하루요? 원래 하던 일을 하고 있지요")
     assert echoes_user("원래 하던 일을 하고 계셨군요.", "오늘 하루요? 원래 하던 일을 하고 있지요")   # '원래하던일을하고'
     assert not echoes_user("그러시군요.", "그럭저럭 지내고 있어요")
@@ -75,7 +75,7 @@ def test_echo_guard_detects_verbatim_repeat():
 
 def test_echo_guard_wired_and_logged():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
-    assert "_echoes(_recv, request.content)" in src and '_recv = "그러셨군요."' in src
+    assert "_echoes(_recv, request.content)" in src and '_repl_stmts(_recv, "그러셨군요.")' in src   # 평서문만 대체, 되물음 보존
     assert '"echo": int(_tm.get("echo") or 0)' in src
 
 

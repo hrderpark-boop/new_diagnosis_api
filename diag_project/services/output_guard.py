@@ -30,7 +30,8 @@ def split_sentences(text: str) -> list[str]:
 
 def is_question(sentence: str) -> bool:
     s = (sentence or "").strip()
-    return s.endswith("?") or bool(re.search(r"(까요|습니까|을까요|나요|시겠어요|시겠습니까|실까요)[.!?…]?$", s))
+    # (2026-10-21) "~시겠어요" 제외 — "분주하시겠어요" 같은 추측 문장이 질문으로 잘려 나갔다. 추측은 추측 규칙(프롬프트)이 맡는다.
+    return s.endswith("?") or bool(re.search(r"(까요|습니까|을까요|나요|시겠습니까|실까요)[.!?…]?$", s))
 
 
 # ── 1) ALIGN: 꼬리 질문 제거 ──
@@ -136,6 +137,8 @@ BANNED_PRAISE = [
     "탁월", "뛰어난", "뛰어나", "감탄", "대단하", "대단한", "존경", "모범적", "귀감", "완벽하",
     "놀라운", "놀랍", "역량이 돋보", "돋보입니다", "돋보이", "리더십이 빛", "빛나는", "귀한 경험",
     "소중한 경험", "값진", "멋진", "멋지", "훌륭", "깊이 공감합니다", "전적으로 공감",
+    # (2026-10-21) 챕터 종료 요약의 평가 어휘
+    "엿볼 수 있었", "엿보였", "고민과 노력", "노력이 느껴", "진심이 느껴", "역량을 보여",
     # 2026-09-17 보강(마무리 총평에서 재발): 인상적·돋보·선명하게 그려지는 등 평가적 총평
     "돋보", "인상적", "선명하게 그려", "그려지는 듯", "기준이 선명", "면모", "리더십이 느껴", "역량이 느껴",
     "저력", "내공", "진정한 리더", "리더로서의 자질",
@@ -243,7 +246,34 @@ def echoes_user(receive: str, user_text: str | None, n: int = 4) -> bool:
     r, u = _compact(body), _compact(user_text or "")
     if len(u) < n or not r:
         return False
-    return any(u[i:i + n] in r for i in range(len(u) - n + 1))
+    # (2026-10-21, 2차) 명사구 단독 재사용('하반기 교육 일정', '그럭저럭')은 허용. 리더 문장의 명사구 + 서술부(동사·어미)가
+    #   함께 그대로일 때만 반복 — 최장 공통 부분 문자열(n자 이상)에 서술부 표지가 들어 있어야 한다.
+    best = ""
+    for i in range(len(u)):
+        for j in range(i + max(n, len(best) + 1), len(u) + 1):
+            if u[i:j] in r:
+                best = u[i:j]
+            else:
+                break
+    return len(best) >= n and bool(_PREDICATE_RE.search(best))
+
+
+_PREDICATE_RE = re.compile(r"(하고|해서|했|하는|하며|하면|이에|있어|있는|있었|없어|없는|지내|몰려|되고|되는|됐|이고|인데|니까|려고|면서|"
+                           r"보내|지냈|했어|했지|하지|하네|거든|이라서|라서|어서|아서|구요|고요|네요|어요|아요|지요|죠|예요)")
+
+
+def smalltalk_followup_ok(question: str) -> bool:
+    """(2026-10-21) 스몰톡 되물음이 일·업무·역할·팀을 묻지 않는가(그건 다음 턴 담당)."""
+    return not _WORK_Q_RE.search(question or "")
+
+
+_WORK_Q_RE = re.compile(r"(업무|역할|담당|맡고|맡으|맡은|직무|직책|직급|프로젝트|무슨 일|어떤 일|어떤 분야|일로|일은|일이|일에|팀(은|이|을|에서|원|장)|회사에서|부서|조직)")
+
+
+def replace_statements(text: str, replacement: str = "그러셨군요.") -> str:
+    """평서문을 모두 replacement 하나로 바꾸고 되물음(마지막 질문)은 보존한다."""
+    qs = [s for s in split_sentences(text or "") if is_question(s)]
+    return f"{replacement} {qs[-1]}".strip() if qs else replacement
 
 
 def receive_sentences(text: str, max_statements: int = 2, allow_question: bool = True,

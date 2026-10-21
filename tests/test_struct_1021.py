@@ -30,6 +30,7 @@ def test_smalltalk_guide_allows_one_followup_from_leader_words():
     g = L._get_instruction_guide("RAPPORT_BUILDING", {"instruction_for_this_turn": "RAPPORT_BUILDING", "forced_rapport_category": "스몰톡",
                                                        "current_hour_text": "오후 4시", "current_time_tone": "활기찬 오후", "last_user_response": "요즘 바빠요"})
     assert "스몰톡 받기" in g and "되물음 1개" in g and "리더님 발화에서 나온 것만" in g
+    assert "일·업무·역할·팀을 묻지 않는다" in g
     assert "담당 업무·기대 질문은 다음 턴" in g
     assert "요즘 바빠요" not in g.split("리더님이 방금")[0]      # 입력과 겹치는 예시 없음(금지·허용 예 모두)
     assert "그럭저럭" not in g
@@ -49,12 +50,25 @@ def test_receive_sentences_and_fixed_bridge():
     assert "괜찮" not in RAPPORT_INTRO_BRIDGE_NO_EXPECTATION and RAPPORT_INTRO_BRIDGE_NO_EXPECTATION.startswith("네, 그러면")
 
 
-def test_echo_guard_4chars_but_quote_handles_allowed():
+def test_echo_guard_noun_reuse_allowed_predicate_copy_flagged():
     u = "그럭저럭 지내고 있어요"
-    assert G.echoes_user("그럭저럭 지내고 계시는군요.", u)
+    assert G.echoes_user("그럭저럭 지내고 계시는군요.", u)                 # 명사구+서술부 그대로
+    assert not G.echoes_user("그럭저럭 보내셨군요.", u)                   # 명사구만 재사용 → 허용
     assert not G.echoes_user("'그럭저럭'이라 하시니, 바쁜 쪽이세요 아니면 지루한 쪽이세요?", u)
     assert not G.echoes_user("그럭저럭이라는 말씀이 편하게 들리네요.", u)
     assert not G.echoes_user("괜찮다고 하시니 다행이네요.", u)
+    u2 = "바쁜 쪽이에요. 하반기 교육 일정이 몰려서요."
+    assert not G.echoes_user("하반기 교육 일정 때문에 많이 분주하시겠어요.", u2)   # 명사구 재사용
+    assert G.echoes_user("하반기 교육 일정이 몰려서 바쁘시군요.", u2)            # '몰려서'까지 그대로
+
+
+def test_question_ending_geteoyo_not_question_and_smalltalk_rules():
+    assert not G.is_question("분주하시겠어요.") and G.is_question("들려주시겠어요?") and G.is_question("어떠셨을까요")
+    assert G.replace_statements("그럭저럭 보내셨군요. 혹시 점심은 드셨어요?") == "그러셨군요. 혹시 점심은 드셨어요?"
+    assert G.replace_statements("그럭저럭 보내셨군요.") == "그러셨군요."
+    assert G.smalltalk_followup_ok("점심은 드셨어요?") and G.smalltalk_followup_ok("바쁜 쪽이세요 아니면 지루한 쪽이세요?")
+    assert not G.smalltalk_followup_ok("요즘 맡고 계신 일은 어떤 쪽이에요?") and not G.smalltalk_followup_ok("팀은 몇 분이세요?")
+    assert "엿볼 수 있었" in G.find_praise("리더님의 고민과 노력을 엿볼 수 있었습니다.")
 
 
 # ── B. 앵커 접착 ──
@@ -93,6 +107,7 @@ def test_state_leak_guard():
 def test_chapter_end_summary_contract():
     g = _g("CHAPTER_READY_TO_END", no_yield_forced=False)
     assert "들은 것 요약(2문장, 사실만)" in g and "시스템이 붙입니다" in g
+    assert "고민과 노력을 엿볼 수 있었습니다" in g        # 평가 어휘 금지 예
     assert chapter_end_bridge("성과관리") == "이제 '성과관리'로 이어가 보겠습니다."
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
     code_only = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
