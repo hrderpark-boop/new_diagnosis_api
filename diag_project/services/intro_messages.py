@@ -82,8 +82,9 @@ def definition_question(chapter_name: str) -> str:
 
 def pause_suggestion_text(elapsed_min: int) -> str:
     """(2026-10-22 P1-1) 일시정지 제안 안내 — 질문 없음. 선택은 프론트 버튼('계속 진행하기'/'다음에 하기')이 받는다."""
-    return (f"리더님, 한 자리에서 {int(elapsed_min)}분째 이어오고 있습니다. 오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. "
-            "이어가실지, 다음에 하실지 아래에서 골라 주세요.")
+    _lead = (f"리더님, 한 자리에서 {int(elapsed_min)}분째 이어오고 있습니다." if int(elapsed_min) >= 5
+             else "리더님, 한 자리에서 꽤 길게 이어오고 있습니다.")   # 턴 수 기준 제안(경과 분이 작을 때)은 분을 말하지 않는다
+    return f"{_lead} 오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. 이어가실지, 다음에 하실지 아래에서 골라 주세요."
 
 
 def chapter_end_bridge(next_topic: str) -> str:

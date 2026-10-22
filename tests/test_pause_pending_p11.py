@@ -29,6 +29,7 @@ def test_pause_turn_text_has_receive_and_notice_but_no_question():
     text = f"{body}\n\n{pause_suggestion_text(47)}"
     assert body == "두 달에 걸쳐 새 체계로 전환하셨군요."
     assert not has_question(text) and "47분째" in text and "골라 주세요" in text
+    assert "0분째" not in pause_suggestion_text(0) and "꽤 길게" in pause_suggestion_text(0)
 
 
 def test_resume_pending_only_after_suggest_or_pause_turn():
