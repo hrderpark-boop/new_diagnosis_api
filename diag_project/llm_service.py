@@ -344,6 +344,35 @@ def _apply_sliding_window(compressed_history: list[dict]) -> list[dict]:
     return summaries + recent_turns
 
 
+def _normalize_sub_assessments(raw: Any, sub_indicators: list) -> Dict[str, Dict[str, Any]]:
+    """(2026-10-22 P0) sub_assessments 를 {하위역량 이름: {...}} 로. Claude 구조화 출력은 배열([{name, ...}]),
+    Gemini 프롬프트 템플릿은 dict. 이름은 공백·괄호 차이를 무시하고 맞춘다(모델이 '변화관리' 처럼 줄여 써도)."""
+    if isinstance(raw, dict):
+        items = [dict(v, name=k) for k, v in raw.items() if isinstance(v, dict)]
+    elif isinstance(raw, list):
+        items = [x for x in raw if isinstance(x, dict)]
+    else:
+        return {}
+
+    def _norm(t: str) -> str:
+        import re as _re
+        return _re.sub(r"[\s()（）·/]", "", str(t or "")).lower()
+
+    out: Dict[str, Dict[str, Any]] = {}
+    subs = list(sub_indicators or [])
+    for it in items:
+        nm = str(it.get("name") or "").strip()
+        target = next((s for s in subs if s == nm), None)
+        if target is None and nm:
+            n2 = _norm(nm)
+            target = next((s for s in subs if _norm(s) == n2), None) \
+                or next((s for s in subs if n2 and (n2 in _norm(s) or _norm(s) in n2)), None)
+        if target is None or target in out:
+            continue
+        out[target] = {k: v for k, v in it.items() if k != "name"}
+    return out
+
+
 def _sanitize_gap_analysis(text: str) -> str:
     """Gap Analysis 금지어 필터 (LLM 프롬프트 무시 대비 하드 가드).
 
@@ -1633,7 +1662,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             # E-2b 취합: 표본별 sub_assessments 파싱 → 탐지=합집합·레벨=다수결.
             _per_sample: list = []
             for _s in _samples:
-                _assess = _s.get("sub_assessments") or {}
+                _assess = _normalize_sub_assessments(_s.get("sub_assessments"), sub_indicators)
+                _s["sub_assessments"] = _assess
                 _one: Dict[str, Dict[str, Any]] = {}
                 for _sub in sub_indicators:
                     a = _assess.get(_sub) or {}

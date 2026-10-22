@@ -191,6 +191,24 @@ async def get_all_reports(db: AsyncSession = Depends(get_db)):
 # --------------------------------------------------------------------------
 # [0] 분석 진행 상태 (GET /{session_id}/progress) — item6
 # --------------------------------------------------------------------------
+REPORT_FAIL_LIMIT = 3
+
+
+def next_analysis_marker(prev: dict | None, error_competencies) -> dict:
+    """(2026-10-22 P0) 분석 오염 마커 전이. fail_count 누적, REPORT_FAIL_LIMIT 회째부터 status=failed + error_id.
+    error_id 는 로그·/admin/alerts·프론트 안내에 같이 찍혀 대조용."""
+    import uuid as _uuid
+    prev = dict(prev or {})
+    n = int(prev.get("fail_count") or 0) + 1
+    stage = ",".join(error_competencies) if isinstance(error_competencies, (list, tuple)) else str(error_competencies or "unknown")
+    out = {"status": "degraded", "error_competencies": error_competencies, "stage": stage,
+           "fail_count": n, "at": datetime.now().isoformat()}
+    if n >= REPORT_FAIL_LIMIT:
+        out["status"] = "failed"
+        out["error_id"] = prev.get("error_id") or _uuid.uuid4().hex[:12]
+    return out
+
+
 @router.get("/{session_id}/progress")
 async def get_analysis_progress(session_id: str):
     """analyze 진행 상태 {stage, done, total, label, started_at, elapsed_s}.
@@ -277,13 +295,15 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db)):
         _sess = await db.get(DiagnosisSession, target_uuid)
         _la = ((getattr(_sess, "self_assessment_data", None) or {})
                .get("last_analysis") or {}) if _sess else {}
-        _status = _la.get("status")  # "degraded" | None(분석 중)
+        _status = _la.get("status")  # "degraded" | "failed"(2026-10-22, 3회 실패 확정) | None(분석 중)
         raise HTTPException(
             status_code=404,
             detail={
                 "message": "Report not ready",
                 "analysis_status": _status or "analyzing",
                 "reason": _la.get("error_competencies"),
+                "error_id": _la.get("error_id"),
+                "fail_count": _la.get("fail_count"),
                 # 원장 보존 → 재시도 실패해도 이어하기 가능
                 "resumable": True,
             })
@@ -679,19 +699,28 @@ async def _analyze_session(session_id, session_uuid, db, llm, progress,
         #   '분석 중(계속 대기)'과 '오염(재시도 필요)'을 구분할 수 있게.
         from sqlalchemy.orm.attributes import flag_modified as _fm_deg
         _sd = dict(session.self_assessment_data or {})
-        _sd["last_analysis"] = {
-            "status": "degraded",
-            "error_competencies": _errc,
-            "at": datetime.now().isoformat(),
-        }
+        _la = next_analysis_marker(_sd.get("last_analysis"), _errc)
+        _sd["last_analysis"] = _la
         session.self_assessment_data = _sd
         _fm_deg(session, "self_assessment_data")
         db.add(session)
         await db.commit()
-        raise HTTPException(
-            status_code=503,
-            detail=("AI 분석이 일시적으로 실패했습니다(크레딧/장애 의심). "
-                    "리포트를 저장하지 않았으며 이어서 재분석할 수 있습니다."))
+        if _la["status"] == "failed":
+            # (2026-10-22 P0) 3회째 실패: '준비 중' 반복 대신 운영자 알림 + 프론트에 종료 상태. 무한 재시도 금지.
+            from diag_project.services.ops_monitor import record_report_failure
+            record_report_failure(session_id, _la["stage"], _la["error_id"], _la["fail_count"])
+            logger.error("🚨 리포트 생성 실패 확정(fail_count=%d) session=%s stage=%s error_id=%s",
+                         _la["fail_count"], session_id, _la["stage"], _la["error_id"])
+            raise HTTPException(status_code=503, detail={
+                "message": "리포트 생성에 문제가 있어 운영자에게 알렸습니다. 대화 내용은 저장되어 있습니다.",
+                "analysis_status": "failed", "error_id": _la["error_id"], "fail_count": _la["fail_count"],
+                "stage": _la["stage"], "resumable": True,
+            })
+        raise HTTPException(status_code=503, detail={
+            "message": ("AI 분석이 일시적으로 실패했습니다(크레딧/장애 의심). "
+                        "리포트를 저장하지 않았으며 이어서 재분석할 수 있습니다."),
+            "analysis_status": "degraded", "fail_count": _la["fail_count"], "stage": _la["stage"], "resumable": True,
+        })
 
     # total_score 는 파이프라인(scoring.overall_score)이 이미 계산해 준 값만 쓴다.
     #   H2: 과거 폴백 `sum(radar_chart.values())/len` 은 radar 값이 미측정(None)
@@ -724,7 +753,9 @@ async def _analyze_session(session_id, session_uuid, db, llm, progress,
 
     # B: 리포트 정상 저장 → 이전 degraded 마커가 있으면 정리(stale 방지).
     _sd_ok = dict(session.self_assessment_data or {})
-    if _sd_ok.get("last_analysis", {}).get("status") == "degraded":
+    if _sd_ok.get("last_analysis", {}).get("status") in ("degraded", "failed"):
+        from diag_project.services.ops_monitor import clear_report_failure
+        clear_report_failure(session_id)
         _sd_ok["last_analysis"] = {"status": "ok",
                                    "at": datetime.now().isoformat()}
         session.self_assessment_data = _sd_ok

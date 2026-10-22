@@ -34,6 +34,23 @@ def recent_5xx(minutes: int = 60) -> list[dict]:
             for (t, p, s, e) in _ERRORS if t >= cut]
 
 
+# (2026-10-22 P0) 리포트 생성 실패(분석 오염 3회) 알림 — /admin/alerts 배너용. 프로세스 메모리(최근 20건).
+REPORT_FAILURES: list[dict] = []
+
+
+def record_report_failure(session_id: str, stage: str, error_id: str, fail_count: int) -> dict:
+    rec = {"at": datetime.utcnow().isoformat(timespec="seconds"), "session_id": str(session_id), "stage": stage,
+           "error_id": error_id, "fail_count": int(fail_count)}
+    REPORT_FAILURES.append(rec)
+    del REPORT_FAILURES[:-20]
+    return rec
+
+
+def clear_report_failure(session_id: str) -> None:
+    sid = str(session_id)
+    REPORT_FAILURES[:] = [r for r in REPORT_FAILURES if r["session_id"] != sid]
+
+
 def alerts_snapshot() -> dict:
     recent = recent_5xx(60)
     return {
@@ -42,6 +59,9 @@ def alerts_snapshot() -> dict:
         "errors_5xx_threshold": ALERT_5XX_THRESHOLD,
         "recent_5xx": recent[-5:],
         "synthetic_check": dict(SYNTHETIC),
+        # (2026-10-22 P0) 리포트 생성 실패(3회) 세션 — 운영자 확인 필요
+        "report_failed": list(REPORT_FAILURES),
+        "report_failed_alert": bool(REPORT_FAILURES),
     }
 
 

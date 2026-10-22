@@ -161,10 +161,12 @@ def test_schemas_are_claude_compatible():
                 S.deep_analysis_schema([]), S.level_gate_schema(), S.summary_schema()):
         S.assert_claude_compatible(sch)
     assert set(S.evidence_extract_schema(keys)["properties"]) == set(keys)
+    # (2026-10-22 P0) sub_assessments 는 배열 — 키 9개 object 는 Claude grammar 한도 초과(사람관리 400)
     deep = S.deep_analysis_schema(["지표A"])
-    assert set(deep["properties"]["sub_assessments"]["properties"]) == {"지표A"}
-    assert deep["properties"]["sub_assessments"]["properties"]["지표A"]["properties"]["level"] == \
-        {"anyOf": [{"type": "integer"}, {"type": "null"}]}
+    item = deep["properties"]["sub_assessments"]["items"]
+    assert deep["properties"]["sub_assessments"]["type"] == "array"
+    assert set(item["properties"]) == {"name", "measured", "level", "evidence", "consistency_flag"}
+    assert item["properties"]["level"] == {"anyOf": [{"type": "integer"}, {"type": "null"}]}
 
 
 # ── 응답 해석 ─────────────────────────────────────────────────────────────────

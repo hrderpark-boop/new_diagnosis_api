@@ -44,9 +44,14 @@ def deep_analysis_schema(sub_indicators: List[str] | None) -> Dict[str, Any]:
     sub_assessments 의 키는 하위역량 이름(한글). 비어 있으면 템플릿과 같은 자리표시자를 쓴다
     (_build_sub_scores_json_template 참조).
     """
-    names = list(sub_indicators) if sub_indicators else ["핵심지표1", "핵심지표2"]
+    # (2026-10-22 P0) sub_assessments 는 '하위역량 이름을 키로 한 object' 가 아니라 '배열'이다.
+    #   사람관리(하위역량 9개)에서 키 9개 × object 가 Claude 구조화 출력 grammar 한도를 넘어 400
+    #   ("The compiled grammar is too large")이 났다 — 재현: 9개 4,862B 거부, 4개 3,141B 통과, 배열 2,041B 통과.
+    #   name 은 자유 문자열(프롬프트가 이름을 지정) → llm_service 가 dict 로 정규화한다(_normalize_sub_assessments).
+    del sub_indicators  # 배열 형태는 하위역량 수와 무관
     step = _obj({"description": _STR, "evidence": _arr(_STR)})
     sub = _obj({
+        "name": _STR,
         "measured": _BOOL,
         "level": _INT_OR_NULL,
         "evidence": _arr(_STR),
@@ -58,7 +63,7 @@ def deep_analysis_schema(sub_indicators: List[str] | None) -> Dict[str, Any]:
             "rubric_base": _NUM, "star_depth_bonus": _NUM,
             "confidence_adj": _NUM, "final": _NUM,
         }),
-        "sub_assessments": _obj({n: sub for n in names}),
+        "sub_assessments": _arr(sub),
         "strength_point": _STR,
         "growth_point": _STR,
         "gap_analysis": _STR,
