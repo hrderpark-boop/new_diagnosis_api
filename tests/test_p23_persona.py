@@ -47,7 +47,9 @@ def test_align_topic_bridge_and_phrases():
     assert set(SUBCOMPETENCY_TOPIC_PHRASE) == set(SUBCOMPETENCY_ANCHOR_QUESTIONS)
     for k, v in SUBCOMPETENCY_TOPIC_PHRASE.items():
         assert v.endswith("쪽") and "제시" not in v and "사고" not in v, k        # 이름 노출 없이 설명어
-    assert align_topic_bridge("vision_sharing") == "먼저 방향을 세우고 반신반의하는 팀원을 설득하셨던 쪽부터 볼게요."
+    assert align_topic_bridge("vision_sharing") == "먼저 방향을 세우고 사람을 모으는 쪽부터 볼게요."
+    # 설명어는 앵커 문장과 겹치지 않게 짧게(앵커 핵심어 '반신반의' 미포함)
+    assert all(len(v) <= 20 and "반신반의" not in v for v in SUBCOMPETENCY_TOPIC_PHRASE.values())
     assert align_topic_bridge(None).startswith("먼저 ")
     body = "저희는 이렇게 봅니다.\n· 비전 제시 및 공유\n· 전략적 사고\n\n'효율'이라는 말씀, 그게 시험받았던 장면부터 들어보고 싶네요."
     out, n = G.strip_align_tail_statements(body)

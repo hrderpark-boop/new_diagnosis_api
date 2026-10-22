@@ -2292,6 +2292,16 @@ async def _submit_message_phase3a(
                 _tm["honorific"] = 1
                 logger.info("🗣️ '리더님,' 문두 호칭 반복 → 제거")
 
+    # 8-o. (2026-10-22) 최종 '한 턴 한 질문' — 8-n 입버릇 재생성·감정 재생성이 바꾼 본문에도 질문이 2개 이상이면 마지막만 남긴다.
+    if (system_override_text is None and not _llm_error and clean_reply and not needs_user_decision
+            and instruction_used not in ("DIAGNOSIS_INTRO", "CHAPTER_READY_TO_END", "USER_REQUESTS_PAUSE", "AWAIT_NEXT_CHAPTER_CHOICE",
+                                         "COMPETENCY_ALIGN", "STAR_COMPLETE_NEW_EVENT")):
+        from diag_project.services.output_guard import keep_last_question as _klq_o
+        clean_reply, _n_qo = _klq_o(clean_reply)
+        if _n_qo:
+            _tm["one_q"] = int(_tm.get("one_q") or 0) + _n_qo
+            logger.info("✂️ 최종 한 턴 한 질문: %d문장 제거", _n_qo)
+
     # 8-m. (2026-10-22 P2-0) 리더 종료 요청 + 넓이 미충족: 되받기 한 문장 + "하나만 더 여쭤봐도 될까요?" + 다음 미탐색 앵커 1개.
     #   원장은 기록하지 않는다 — 답하면 다음 프로브 스텝이 같은 타겟을 골라 기록하고, 거절하면 미탐색으로 남는다.
     if instruction_used == "CHAPTER_ONE_MORE_ASK" and system_override_text is None and not _llm_error:
