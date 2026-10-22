@@ -80,6 +80,42 @@ def definition_question(chapter_name: str) -> str:
     return f"리더님께서는 {with_josa(chapter_name, '을/를', quote=True)} 무엇이라고 생각하시나요?"
 
 
+# (2026-10-22 P2-3) 전환 턴 다리 문장 — 페르소나별 3개. 되받기 뒤, 앵커 앞. 단독 금지(되받기가 먼저).
+TRANSITION_BRIDGES = {
+    "Ella": ["여기까지 그 장면은 잘 그려졌어요. 결이 다른 장면도 하나 보고 싶어요.",
+             "그 이야기는 여기서 한 번 접어 둘게요. 조금 다른 자리의 이야기도 듣고 싶어요.",
+             "그 장면은 충분히 선명해졌어요. 이번엔 다른 결의 장면으로 가 볼게요."],
+    "Jessica": ["그 건은 정리됐습니다. 다른 축의 장면 하나 더 보겠습니다.",
+                "여기까지 확인했습니다. 각도를 바꿔 보겠습니다.",
+                "이 사례는 여기서 접고, 다른 장면으로 넘어가겠습니다."],
+    "Olivia": ["그 장면은 여기까지 두고, 반대편 각도의 이야기를 하나 꺼내 볼게요.",
+               "흥미로운 지점은 충분히 들었어요. 이번엔 전혀 다른 결로 가 볼게요.",
+               "그 이야기는 잠시 접고, 다른 종류의 장면을 하나 열어 볼게요."],
+    "Daniel": ["그 장면은 여기까지 잘 들었습니다. 결이 다른 경험도 하나 여쭙겠습니다.",
+               "이 이야기는 여기서 매듭짓고, 다른 장면으로 옮겨 가겠습니다.",
+               "충분히 들었습니다. 이번에는 다른 자리의 경험을 여쭙겠습니다."],
+    "Michael": ["그 장면은 여기까지. 이번엔 다른 현장으로 바로 가 보죠.",
+                "좋습니다, 그 이야기는 접어 두고 결이 다른 장면 하나 더 가 보겠습니다.",
+                "여기까지 잘 들었습니다. 다음 장면으로 넘어가 보죠."],
+    "Lucas": ["그 장면은 정리됐습니다. 다른 축 하나 보겠습니다.",
+              "여기까지입니다. 각도를 바꾸겠습니다.",
+              "이 사례는 여기서 접습니다. 다른 장면으로요."],
+}
+
+
+def transition_bridge(persona_name: str | None, pos: int = 0) -> str:
+    key = (persona_name or "").split(" ")[0]
+    pool = TRANSITION_BRIDGES.get(key) or TRANSITION_BRIDGES["Ella"]
+    return pool[pos % len(pool)]
+
+
+def align_topic_bridge(sub_key: str | None, sub_name: str | None = None) -> str:
+    """(2026-10-22 P2-3) ALIGN 끝 고정 다리 — '먼저 ~쪽부터 볼게요'. 하위역량 이름은 노출하지 않고 설명어로."""
+    from diag_project.data.competencies import SUBCOMPETENCY_TOPIC_PHRASE
+    phrase = SUBCOMPETENCY_TOPIC_PHRASE.get(sub_key or "") or "실제로 겪으신 장면 쪽"
+    return f"먼저 {phrase}부터 볼게요."
+
+
 def pause_suggestion_text(elapsed_min: int) -> str:
     """(2026-10-22 P1-1) 일시정지 제안 안내 — 질문 없음. 선택은 프론트 버튼('계속 진행하기'/'다음에 하기')이 받는다."""
     _lead = (f"리더님, 한 자리에서 {int(elapsed_min)}분째 이어오고 있습니다." if int(elapsed_min) >= 5

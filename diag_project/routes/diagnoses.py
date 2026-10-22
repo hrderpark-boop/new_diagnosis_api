@@ -1520,8 +1520,11 @@ async def _submit_message_phase3a(
         _rc = state.get("rapport_turn_count", 0)
         _smalltalk = _rc == 1
 
+        from diag_project.services.output_guard import persona_lead_cap as _plc
+        _cap_p = _plc((state.get("coach_persona") or {}).get("name"))   # (2026-10-22 P2-3) 페르소나별 되받기 상한
+
         def _take(txt: str) -> str:
-            return _recv_multi(txt, max_statements=2, allow_question=True) if _smalltalk else _recv_sent(txt)
+            return _recv_multi(txt, max_statements=_cap_p, allow_question=True) if _smalltalk else _recv_sent(txt)
 
         _recv = _take(clean_reply)
         if _recv != clean_reply.strip():
@@ -1653,11 +1656,17 @@ async def _submit_message_phase3a(
             clean_reply, _list_added = ensure_align_list(clean_reply, state.get("all_subcompetencies") or [])
             if _list_added:
                 logger.info("📋 ALIGN 하위역량 목록 누락 → 삽입")
-            if not align_has_bridge(clean_reply):
-                _br = align_default_bridge((state.get("coach_persona") or {}).get("name"), request.content,
-                                           pos=len(asked_for_chapter(session.self_assessment_data, chapter) or []))
-                clean_reply = f"{clean_reply.rstrip()}\n\n{_br}"
-                logger.info("🌉 ALIGN 다리 삽입: %s", _br)
+            # (2026-10-22 P2-3) ALIGN 끝 다리는 고정: LLM 이 목록 뒤에 쓴 평서문은 지우고 "먼저 ~쪽부터 볼게요." 를 붙인다
+            #   (하위역량 이름 미노출·설명어). 과거의 페르소나 풀(align_default_bridge)은 쓰지 않는다.
+            from diag_project.data.competencies import find_sub_key_by_name as _fsk_ab
+            from diag_project.services.intro_messages import align_topic_bridge as _atb
+            from diag_project.services.output_guard import strip_align_tail_statements as _sats
+            clean_reply, _n_llm_br = _sats(clean_reply)
+            if _n_llm_br:
+                logger.info("✂️ ALIGN 목록 뒤 LLM 다리 %d문장 제거", _n_llm_br)
+            _br = _atb(_fsk_ab(chapter, current_target_sub), current_target_sub)
+            clean_reply = f"{clean_reply.rstrip()}\n\n{_br}"
+            del align_has_bridge, align_default_bridge
             _anchor = strip_frame_lead(_anchor)
             clean_reply = f"{clean_reply.rstrip()}\n\n{_anchor}"
             # 다음 턴 decider 가 CHAPTER_OPENING 을 다시 내지 않도록 원장에 표식.
@@ -2050,6 +2059,11 @@ async def _submit_message_phase3a(
             clean_reply, _n_m = _fmq(clean_reply)
             if _n_m:
                 _tm["moment"] = _n_m
+            # (2026-10-22 P2-3) 되받기 상한을 페르소나별로(Ella·Daniel 2, Jessica·Lucas 1, Olivia·Michael 2) — 관찰 문장 우선 보존
+            from diag_project.services.output_guard import cap_leads_persona as _clp, persona_lead_cap as _plc2
+            clean_reply, _n_cap = _clp(clean_reply, _plc2((state.get("coach_persona") or {}).get("name")), _llm_user_text)
+            if _n_cap:
+                _tm["lead_cap"] = _n_cap
             # (2026-10-22 P2-2) 감정·표정·마음속 질문은 챕터당 1회 — 초과면 재생성 1회, 그래도면 행동 질문으로 교체
             from diag_project.services.output_guard import is_emotion_question as _ieq
             from diag_project.services.traversal import ACTION_FALLBACK_QUESTION as _AFQ, is_action_probe_text as _iapt
@@ -2142,6 +2156,12 @@ async def _submit_message_phase3a(
                 else:
                     _tm["bridge"] = 2
                     _body = _ATR_j[0]
+            # (2026-10-22 P2-3) 다리 문장 필수 — 되받기만 있으면 페르소나별 다리 한 문장을 붙인다(단독 전환 문장 금지).
+            _stm_n = len([x for x in split_sentences(_body) if x.strip()])
+            if _stm_n < 2:
+                from diag_project.services.intro_messages import transition_bridge as _tbr
+                _body = f"{_body} {_tbr((state.get('coach_persona') or {}).get('name'), len(asked_for_chapter(session.self_assessment_data, chapter) or []))}".strip()
+                _tm["bridge_added"] = 1
             _ar_q, _ar_mode = await _render_anchor_for(current_target_sub)
             _tm["anchor_render"] = _ar_mode
             clean_reply = f"{_body} {_ar_q}".strip()
@@ -2593,6 +2613,8 @@ async def _submit_message_phase3a(
             # (2026-10-22 P2-2) sar_full: S-A-R 완비 답변(탐침 1회 후 전진) · emotion 1 재생성/2 교체 · action_fix: A 강제 고정 질문
             "sar_full": int(_tm.get("sar_full") or 0), "emotion": int(_tm.get("emotion") or 0),
             "action_fix": int(_tm.get("action_fix") or 0),
+            # (2026-10-22 P2-3) lead_cap: 페르소나 상한으로 지운 되받기 문장 수 · bridge_added: 전환 턴에 페르소나 다리 삽입
+            "lead_cap": int(_tm.get("lead_cap") or 0), "bridge_added": int(_tm.get("bridge_added") or 0),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

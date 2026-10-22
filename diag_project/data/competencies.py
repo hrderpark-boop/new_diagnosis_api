@@ -717,6 +717,37 @@ SUBCOMPETENCY_MUST_ASK: dict[str, list[str]] = {
 }
 
 
+# (2026-10-22 P2-3) ALIGN 끝 다리용 설명어 — 하위역량 이름 대신 '~쪽' 으로. "먼저 {phrase}부터 볼게요."
+SUBCOMPETENCY_TOPIC_PHRASE: dict[str, str] = {
+    "vision_sharing": "방향을 세우고 반신반의하는 팀원을 설득하셨던 쪽",
+    "strategic_thinking": "당장보다 내년을 보고 결정하셨던 쪽",
+    "change_management": "무엇인가 바꾸려다 반발을 만나셨던 쪽",
+    "innovative_thinking": "늘 하던 방식이 답답해 다른 방법을 써보셨던 쪽",
+    "goal_setting_sharing": "위에서 내려온 버거운 목표를 팀에 설명하셨던 쪽",
+    "kpi_management": "성과를 무엇으로 잴지 팀원과 정하셨던 쪽",
+    "performance_evaluation_feedback": "기대에 못 미친 팀원에게 피드백을 건네셨던 쪽",
+    "problem_solving": "원인은 모르는데 시간은 없던 문제를 푸셨던 쪽",
+    "execution_power": "계획대로 안 풀리는 일을 끝까지 밀어붙이셨던 쪽",
+    "conflict_management": "팀원 사이 갈등에 직접 끼어드셨던 쪽",
+    "trust_building": "깨진 신뢰를 다시 쌓으셨던 쪽",
+    "teamwork_promotion": "서로 안 도와주던 팀을 같이 일하게 만드셨던 쪽",
+    "coaching_feedback": "자신감 없는 팀원을 옆에서 키우셨던 쪽",
+    "delegation": "직접 하고 싶은 일을 팀원에게 맡기셨던 쪽",
+    "motivation": "지쳐서 손을 놓은 팀원을 다시 움직이게 하셨던 쪽",
+    "empathy_emotional_intelligence": "개인 사정으로 힘든 팀원을 배려하셨던 쪽",
+    "communication": "나쁜 소식을 팀에 직접 전하셨던 쪽",
+    "talent_development": "잘하는 팀원에게 일부러 어려운 일을 맡기셨던 쪽",
+    "work_planning_organization": "일이 한꺼번에 몰렸을 때 순서를 다시 짜셨던 쪽",
+    "resource_time_management": "사람도 예산도 부족한데 결과를 내셔야 했던 쪽",
+    "work_division": "한 사람에게 몰린 일을 다시 나누셨던 쪽",
+    "work_improvement_standardization": "비효율인 줄 알면서 하던 절차를 바꾸셨던 쪽",
+    "digital_literacy": "새 시스템이나 툴을 팀에 쓰게 만드셨던 쪽",
+    "self_awareness": "내 방식에 대한 예상 못 한 반응을 받고 바꾸셨던 쪽",
+    "resilience": "크게 실패한 뒤 다시 해보려 하셨던 쪽",
+    "centrality": "갑작스러운 위기에서 침착함을 지키셨던 쪽",
+}
+
+
 def get_anchor_questions(sub_key: str) -> list[str]:
     """하위역량 키 → 대상자에게 던지는 앵커 질문 2개(없으면 빈 리스트)."""
     return list(SUBCOMPETENCY_ANCHOR_QUESTIONS.get(sub_key, []))

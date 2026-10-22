@@ -413,6 +413,78 @@ def is_transition_only(text: str) -> bool:
     return all(_TRANSITION_ONLY_RE.match(s) for s in stmts)
 
 
+# ── 4-c3) (2026-10-22 P2-3) 페르소나별 되받기 상한 · 관찰 문장 ──
+PERSONA_LEAD_CAP = {"Ella": 2, "Daniel": 2, "Jessica": 1, "Lucas": 1, "Olivia": 2, "Michael": 2}
+_OBS_PARTICLE_RE = re.compile(r"(으로|에서|에게|께서|이라|라고|이라고|과|와|은|는|이|가|을|를|의|에|도|로|만|까지|부터|처럼|보다|랑|이랑)$")
+_OBS_STOP = {"리더님", "리더", "사이", "쪽", "것", "거", "때", "경우", "부분", "이야기", "말씀", "생각", "장면", "순간", "분", "번", "점"}
+
+
+def persona_lead_cap(persona_name: str | None) -> int:
+    key = (persona_name or "").split(" ")[0]
+    return PERSONA_LEAD_CAP.get(key, 2)
+
+
+def _sentence_nouns(sentence: str) -> list[str]:
+    out = []
+    for w in re.sub(r"[.!?…,\"'“”‘’()]", " ", sentence or "").split():
+        w0 = re.sub(r"[^가-힣a-zA-Z0-9]", "", w)
+        if re.search(r"(하는|되는|한|된|할|될|하셨|셨|였|있|없|했|던|시|겠|죠|요|네|다|지|고|서|면|며|워|운|웠)$", w0):
+            continue   # 동사·형용사 활용형(원형 기준)
+        w1 = _OBS_PARTICLE_RE.sub("", w0)
+        if len(w1) >= 2 and w1 not in _OBS_STOP:
+            out.append(w1)
+    return out
+
+
+def is_observation(sentence: str, user_text: str | None) -> bool:
+    """(2026-10-22 P2-3) 관찰 문장: 리더 발화에 있는 사실·대비를 재구성한 문장 — 문장의 명사가 전부 리더 발화에서 왔는가.
+    ('속도를 원하는 선임과 준비를 택한 리더님 사이였군요' 는 추측이 아니라 관찰)."""
+    nouns = _sentence_nouns(sentence)
+    if not nouns:
+        return False
+    u = _compact(user_text or "")
+    return all(_compact(n) in u for n in nouns)
+
+
+def cap_leads_persona(text: str, cap: int, user_text: str | None) -> tuple[str, int]:
+    """질문 앞 평서문(되받기)을 페르소나 상한까지만 남긴다 — 관찰 문장을 먼저 남기고, 나머지는 앞에서부터."""
+    sents = split_sentences(text or "")
+    leads = [s for s in sents if not is_question(s)]
+    if len(leads) <= cap:
+        return text, 0
+    keep = [s for s in leads if is_observation(s, user_text)][:cap]
+    for s in leads:
+        if len(keep) >= cap:
+            break
+        if s not in keep:
+            keep.append(s)
+    out = text
+    for s in leads:
+        if s not in keep:
+            out = out.replace(s, "", 1)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out, len(leads) - len(keep)
+
+
+def strip_align_tail_statements(text: str) -> tuple[str, int]:
+    """(2026-10-22 P2-3) ALIGN: 마지막 '· ' 목록 줄 뒤의 평서문(LLM 다리)을 지운다 — 다리는 시스템이 붙인다."""
+    lines = (text or "").rstrip().split("\n")
+    last_list = max((i for i, l in enumerate(lines) if l.strip().startswith("·")), default=None)
+    if last_list is None:
+        return text, 0
+    head = "\n".join(lines[: last_list + 1])
+    tail = "\n".join(lines[last_list + 1:])
+    sents = [s for s in split_sentences(tail) if s.strip()]
+    kept = [s for s in sents if is_question(s)]
+    removed = len(sents) - len(kept)
+    if removed == 0:
+        return text, 0
+    out = head + ("\n\n" + " ".join(kept) if kept else "")
+    return out.strip(), removed
+
+
 # ── 4-c2) (2026-10-22 P2-2) 감정·표정·마음속 질문 — 챕터당 1회 상한 ──
 _EMOTION_Q_RE = re.compile(r"마음|감정|기분|표정|느끼|느낌|심정|속으로|불안|안도|부담감|어떤 생각이 드")
 
