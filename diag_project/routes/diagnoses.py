@@ -1051,6 +1051,7 @@ async def _submit_message_phase3a(
     _resume_pend = state.get("resume_pending")
     _llm_user_text = request.content
     if _resume_pend:
+        _tm["resume"] = 1   # guard_log 에 재개 턴 표식
         _prev_answer = (_resume_pend.get("user_text") or "").strip()
         if _prev_answer:
             _llm_user_text = _prev_answer
@@ -2422,6 +2423,7 @@ async def _submit_message_phase3a(
             "work_q": int(_tm.get("work_q") or 0),   # (2026-10-21) 스몰톡 되물음이 업무·역할 질문이라 삭제됨
             # (2026-10-22 P1) no_q_fix: 질문 없는 턴 보정 경로 · quantify: 정도 부사 → 수치 질문 교체
             "no_q_fix": _tm.get("no_q_fix"), "quantify": int(_tm.get("quantify") or 0),
+            "resume": int(_tm.get("resume") or 0),   # (2026-10-22 P1-1) 일시정지 제안 뒤 pending 재개 턴
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):
