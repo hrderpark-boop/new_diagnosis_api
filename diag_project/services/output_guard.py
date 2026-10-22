@@ -413,6 +413,65 @@ def is_transition_only(text: str) -> bool:
     return all(_TRANSITION_ONLY_RE.match(s) for s in stmts)
 
 
+# ── 4-d) (2026-10-22 P2-1) 입버릇 반복 가드 — 되받기(평서문) 마무리 어구(마지막 어절 2개)를 세션 단위로 센다 ──
+BANNED_TAILS = [
+    "마음에 남아요", "마음에 남네요", "마음에 남습니다", "짐작이 되네요", "짐작이 됩니다", "짐작이 돼요",
+    "인상에 남네요", "인상에 남아요", "인상에 남습니다", "그려지네요", "그려집니다", "그려져요",
+    "분명하게 들어왔어요", "분명하게 들어왔습니다", "분명히 들어왔어요",
+]
+_BANNED_TAIL_RE = re.compile("|".join(re.escape(p) for p in sorted(set(BANNED_TAILS), key=len, reverse=True)))
+_HONORIFIC_LEAD_RE = re.compile(r"^\s*(?:[가-힣]{2,4}\s+)?리더님[,!]\s*")
+
+
+def tail_phrase(sentence: str) -> str:
+    """문장의 마지막 어절 2개(문장부호·따옴표 제거)."""
+    words = re.sub(r"[.!?…\"'“”‘’]", "", sentence or "").split()
+    return " ".join(words[-2:]) if words else ""
+
+
+def lead_tails(text: str) -> list[str]:
+    """평서문(되받기)들의 마무리 어구 목록."""
+    return [t for t in (tail_phrase(s) for s in split_sentences(text or "") if not is_question(s)) if t]
+
+
+def find_banned_tail(text: str) -> list[str]:
+    out = []
+    for s in split_sentences(text or ""):
+        if is_question(s):
+            continue
+        m = _BANNED_TAIL_RE.search(s)
+        if m:
+            out.append(m.group(0))
+    return out
+
+
+def strip_lead_sentences(text: str, tails: set) -> tuple[str, int]:
+    """마무리 어구가 tails 에 있거나 금지 어구를 담은 평서문을 지운다(질문·목록 줄은 보존). 전부 지워지면 '그러셨군요.'."""
+    sents = split_sentences(text or "")
+    hit = [s for s in sents if not is_question(s) and (tail_phrase(s) in tails or _BANNED_TAIL_RE.search(s))]
+    if not hit:
+        return text, 0
+    out = text
+    for x in hit:
+        out = out.replace(x, "", 1)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    if not out:
+        out = "그러셨군요."
+    return out, len(hit)
+
+
+def starts_with_honorific(text: str) -> bool:
+    return bool(_HONORIFIC_LEAD_RE.match(text or ""))
+
+
+def strip_leading_honorific(text: str) -> tuple[str, bool]:
+    """문두 '리더님,'(또는 '박기진 리더님,') 호칭을 뗀다 — 3턴에 1회 규칙."""
+    new = _HONORIFIC_LEAD_RE.sub("", text or "", count=1)
+    return new, new != (text or "")
+
+
 # ── 5) (2026-09-22 폐지) 되받기 리드 삭제 trim_lead_sentences — 자른 문장이 어색하다. 되받기는 프롬프트 한 줄이 맡는다. ──
 
 

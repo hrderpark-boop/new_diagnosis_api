@@ -2167,6 +2167,54 @@ async def _submit_message_phase3a(
     if clean_reply:
         clean_reply = clean_reply.replace("있으시겠습니까", "있으셨습니까").replace("있으시겠어요", "있으셨어요")
 
+    # 8-n. (2026-10-22 P2-1) 입버릇 반복 가드 — 되받기 마무리 어구(마지막 어절 2개)를 세션 단위로 센다.
+    #   같은 어구 2회째 → 재생성 1회, 3회째(또는 재생성 후에도) → 그 문장 삭제. 금지 어구(마음에 남아요·짐작이 되네요·
+    #   인상에 남네요·그려지네요·분명하게 들어왔어요)는 1회째부터 재생성. '리더님,' 문두 호칭은 3턴에 1회(직전 2턴에 있으면 뗀다).
+    _TAIL_EXEMPT = {"DIAGNOSIS_INTRO", "USER_REQUESTS_PAUSE", "CHAPTER_READY_TO_END", "AWAIT_NEXT_CHAPTER_CHOICE"}
+    if (system_override_text is None and not _llm_error and clean_reply and instruction_used not in _TAIL_EXEMPT
+            and not needs_user_decision):
+        from diag_project.services.output_guard import (
+            find_banned_tail as _fbt, lead_tails as _lts, starts_with_honorific as _swh,
+            strip_lead_sentences as _sls, strip_leading_honorific as _slh,
+        )
+        _tc = dict((session.self_assessment_data or {}).get("tail_counts") or {})
+
+        def _tail_hits(txt: str) -> tuple[list, list]:
+            _b = _fbt(txt)
+            _r = [t for t in _lts(txt) if int(_tc.get(t, 0) or 0) >= 1]
+            return _b, _r
+
+        _b0, _r0 = _tail_hits(clean_reply)
+        if _b0 or _r0:
+            _tm["tail"] = (_b0 + _r0)[0]
+            _third = any(int(_tc.get(t, 0) or 0) >= 2 for t in _r0)
+            _fixed = False
+            if not _third:
+                try:
+                    _t_out = await _timed_regen(
+                        system_prompt=system_prompt, chapter_context=chapter_context,
+                        turn_state_text=turn_state_text + (
+                            "\n\n🚨 [시스템 — 재생성 지시] 되받기 마무리 어구 '" + "', '".join(_b0 + _r0)
+                            + "' 는 이 세션에서 이미 썼거나 금지된 입버릇입니다. 되받기를 다른 마무리로 다시 쓰세요(질문은 유지)."),
+                        compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
+                    _t_txt = _MARKER_RE.sub("", _t_out.get("reply") or "").strip()
+                    _b1, _r1 = _tail_hits(_t_txt) if _t_txt else (["(빈 응답)"], [])
+                    if _t_txt and not _b1 and not _r1:
+                        clean_reply = _t_txt
+                        _fixed = True
+                        logger.info("🗣️ 입버릇 반복 → 재생성으로 해결: %s", _tm["tail"])
+                except Exception as _e:
+                    logger.error("🗣️ 입버릇 재생성 실패: %s", _e)
+            if not _fixed:
+                clean_reply, _n_tail = _sls(clean_reply, set(_r0))
+                _tm["tail_fix"] = 2
+                logger.info("🗣️ 입버릇 반복(%s) → 되받기 문장 %d개 삭제", _tm["tail"], _n_tail)
+        if _swh(clean_reply) and any(_swh(_t) for _t in _recent_coach_texts):
+            clean_reply, _hon = _slh(clean_reply)
+            if _hon:
+                _tm["honorific"] = 1
+                logger.info("🗣️ '리더님,' 문두 호칭 반복 → 제거")
+
     # 8-m. (2026-10-22 P2-0) 리더 종료 요청 + 넓이 미충족: 되받기 한 문장 + "하나만 더 여쭤봐도 될까요?" + 다음 미탐색 앵커 1개.
     #   원장은 기록하지 않는다 — 답하면 다음 프로브 스텝이 같은 타겟을 골라 기록하고, 거절하면 미탐색으로 남는다.
     if instruction_used == "CHAPTER_ONE_MORE_ASK" and system_override_text is None and not _llm_error:
@@ -2442,6 +2490,15 @@ async def _submit_message_phase3a(
         _gl_store = dict(session.self_assessment_data or {})
         if state.get("resume_pending") and instruction_used != "USER_REQUESTS_PAUSE":
             _gl_store.pop("pending_instruction", None)   # (2026-10-22 P1-1) 재개 턴이 pending 을 소비
+        if system_override_text is None and not _llm_error:
+            # (2026-10-22 P2-1) 이번 턴 되받기 마무리 어구를 세션 카운터에 누적(최근 60개)
+            from diag_project.services.output_guard import lead_tails as _lts_g
+            _tcg = dict(_gl_store.get("tail_counts") or {})
+            for _t in _lts_g(clean_reply):
+                _tcg[_t] = int(_tcg.get(_t, 0) or 0) + 1
+            if len(_tcg) > 60:
+                _tcg = dict(list(_tcg.items())[-60:])
+            _gl_store["tail_counts"] = _tcg
         _gl = list(_gl_store.get("guard_log") or [])[-199:]
         _gl.append({
             "t": _turn_index, "ch": chapter, "instr": instruction_used,
@@ -2462,6 +2519,8 @@ async def _submit_message_phase3a(
             "resume": int(_tm.get("resume") or 0),   # (2026-10-22 P1-1) 일시정지 제안 뒤 pending 재개 턴
             # (2026-10-22 P2-0) volunteered: 자발적 사례로 asked 기록된 하위역량 · one_more: '하나만 더' 가 겨냥한 하위역량
             "volunteered": _tm.get("volunteered"), "one_more": _tm.get("one_more"),
+            # (2026-10-22 P2-1) tail: 반복·금지 어구 · tail_fix 2=문장 삭제 폴백 · honorific: '리더님,' 문두 제거
+            "tail": _tm.get("tail"), "tail_fix": int(_tm.get("tail_fix") or 0), "honorific": int(_tm.get("honorific") or 0),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):
