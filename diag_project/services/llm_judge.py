@@ -48,6 +48,30 @@ async def same_question_as_recent(llm, new_q: str, prev_qs: Iterable[str]) -> bo
     )
 
 
+async def volunteered_subcompetency(llm, answer: str, candidates: dict) -> str | None:
+    """(2026-10-22 P2-0) 리더가 앵커 질문 없이 말한 사례가 아직 안 다룬 하위역량(candidates: 이름→앵커 설명) 중 하나를
+    분명히 다루면 그 이름, 아니면 None. 모호하면 None(기록하지 않는다)."""
+    if os.getenv("FM_LLM_STUB") or not candidates or not (answer or "").strip():
+        return None
+    listed = "\n".join(f"- {n}: {d}" for n, d in candidates.items())
+    prompt = ("아래 리더의 답변이 다음 하위역량 중 하나의 '구체 사례'(리더가 실제로 한 행동)를 분명히 담고 있으면 그 하위역량 이름을 "
+              "목록의 표기 그대로 한 줄로 출력하세요. 둘 이상에 걸치거나 분명하지 않으면 NONE 만 출력하세요.\n\n"
+              f"[하위역량 후보]\n{listed}\n\n[리더 답변]\n{answer.strip()[:1200]}")
+    try:
+        out = await llm._generate_with_retry(prompt=prompt, max_tokens=30, thinking_budget=0,
+                                             call_type="judge_volunteered", temperature=0.0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("자발적 사례 판정 실패: %s", e)
+        return None
+    name = (out or "").strip().splitlines()[0].strip().strip("'\"-·* ") if out else ""
+    if not name or name.upper().startswith("NONE"):
+        return None
+    for n in candidates:
+        if n == name or n.replace(" ", "") == name.replace(" ", "") or name in n:
+            return n
+    return None
+
+
 async def must_ask_covered(llm, question: str, must_ask: Iterable[str]) -> bool | None:
     """렌더링한 앵커 질문이 must_ask 조건(대상·상황·행동·시점 키워드)을 전부 담았는가."""
     keys = [k for k in must_ask if k]

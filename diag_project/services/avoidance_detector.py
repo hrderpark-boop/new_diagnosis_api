@@ -10,6 +10,8 @@
 """
 
 # 회피 키워드
+import re
+
 AVOIDANCE_KEYWORDS = [
     "모르겠", "기억 안", "기억안", "글쎄", "잘 모르",
     "생각 안", "안 떠올라", "안떠올라", "떠오르지 않",
@@ -65,6 +67,10 @@ CLOSING_EXPLICIT_KEYWORDS = [
     "끝인가요", "다 끝난", "마무리하죠", "마무리합시다", "마무리해 주",
     "마무리 지", "마무리할게요", "종료하죠", "종료할게요", "종료해 주",
     "이만 마치", "이만 줄이", "여기서 마치", "이제 마치",
+    # (2026-10-22 P2-0) 리더의 '이 영역은 충분하다' 류 종료 요청
+    "충분히 말씀드린", "충분히 말씀 드린", "충분히 말한 것 같", "이 정도면 될 것 같", "이 정도면 된 것 같",
+    "이 정도면 충분", "그 정도면 될 것 같", "그 정도면 된 것 같", "그 정도면 충분", "이 정도로 하죠", "이 정도로 할게요",
+    "다음으로 넘어가죠", "다음으로 넘어갈까요", "다음으로 넘어가시죠", "다음 영역으로 넘어가", "다음 주제로 넘어가",
 ]
 CLOSING_SOFT_KEYWORDS = [
     "감사합니다", "감사했습니다", "감사드립니다", "고맙습니다",
@@ -113,8 +119,21 @@ def check_avoidance(text: str | None) -> bool:
         return True
     stripped = text.strip()
     if any(kw in stripped for kw in AVOIDANCE_KEYWORDS):
-        return True
+        # (2026-10-22 P2-0) "모르겠" 단독 판정 금지 — 상황·행동 서술(과거형 동사 2개 이상 또는 30자 이상)이 있으면 회피가 아니다.
+        #   "원인은 모르겠는데 시간은 없던 문제는 … 전화로 물어봐서 … 찾았죠" 가 AVOIDANCE_DETECTED 로 가던 오탐.
+        return not has_narrative(stripped)
     return not _has_substance(stripped)
+
+
+_PAST_VERB_RE = re.compile(r"[가-힣]+(았|었|했|됐|였|갔|왔|냈|봤|줬|렸|졌|했었)(어요|습니다|죠|고|는데|고요|어|지요|습니까|다|던|을|네요|거든요|잖아요)")
+
+
+def has_narrative(text: str | None) -> bool:
+    """(2026-10-22 P2-0) 발화에 상황·행동 서술이 있는가 — 과거형 동사 2개 이상 또는 공백 제외 30자 이상."""
+    t = (text or "").strip()
+    if len(t.replace(" ", "")) >= 30:
+        return True
+    return len(_PAST_VERB_RE.findall(t)) >= 2
 
 
 # 부재 진술(absence statement) 표지 — "그런 경험은 없다 / 만들어두지 못했다 /

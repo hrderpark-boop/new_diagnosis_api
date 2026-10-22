@@ -185,6 +185,8 @@ InstructionType = Literal[
     "INVALID_INPUT",
     # 2026-09-16: 챕터 전환 직후(정의 질문 전) 버튼 대신 친 자유 텍스트 → 안내만, 상태 무변경
     "AWAIT_NEXT_CHAPTER_CHOICE",
+    # 2026-10-22 P2-0: 리더가 '이 영역은 충분하다'고 했는데 넓이 미충족 → "하나만 더 여쭤봐도 될까요?" 1회
+    "CHAPTER_ONE_MORE_ASK",
 ]
 
 # 챕터 전환 팝업에서 버튼 대신 텍스트로 '확인'한 것으로 볼 표현(이중 방어).
@@ -534,7 +536,17 @@ def decide_instruction(state: dict) -> InstructionType:
                 if _progressed and _chapter_can_close(state):
                     return "CHAPTER_READY_TO_END"
             elif _closing == "explicit":
-                return "USER_REQUESTS_PAUSE"
+                # (2026-10-22 P2-0) 중간 챕터의 종료 요청: 넓이 하한 충족 → 요약 + 다음 챕터. 미충족 → '하나만 더' 1회,
+                #   그래도 거절이면 종료(해당 하위역량은 미탐색으로 남는다). 과거엔 일시중지(paused)로 보냈다.
+                if _chapter_can_close(state) or state.get("one_more_asked"):
+                    return "CHAPTER_READY_TO_END"
+                return "CHAPTER_ONE_MORE_ASK"
+        # (2026-10-22 P2-0) '하나만 더' 뒤 짧은 거절("아니요", "됐어요", "괜찮아요")도 종료로 — 서술이 있으면 답한 것(평소 흐름).
+        if state.get("last_instruction") == "CHAPTER_ONE_MORE_ASK":
+            _ans = (state.get("last_user_response") or "").strip()
+            from diag_project.services.avoidance_detector import has_narrative as _has_narr
+            if not _has_narr(_ans) and len(_ans.replace(" ", "")) < 30:
+                return "CHAPTER_READY_TO_END"
 
     # === 7단계 코칭 프로세스: 한 턴에 한 스텝, 엄격한 순서 (압축·건너뛰기 금지) ===
     #   Step1 인사+이름확인 → Step2 라포(아이스브레이킹) → Step3 시작 동의 →
@@ -912,6 +924,8 @@ async def build_turn_state(
 
     # 8-0. N턴 무수확 '최후통첩'을 이 챕터에서 이미 던졌는지 (probe 마커).
     no_yield_ultimatum_given = any(m.probe_type_used == "NO_YIELD_ULTIMATUM" for m in _ch_model)
+    # (2026-10-22 P2-0) 종료 요청에 '하나만 더' 를 이미 물었는지 (챕터당 1회)
+    one_more_asked = any(m.probe_type_used == "ONE_MORE_ASK" for m in _ch_model)
 
     # 8-0b. 세션 강제 종료 '경고(Warning)'를 이미 1회 냈는지 (probe 마커).
     #   경고를 이미 줬다면 다음 회피 턴에서 곧바로 종료(재경고 루프 방지).
@@ -1141,6 +1155,7 @@ async def build_turn_state(
         "name_extraction_failed": name_extraction_failed,
         "name_reconfirm_asked": name_reconfirm_asked,
         "no_yield_ultimatum_given": no_yield_ultimatum_given,
+        "one_more_asked": one_more_asked,
         "first_subcompetency_name": first_subcompetency_name,
         "all_subcompetencies": all_subcompetencies,
         "explored_subcompetencies": explored_subcompetencies,

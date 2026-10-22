@@ -899,6 +899,25 @@ async def _submit_message_phase3a(
         _event_done = instruction_used == "STAR_COMPLETE_NEW_EVENT"
         # 🔑 타겟 전진 감지용: 스텝 '이전'의 현재 타겟(없으면 None=챕터 첫 앵커).
         _cur_before = (_store.get("current_target") or {}).get(chapter)
+        # (2026-10-22 P2-0) 자발적 사례: 리더가 앵커 질문 없이 '아직 안 다룬' 하위역량의 사례를 분명히 말했으면(flash 판정)
+        #   asked 원장에 기록해 같은 앵커를 다시 묻지 않는다. 현재 타겟과 같으면 기록하지 않는다(그건 정상 답변).
+        if len((request.content or "").replace(" ", "")) >= 60:
+            from diag_project.data.competencies import SUBCOMPETENCY_ANCHORS as _SA, find_sub_key_by_name as _fsk_v
+            from diag_project.services.llm_judge import volunteered_subcompetency as _vol
+            _asked_now = set(asked_for_chapter(_store, chapter))
+            _cands = {}
+            for _nm in _all_subs:
+                if _nm in _asked_now or _nm == _cur_before:
+                    continue
+                _k = _fsk_v(chapter, _nm)
+                _cands[_nm] = " / ".join(_SA.get(_k) or []) if _k else ""
+            if _cands:
+                _vsub = await _vol(llm, request.content, _cands)
+                if _vsub:
+                    from diag_project.services.traversal import record_asked as _rec_v
+                    _store = _rec_v(_store, chapter, _vsub)
+                    _tm["volunteered"] = _vsub
+                    logger.info("🗂️ 자발적 사례 → asked 기록: [%s] %s (앵커 재질문 금지)", chapter, _vsub)
         _store, current_target_sub = apply_probe_turn(
             _store, chapter, _all_subs, _event_done, priority=[]
         )
@@ -1067,7 +1086,7 @@ async def _submit_message_phase3a(
     _LIGHT_LAYER1_INSTRUCTIONS = {
         "RAPPORT_BUILDING", "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "COMPETENCY_ASK", "COMPETENCY_ALIGN",
         "META_QUESTION_FROM_USER", "USER_REQUESTS_PAUSE", "INVALID_INPUT", "PROMPT_INJECTION_DETECTED",
-        "CHAPTER_CONTINUE_CONFIRMED", "NAME_RECONFIRM",
+        "CHAPTER_CONTINUE_CONFIRMED", "NAME_RECONFIRM", "CHAPTER_ONE_MORE_ASK",
     }
     system_prompt = build_layer1_with_persona(
         coach_id=coach_key,
@@ -1230,6 +1249,7 @@ async def _submit_message_phase3a(
             "PROMPT_INJECTION_DETECTED",
             # 경계 브릿지 턴: 한 문장 브릿지만 (경량)
             "CHAPTER_CONTINUE_CONFIRMED",
+            "CHAPTER_ONE_MORE_ASK",   # (2026-10-22 P2-0) 되받기 한 문장만
         }
         _l0 = _time.perf_counter()
         llm_output = await llm.generate_phase3a_interaction(
@@ -2147,6 +2167,20 @@ async def _submit_message_phase3a(
     if clean_reply:
         clean_reply = clean_reply.replace("있으시겠습니까", "있으셨습니까").replace("있으시겠어요", "있으셨어요")
 
+    # 8-m. (2026-10-22 P2-0) 리더 종료 요청 + 넓이 미충족: 되받기 한 문장 + "하나만 더 여쭤봐도 될까요?" + 다음 미탐색 앵커 1개.
+    #   원장은 기록하지 않는다 — 답하면 다음 프로브 스텝이 같은 타겟을 골라 기록하고, 거절하면 미탐색으로 남는다.
+    if instruction_used == "CHAPTER_ONE_MORE_ASK" and system_override_text is None and not _llm_error:
+        from diag_project.data.competencies import find_sub_key_by_name as _fsk_om
+        from diag_project.services.anchor_render import dict_anchor as _dict_anchor_om
+        from diag_project.services.output_guard import receive_sentence as _recv_om
+        from diag_project.services.traversal import select_next_target as _snt_om
+        _recv_text = _recv_om(clean_reply, fallback="네, 이 영역은 충분히 들려주셨어요.")
+        _next_sub = _snt_om(asked_for_chapter(session.self_assessment_data, chapter), state.get("all_subcompetencies") or [], [])
+        _om_q = _dict_anchor_om(_fsk_om(chapter, _next_sub) if _next_sub else None)
+        clean_reply = f"{_recv_text} 하나만 더 여쭤봐도 될까요? {_om_q}"
+        _tm["one_more"] = _next_sub or "-"
+        logger.info("🙏 종료 요청(넓이 미충족) → 하나만 더: [%s] %s", chapter, _next_sub)
+
     # 8-k. (2026-10-22 P1-3) 모든 코치 턴은 질문 하나로 끝난다 — LLM 출력에 질문이 없으면 그 턴의 고정 질문을 붙인다.
     #   라포(8-0)·INTRO(안내 끝 '시작해볼까요?')·ALIGN/전환(앵커)·프로브(템플릿 앵커·결과 폴백)는 각자 보장하고,
     #   여기서는 정의 질문 턴(DIAGNOSIS_CONFIRM·COMPETENCY_ASK)을 보장한다. 질문을 두지 않는 턴(일시정지 제안·일시중지·
@@ -2255,6 +2289,8 @@ async def _submit_message_phase3a(
     elif instruction_used == "CHAPTER_NO_YIELD_ULTIMATUM":
         # 무수확 최후통첩 턴 — 다음 턴에 '이미 통첩함'을 판별하는 근거 마커.
         probe_type_used = "NO_YIELD_ULTIMATUM"
+    elif instruction_used == "CHAPTER_ONE_MORE_ASK":
+        probe_type_used = "ONE_MORE_ASK"   # (2026-10-22 P2-0) 챕터당 1회 판별 마커
     elif _is_warning:
         # 최후 의향 확인(Warning) 턴 — 다음 턴에 '이미 경고함'을 판별해
         # 재경고 루프를 막고 곧바로 종료로 승격시키는 근거 마커.
@@ -2424,6 +2460,8 @@ async def _submit_message_phase3a(
             # (2026-10-22 P1) no_q_fix: 질문 없는 턴 보정 경로 · quantify: 정도 부사 → 수치 질문 교체
             "no_q_fix": _tm.get("no_q_fix"), "quantify": int(_tm.get("quantify") or 0),
             "resume": int(_tm.get("resume") or 0),   # (2026-10-22 P1-1) 일시정지 제안 뒤 pending 재개 턴
+            # (2026-10-22 P2-0) volunteered: 자발적 사례로 asked 기록된 하위역량 · one_more: '하나만 더' 가 겨냥한 하위역량
+            "volunteered": _tm.get("volunteered"), "one_more": _tm.get("one_more"),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

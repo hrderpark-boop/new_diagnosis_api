@@ -22,7 +22,7 @@ def test_degree_adverb_without_number_triggers_quantify():
     assert G.needs_quantify_probe("불필요한 회의 시간이 획기적으로 줄고 팀 생산성이 대폭 향상되었습니다.")
     assert not G.needs_quantify_probe("회의 시간이 30% 줄었습니다.")          # 숫자 있음
     assert not G.needs_quantify_probe("회의 시간이 줄었습니다.")              # 정도 부사 없음
-    assert G.result_fallback_question("생산성이 훨씬 좋아졌어요", None, alt=0) == G.RESULT_QUANTIFY_QUESTION
+    assert G.result_fallback_question("회의 시간이 훨씬 줄었어요", None, alt=0) == G.RESULT_QUANTIFY_QUESTION   # (P2-0) 수식 대상이 시간
     assert G.is_quantify_question("어느 정도였어요?") and G.is_quantify_question("몇 명이나 참여했나요?")
     assert not G.is_quantify_question("그 뒤로 어떻게 됐어요?")
 

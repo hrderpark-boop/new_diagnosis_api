@@ -575,10 +575,22 @@ RESULT_QUANTIFY_QUESTION = "어느 정도였어요? 숫자나 기간으로 기�
 _DEGREE_ADVERB_RE = re.compile(r"획기적|대폭|비약적|크게|훨씬|현저히|눈에 띄게|극적으로|상당히|엄청")
 
 
+_QUANT_NOUN_RE = re.compile(r"시간|기간|비용|예산|횟수|비율|퍼센트|인원|명|일정|매출|속도|건수|건|개수|분량|일수|주기|금액|원가|납기|"
+                            r"리드타임|처리량|소요|기한|이탈률|신청률|수료율|점유율|달성률|회전율|회수")
+_NONQUANT_NOUN_RE = re.compile(r"반응|분위기|표정|만족|마음|신뢰|태도|관계|사기|긴장|불안|안도|호응|공감")
+
+
 def needs_quantify_probe(user_text: str | None) -> bool:
-    """(2026-10-22 P1-2) 리더 발화에 정도 부사(획기적·대폭·비약적·크게·훨씬 류)가 있고 숫자가 없으면 수치 질문 우선."""
+    """(2026-10-22 P1-2, P2-0 범위 축소) 정도 부사(획기적·대폭·비약적·크게·훨씬 류)의 수식 대상이 시간·기간·비용·횟수·비율·인원·
+    일정·매출·속도·건수 류일 때만, 그리고 숫자가 없을 때만 수치 질문 우선. 반응·분위기·표정·만족 은 제외."""
     t = user_text or ""
-    return bool(_DEGREE_ADVERB_RE.search(t)) and not re.search(r"\d", t)
+    if re.search(r"\d", t):
+        return False
+    for m in _DEGREE_ADVERB_RE.finditer(t):
+        win = t[max(0, m.start() - 22): m.end() + 16]
+        if _QUANT_NOUN_RE.search(win) and not _NONQUANT_NOUN_RE.search(win):
+            return True
+    return False
 
 
 def result_fallback_question(user_text: str | None, prev_user_text: str | None = None, alt: int = 0) -> str:
