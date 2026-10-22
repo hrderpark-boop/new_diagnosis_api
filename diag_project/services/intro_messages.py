@@ -71,6 +71,15 @@ RAPPORT_EXPECTATION_QUESTION = "이번 진단에서 기대하시는 것이 있�
 RAPPORT_INTRO_BRIDGE_NO_EXPECTATION = "네, 그러면 제가 오늘 흐름부터 설명드릴게요."
 
 
+# (2026-10-22 P1-3) 질문 없는 턴 금지 — LLM 출력에 질문이 없으면 백엔드가 그 턴의 고정 질문을 붙인다.
+RAPPORT_SMALLTALK_FALLBACK_QUESTION = "오늘 하루는 바쁜 쪽이었어요, 여유 있는 쪽이었어요?"
+
+
+def definition_question(chapter_name: str) -> str:
+    from diag_project.services.korean import with_josa
+    return f"리더님께서는 {with_josa(chapter_name, '을/를', quote=True)} 무엇이라고 생각하시나요?"
+
+
 def pause_suggestion_text(elapsed_min: int) -> str:
     """(2026-10-22 P1-1) 일시정지 제안 안내 — 질문 없음. 선택은 프론트 버튼('계속 진행하기'/'다음에 하기')이 받는다."""
     return (f"리더님, 한 자리에서 {int(elapsed_min)}분째 이어오고 있습니다. 오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. "

@@ -968,6 +968,9 @@ async def _submit_message_phase3a(
         from sqlalchemy.orm.attributes import flag_modified as _fm_att
         _fm_att(session, "self_assessment_data")
         state["force_result_probe"] = _force_r
+        if _force_r:
+            from diag_project.services.output_guard import needs_quantify_probe as _nqp
+            state["result_quantify"] = _nqp((state.get("resume_pending") or {}).get("user_text") or request.content)
         if _force_r and chapter:
             # (2026-09-29) 풀 문장을 넣지 않는다 — 직전 발화의 명사구를 주고 LLM 이 결과 질문을 만든다.
             from diag_project.services.output_guard import key_noun_phrase as _knp
@@ -1507,11 +1510,25 @@ async def _submit_message_phase3a(
                 _tm["echo"] = 2
                 _recv = _repl_stmts(_recv, "그러셨군요.")   # (2026-10-21) 평서문만 대체, 되물음 보존
                 logger.info("🔁 재생성 후에도 반복 → 평서문만 '그러셨군요.' 대체")
+        # (2026-10-22 P1-3) '네'·'네, 감사해요' 류 동의만 보냈으면 되받기를 생략하고 바로 고정 질문.
+        from diag_project.prompts.phase3a.layer3_state import is_consent_only as _consent_only
+        _consent_in = _consent_only(request.content)
         if _smalltalk:
-            clean_reply = _recv
+            from diag_project.services.intro_messages import RAPPORT_SMALLTALK_FALLBACK_QUESTION
+            if _consent_in:
+                clean_reply = RAPPORT_SMALLTALK_FALLBACK_QUESTION
+                _tm["no_q_fix"] = "smalltalk_consent"
+            elif not any(is_question_g(x) for x in split_sentences_g(_recv)):
+                # 10/22 2턴 "그러셨군요." 단독 출력 차단 — 모든 코치 턴은 질문 하나로 끝난다
+                clean_reply = f"{_recv} {RAPPORT_SMALLTALK_FALLBACK_QUESTION}"
+                _tm["no_q_fix"] = "smalltalk"
+            else:
+                clean_reply = _recv
         else:
             _fixed_q = RAPPORT_ROLE_QUESTION if _rc == 2 else RAPPORT_EXPECTATION_QUESTION
-            clean_reply = f"{_recv} {_fixed_q}"
+            clean_reply = _fixed_q if _consent_in else f"{_recv} {_fixed_q}"
+            if _consent_in:
+                _tm["no_q_fix"] = "consent_skip_receive"
 
     # 8-a. DIAGNOSIS_INTRO 하이브리드: LLM 되받기 한 문장 + 시스템 진단 안내 본문 합치기
     #   (2026-10-19) 기대 답변이 없으면 위에서 system_override_text(안내만)로 처리되어 여기 오지 않는다.
@@ -1643,6 +1660,8 @@ async def _submit_message_phase3a(
             _sum, _ = _dqs_e(clean_reply)
             _sum, _ = _sp_e(_sum)
             _sum, _ = _ssl_e(_sum)
+            from diag_project.services.output_guard import strip_transition_sentences as _sts_e
+            _sum, _ = _sts_e(_sum)          # (2026-10-22 P1-3) LLM 이 '이어가 보겠습니다' 를 쓰면 고정 다리와 중복 → 제거
             _sum = " ".join([x.strip() for x in _ss_e(_sum) if x.strip()][:2]).strip()
             if not _sum:
                 _sum = "이 영역에서 들려주신 이야기는 여기서 정리하겠습니다."
@@ -1786,7 +1805,8 @@ async def _submit_message_phase3a(
                 return template_anchor(_tgt_q)
             if chapter:
                 from diag_project.services.output_guard import result_fallback_question as _rfq
-                return _rfq(request.content, _prev_user_text)
+                _alt = sum(1 for _t in _recent_coach_texts if "그 뒤에는 어떻게 됐어요" in _t)   # 직전 폴백이 A 면 B
+                return _rfq((state.get("resume_pending") or {}).get("user_text") or request.content, _prev_user_text, alt=_alt)
             return template_anchor(_tgt_q)
         from diag_project.data.competencies import (
             COMPETENCY_FRAMEWORK as _CF, find_sub_key_by_name as _fsk, get_anchor_questions as _gaq,
@@ -1948,7 +1968,7 @@ async def _submit_message_phase3a(
                 from diag_project.services.output_guard import bare_demonstrative_questions as _bdq2, result_fallback_question as _rfq2
                 from diag_project.services.output_guard import followup_from_user as _ffu
                 for _bq in _bdq2(clean_reply, request.content):
-                    clean_reply = clean_reply.replace(_bq, _rfq2(request.content, _prev_user_text) if state.get("force_result_probe")
+                    clean_reply = clean_reply.replace(_bq, _rfq2(request.content, _prev_user_text, alt=len(_recent_coach_texts)) if state.get("force_result_probe")
                                                       else _ffu(request.content), 1)
                     logger.info("🧹 대명사 단독 질문 교체: %s", _bq[:40])
             # (2026-09-22, 4번) 전환 선언·되받기 리드는 자르지 않는다 — 자른 문장이 어색하다. 위반은 guard_log 에만 남는다.
@@ -1964,6 +1984,17 @@ async def _submit_message_phase3a(
             clean_reply, _fb_hit = _sfb(clean_reply)
             if _fb_hit:
                 logger.info("🌉✂️ 앵커 군말 다리 제거 → 전환 문장")
+
+        # (2026-10-22 P1-2) 결과 강제 턴 + 정도 부사·숫자 없음 → 수치 질문 우선(LLM 질문이 수치를 묻지 않으면 교체)
+        if (_is_probe and not _is_anchor and not _llm_error and not _guard_replaced
+                and state.get("force_result_probe") and state.get("result_quantify")):
+            from diag_project.services.output_guard import RESULT_QUANTIFY_QUESTION as _RQQ, is_quantify_question as _isq
+            _qs_now = [x for x in split_sentences(clean_reply) if is_question_sentence(x)]
+            if not _qs_now or not _isq(_qs_now[-1]):
+                _lead_q = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
+                clean_reply = " ".join(_lead_q + [_RQQ]).strip()
+                _tm["quantify"] = 1
+                logger.info("📏 정도 부사·숫자 없음 → 수치 질문으로 교체")
 
         # (2026-10-21) 탐침 품질 — 프로브 턴(전환 턴 제외): 한 턴 한 질문(마지막만) · 시점 문형 · 의미 반복 flash 판정 1회
         if _is_probe and not _is_anchor and not _llm_error and not _guard_replaced:
@@ -2114,6 +2145,20 @@ async def _submit_message_phase3a(
     # 5(2026-09-21) 문법: '있으시겠습니까' 는 미래·청유형 오용 → '있으셨습니까'
     if clean_reply:
         clean_reply = clean_reply.replace("있으시겠습니까", "있으셨습니까").replace("있으시겠어요", "있으셨어요")
+
+    # 8-k. (2026-10-22 P1-3) 모든 코치 턴은 질문 하나로 끝난다 — LLM 출력에 질문이 없으면 그 턴의 고정 질문을 붙인다.
+    #   라포(8-0)·INTRO(안내 끝 '시작해볼까요?')·ALIGN/전환(앵커)·프로브(템플릿 앵커·결과 폴백)는 각자 보장하고,
+    #   여기서는 정의 질문 턴(DIAGNOSIS_CONFIRM·COMPETENCY_ASK)을 보장한다. 질문을 두지 않는 턴(일시정지 제안·일시중지·
+    #   챕터 종료 다리·세션 종료)은 제외.
+    if (system_override_text is None and not _llm_error and clean_reply
+            and instruction_used in ("DIAGNOSIS_CONFIRM", "COMPETENCY_ASK")):
+        from diag_project.services.output_guard import has_question as _hq_k
+        if not _hq_k(clean_reply):
+            from diag_project.services.intro_messages import definition_question
+            _cn_k = COMPETENCY_FRAMEWORK.get(chapter, {}).get("name", "이 역량")
+            clean_reply = f"{clean_reply.rstrip()} {definition_question(_cn_k)}"
+            _tm["no_q_fix"] = "definition"
+            logger.info("❓ 질문 없는 정의 턴 → 고정 정의 질문 결합")
 
     # 8-h. 느낌표 상한(2026-09-15): 페르소나별 상한(Michael 1·안내턴 0, 나머지 0)을 백엔드가 센다.
     #   초과 → 재생성 1회(같은 프롬프트 + 상한 지시) → 그래도 초과면 초과분을 마침표로 치환.
@@ -2375,6 +2420,8 @@ async def _submit_message_phase3a(
             "bridge": int(_tm.get("bridge") or 0), "one_q": int(_tm.get("one_q") or 0),
             "moment": int(_tm.get("moment") or 0), "anchor": _tm.get("anchor_render"),
             "work_q": int(_tm.get("work_q") or 0),   # (2026-10-21) 스몰톡 되물음이 업무·역할 질문이라 삭제됨
+            # (2026-10-22 P1) no_q_fix: 질문 없는 턴 보정 경로 · quantify: 정도 부사 → 수치 질문 교체
+            "no_q_fix": _tm.get("no_q_fix"), "quantify": int(_tm.get("quantify") or 0),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

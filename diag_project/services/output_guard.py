@@ -31,7 +31,14 @@ def split_sentences(text: str) -> list[str]:
 def is_question(sentence: str) -> bool:
     s = (sentence or "").strip()
     # (2026-10-21) "~시겠어요" 제외 — "분주하시겠어요" 같은 추측 문장이 질문으로 잘려 나갔다. 추측은 추측 규칙(프롬프트)이 맡는다.
-    return s.endswith("?") or bool(re.search(r"(까요|습니까|을까요|나요|시겠습니까|실까요)[.!?…]?$", s))
+    # (2026-10-22 P1-3) 간접 질문도 질문: "…궁금해요/궁금합니다/들려주세요/떠올려 주세요/말씀해 주세요" 로 끝나는 문장.
+    #   챕터 종료·전환 턴에서는 제거되고, 탐침 턴에서는 '한 턴 한 질문' 에 포함된다.
+    return s.endswith("?") or bool(re.search(r"(까요|습니까|을까요|나요|시겠습니까|실까요)[.!?…]?$", s)) \
+        or bool(_INDIRECT_Q_RE.search(s))
+
+
+_INDIRECT_Q_RE = re.compile(r"(궁금(해요|합니다|하네요|한데요)|들려주(세요|시죠|실래요)|떠올려\s*주세요|말씀해\s*주세요|"
+                            r"말씀해\s*주시(면|겠)|들려주시(면|겠)|이야기해\s*주세요|알려주세요)[.!…]?$")
 
 
 # ── 1) ALIGN: 꼬리 질문 제거 ──
@@ -563,12 +570,27 @@ def key_noun_phrase(user_text: str | None) -> str:
     return ""
 
 
-def result_fallback_question(user_text: str | None, prev_user_text: str | None = None) -> str:
-    """결과 질문 폴백 — 직전 발화의 명사구를 채운다(없으면 그 앞 발화 — 같은 사건의 서술). 대명사만으로 가리키지 않는다."""
-    np_ = key_noun_phrase(user_text) or key_noun_phrase(prev_user_text)
-    if np_:
-        return f"'{np_}' 이후로는 어떻게 됐습니까?"
-    return "방금 말씀하신 일 이후로는 어떻게 됐습니까?"
+RESULT_FALLBACKS = ["그래서 그 뒤에는 어떻게 됐어요?", "결과는 어떻게 나왔어요?"]
+RESULT_QUANTIFY_QUESTION = "어느 정도였어요? 숫자나 기간으로 기억나시는 게 있으면 좋겠어요."
+_DEGREE_ADVERB_RE = re.compile(r"획기적|대폭|비약적|크게|훨씬|현저히|눈에 띄게|극적으로|상당히|엄청")
+
+
+def needs_quantify_probe(user_text: str | None) -> bool:
+    """(2026-10-22 P1-2) 리더 발화에 정도 부사(획기적·대폭·비약적·크게·훨씬 류)가 있고 숫자가 없으면 수치 질문 우선."""
+    t = user_text or ""
+    return bool(_DEGREE_ADVERB_RE.search(t)) and not re.search(r"\d", t)
+
+
+def result_fallback_question(user_text: str | None, prev_user_text: str | None = None, alt: int = 0) -> str:
+    """(2026-10-22 P1-2) 결과 질문 폴백 — 명사 따옴표 끼우기("'X' 이후로는 어떻게 됐습니까?") 폐지.
+    정도 부사+숫자 없음이면 수치 질문, 아니면 두 문장을 번갈아(alt 짝/홀)."""
+    if needs_quantify_probe(user_text):
+        return RESULT_QUANTIFY_QUESTION
+    return RESULT_FALLBACKS[int(alt) % len(RESULT_FALLBACKS)]
+
+
+def is_quantify_question(text: str | None) -> bool:
+    return bool(re.search(r"어느\s*정도|얼마나|몇\s*(명|%|퍼센트|개월|주|달|배|건)|수치|숫자|기간", text or ""))
 
 
 _DEMONSTRATIVE_RE = re.compile(r"(그것|그걸|그게|그거|그럴\s*(때|땐)|그런\s*(때|땐)|그러실\s*(때|땐)|그렇게\s*하(니|시니|셨을\s*(때|땐))|그때는|그땐|그\s*일)")
