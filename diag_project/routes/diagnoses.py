@@ -921,6 +921,18 @@ async def _submit_message_phase3a(
         _store, current_target_sub = apply_probe_turn(
             _store, chapter, _all_subs, _event_done, priority=[]
         )
+        # (2026-10-22 P2-2) 리더 답변이 S-A-R 을 이미 다 담았으면(과거형 행동 2+ · 결과 표지 · 80자+) 이번 턴 탐침 1회로 줄이고
+        #   다음 턴에 전진 — 현재 타겟 turns 를 상한으로 올리고 result_probed 를 True 로(답에 결과가 있으므로 R 강제 불필요).
+        #   되받기(다음 전환 턴의 8-j 본문)가 들은 것을 요약하고 넘어간다.
+        from diag_project.services.avoidance_detector import has_full_star as _hfs
+        from diag_project.services.traversal import MAX_TURNS_PER_SUB as _MAXT_sar, advanced_to_new_target as _adv_sar
+        if (current_target_sub and not _adv_sar(_cur_before, current_target_sub) and _hfs(request.content)
+                and int((_store.get("turns_on_target") or {}).get(chapter, 0) or 0) < _MAXT_sar):
+            _store.setdefault("turns_on_target", {})[chapter] = _MAXT_sar
+            _store.setdefault("result_probed", {})[chapter] = True
+            state["sar_complete_answer"] = True
+            _tm["sar_full"] = 1
+            logger.info("🧭 S-A-R 완비 답변 → [%s] %s 탐침 1회 후 전진", chapter, current_target_sub)
         session.self_assessment_data = _store
         from sqlalchemy.orm.attributes import flag_modified as _flag_mod
         _flag_mod(session, "self_assessment_data")
@@ -987,6 +999,17 @@ async def _submit_message_phase3a(
         from sqlalchemy.orm.attributes import flag_modified as _fm_att
         _fm_att(session, "self_assessment_data")
         state["force_result_probe"] = _force_r
+        # (2026-10-22 P2-2) S-A-R 중 빈 요소 먼저: 상황(S)은 들었는데 리더가 직접 한 행동(A)이 비어 있고 아직 A 를 묻지 않았으면
+        #   이번 탐침은 행동 질문(R 강제가 아닐 때). 원장 action_probed 는 코치 질문이 행동 표지일 때 턴 끝에 기록.
+        from diag_project.services.traversal import action_probed as _ap
+        _cov_sar = state.get("current_event_star_coverage") or {}
+        _force_a = (not _target_advanced_now and not _force_r and not state.get("sar_complete_answer")
+                    and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE")
+                    and bool(_cov_sar) and bool(_cov_sar.get("S")) and not _cov_sar.get("A")
+                    and not _ap(session.self_assessment_data, chapter))
+        state["force_action_probe"] = _force_a
+        if _force_a:
+            logger.info("🎯 A 탐침 강제: [%s] target=%s (S 있음·A 비어 있음)", chapter, current_target_sub)
         if _force_r:
             from diag_project.services.output_guard import needs_quantify_probe as _nqp
             state["result_quantify"] = _nqp((state.get("resume_pending") or {}).get("user_text") or request.content)
@@ -2027,6 +2050,40 @@ async def _submit_message_phase3a(
             clean_reply, _n_m = _fmq(clean_reply)
             if _n_m:
                 _tm["moment"] = _n_m
+            # (2026-10-22 P2-2) 감정·표정·마음속 질문은 챕터당 1회 — 초과면 재생성 1회, 그래도면 행동 질문으로 교체
+            from diag_project.services.output_guard import is_emotion_question as _ieq
+            from diag_project.services.traversal import ACTION_FALLBACK_QUESTION as _AFQ, is_action_probe_text as _iapt
+            _eq_store = dict(session.self_assessment_data or {})
+            _eq_n = int((_eq_store.get("emotion_q_count") or {}).get(chapter, 0) or 0)
+            _cur_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
+            if _cur_q and _ieq(_cur_q) and _eq_n >= 1:
+                _tm["emotion"] = 1
+                _e_txt = ""
+                try:
+                    _e_out = await _timed_regen(
+                        system_prompt=system_prompt, chapter_context=chapter_context,
+                        turn_state_text=turn_state_text + (
+                            "\n\n🚨 [시스템 — 재생성 지시] 이 영역에서 감정·표정·마음을 묻는 질문은 이미 한 번 했습니다. "
+                            "이번 질문은 리더님이 그때 직접 한 행동이나 그 뒤의 결과를 묻는 질문 하나로 다시 쓰세요."),
+                        compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
+                    _e_txt = _MARKER_RE.sub("", _e_out.get("reply") or "").strip()
+                except Exception as _e:
+                    logger.error("감정 질문 재생성 실패: %s", _e)
+                _e_q = next((x for x in reversed(split_sentences(_e_txt)) if is_question_sentence(x)), "") if _e_txt else ""
+                if _e_q and not _ieq(_e_q):
+                    clean_reply, _ = _klq(_e_txt)
+                else:
+                    _tm["emotion"] = 2
+                    _lead_e = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
+                    clean_reply = " ".join(_lead_e + [_AFQ]).strip()
+                    logger.info("💭 감정 질문 초과 → 행동 질문으로 교체")
+            # (2026-10-22 P2-2) A 강제 턴인데 행동 질문이 아니면 고정 행동 질문으로
+            _cur_q2 = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
+            if state.get("force_action_probe") and not _iapt(_cur_q2):
+                _lead_a = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
+                clean_reply = " ".join(_lead_a + [_AFQ]).strip()
+                _tm["action_fix"] = 1
+                logger.info("🎯 A 강제 턴에 행동 질문 없음 → 고정 행동 질문")
             _new_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
             _prev_qs = [x for t in _recent_coach_texts for x in split_sentences(t) if is_question_sentence(x)]
             if _new_q and _prev_qs:
@@ -2490,6 +2547,18 @@ async def _submit_message_phase3a(
         _gl_store = dict(session.self_assessment_data or {})
         if state.get("resume_pending") and instruction_used != "USER_REQUESTS_PAUSE":
             _gl_store.pop("pending_instruction", None)   # (2026-10-22 P1-1) 재개 턴이 pending 을 소비
+        if chapter and system_override_text is None and not _llm_error:
+            # (2026-10-22 P2-2) 이번 코치 질문이 감정 질문이면 챕터 카운트 +1, 행동 질문이면 action_probed 기록
+            from diag_project.services.output_guard import is_emotion_question as _ieq_g, split_sentences as _ss_g
+            from diag_project.services.output_guard import is_question as _isq_g
+            from diag_project.services.traversal import is_action_probe_text as _iapt_g, mark_action_probed as _map_g
+            _fq = next((x for x in reversed(_ss_g(clean_reply)) if _isq_g(x)), "")
+            if _fq and _ieq_g(_fq):
+                _eqc = dict(_gl_store.get("emotion_q_count") or {})
+                _eqc[chapter] = int(_eqc.get(chapter, 0) or 0) + 1
+                _gl_store["emotion_q_count"] = _eqc
+            if _fq and _iapt_g(_fq):
+                _gl_store = _map_g(_gl_store, chapter)
         if system_override_text is None and not _llm_error:
             # (2026-10-22 P2-1) 이번 턴 되받기 마무리 어구를 세션 카운터에 누적(최근 60개)
             from diag_project.services.output_guard import lead_tails as _lts_g
@@ -2521,6 +2590,9 @@ async def _submit_message_phase3a(
             "volunteered": _tm.get("volunteered"), "one_more": _tm.get("one_more"),
             # (2026-10-22 P2-1) tail: 반복·금지 어구 · tail_fix 2=문장 삭제 폴백 · honorific: '리더님,' 문두 제거
             "tail": _tm.get("tail"), "tail_fix": int(_tm.get("tail_fix") or 0), "honorific": int(_tm.get("honorific") or 0),
+            # (2026-10-22 P2-2) sar_full: S-A-R 완비 답변(탐침 1회 후 전진) · emotion 1 재생성/2 교체 · action_fix: A 강제 고정 질문
+            "sar_full": int(_tm.get("sar_full") or 0), "emotion": int(_tm.get("emotion") or 0),
+            "action_fix": int(_tm.get("action_fix") or 0),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

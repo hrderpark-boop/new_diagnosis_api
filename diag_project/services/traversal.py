@@ -197,6 +197,7 @@ def apply_probe_turn(
             store.setdefault("turns_on_target", {})[chapter] = 1
             # 🎯 새 타겟에서는 아직 결과(R)를 묻지 않았다 — R 탐침 강제 판정용 리셋.
             store.setdefault("result_probed", {})[chapter] = False
+            store.setdefault("action_probed", {})[chapter] = False   # (2026-10-22 P2-2) A 탐침 원장도 리셋
             cur = target
         # target 이 None(전량 탐색)이면 현재 타겟 유지
     else:
@@ -225,6 +226,26 @@ def is_result_probe_text(text: str | None) -> bool:
 
 def result_probed(store: dict, chapter: str) -> bool:
     return bool(((store or {}).get("result_probed") or {}).get(chapter, False))
+
+
+# (2026-10-22 P2-2) 행동(A) 탐침 원장 — result_probed 와 같은 방식. 현재 타겟에서 '리더가 직접 한 행동'을 물었는가.
+_ACTION_Q_RE = re.compile(r"(어떻게 하셨|무엇을 하셨|뭘 하셨|어떤 행동|어떤 조치|어떻게 대응|어떻게 접근|어떻게 이끄|어떻게 진행|"
+                          r"어떤 방식으로|직접 하신|먼저 하신|어떤 말을|어떻게 말씀|무엇부터|어떻게 설득|어떻게 풀)")
+ACTION_FALLBACK_QUESTION = "그때 리더님이 직접 하신 일은 무엇이었어요?"
+
+
+def is_action_probe_text(text: str | None) -> bool:
+    return bool(text) and bool(_ACTION_Q_RE.search(text))
+
+
+def action_probed(store: dict, chapter: str) -> bool:
+    return bool(((store or {}).get("action_probed") or {}).get(chapter, False))
+
+
+def mark_action_probed(store: dict, chapter: str) -> dict:
+    store = dict(store or {})
+    store.setdefault("action_probed", {})[chapter] = True
+    return store
 
 
 def mark_result_probed(store: dict, chapter: str) -> dict:

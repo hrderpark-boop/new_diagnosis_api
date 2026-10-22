@@ -413,6 +413,14 @@ def is_transition_only(text: str) -> bool:
     return all(_TRANSITION_ONLY_RE.match(s) for s in stmts)
 
 
+# ── 4-c2) (2026-10-22 P2-2) 감정·표정·마음속 질문 — 챕터당 1회 상한 ──
+_EMOTION_Q_RE = re.compile(r"마음|감정|기분|표정|느끼|느낌|심정|속으로|불안|안도|부담감|어떤 생각이 드")
+
+
+def is_emotion_question(question: str | None) -> bool:
+    return bool(question) and bool(_EMOTION_Q_RE.search(question))
+
+
 # ── 4-d) (2026-10-22 P2-1) 입버릇 반복 가드 — 되받기(평서문) 마무리 어구(마지막 어절 2개)를 세션 단위로 센다 ──
 BANNED_TAILS = [
     "마음에 남아요", "마음에 남네요", "마음에 남습니다", "짐작이 되네요", "짐작이 됩니다", "짐작이 돼요",

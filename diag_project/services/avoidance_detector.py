@@ -128,6 +128,18 @@ def check_avoidance(text: str | None) -> bool:
 _PAST_VERB_RE = re.compile(r"[가-힣]+(았|었|했|됐|였|갔|왔|냈|봤|줬|렸|졌|했었)(어요|습니다|죠|고|는데|고요|어|지요|습니까|다|던|을|네요|거든요|잖아요)")
 
 
+_RESULT_MARK_RE = re.compile(r"결과|됐|되었|달라졌|줄었|늘었|올랐|떨어졌|성공|실패|해결|돌아왔|안정|나아졌|개선|\d+\s*(%|퍼센트|명|건|개월|주|일|배)|"
+                             r"만에|부터는|이후로|그 뒤")
+
+
+def has_full_star(text: str | None) -> bool:
+    """(2026-10-22 P2-2) 리더 답변이 상황·행동·결과를 이미 다 담았는가 — 과거형 동사 2개 이상(행동) + 결과 표지 + 80자 이상."""
+    t = (text or "").strip()
+    if len(t.replace(" ", "")) < 80:
+        return False
+    return len(_PAST_VERB_RE.findall(t)) >= 2 and bool(_RESULT_MARK_RE.search(t))
+
+
 def has_narrative(text: str | None) -> bool:
     """(2026-10-22 P2-0) 발화에 상황·행동 서술이 있는가 — 과거형 동사 2개 이상 또는 공백 제외 30자 이상."""
     t = (text or "").strip()
