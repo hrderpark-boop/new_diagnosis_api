@@ -2286,6 +2286,12 @@ async def _submit_message_phase3a(
                 clean_reply, _n_tail = _sls(clean_reply, set(_r0))
                 _tm["tail_fix"] = 2
                 logger.info("🗣️ 입버릇 반복(%s) → 되받기 문장 %d개 삭제", _tm["tail"], _n_tail)
+                if instruction_used == "STAR_COMPLETE_NEW_EVENT" and not any(
+                        not is_question_sentence(x) for x in split_sentences(clean_reply)):
+                    # 전환 턴은 되받기·다리 없이 앵커만 남으면 안 된다 → 페르소나 다리 한 문장을 앞에
+                    from diag_project.services.intro_messages import transition_bridge as _tbr_n
+                    clean_reply = f"{_tbr_n((state.get('coach_persona') or {}).get('name'), len(asked_for_chapter(session.self_assessment_data, chapter) or []))} {clean_reply}".strip()
+                    _tm["bridge_added"] = 1
         if _swh(clean_reply) and any(_swh(_t) for _t in _recent_coach_texts):
             clean_reply, _hon = _slh(clean_reply)
             if _hon:

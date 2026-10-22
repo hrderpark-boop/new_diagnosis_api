@@ -33,6 +33,14 @@ def test_repeated_tail_stripped_keeps_question_and_fallback_when_empty():
     assert n2 == 1 and out2 == "그러셨군요."
 
 
+def test_keep_last_question_keeps_either_or_pair():
+    t = "그 변화를 직접 이끄셨나요? 아니면 그냥 지켜보셨던 쪽에 가까웠나요?"
+    assert G.keep_last_question(t) == (t, 0)                                           # 양자택일은 한 질문
+    t2 = "그때 어떠셨어요? 리더님이 먼저 나서셨나요? 아니면 팀이 먼저였나요?"
+    out, n = G.keep_last_question(t2)
+    assert n == 1 and out == "리더님이 먼저 나서셨나요? 아니면 팀이 먼저였나요?"
+
+
 def test_leading_honorific():
     assert G.starts_with_honorific("리더님, 그 결정은 언제였을까요?") and G.starts_with_honorific("박기진 리더님, 그때는요?")
     assert not G.starts_with_honorific("그때 리더님은 어떻게 하셨어요?")

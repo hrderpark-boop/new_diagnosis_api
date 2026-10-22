@@ -303,12 +303,18 @@ def keep_last_question(text: str) -> tuple[str, int]:
     qs = [s for s in sents if is_question(s)]
     if len(qs) < 2:
         return text, 0
+    # (2026-10-22) "A? 아니면 B?" 양자택일 쌍은 한 질문 — 마지막이 '아니면'으로 시작하면 바로 앞 질문도 남긴다
+    keep = qs[-2:] if qs[-1].lstrip().startswith(("아니면", "혹은", "또는")) else qs[-1:]
+    if len(keep) == len(qs):
+        return text, 0
     out = text
-    for q in qs[:-1]:
+    for q in qs:
+        if q in keep:
+            continue
         out = out.replace(q, "", 1)
     out = re.sub(r"[ \t]{2,}", " ", out)
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
-    return out, len(qs) - 1
+    return out, len(qs) - len(keep)
 
 
 _MOMENT_Q_RE = re.compile(r"순간(이|은|도|들이|들도)\s*(있었|있으셨|있었던|있으셨던|없었|없으셨)(을까요|나요|어요|습니까)\s*\?")
