@@ -303,6 +303,19 @@ def _force_rapport_category(rapport_turn_count: int) -> str:
     return "기대"
 
 
+def resume_pending_for(store: dict, latest_model_msg, chapter: str | None) -> dict | None:
+    """(2026-10-22 P1-1) 일시정지 제안 턴이 삼킨 instruction(pending)을 이번 턴에 재개해야 하는가.
+    직전 코치 턴이 SUGGEST_PAUSE(제안) 또는 USER_REQUESTS_PAUSE(제안 뒤 '다음에' → 재개)이고 pending 챕터가 같을 때만."""
+    pend = (store or {}).get("pending_instruction")
+    if not isinstance(pend, dict) or not pend.get("instruction") or latest_model_msg is None:
+        return None
+    if pend.get("chapter") != chapter:
+        return None
+    if latest_model_msg.probe_type_used == "SUGGEST_PAUSE" or latest_model_msg.instruction_used == "USER_REQUESTS_PAUSE":
+        return dict(pend)
+    return None
+
+
 def extract_expectation_answer(msgs: list) -> str | None:
     """(2026-10-16) INTRO 턴에 주입할 '기대 질문 답변'을 메시지 열에서 찾는다.
 
@@ -435,6 +448,16 @@ def decide_instruction(state: dict) -> InstructionType:
         return "SESSION_ABORT_3STRIKE"
     if _defl >= 2 and not _warned:
         return "SESSION_ABORT_WARNING"
+
+    # === 0.6순위 (2026-10-22 P1-1): 일시정지 제안(SUGGEST_PAUSE) 직후 — pending instruction 그대로 실행 ===
+    #   제안 턴은 되받기 + 안내만 내고 질문을 삼켰다. 리더가 '계속'이면 그 턴에 나갔어야 할 탐침을 그대로(새 앵커 금지),
+    #   '다음에/잠시 쉬' 면 일시중지. 원장은 제안 턴에서 되돌려 두었으므로 같은 타겟이 다시 잡힌다.
+    _pend = state.get("resume_pending")
+    if _pend:
+        if detect_pause_request(state.get("last_user_response")):
+            return "USER_REQUESTS_PAUSE"
+        state["route_reason"] = "resume_pending"
+        return _pend["instruction"]
 
     # === 🚦 A: 참여 이탈(disengagement) 중단 흐름 (BEI 컨텍스트에서만) ===
     #   중단 트리거는 '근거 부족'이 아니라 '참여 이탈'(A-0). 카운터/판정은
@@ -1145,6 +1168,8 @@ async def build_turn_state(
         "chapter_framework": chapter_framework_state,
         # (2026-10-16) INTRO 가이드 변수: 리더가 '기대' 질문에 실제로 한 답(없으면 None → paraphrase 생략)
         "expectation_answer": extract_expectation_answer(_msgs),
+        # (2026-10-22 P1-1) 직전 코치 턴이 일시정지 제안(또는 그 직후 일시중지)이고 pending 이 같은 챕터면 → 그대로 실행
+        "resume_pending": resume_pending_for(_store, latest_model_msg, chapter),
     }
 
     # 9-d. 시간 정보 (라포 단계 LLM 자연스러운 응답 위해)

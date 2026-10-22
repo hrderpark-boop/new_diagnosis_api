@@ -971,7 +971,7 @@ async def _submit_message_phase3a(
         if _force_r and chapter:
             # (2026-09-29) 풀 문장을 넣지 않는다 — 직전 발화의 명사구를 주고 LLM 이 결과 질문을 만든다.
             from diag_project.services.output_guard import key_noun_phrase as _knp
-            state["result_focus"] = _knp(request.content)
+            state["result_focus"] = _knp((state.get("resume_pending") or {}).get("user_text") or request.content)
         if _force_r and instruction_used != "STAR_INCOMPLETE":
             logger.info(
                 "🎯 R 탐침 강제: [%s] target=%s turns=%d instr %s→STAR_INCOMPLETE",
@@ -1043,6 +1043,18 @@ async def _submit_message_phase3a(
     import os as _os_st
     state["style_at_tail"] = _os_st.getenv("FM_STYLE_TAIL", "1") != "0"
     turn_state_text = format_turn_state_for_llm(state)
+    # (2026-10-22 P1-1) 일시정지 제안 뒤 '계속' 재개 턴: 리더의 이번 메시지는 재개 의사일 뿐이다. 제안 직전 답변을
+    #   이어받아 pending 탐침을 그대로 던지게 하고, 새 주제·새 앵커를 금지한다.
+    _resume_pend = state.get("resume_pending")
+    _llm_user_text = request.content
+    if _resume_pend:
+        _prev_answer = (_resume_pend.get("user_text") or "").strip()
+        if _prev_answer:
+            _llm_user_text = _prev_answer
+        turn_state_text += (
+            "\n\n🔁 [시스템 — 재개] 직전 턴에 잠시 쉬어갈지 안내했고 리더님이 '계속'을 골랐습니다. 이번 메시지는 재개 의사일 뿐이니 "
+            "되받지 마세요. 아래 [Latest User Message]는 그 전에 리더님이 하신 답변입니다 — 그 답변에 이어 이번 지시의 탐침을 "
+            "그대로 던지세요. 새 주제·새 앵커·'다시 시작' 류 인사 금지.")
     if state["style_at_tail"]:
         from diag_project.prompts.phase3a.layer3_state import build_style_tail
         _style_tail = build_style_tail(state)
@@ -1221,7 +1233,7 @@ async def _submit_message_phase3a(
             chapter_context=chapter_context,
             turn_state_text=turn_state_text,
             compressed_history=compressed_history,
-            user_message=request.content,
+            user_message=_llm_user_text,   # (2026-10-22 P1-1) 재개 턴은 제안 직전 답변
             light_mode=(instruction_used in _LIGHT_MODE_INSTRUCTIONS),
             tail_block=_style_tail,
         )
@@ -1295,7 +1307,7 @@ async def _submit_message_phase3a(
     _last_sp_idx = max((i for i, m in enumerate(history_messages)
                         if m.probe_type_used == "SUGGEST_PAUSE"), default=None)
     _turns_since_sp = (len(history_messages) - 1 - _last_sp_idx) // 2 if _last_sp_idx is not None else None
-    _backend_pause_suggested = (system_override_text is None and not _llm_error and _ssp(
+    _backend_pause_suggested = (system_override_text is None and not _llm_error and not state.get("resume_pending") and _ssp(
         elapsed_min=_sit_elapsed, sitting_messages=_sit_n,
         suggest_pause_count=state.get("suggest_pause_count", 0),
         turns_since_last_suggest=_turns_since_sp, instruction_used=instruction_used,
@@ -2148,11 +2160,26 @@ async def _submit_message_phase3a(
                 logger.info("❗ 느낌표 치환: %d → %d", _before, count_exclamations(clean_reply))
 
     if needs_user_decision and _backend_pause_suggested and clean_reply:
-        clean_reply = (
-            f"{clean_reply.rstrip()}\n\n"
-            f"리더님, 한 자리에서 {int(_sit_elapsed)}분째 이어오고 있습니다. 오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. "
-            "이어가실지, 다음에 하실지 골라 주세요."
-        )
+        # (2026-10-22 P1-1) 제안 턴은 '되받기 한 문장 + 안내'만 — 질문은 삼키되 버리지 않는다:
+        #   이 턴의 instruction·타겟·리더 답변을 pending 으로 저장하고, 원장(asked/turns/target)은 스텝 이전으로 되돌린다.
+        #   리더가 '계속'이면 다음 턴 decider 가 pending 을 그대로 실행(같은 타겟·같은 탐침), '다음에'면 paused.
+        from diag_project.services.intro_messages import pause_suggestion_text
+        from diag_project.services.output_guard import receive_sentence as _recv_pause
+        from diag_project.services.traversal import restore_ledger as _restore_ledger
+        _recv_only = _recv_pause(clean_reply, fallback="")
+        clean_reply = f"{_recv_only}\n\n{pause_suggestion_text(_sit_elapsed)}".strip()
+        _pst = dict(session.self_assessment_data or {})
+        if _ledger_snapshot is not None:
+            _pst = _restore_ledger(_pst, _ledger_snapshot)
+        _pst["pending_instruction"] = {
+            "instruction": instruction_used, "chapter": chapter, "target": current_target_sub,
+            "user_text": (request.content or "")[:1000], "at": datetime.utcnow().isoformat(timespec="seconds"),
+        }
+        session.self_assessment_data = _pst
+        from sqlalchemy.orm.attributes import flag_modified as _fm_pst
+        _fm_pst(session, "self_assessment_data")
+        logger.info("⏸️ 일시정지 제안: 질문 보류 → pending=%s target=%s (원장 되돌림=%s)",
+                    instruction_used, current_target_sub, _ledger_snapshot is not None)
 
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     #   (2026-09-22) 탐침 종류는 LLM 자기보고가 아니라 instruction·문장 표지로(event_tracker.probe_type_for).
@@ -2331,6 +2358,8 @@ async def _submit_message_phase3a(
     # (2026-09-18) 턴별 가드 결과를 세션 store 에 남긴다(Render 로그는 실세션 후 조회 불가). 최근 200턴만 유지.
     try:
         _gl_store = dict(session.self_assessment_data or {})
+        if state.get("resume_pending") and instruction_used != "USER_REQUESTS_PAUSE":
+            _gl_store.pop("pending_instruction", None)   # (2026-10-22 P1-1) 재개 턴이 pending 을 소비
         _gl = list(_gl_store.get("guard_log") or [])[-199:]
         _gl.append({
             "t": _turn_index, "ch": chapter, "instr": instruction_used,

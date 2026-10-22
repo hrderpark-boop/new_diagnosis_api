@@ -71,6 +71,12 @@ RAPPORT_EXPECTATION_QUESTION = "이번 진단에서 기대하시는 것이 있�
 RAPPORT_INTRO_BRIDGE_NO_EXPECTATION = "네, 그러면 제가 오늘 흐름부터 설명드릴게요."
 
 
+def pause_suggestion_text(elapsed_min: int) -> str:
+    """(2026-10-22 P1-1) 일시정지 제안 안내 — 질문 없음. 선택은 프론트 버튼('계속 진행하기'/'다음에 하기')이 받는다."""
+    return (f"리더님, 한 자리에서 {int(elapsed_min)}분째 이어오고 있습니다. 오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. "
+            "이어가실지, 다음에 하실지 아래에서 골라 주세요.")
+
+
 def chapter_end_bridge(next_topic: str) -> str:
     """(2026-10-21) 챕터 종료: 들은 것 요약(LLM, 사실만) 뒤에 붙는 고정 다리."""
     return f"이제 '{next_topic}'로 이어가 보겠습니다."
