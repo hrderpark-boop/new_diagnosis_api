@@ -45,7 +45,8 @@ def test_cache_roundtrip_and_persist():
        AC.get("unit_ns", AC.make_key("v2", "조직", "발화A")) is None)
 
 
-def test_gate_cache_second_run_zero_calls():
+def test_gate_cache_second_run_zero_calls(monkeypatch):
+    monkeypatch.setenv("GATE_VOTES", "1")   # (2026-10-23 D) 캐시 의미만 본다 — 투표 수는 1로 고정
     LG._GATE_CACHE.clear()
     calls = {"n": 0}
 

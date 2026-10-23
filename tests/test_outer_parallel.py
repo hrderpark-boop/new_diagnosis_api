@@ -163,6 +163,7 @@ def test_concurrency_cap_bounds_llm_calls(monkeypatch):
 
 
 def test_gate_shares_inflight_verdict(monkeypatch):
+    monkeypatch.setenv("GATE_VOTES", "1")   # (2026-10-23 D) 공유·재판정 의미만 본다 — 투표 수는 1로 고정
     """병렬 outer 가 같은 후보를 동시에 게이트에 넣으면 LLM 1회로 판정을 공유."""
     monkeypatch.setenv("ANALYSIS_CACHE_ENABLED", "0")
     LG._GATE_CACHE.clear()
@@ -190,6 +191,7 @@ def test_gate_shares_inflight_verdict(monkeypatch):
 
 
 def test_gate_shared_failure_is_rejudged(monkeypatch):
+    monkeypatch.setenv("GATE_VOTES", "1")   # (2026-10-23 D) 공유·재판정 의미만 본다 — 투표 수는 1로 고정
     """공유한 판정이 실패(pending)면 기다린 쪽이 직접 재판정한다."""
     monkeypatch.setenv("ANALYSIS_CACHE_ENABLED", "0")
     monkeypatch.setattr(LG, "GATE_MAX_RETRIES", 1)
