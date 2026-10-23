@@ -1,4 +1,4 @@
-"""I-6: outer run 교집합 병합(outer_merge) 순수 함수 고정 테스트. 실행: pytest."""
+"""I-6 → (2026-10-23) outer run 다수결 병합(outer_merge) 순수 함수 고정 테스트. weak(1/3 탐지)=measured+배지, dropped(탈락 2회+)=미측정."""
 import os
 import random
 import sys
@@ -10,9 +10,11 @@ from diag_project.services.outer_merge import (  # noqa: E402
 )
 
 
-def _row(measured, level, ev=None):
+def _row(measured, level, ev=None, gate=None):
+    """gate: run 의 gate_status. 기본은 measured→passed, 아니면 n_a(근거 후보 없음). 'failed'=게이트 탈락."""
     return {"measured": measured, "level": level,
-            "evidence": ev if ev is not None else (["q"] if measured else [])}
+            "evidence": ev if ev is not None else (["q"] if measured else []),
+            "gate_status": gate or ("passed" if measured else "n_a")}
 
 
 def test_stable_all_three_same_level():
@@ -36,10 +38,23 @@ def test_semi_three_detected_level_split():
     assert m["borderline"]["level_range"] == [2, 3]
 
 
-def test_weak_one_of_three_not_measured():
+def test_weak_one_of_three_is_measured_with_badge():
     m = classify_sub([_row(True, 1), _row(False, None), _row(False, None)], 3)
-    assert m["class"] == "weak" and not m["measured"]
-    assert m["level"] is None            # measured 아님 → 레벨 없음
+    assert m["class"] == "weak" and m["measured"] and m["level"] == 1
+    assert m["borderline"]["flags"] == ["detection"] and m["borderline"]["detection_count"] == 1
+
+
+def test_weak_survives_single_drop():
+    # 1회 통과 + 1회 탈락 + 1회 근거 없음 → 아직 measured(탈락 1회로는 떨어뜨리지 않음)
+    m = classify_sub([_row(True, 2), _row(False, None, gate="failed"), _row(False, None)], 3)
+    assert m["class"] == "weak" and m["measured"] and m["level"] == 2 and m["dropped_count"] == 1
+
+
+def test_dropped_two_or_more_not_measured():
+    m = classify_sub([_row(True, 1), _row(False, None, gate="failed"), _row(False, None, gate="failed")], 3)
+    assert m["class"] == "dropped" and not m["measured"] and m["level"] is None
+    m2 = classify_sub([_row(False, None, gate="failed")] * 3, 3)
+    assert m2["class"] == "dropped" and not m2["measured"]
 
 
 def test_none_never_detected():
@@ -47,10 +62,11 @@ def test_none_never_detected():
     assert m["class"] == "none" and not m["measured"]
 
 
-def test_majority_and_median():
-    assert _majority_level([1, 1, 2]) == 1          # 다수결
-    assert _majority_level([1, 2, 3]) == 2          # 전부 다르면 중앙값
-    assert _majority_level([2, 3]) == 2             # 2개 갈림 → 보수적 최소
+def test_median_level():
+    assert _majority_level([1, 1, 2]) == 1          # 중앙값
+    assert _majority_level([1, 2, 3]) == 2
+    assert _majority_level([2, 3]) == 2             # 짝수면 낮은 쪽(보수적)
+    assert _majority_level([2, 4, 4]) == 4
 
 
 def test_evidence_union_dedup():
@@ -70,9 +86,10 @@ def test_shuffle_invariant():
 
 
 def _run(sub_levels, err=False):
-    """competency result 하나(한 outer run): {sub: (measured, level)}."""
-    led = {s: {"asked": True, "measured": (lv is not None),
-               "level": lv, "evidence": (["q"] if lv is not None else [])}
+    """competency result 하나(한 outer run): {sub: level|None|'X'(게이트 탈락)}."""
+    led = {s: {"asked": True, "measured": (lv is not None and lv != "X"),
+               "level": (None if lv == "X" else lv), "evidence": (["q"] if lv not in (None, "X") else []),
+               "gate_status": ("failed" if lv == "X" else ("passed" if lv is not None else "n_a"))}
            for s, lv in sub_levels.items()}
     r = {"sub_ledger": led, "score_breakdown": {}}
     if err:
@@ -89,9 +106,19 @@ def test_merge_measured_and_qualifying_from_stable_semi():
     led = m["sub_ledger"]
     assert led["a"]["stability"] == "stable" and led["a"]["measured"]
     assert led["b"]["stability"] == "semi" and led["b"]["measured"]
-    assert led["c"]["stability"] == "weak" and not led["c"]["measured"]
-    assert m["measured_count"] == 2                 # stable + semi
-    assert m["stability_counts"] == {"stable": 1, "semi": 1, "weak": 1}
+    assert led["c"]["stability"] == "weak" and led["c"]["measured"] and led["c"]["level"] == 1
+    assert m["measured_count"] == 3                 # stable + semi + weak(배지)
+    assert m["stability_counts"] == {"stable": 1, "semi": 1, "weak": 1, "dropped": 0}
+
+
+def test_merge_dropped_twice_is_evidence_missing():
+    runs = [_run({"a": 2, "b": "X"}), _run({"a": "X", "b": "X"}), _run({"a": None, "b": 3})]
+    m = merge_competency(runs, "people_management", 3)
+    led = m["sub_ledger"]
+    assert led["a"]["stability"] == "weak" and led["a"]["measured"]            # 통과 1 + 탈락 1 + 없음 1
+    assert led["b"]["stability"] == "dropped" and not led["b"]["measured"]     # 탈락 2 + 통과 1
+    assert led["b"]["gate_status"] == "failed" and led["b"]["status"] == "evidence_missing"
+    assert m["stability_counts"]["dropped"] == 1
 
 
 def test_merge_error_propagates():

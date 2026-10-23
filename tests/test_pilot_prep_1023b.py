@@ -34,7 +34,8 @@ def test_gate_runs_recorded_per_run_for_weak_sub():
             _run(False, None, {"verified_level": None, "category": "일반화", "reason": "시점·상황 없음", "dropped": True, "pending": False})]
     merged = merge_competency(runs, "organization_management", 3)
     row = merged["sub_ledger"]["전략적 사고"]
-    assert row["stability"] == "weak" and row["measured"] is False and row["gate_status"] == "failed"
+    # (2026-10-23 다수결) 통과 1 + 탈락 2 → dropped(근거 미확보). gate_runs 로 어느 run 이 왜 떨어뜨렸는지 남는다.
+    assert row["stability"] == "dropped" and row["measured"] is False and row["gate_status"] == "failed"
     gr = row["gate_runs"]
     assert len(gr) == 3 and gr[0]["verified_level"] == 1 and gr[0]["measured"] is True
     assert gr[1]["dropped"] is True and gr[1]["category"] == "일반화" and gr[1]["reason"] == "평소 방식 서술"

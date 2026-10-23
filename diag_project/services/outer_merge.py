@@ -1,14 +1,16 @@
-"""S-1/I-1: E-2a×3 + 교집합 병합 — outer run 3회의 원장을 교차 분류.
+"""S-1/I-1 → (2026-10-23) 다수결 병합: outer run 3회의 원장을 교차 분류.
 
-E-2b(inner union, 측정 인플레)를 기각하고, '완결된 분석 파이프라인 3회(outer)'의
-교집합으로 안정성을 판정한다.
+  stable  : 3회 전부 탐지(게이트 통과) + 레벨 일치 → 카드 자격, 배지 없음
+  semi    : 2회 탐지, 또는 3회 탐지지만 레벨 갈림 → measured + '근거 제한적' 배지
+  weak    : 1회만 탐지(나머지는 근거 후보 없음) → measured + 배지(detection 1/3)   ← 2026-10-23 변경(이전엔 미측정)
+  dropped : 게이트 탈락(dropped) 2회 이상 → 미측정(근거 미확보). 1회 탈락만으로는 떨어뜨리지 않는다.
+  none    : 한 번도 근거 후보가 없음 → 미측정
 
-  stable : 3회 전부 탐지(measured) + 레벨 일치 → 카드 자격, 배지 없음
-  semi   : 2회 탐지, 또는 3회 탐지지만 레벨 갈림 → 카드 충원 + '근거 제한적' 배지
-  weak   : 1회만 탐지 → 재현되지 않음 → measured 로 세지 않음(gate_status=failed)
+레벨은 통과한 run 의 verified_level 중앙값(짝수면 낮은 쪽 — 레벨은 판정 축이라 보수적).
+measured = stable+semi+weak. qualifying/셧다운은 여전히 stable 만 센다(llm_service).
 
-레벨은 탐지된 표본의 다수결(3개 전부 다르면 중앙값). qualifying/measured 는
-stable+semi(재현 측정)만 센다 — weak(1/3)은 노이즈로 취급해 발행을 부풀리지 않는다.
+배경: 교집합(weak 미측정)은 cbd5210b '전략적 사고'처럼 3회 중 1회 Lv.1 통과·2회 미탐지를 '근거 미확보'로
+떨어뜨렸다. 다수결로 바꿔 탐지 1회는 살리고(배지), 게이트가 2회 이상 적극 거절한 것만 떨어뜨린다.
 
 전부 순수 함수. 동일 입력 → 동일 출력(결정론). API 호출 없음.
 """
@@ -20,18 +22,14 @@ from diag_project.services.scoring import (
 )
 
 
-def _majority_level(levels: List[int]) -> int:
-    """탐지된 표본 레벨의 다수결. 최빈값 유일하면 그것, 3개 전부 다르면 중앙값,
-    2개 갈림 등 동률은 보수적 최소(레벨은 판정 축)."""
-    from collections import Counter
-    c = Counter(levels)
-    top = max(c.values())
-    modes = [v for v, n in c.items() if n == top]
-    if len(modes) == 1:
-        return modes[0]
-    if len(levels) == 3 and len(set(levels)) == 3:
-        return int(statistics.median(levels))
-    return min(levels)
+def _median_level(levels: List[int]) -> int:
+    """통과한 run 의 verified_level 중앙값. 짝수 개면 낮은 쪽(보수적)."""
+    srt = sorted(int(x) for x in levels)
+    return srt[(len(srt) - 1) // 2]
+
+
+# 하위 호환(테스트·외부 참조): 이름만 유지, 중앙값 규칙으로 동작한다.
+_majority_level = _median_level
 
 
 def classify_sub(run_rows: List[Dict[str, Any]], n_runs: int) -> Dict[str, Any]:
@@ -43,6 +41,8 @@ def classify_sub(run_rows: List[Dict[str, Any]], n_runs: int) -> Dict[str, Any]:
     """
     present = [r for r in run_rows if r and r.get("measured")]
     detect = len(present)
+    # 게이트가 '실행돼서 탈락'시킨 run 수(gate_status=failed). 근거 후보가 없어 게이트가 안 돈 run(n_a)은 세지 않는다.
+    dropped_n = sum(1 for r in run_rows if r and r.get("gate_status") == "failed")
     levels = [int(r["level"]) for r in present
               if r.get("level") is not None]
     # 근거 합집합(표시용) — 중복 제거, 순서 보존
@@ -56,20 +56,21 @@ def classify_sub(run_rows: List[Dict[str, Any]], n_runs: int) -> Dict[str, Any]:
                 ev_union.append(e)
 
     same_level = len(set(levels)) <= 1
-    if detect >= n_runs and same_level and levels:
-        cls = "stable"
-    elif detect >= 2:
-        cls = "semi"
+    if detect >= 2:
+        cls = "stable" if (detect >= n_runs and same_level and levels) else "semi"
+    elif dropped_n >= 2:
+        cls = "dropped"            # 2회 이상 적극 거절 → 근거 미확보
     elif detect == 1:
-        cls = "weak"
+        cls = "weak"               # 1회 통과(+탈락 1회 이하) → measured + 배지
     else:
         cls = "none"
 
-    merged_level = _majority_level(levels) if levels else None
+    measured = cls in ("stable", "semi", "weak")
+    merged_level = _median_level(levels) if (levels and measured) else None
     lvl_range = [min(levels), max(levels)] if levels and not same_level else None
 
     borderline = None
-    if cls == "semi":
+    if cls in ("semi", "weak"):
         flags = []
         if detect < n_runs:
             flags.append("detection")
@@ -77,12 +78,13 @@ def classify_sub(run_rows: List[Dict[str, Any]], n_runs: int) -> Dict[str, Any]:
             flags.append("level")
         borderline = {"flags": flags or ["detection"],
                       "detection_count": detect, "of": n_runs,
-                      "level_range": lvl_range}
+                      "level_range": lvl_range,
+                      "dropped_runs": dropped_n}
 
-    return {"class": cls, "measured": cls in ("stable", "semi"),
-            "level": merged_level if cls in ("stable", "semi") else None,
+    return {"class": cls, "measured": measured,
+            "level": merged_level,
             "evidence": ev_union, "borderline": borderline,
-            "detection_count": detect, "of": n_runs}
+            "detection_count": detect, "dropped_count": dropped_n, "of": n_runs}
 
 
 def gate_run_summary(run_result: Dict[str, Any], sub: str) -> Dict[str, Any]:
@@ -116,7 +118,7 @@ def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
     sub_ledger: Dict[str, Any] = {}
     gate_counts = {"passed": 0, "failed": 0, "pending": 0, "n_a": 0}
     measured_count = 0
-    class_counts = {"stable": 0, "semi": 0, "weak": 0}
+    class_counts = {"stable": 0, "semi": 0, "weak": 0, "dropped": 0}
     for sub in subs:
         rows = [(r.get("sub_ledger") or {}).get(sub) or {} for r in run_results]
         asked = any((r.get("sub_ledger") or {}).get(sub, {}).get("asked")
@@ -134,8 +136,8 @@ def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
             level = int(m["level"]); score = float(level)
             measured_count += 1
             disp_ev = m["evidence"]
-        elif cls == "weak":
-            # 1회만 탐지 → 재현 실패. measured 아님(근거 미확보로 표기).
+        elif cls == "dropped":
+            # 게이트가 2회 이상 적극 거절 → 근거 미확보.
             gate_status, status = "failed", "evidence_missing"
             level = score = None; disp_ev = []
         else:  # none
