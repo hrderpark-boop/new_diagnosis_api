@@ -40,7 +40,11 @@ def test_persona_generalize_lines_six_variants():
     assert len(lines) == 6 and len(set(lines.values())) == 6
     for p, q in lines.items():
         assert is_question(q) and "최근" in q and ("언제" in q), (p, q)
-    assert persona_line("Ella", "generalize") == "그중 가장 최근 일 하나만요. 어떤 일이었고 언제쯤이었어요?"
+    # 한 문장이어야 한다 — 두 문장이면 8-o/되받기 상한이 앞 문장("그중 가장 최근 일 하나만요.")을 지운다(g4b 재생 10턴에서 확인)
+    from diag_project.services.output_guard import split_sentences
+    for p, q in lines.items():
+        assert len([x for x in split_sentences(q) if x.strip()]) == 1, (p, q)
+    assert persona_line("Ella", "generalize") == "그중 가장 최근 일 하나만요, 어떤 일이었고 언제쯤이었어요?"
     assert persona_line("Michael", "generalize").startswith("좋습니다,") and persona_line("Jessica", "generalize").endswith("습니까?")
 
 
