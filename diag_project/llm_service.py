@@ -368,6 +368,12 @@ def _normalize_sub_assessments(raw: Any, sub_indicators: list) -> Dict[str, Dict
             target = next((s for s in subs if _norm(s) == n2), None) \
                 or next((s for s in subs if n2 and (n2 in _norm(s) or _norm(s) in n2)), None)
         if target is None or target in out:
+            # (2026-10-23) 못 맞춘 이름은 버리되 로그로 남긴다 — 운영 리포트의 '근거 미확보'가 이름 불일치인지
+            #   게이트 거절인지 즉시 가릴 수 있게. (cbd5210b 조사: 3건 모두 이름은 맞았고 게이트가 거절했다.)
+            if target is None and nm:
+                logger.warning("⚠️ sub_assessments 이름 불일치 → 제외: %r (후보: %s)", nm, subs)
+            elif target is not None:
+                logger.warning("⚠️ sub_assessments 이름 중복 → 뒤 항목 제외: %r → %s", nm, target)
             continue
         out[target] = {k: v for k, v in it.items() if k != "name"}
     return out

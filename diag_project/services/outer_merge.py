@@ -85,6 +85,23 @@ def classify_sub(run_rows: List[Dict[str, Any]], n_runs: int) -> Dict[str, Any]:
             "detection_count": detect, "of": n_runs}
 
 
+def gate_run_summary(run_result: Dict[str, Any], sub: str) -> Dict[str, Any]:
+    """한 outer run 의 (게이트 판정, 원장) 을 한 줄로. 게이트가 안 돌았으면(근거 후보 없음) verdict=None."""
+    g = ((run_result or {}).get("level_gate") or {}).get(sub) or None
+    row = ((run_result or {}).get("sub_ledger") or {}).get(sub) or {}
+    claimed = ((run_result or {}).get("_parsed") or {}).get(sub, {}).get("level")
+    return {
+        "claimed_level": claimed,
+        "verified_level": g.get("verified_level") if g else None,
+        "category": g.get("category") if g else None,
+        "dropped": bool(g.get("dropped")) if g else None,
+        "pending": bool(g.get("pending")) if g else None,
+        "reason": (g.get("reason") or "")[:120] if g else None,
+        "measured": bool(row.get("measured")),
+        "gate_status": row.get("gate_status"),
+    }
+
+
 def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
                      n_runs: int) -> Dict[str, Any]:
     """한 대역량의 outer run 결과들을 교집합 병합 → 단일 competency result.
@@ -131,6 +148,9 @@ def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
             "score": score, "evidence": disp_ev, "status": status,
             "gate_status": gate_status, "borderline": m["borderline"],
             "stability": cls, "candidate_runs": cand_runs,
+            # (2026-10-23) run 별 게이트 판정 — 리포트의 level_gate 는 run0 만 남아 weak(1/3)·탈락 사유를
+            #   되짚을 수 없었다(cbd5210b '전략적 사고'). 어느 run 이 왜 떨어뜨렸는지 그대로 싣는다.
+            "gate_runs": [gate_run_summary(r, sub) for r in run_results],
         }
 
     base["sub_ledger"] = sub_ledger
