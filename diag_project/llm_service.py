@@ -1016,7 +1016,16 @@ class GeminiService:
 
         # (2026-10-23) stop_reason=refusal 은 비결정적이라 같은 요청을 최대 2회 더 보낸다 — cbd5210b 로컬 재분석에서
         #   사람관리 심층분석 3회 중 2회가 refusal 로 떨어져 챕터 측정 0 이 됐다. 3회 연속이면 그대로 올려 호출자가 실패 처리.
+        # (2026-10-23 C) 조사 결과 refusal 은 thinking 과 함께 나온다 — 사람관리 심층분석 캐시 없이 8회: thinking 켬 14콜 중 6회
+        #   거절, thinking 끔 8콜 중 0회(응답도 26s 대 60~140s). 재시도는 thinking 을 끄고 보낸다(첫 시도는 그대로).
         for _ref_attempt in range(3):
+            if _ref_attempt > 0 and thinking_budget != 0:
+                req = _provider.build_request(
+                    prompt=prompt, system_instruction=system_instruction, max_tokens=max_tokens,
+                    json_mode=json_mode, json_schema=json_schema, model=model,
+                    thinking_budget=0, analysis_marker=ANALYSIS_MODEL,
+                )
+                _do_call = (lambda _req=req: _provider.get_client(LLM_HTTP_TIMEOUT_MS).messages.create(**_req))
             response = await _call_with_retry(_do_call, max_retries=3,
                                               provider=_provider.CLAUDE)
             if getattr(response, "stop_reason", None) == "refusal":
@@ -1025,8 +1034,9 @@ class GeminiService:
                     _blocks = [(getattr(b, "type", "?"), (getattr(b, "text", "") or "")[:400]) for b in (getattr(response, "content", None) or [])]
                 except Exception:  # noqa: BLE001
                     _blocks = repr(getattr(response, "content", None))[:800]
-                logger.warning("🚫 Claude refusal [%s, model=%s, attempt %d/3] prompt[:500]=%r | response=%r",
-                               call_type, model_name, _ref_attempt + 1, prompt[:500], _blocks)
+                logger.warning("🚫 Claude refusal [%s, model=%s, attempt %d/3, thinking=%s] prompt[:500]=%r | response=%r",
+                               call_type, model_name, _ref_attempt + 1, "off" if (_ref_attempt > 0 or thinking_budget == 0) else "on",
+                               prompt[:500], _blocks)
                 if _ref_attempt < 2:
                     continue
             break

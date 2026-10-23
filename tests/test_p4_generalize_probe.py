@@ -73,3 +73,5 @@ def test_route_and_prompt_wiring():
     from diag_project import llm_service as L
     gsrc = inspect.getsource(L.GeminiService._generate_claude)
     assert 'stop_reason", None) == "refusal"' in gsrc and "_ref_attempt < 2" in gsrc
+    # (C) 재시도는 thinking 을 끄고 보낸다
+    assert "if _ref_attempt > 0 and thinking_budget != 0:" in gsrc and "thinking_budget=0, analysis_marker=ANALYSIS_MODEL" in gsrc
