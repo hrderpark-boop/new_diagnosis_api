@@ -1053,6 +1053,23 @@ async def _submit_message_phase3a(
         state["force_action_probe"] = _force_a
         if _force_a:
             logger.info("🎯 A 탐침 강제: [%s] target=%s (S 있음·A 비어 있음)", chapter, current_target_sub)
+        # (2026-10-23, 4-1) 일반화 답변 → 구체 사례 탐침 1회. 앵커 답변(이 타겟 2번째 코치 턴)에 시점이 없고 습관 표지가
+        #   있으면 이번 질문은 "그중 가장 최근 일 하나만요"(페르소나별). 타겟당 1회, 그래도 일반화면 그대로 전진.
+        from diag_project.services.avoidance_detector import is_generalized_answer as _iga
+        from diag_project.services.traversal import generalize_probed as _gpd
+        _tot_g = int((session.self_assessment_data.get("turns_on_target") or {}).get(chapter, 0) or 0)
+        _force_g = bool(chapter and current_target_sub and not _target_advanced_now and _tot_g == 2
+                        and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE")
+                        and not state.get("sar_complete_answer")
+                        and _iga((state.get("resume_pending") or {}).get("user_text") or request.content)
+                        and not _gpd(session.self_assessment_data, chapter, current_target_sub))
+        state["force_generalize_probe"] = _force_g
+        if _force_g:
+            _force_a = False
+            _force_r = False
+            state["force_action_probe"] = False
+            state["force_result_probe"] = False
+            logger.info("🧭 일반화 탐침: [%s] target=%s (시점 없음·습관 표지)", chapter, current_target_sub)
         if _force_r:
             from diag_project.services.output_guard import needs_quantify_probe as _nqp
             state["result_quantify"] = _nqp((state.get("resume_pending") or {}).get("user_text") or request.content)
@@ -2151,6 +2168,12 @@ async def _submit_message_phase3a(
                 clean_reply = " ".join(_lead_a + [_AFQ]).strip()
                 _tm["action_fix"] = 1
                 logger.info("🎯 A 강제 턴에 행동 질문 없음 → 고정 행동 질문")
+            # (2026-10-23, 4-1) 일반화 탐침 턴: 되받기 1문장 + 페르소나별 "그중 가장 최근 일 하나만요" (LLM 질문은 버린다)
+            if state.get("force_generalize_probe"):
+                _lead_g = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
+                clean_reply = " ".join(_lead_g + [_pl_a((state.get("coach_persona") or {}).get("name"), "generalize")]).strip()
+                _tm["generalize"] = 1
+                logger.info("🧭 일반화 탐침 질문 삽입")
             _new_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
             _prev_qs = [x for t in _recent_coach_texts for x in split_sentences(t) if is_question_sentence(x)]
             if _new_q and _prev_qs:
@@ -2649,6 +2672,9 @@ async def _submit_message_phase3a(
                 _gl_store["emotion_q_count"] = _eqc
             if _fq and _iapt_g(_fq):
                 _gl_store = _map_g(_gl_store, chapter)
+            if _tm.get("generalize"):
+                from diag_project.services.traversal import mark_generalize_probed as _mgp_g
+                _gl_store = _mgp_g(_gl_store, chapter, current_target_sub)
         if system_override_text is None and not _llm_error:
             # (2026-10-22 P2-1) 이번 턴 되받기 마무리 어구를 세션 카운터에 누적(최근 60개)
             from diag_project.services.output_guard import lead_tails as _lts_g
@@ -2685,6 +2711,8 @@ async def _submit_message_phase3a(
             "action_fix": int(_tm.get("action_fix") or 0),
             # (2026-10-22 P2-3) lead_cap: 페르소나 상한으로 지운 되받기 문장 수 · bridge_added: 전환 턴에 페르소나 다리 삽입
             "lead_cap": int(_tm.get("lead_cap") or 0), "bridge_added": int(_tm.get("bridge_added") or 0),
+            # (2026-10-23, 4-1) generalize_probe: 일반화 답변에 '가장 최근 일 하나' 탐침을 붙인 턴
+            "generalize_probe": int(_tm.get("generalize") or 0),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

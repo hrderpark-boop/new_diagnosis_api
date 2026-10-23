@@ -148,6 +148,26 @@ def has_narrative(text: str | None) -> bool:
     return len(_PAST_VERB_RE.findall(t)) >= 2
 
 
+# (2026-10-23, 4-1) 일반화 답변 — 앵커에 '평소 방식'으로 답한 경우. 시점 표지가 없고 습관 표지가 있으면 True.
+#   시점 표지: 지난달·올해·작년·N월·N년·N주·분기·당시·그때·얼마 전 … (프로젝트 '이름'은 패턴으로 못 잡아 제외)
+#   습관 표지: ~일수록·~때는·~때마다·~하는 편·늘·항상·보통·주로·평소·대개·매번
+_TIME_MARK_RE = re.compile(
+    r"(지난\s?(달|주|해|번|분기|학기)|작년|올해|이번\s?(달|주|분기|해)|\d+\s?(월|년|주|일|분기|개월|년도)|"
+    r"상반기|하반기|연초|연말|당시|그때|그 때|얼마 전|최근에|지난번|초에 |말에 |전에 |어제|오늘|이틀|사흘)"
+)
+_HABIT_MARK_RE = re.compile(
+    r"(일수록|때는|때마다|때면|하는 편|는 편이|편입니다|편이에요|늘 |항상|보통|주로|평소|대개|대체로|매번|경우에는|경우엔|으면 보통|면 일단)"
+)
+
+
+def is_generalized_answer(text: str | None) -> bool:
+    """시점 없이 습관 표지로만 말한 답변인가. 구체 사례 탐침(generalize_probe) 1회의 발동 조건."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_HABIT_MARK_RE.search(t)) and not _TIME_MARK_RE.search(t)
+
+
 # 부재 진술(absence statement) 표지 — "그런 경험은 없다 / 만들어두지 못했다 /
 # (위임 등을) 하지 않고 직접 챙긴다". 회피 키워드('모르겠')는 없지만
 # 채점 가능한 '구체 행동 사건'이 아니다. 곧바로 measured 로 통과시키면 안 되고,

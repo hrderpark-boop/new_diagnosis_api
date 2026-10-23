@@ -81,7 +81,7 @@ def test_persona_lines_complete_and_structural():
     assert set(PERSONA_LINES) == {"Ella", "Jessica", "Olivia", "Daniel", "Michael", "Lucas"}
     for p, d in PERSONA_LINES.items():
         assert set(d) == keys, p
-        for k in ("role_q", "expect_q", "smalltalk_q", "result_a", "result_b", "quantify", "action", "one_more"):
+        for k in ("role_q", "expect_q", "smalltalk_q", "result_a", "result_b", "quantify", "action", "one_more", "generalize"):
             assert G.has_question(d[k]), (p, k)
         for v in d.values():
             assert not G.find_banned_tail(v)

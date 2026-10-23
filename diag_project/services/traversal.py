@@ -248,6 +248,23 @@ def mark_action_probed(store: dict, chapter: str) -> dict:
     return store
 
 
+def generalize_probed(store: dict, chapter: str, sub: str | None) -> bool:
+    """(2026-10-23, 4-1) 이 챕터의 이 하위역량에 '구체 사례 탐침'을 이미 1회 썼는가."""
+    return bool(sub) and sub in (((store or {}).get("generalize_probed") or {}).get(chapter) or [])
+
+
+def mark_generalize_probed(store: dict, chapter: str, sub: str | None) -> dict:
+    store = dict(store or {})
+    if not sub:
+        return store
+    gp = {k: list(v) for k, v in (store.get("generalize_probed") or {}).items()}
+    gp.setdefault(chapter, [])
+    if sub not in gp[chapter]:
+        gp[chapter].append(sub)
+    store["generalize_probed"] = gp
+    return store
+
+
 def mark_result_probed(store: dict, chapter: str) -> dict:
     """이번 코치 턴이 R 을 물었다 — 현재 타겟에 기록(호출자가 영속화)."""
     store = dict(store or {})
