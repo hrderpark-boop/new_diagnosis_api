@@ -99,6 +99,7 @@ def gate_run_summary(run_result: Dict[str, Any], sub: str) -> Dict[str, Any]:
         "dropped": bool(g.get("dropped")) if g else None,
         "pending": bool(g.get("pending")) if g else None,
         "reason": (g.get("reason") or "")[:120] if g else None,
+        "reselected": bool(g.get("reselected")) if g else False,     # (2026-10-23 A) 근거 재선택을 거친 판정
         "measured": bool(row.get("measured")),
         "gate_status": row.get("gate_status"),
     }

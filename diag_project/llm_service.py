@@ -1019,10 +1019,16 @@ class GeminiService:
         for _ref_attempt in range(3):
             response = await _call_with_retry(_do_call, max_retries=3,
                                               provider=_provider.CLAUDE)
-            if getattr(response, "stop_reason", None) == "refusal" and _ref_attempt < 2:
-                logger.warning("🚫 Claude refusal(stop_reason=refusal) → 재시도 %d/2 [%s, model=%s]",
-                               _ref_attempt + 1, call_type, model_name)
-                continue
+            if getattr(response, "stop_reason", None) == "refusal":
+                # (2026-10-23 C) 원인 조사용: 요청 프롬프트 앞 500자 + 응답 전문(content 블록 repr)을 남긴다.
+                try:
+                    _blocks = [(getattr(b, "type", "?"), (getattr(b, "text", "") or "")[:400]) for b in (getattr(response, "content", None) or [])]
+                except Exception:  # noqa: BLE001
+                    _blocks = repr(getattr(response, "content", None))[:800]
+                logger.warning("🚫 Claude refusal [%s, model=%s, attempt %d/3] prompt[:500]=%r | response=%r",
+                               call_type, model_name, _ref_attempt + 1, prompt[:500], _blocks)
+                if _ref_attempt < 2:
+                    continue
             break
 
         # D-1 과 동일: max_tokens 로 잘린 응답은 깨진 JSON 위험 → 경고(상향 신호).
@@ -1579,6 +1585,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         신호다 — 문장이 구체적이라고 레벨을 올리지 말 것.
 규칙 4. evidence 는 그 판정의 근거가 된 '원문 그대로(verbatim)' 발췌만.
         요약·창작 금지. 최소 1건. (measured=false 면 빈 배열)
+        🚨 행동 문장 우선: 리더가 실제로 한 결정·실행·대화 문장을 먼저 고른다. 이유·판단·신념 문장
+        ("~라고 생각했다", "~가 중요하기 때문이다")은 행동 문장에 덧붙일 때만 넣고, 단독으로는 넣지 않는다.
 규칙 5. 점수의 평균·클램프·가점은 시스템(코드)이 계산한다. 당신은 지표별
         measured/level/evidence 판정만 정확히 하면 된다.
 
@@ -1726,6 +1734,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             result["_parsed"] = _parsed
             result["_asked_list"] = list(_asked_set)
             result["_sub_indicators"] = list(sub_indicators)
+            result["_chapter_text"] = relevant_utterances      # (2026-10-23 A) 게이트 거절 시 근거 재선택용 — 저장 전 제거
             result["_n_samples"] = len(_samples)
             self._finalize_ledger(result, competency_key, gate=None)
             return result
@@ -1925,11 +1934,59 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                                                 provider=self.provider())
                 logger.info("⏱️ gate[%s] %.1fs (후보 %d, 대기 포함)", ckey,
                             time.monotonic() - _t_g, len(candidates))
+                # (2026-10-23 A) 태도·일반화로 거절된 후보는 같은 답변에서 '행동 문장'을 1회 다시 골라 재판정한다.
+                gate = await self._reselect_dropped_evidence(ckey, result, parsed, candidates, gate, _gate_llm)
             result["level_gate"] = gate
             self._finalize_ledger(result, ckey, gate=gate)
             # 내부 파싱 캐시는 저장 payload 에서 제거(원문은 sub_ledger 에 있음)
-            for _k in ("_parsed", "_asked_list", "_sub_indicators"):
+            for _k in ("_parsed", "_asked_list", "_sub_indicators", "_chapter_text"):
                 result.pop(_k, None)
+
+    async def _reselect_dropped_evidence(self, ckey: str, result: Dict, parsed: Dict, candidates: Dict,
+                                         gate: Dict, gate_llm) -> Dict:
+        """(2026-10-23 A, 9월 보류분) 게이트가 '태도'·'일반화'로 거절한 하위역량: 같은 리더 답변에서 행동 문장
+        (결정·실행·대화)만 1회 재선택 → 재판정. 통과하면 parsed 의 evidence 와 verdict 를 바꾸고 reselected=True 로 표시.
+        실패해도 원 판정은 그대로(reselected=True, reselect_result 기록)."""
+        from diag_project.services.level_gate import (
+            RESELECT_CATEGORIES, gate_verify_levels, reselect_evidence,
+        )
+        chapter_text = result.get("_chapter_text") or ""
+        targets = [s for s, g in gate.items()
+                   if g and g.get("dropped") and not g.get("pending") and g.get("category") in RESELECT_CATEGORIES]
+        if not targets or not chapter_text:
+            return gate
+
+        async def _sel_llm(_p):
+            async with _analysis_semaphore():
+                return await self._generate_with_retry(
+                    _p, max_tokens=2048, json_mode=True, model=ANALYSIS_MODEL,
+                    temperature=_JUDGMENT_TEMPERATURE, thinking_budget=_GATE_TB,
+                    call_type="evidence_reselect", json_schema=_schemas.evidence_reselect_schema())
+
+        for sub in targets:
+            old_ev = list(candidates.get(sub, {}).get("evidence") or [])
+            claimed = int(candidates.get(sub, {}).get("claimed_level") or 1)
+            first = dict(gate[sub])
+            new_ev = await reselect_evidence(_sel_llm, ckey, sub, old_ev, chapter_text, provider=self.provider())
+            new_ev = [e for e in new_ev if e not in old_ev]
+            if not new_ev:
+                gate[sub] = {**first, "reselected": True, "reselect_result": "no_action_sentence"}
+                logger.info("🔁 근거 재선택 [%s/%s] 행동 문장 없음 → 원 판정 유지(%s)", ckey, sub, first.get("category"))
+                continue
+            g2 = await gate_verify_levels(ckey, {sub: {"evidence": new_ev, "claimed_level": claimed}}, gate_llm,
+                                          provider=self.provider())
+            v2 = (g2 or {}).get(sub) or {}
+            if v2.get("verified_level") and not v2.get("dropped") and not v2.get("pending"):
+                parsed[sub]["evidence"] = new_ev
+                gate[sub] = {**v2, "reselected": True, "first_category": first.get("category"),
+                             "first_reason": (first.get("reason") or "")[:120]}
+                logger.info("🔁 근거 재선택 통과 [%s/%s] %s → Lv.%s (근거 %d건 교체)", ckey, sub,
+                            first.get("category"), v2.get("verified_level"), len(new_ev))
+            else:
+                gate[sub] = {**first, "reselected": True, "reselect_result": "still_dropped",
+                             "reselect_reason": (v2.get("reason") or "")[:120]}
+                logger.info("🔁 근거 재선택 후에도 탈락 [%s/%s]: %s", ckey, sub, (v2.get("reason") or "")[:80])
+        return gate
 
     def _generate_fallback_sub_scores(self, sub_indicators: list, base_score: float) -> dict:
         """sub_scores 생성 실패 시 기본값 — 단순 복사가 아닌 소폭 편차 적용"""

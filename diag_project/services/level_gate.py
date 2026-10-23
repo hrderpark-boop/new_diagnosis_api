@@ -12,6 +12,7 @@
 판정)한다. LLM 이 없으면(단위 테스트 등) 게이트를 건너뛰고 claimed_level 을
 그대로 둔다(보수적: 판사 없이 강등하지 않음).
 """
+import re
 import asyncio
 import json
 import logging
@@ -309,3 +310,84 @@ async def _judge_batch(competency_key: str, items: list, llm,
         for it in items:
             v = out.get(it["sub_name"])
             _release(it, None if (not v or v.get("pending")) else dict(v))
+
+
+# ── (2026-10-23 A) evidence 재선택 — 게이트가 태도·일반화로 거절한 근거를 같은 답변에서 '행동 문장'으로 1회 다시 고른다 ──
+RESELECT_PROMPT_VERSION = "2026-10-23.v1"
+RESELECT_CATEGORIES = ("태도", "일반화")
+
+
+def _norm_ws(t: str) -> str:
+    return re.sub(r"\s+", "", t or "")
+
+
+def leader_answer_lines(chapter_text: str, old_evidence: list[str]) -> list[str]:
+    """챕터 전사('리더: …' 줄)에서 기존 근거가 들어 있던 리더 답변 줄들을 고른다. 못 찾으면 리더 줄 전부(앞 6000자)."""
+    lines = [ln[len("리더:"):].strip() for ln in (chapter_text or "").split("\n") if ln.startswith("리더:")]
+    hits = []
+    for ln in lines:
+        n = _norm_ws(ln)
+        if any(_norm_ws(e)[:40] and _norm_ws(e)[:40] in n for e in old_evidence or []):
+            hits.append(ln)
+    if hits:
+        return hits
+    out, total = [], 0
+    for ln in lines:
+        if total + len(ln) > 6000:
+            break
+        out.append(ln); total += len(ln)
+    return out
+
+
+def filter_verbatim(candidates: list, source_lines: list[str], max_n: int = 3) -> list[str]:
+    """LLM 이 고른 문장 중 원문에 실제로 있는 것만(공백 무시 부분 일치), 최대 max_n."""
+    src = _norm_ws(" ".join(source_lines))
+    out: list[str] = []
+    for c in candidates or []:
+        c = str(c or "").strip()
+        if len(c) < 8:
+            continue
+        if _norm_ws(c) in src and c not in out:
+            out.append(c)
+        if len(out) >= max_n:
+            break
+    return out
+
+
+def build_reselect_prompt(sub_name: str, answer_lines: list[str], old_evidence: list[str]) -> str:
+    body = "\n".join(f"- {ln}" for ln in answer_lines)
+    old = "\n".join(f"- {e}" for e in old_evidence or [])
+    return (
+        "당신은 BEI(행동사건면접) 근거 선별관이다. 아래 '리더 답변'에서 하위역량 "
+        f"'{sub_name}' 과 관련해 리더가 **실제로 한 행동 문장**(결정·실행·대화)만 고르라.\n"
+        "제외: 이유·판단·신념·가치관 문장('~라고 생각했다', '~가 중요하다', '~기 때문이다'), "
+        "평소 방식 일반화('~하는 편이다', '~일수록'), 부재 진술.\n"
+        "원문 그대로(verbatim) 복사하고 요약·창작하지 않는다. 최대 3문장, 없으면 빈 배열.\n\n"
+        f"[리더 답변]\n{body}\n\n"
+        f"[앞서 거절된 근거 — 이유·일반화 문장이었다. 이것과 다른 '행동' 문장을 고른다]\n{old}\n\n"
+        '출력(JSON, 마크다운 금지): {"evidence": ["...", "..."]}'
+    )
+
+
+async def reselect_evidence(llm, competency_key: str, sub_name: str, old_evidence: list[str],
+                            chapter_text: str, provider: str | None = None) -> list[str]:
+    """같은 답변에서 행동 문장을 1회 다시 고른다(결정론 캐시). 실패·없음은 []."""
+    from diag_project.services import analysis_cache as _ac
+    lines = leader_answer_lines(chapter_text, old_evidence)
+    if not lines or llm is None:
+        return []
+    key = _ac.make_key(RESELECT_PROMPT_VERSION, competency_key, sub_name, "|".join(old_evidence or []),
+                       "|".join(lines)[:4000], provider or "")
+    cached = _ac.get("evidence_reselect", key)
+    if cached is not None:
+        return list(cached)
+    try:
+        raw = await llm(build_reselect_prompt(sub_name, lines, old_evidence))
+        raw = (raw or "").replace("```json", "").replace("```", "").strip()
+        cands = (json.loads(raw) or {}).get("evidence") or []
+    except Exception as e:  # noqa: BLE001
+        logger.warning("근거 재선택 실패 [%s/%s]: %s", competency_key, sub_name, str(e)[:120])
+        return []
+    picked = filter_verbatim(cands, lines)
+    _ac.set("evidence_reselect", key, picked)
+    return picked

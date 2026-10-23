@@ -85,6 +85,11 @@ def level_gate_schema() -> Dict[str, Any]:
     return _obj({"results": _arr(item)})
 
 
+def evidence_reselect_schema() -> Dict[str, Any]:
+    """(2026-10-23 A) 근거 재선택(level_gate.reselect_evidence): {"evidence": [행동 문장 verbatim...]}."""
+    return _obj({"evidence": _arr(_STR)})
+
+
 def summary_schema() -> Dict[str, Any]:
     """STEP 3 종합(_generate_comprehensive_summary): feedback_summary·archetype·blind_spot·idp·top_keywords."""
     return _obj({
