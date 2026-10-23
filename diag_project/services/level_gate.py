@@ -90,8 +90,13 @@ def _build_gate_prompt(items: list) -> str:
         "   · 부재 진술('그런 경험은 없습니다') — 오히려 낮은 수준의 신호\n"
         "2. 구체 행동 사례라면, 그 행동이 '실제로 도달한 가장 높은 레벨'을 고른다. "
         "서술이 유창하다고 레벨을 올리지 말 것. 기준 서술과의 '행동 수준' 일치만 본다.\n"
-        "3. 주장 레벨보다 높게 올리지 말 것(게이트는 강등 또는 유지만 한다). "
-        "발화가 기준에 못 미치면 한 단계씩 낮춘다. Lv.1 기준에도 못 미치면 0.\n\n"
+        "3. 레벨은 Lv.1~4 '서술을 모두 대조해 발화에 가장 잘 맞는 것'으로 고른다. 주장 레벨보다 높게 올리지 말 것"
+        "(게이트는 강등 또는 유지만 한다).\n"
+        "4. Lv.n 요건이 '일부만' 충족돼도 자동으로 Lv.n-1 로 내리지 않는다. 그때는 Lv.n 서술과 Lv.n-1 서술 중 "
+        "발화의 행동에 더 잘 맞는 쪽을 고른다(예: 조직 목표와의 연결은 없지만 중장기 흐름을 고려한 결정이면 "
+        "Lv.2 서술이 Lv.1 서술보다 맞다).\n"
+        "5. Lv.1 은 Lv.1 서술(역할 인식 부재·단기 수습·전달 수준)이 발화에 실제로 맞을 때만 준다. Lv.2 요건이 "
+        "부분 충족인데 Lv.1 서술은 맞지 않으면 Lv.2 다. 구체 행동 사례가 아니면(태도·일반화·부재) 0.\n\n"
         f"{body}\n\n"
         '출력(JSON, 마크다운 금지): {"results": [{"idx": <번호>, '
         '"supported_level": <0~4>, "category": "구체행동|태도|일반화|부재", '
@@ -110,7 +115,10 @@ _GATE_CACHE: Dict[tuple, Dict[str, Any]] = {}
 # 캐시되지 않아 다음 run 이 재시도하던 것과 같다.
 _INFLIGHT: Dict[tuple, "asyncio.Future"] = {}
 GATE_MAX_RETRIES = 3  # 지수 백오프 재시도 횟수
+GATE_VOTES_DEFAULT = 3  # (2026-10-23 D) 같은 근거 5회 측정: 업무계획 [2,3,X,X,2] 처럼 2개 레벨에 걸쳐 3표 중앙값으로 고정
 GATE_PROMPT_VERSION = "2026-08-17.v1"
+# (2026-10-23 E) claude 경로의 게이트 캐시만 새 판정 규칙 버전으로 가른다 — gemini 키(420f1341 캐시)는 그대로 둔다(사용자 결정).
+GATE_PROMPT_VERSION_CLAUDE = "2026-10-23.v2"
 
 
 def _cache_key(competency_key: str, sub: str, evidence, claimed: int,
@@ -118,7 +126,12 @@ def _cache_key(competency_key: str, sub: str, evidence, claimed: int,
     # (2026-10-15) provider 성분: gemini 는 빈 튜플(기존 키 보존), claude 는 별도 키.
     from diag_project import llm_provider as _lp
     return (competency_key, sub, "|".join(evidence or []), int(claimed or 1),
-            *_lp.cache_key_parts(provider))
+            *_lp.cache_key_parts(provider), *_claude_version_parts(provider))
+
+
+def _claude_version_parts(provider: str | None) -> tuple:
+    from diag_project import llm_provider as _lp
+    return (GATE_PROMPT_VERSION_CLAUDE,) if _lp.resolve_session(provider) == _lp.CLAUDE else ()
 
 
 def _persist_key(competency_key: str, sub: str, evidence, claimed: int,
@@ -132,7 +145,7 @@ def _persist_key(competency_key: str, sub: str, evidence, claimed: int,
                         "|".join(evidence or []), int(claimed or 1),
                         os.getenv("ANALYSIS_TEMPERATURE", "temp0"),
                         f"tb{os.getenv('GATE_TB', 'dyn')}",
-                        *_lp.cache_key_parts(provider))
+                        *_lp.cache_key_parts(provider), *_claude_version_parts(provider))
 
 
 def _pending(reason: str) -> Dict[str, Any]:
@@ -207,7 +220,7 @@ async def gate_verify_levels(
 
     # 자기 배치와 공유 대기를 함께 진행(자기 배치는 누구도 기다리지 않으므로
     #   run 끼리 서로를 기다리는 교착이 없다).
-    jobs = [_judge_batch(competency_key, items, llm, out, provider)] if items else []
+    jobs = [_judge_batch_voted(competency_key, items, llm, out, provider)] if items else []
     res = await asyncio.gather(*jobs, *[_await_shared(it, f) for it, f in shared])
     retry = []
     for it, verdict in res[len(jobs):]:
@@ -217,7 +230,7 @@ async def gate_verify_levels(
             retry.append(it)                        # 공유 판정 실패 → 직접 재판정
     if retry:
         _register(retry)
-        await _judge_batch(competency_key, retry, llm, out, provider)
+        await _judge_batch_voted(competency_key, retry, llm, out, provider)
     return out
 
 
@@ -239,10 +252,69 @@ def _release(it: dict, verdict) -> None:
         fut.set_result(verdict)
 
 
+def gate_votes() -> int:
+    """(2026-10-23 D) 같은 근거를 몇 번 판정해 중앙값을 쓸지. 기본 GATE_VOTES_DEFAULT; 환경변수 GATE_VOTES 로 덮어쓴다."""
+    try:
+        return max(1, int(os.getenv("GATE_VOTES", str(GATE_VOTES_DEFAULT))))
+    except ValueError:
+        return GATE_VOTES_DEFAULT
+
+
+def merge_votes(votes: list, claimed: int) -> Dict[str, Any]:
+    """투표 병합(순수 함수): 과반이 탈락이면 탈락, 아니면 통과표의 verified_level 중앙값(짝수면 낮은 쪽).
+    category 는 최빈값, reason 은 채택 레벨을 낸 표의 사유. votes 필드에 표별 레벨(탈락 0)을 남긴다."""
+    from collections import Counter
+    valid = [v for v in votes if v and not v.get("pending")]
+    if not valid:
+        return _pending("게이트 투표 응답 부족")
+    dropped = [v for v in valid if v.get("dropped")]
+    passed = [v for v in valid if not v.get("dropped") and v.get("verified_level")]
+    tally = [int(v.get("verified_level") or 0) for v in valid]
+    if len(dropped) * 2 > len(valid) or not passed:
+        base = dict(dropped[0] if dropped else valid[0])
+        cat = Counter(v.get("category") for v in dropped or valid).most_common(1)[0][0]
+        base.update({"verified_level": None, "dropped": True, "downgraded": False, "category": cat, "votes": tally})
+        return base
+    lv_sorted = sorted(int(v["verified_level"]) for v in passed)
+    level = lv_sorted[(len(lv_sorted) - 1) // 2]
+    pick = next(v for v in passed if int(v["verified_level"]) == level)
+    out = dict(pick)
+    out.update({"verified_level": level, "dropped": False, "downgraded": level < int(claimed or 1),
+                "category": Counter(v.get("category") for v in passed).most_common(1)[0][0], "votes": tally})
+    return out
+
+
+async def _judge_batch_voted(competency_key: str, items: list, llm,
+                             out: Dict[str, Dict[str, Any]],
+                             provider: str | None = None) -> None:
+    """GATE_VOTES>1 이면 같은 배치를 n 회 독립 판정해 merge_votes 로 합친다(캐시·공유는 병합 결과로)."""
+    n = gate_votes()
+    if n <= 1:
+        return await _judge_batch(competency_key, items, llm, out, provider)
+    temps: list = [dict() for _ in range(n)]
+    try:
+        await asyncio.gather(*[_judge_batch(competency_key, items, llm, temps[i], provider, cache=False, release=False)
+                               for i in range(n)])
+        from diag_project.services import analysis_cache as _ac
+        for it in items:
+            merged = merge_votes([t.get(it["sub_name"]) for t in temps], it["claimed_level"])
+            out[it["sub_name"]] = merged
+            if not merged.get("pending"):
+                _GATE_CACHE[it["ck"]] = dict(merged)
+                _ac.set("level_gate", _persist_key(competency_key, it["sub_name"], it["evidence"],
+                                                  it["claimed_level"], provider), dict(merged))
+                logger.info("🗳️ 레벨게이트 투표 [%s/%s] %s → %s", competency_key, it["sub_name"],
+                            merged.get("votes"), merged.get("verified_level") or "탈락")
+    finally:
+        for it in items:
+            v = out.get(it["sub_name"])
+            _release(it, None if (not v or v.get("pending")) else dict(v))
+
+
 async def _judge_batch(competency_key: str, items: list, llm,
                        out: Dict[str, Dict[str, Any]],
-                       provider: str | None = None) -> None:
-    """items 를 한 번의 LLM 호출로 판정해 out 에 기록(+캐시). 실패는 pending."""
+                       provider: str | None = None, *, cache: bool = True, release: bool = True) -> None:
+    """items 를 한 번의 LLM 호출로 판정해 out 에 기록(+캐시). 실패는 pending. cache/release=False 는 투표용(병합 결과만 캐시·공유)."""
     prompt = _build_gate_prompt(items)
 
     async def _call_gate():
@@ -292,11 +364,12 @@ async def _judge_batch(competency_key: str, items: list, llm,
                 "pending": False,
             }
             out[it["sub_name"]] = verdict
-            _GATE_CACHE[it["ck"]] = dict(verdict)        # in-mem 저장
-            from diag_project.services import analysis_cache as _ac
-            _ac.set("level_gate", _persist_key(
-                competency_key, it["sub_name"], it["evidence"],
-                it["claimed_level"], provider), dict(verdict))  # 파일 영속
+            if cache:
+                _GATE_CACHE[it["ck"]] = dict(verdict)        # in-mem 저장
+                from diag_project.services import analysis_cache as _ac
+                _ac.set("level_gate", _persist_key(
+                    competency_key, it["sub_name"], it["evidence"],
+                    it["claimed_level"], provider), dict(verdict))  # 파일 영속
             if verified is None:
                 logger.info("🚧 레벨게이트 탈락 [%s/%s] claimed=Lv.%s → 근거미달(%s)",
                             competency_key, it["sub_name"], claimed,
@@ -306,10 +379,11 @@ async def _judge_batch(competency_key: str, items: list, llm,
                             competency_key, it["sub_name"], claimed, verified,
                             verdict["reason"])
     finally:
-        # 기다리는 쪽에 판정 공유(pending 은 공유하지 않음 → None → 재판정).
-        for it in items:
-            v = out.get(it["sub_name"])
-            _release(it, None if (not v or v.get("pending")) else dict(v))
+        # 기다리는 쪽에 판정 공유(pending 은 공유하지 않음 → None → 재판정). 투표 모드에서는 병합 뒤 호출자가 공유한다.
+        if release:
+            for it in items:
+                v = out.get(it["sub_name"])
+                _release(it, None if (not v or v.get("pending")) else dict(v))
 
 
 # ── (2026-10-23 A) evidence 재선택 — 게이트가 태도·일반화로 거절한 근거를 같은 답변에서 '행동 문장'으로 1회 다시 고른다 ──
