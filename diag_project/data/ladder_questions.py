@@ -42,7 +42,10 @@ LADDER_QUESTIONS: dict[str, dict[str, str]] = {
 
 
 def ladder_question(sub_key: str | None, current_level: int | None) -> tuple[str | None, str | None]:
-    """(질문, 단계키). current_level 1·2 → "2_3", 3 → "3_4", 4 이상·모름(None)·사전 없음 → (None, None)."""
+    """(질문, 단계키). current_level 1·2 → "2_3", 3 → "3_4", 4 이상·모름(None)·사전 없음 → (None, None).
+
+    규칙(2026-10-23 확정): 사전에는 1→2 단계가 없다. flash 판정이 Lv.1 이면 Lv.2→3 질문을 쓴다 — Lv.1 판정은 대개 '구체 사례 미달'이라
+    Lv.2 의 기본 행동은 이미 앵커가 물은 것이고, 다음 단계 행동(Lv.3 차별 행동)을 한 번 더 묻는 쪽이 측정에 보탬이 되기 때문이다."""
     if not sub_key or sub_key not in LADDER_QUESTIONS or current_level is None:
         return None, None
     step = "2_3" if current_level <= 2 else ("3_4" if current_level == 3 else None)

@@ -30,7 +30,7 @@ def test_dictionary_covers_26_subs_with_one_question_each():
 
 
 def test_ladder_question_selection():
-    assert ladder_question("kpi_management", 1)[1] == "2_3" and ladder_question("kpi_management", 2)[1] == "2_3"
+    assert ladder_question("kpi_management", 1)[1] == "2_3" and ladder_question("kpi_management", 2)[1] == "2_3"   # Lv.1 → 2_3 은 명시 규칙(사전에 1→2 없음)
     assert ladder_question("kpi_management", 3)[1] == "3_4"
     assert ladder_question("kpi_management", 4) == (None, None) and ladder_question("없음", 2) == (None, None)
     assert ladder_question("kpi_management", None) == (None, None)
