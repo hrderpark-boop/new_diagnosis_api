@@ -383,8 +383,14 @@ BANNED_STATE_LEAK = [
     "사례로 기록", "하나의 사례로", "또 다른 사례를 들려주", "새로운 사례",
     # (2026-10-22) 챕터 종료 요약의 집계 누설
     "사례는 두 가지", "사례는 세 가지", "사례는 네 가지", "사례는 다섯 가지", "사례는 한 가지", "말씀해 주신 사례는",
+    # (2026-10-23 6번 보정) 집계·완료 누설 — "사건 두 개가 모두 정리되었습니다"(Jessica 재생 12턴)
+    "정리되었습니다", "정리됐습니다", "정리가 되었습니다", "수집되었습니다", "수집됐습니다", "기록되었습니다", "확보되었습니다", "확보됐습니다",
+    "사실 확인부터 해보겠습니다",
 ]
-_STATE_LEAK_RE = re.compile("|".join(re.escape(p) for p in sorted(set(BANNED_STATE_LEAK), key=len, reverse=True)))
+_STATE_LEAK_RE = re.compile(
+    "|".join(re.escape(p) for p in sorted(set(BANNED_STATE_LEAK), key=len, reverse=True))
+    + r"|사건\s*(한|두|세|네|다섯|\d+)\s*개|사례\s*(한|두|세|네|다섯|\d+)\s*(개|건)(가|이|를|을|는|은)?"
+)
 
 
 def find_state_leak(text: str) -> list[str]:
@@ -503,7 +509,8 @@ _EMOTION_Q_RE = re.compile(r"마음|감정|기분|표정|느끼|느낌|심정|�
 
 
 def is_emotion_question(question: str | None) -> bool:
-    return bool(question) and bool(_EMOTION_Q_RE.search(question))
+    """감정·표정·마음을 '묻는' 문장인가. (2026-10-23) 평서문('마음이 느껴지네요')은 질문이 아니므로 False — 규칙은 질문에만 건다."""
+    return bool(question) and is_question(question) and bool(_EMOTION_Q_RE.search(question))
 
 
 # ── 4-d) (2026-10-22 P2-1) 입버릇 반복 가드 — 되받기(평서문) 마무리 어구(마지막 어절 2개)를 세션 단위로 센다 ──

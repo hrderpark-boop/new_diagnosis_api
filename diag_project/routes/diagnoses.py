@@ -1581,7 +1581,9 @@ async def _submit_message_phase3a(
         # (2026-10-23 P4) 사전 문장(dict/fallback)은 페르소나 어미 변환 계층을 거친다. llm 렌더링 문장은 그대로.
         if _mode in ("dict", "fallback"):
             from diag_project.services.persona_voice import voice_question as _vq
-            _q = _vq((state.get("coach_persona") or {}).get("name"), _q)
+            _q = _vq((state.get("coach_persona") or {}).get("name"), _q,
+                     variant=int(((session.self_assessment_data or {}).get("voice_variant_count") or {}).get(chapter, 0) or 0))
+            _tm["voiced"] = 1
         return _q, _mode
 
     # 8-0. 라포 2·3·4턴 — LLM 은 되받기만, 질문은 백엔드 고정 문장(기록=발화 결합과 같은 방식). (2026-10-19 → 10-21 개편)
@@ -2181,6 +2183,34 @@ async def _submit_message_phase3a(
                     _lead_e = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
                     clean_reply = " ".join(_lead_e + [_AFQ]).strip()
                     logger.info("💭 감정 질문 초과 → 행동 질문으로 교체")
+            # (2026-10-23 6번 보정) 대조 도입구는 실제 대조 질문에만. 대조 탐침은 챕터당 1회 — 초과면 재생성 1회, 그래도면 행동 질문으로.
+            from diag_project.services.persona_voice import is_contrast_question as _icq, strip_contrast_lead as _scl
+            clean_reply, _n_lead = _scl(clean_reply)
+            if _n_lead:
+                _tm["contrast_lead_fix"] = _n_lead
+            _cq_now = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
+            _cq_cnt = int(((session.self_assessment_data or {}).get("contrast_q_count") or {}).get(chapter, 0) or 0)
+            if _cq_now and _icq(_cq_now) and _cq_cnt >= 1:
+                _tm["contrast_fix"] = 1
+                _c_txt = ""
+                try:
+                    _c_out = await _timed_regen(
+                        system_prompt=system_prompt, chapter_context=chapter_context,
+                        turn_state_text=turn_state_text + (
+                            "\n\n🚨 [시스템 — 재생성 지시] 이 영역에서 '반대로 했다면' 식 대조 질문은 이미 한 번 했습니다. "
+                            "이번 질문은 리더님이 그때 직접 한 행동이나 그 뒤의 결과를 묻는 질문 하나로 다시 쓰세요."),
+                        compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
+                    _c_txt = _MARKER_RE.sub("", _c_out.get("reply") or "").strip()
+                except Exception as _e:
+                    logger.error("대조 질문 재생성 실패: %s", _e)
+                _c_q = next((x for x in reversed(split_sentences(_c_txt)) if is_question_sentence(x)), "") if _c_txt else ""
+                if _c_q and not _icq(_c_q):
+                    clean_reply, _ = _klq(_scl(_c_txt)[0])
+                else:
+                    _tm["contrast_fix"] = 2
+                    _lead_c = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
+                    clean_reply = " ".join(_lead_c + [_AFQ]).strip()
+                    logger.info("🔁 대조 질문 초과 → 행동 질문으로 교체")
             # (2026-10-22 P2-2) A 강제 턴인데 행동 질문이 아니면 고정 행동 질문으로
             _cur_q2 = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
             if state.get("force_action_probe") and not _iapt(_cur_q2):
@@ -2199,7 +2229,9 @@ async def _submit_message_phase3a(
                 _lp = state["force_ladder_probe"]
                 _lead_l = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
                 from diag_project.services.persona_voice import voice_question as _vq_l
-                clean_reply = " ".join(_lead_l + [_vq_l((state.get("coach_persona") or {}).get("name"), _lp["q"])]).strip()
+                clean_reply = " ".join(_lead_l + [_vq_l((state.get("coach_persona") or {}).get("name"), _lp["q"],
+                                                        variant=int(((session.self_assessment_data or {}).get("voice_variant_count") or {}).get(chapter, 0) or 0))]).strip()
+                _tm["voiced"] = 1
                 _tm["ladder"] = _lp["step"]
                 logger.info("🪜 사다리 질문 삽입 [%s] %s", _lp.get("sub"), _lp["step"])
             _new_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
@@ -2411,6 +2443,17 @@ async def _submit_message_phase3a(
         if _n_qo:
             _tm["one_q"] = int(_tm.get("one_q") or 0) + _n_qo
             logger.info("✂️ 최종 한 턴 한 질문: %d문장 제거", _n_qo)
+
+    # 8-p. (2026-10-23 6번 보정) Michael "좋습니다" 도입: 턴당 최대 1회, 챕터에서 2턴에 1회 이하(직전 턴에 썼으면 이번 턴은 뗀다).
+    if (system_override_text is None and not _llm_error and clean_reply
+            and (state.get("coach_persona") or {}).get("name", "").startswith("Michael")):
+        from diag_project.services.persona_voice import michael_lead_guard as _mlg
+        _good_prev = list(((session.self_assessment_data or {}).get("good_turns") or {}).get(chapter or "_", []))
+        _allow_good = (_turn_index - 1) not in _good_prev
+        clean_reply, _used_good = _mlg(clean_reply, _allow_good)
+        _tm["good_lead"] = 1 if _used_good else 0
+        if not _allow_good:
+            _tm["good_lead_cut"] = 1
 
     # 8-m. (2026-10-22 P2-0) 리더 종료 요청 + 넓이 미충족: 되받기 한 문장 + "하나만 더 여쭤봐도 될까요?" + 다음 미탐색 앵커 1개.
     #   원장은 기록하지 않는다 — 답하면 다음 프로브 스텝이 같은 타겟을 골라 기록하고, 거절하면 미탐색으로 남는다.
@@ -2700,6 +2743,14 @@ async def _submit_message_phase3a(
                 _gl_store["emotion_q_count"] = _eqc
             if _fq and _iapt_g(_fq):
                 _gl_store = _map_g(_gl_store, chapter)
+            if _tm.get("voiced"):
+                _vvc = dict(_gl_store.get("voice_variant_count") or {})
+                _vvc[chapter] = int(_vvc.get(chapter, 0) or 0) + 1
+                _gl_store["voice_variant_count"] = _vvc
+            if _tm.get("good_lead"):
+                _gt = {k_: list(v_) for k_, v_ in (_gl_store.get("good_turns") or {}).items()}
+                _gt.setdefault(chapter or "_", []).append(_turn_index)
+                _gl_store["good_turns"] = _gt
             # (2026-10-23 P4) Olivia 대조 탐침 챕터당 1회 집계
             from diag_project.services.persona_voice import is_contrast_question as _icq_g
             if _fq and _icq_g(_fq):
@@ -2754,6 +2805,9 @@ async def _submit_message_phase3a(
             # (2026-10-23 P3) ladder_probe: 사다리 질문 단계("2_3"|"3_4") · ladder_level: flash 판정 레벨
             "ladder_probe": _tm.get("ladder"), "ladder_level": (state.get("force_ladder_probe") or {}).get("level") if _tm.get("ladder") else None,
             "contrast_q": int(_tm.get("contrast_q") or 0),   # (2026-10-23 P4) 대조 탐침 질문 턴
+            # (2026-10-23 6번 보정) contrast_fix 1 재생성/2 교체 · contrast_lead_fix 도입구 제거 수 · good_lead Michael 도입 사용 · good_lead_cut 직전 턴 사용으로 제거
+            "contrast_fix": int(_tm.get("contrast_fix") or 0), "contrast_lead_fix": int(_tm.get("contrast_lead_fix") or 0),
+            "good_lead": int(_tm.get("good_lead") or 0), "good_lead_cut": int(_tm.get("good_lead_cut") or 0),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

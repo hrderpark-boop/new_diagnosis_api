@@ -3,9 +3,9 @@
 LLM 이 아니라 규칙이다. 질문의 내용(묻는 대상·시점·행동)은 그대로 두고 어미·호칭·도입구만 바꾼다.
   Ella    부드러운 "~어요?"(기준형, 변환 없음)
   Jessica "~습니까?" 간결 — 완곡·군말 제거
-  Olivia  질문 앞에 '다른 각도' 한 줄
+  Olivia  변환 없음(대조 도입구는 실제 대조 질문에만 — LLM 질문 가드가 담당)
   Daniel  격식 "~시겠습니까?"
-  Michael "좋습니다," 도입 + 행동 강조
+  Michael '직접' 행동 강조("좋습니다," 도입은 턴 가드 michael_lead_guard 가 2턴에 1회 이하로 관리)
   Lucas   최단문, 도입구·호칭 없음
 또한 페르소나별 탐침 선호(레이어3 지시)와 되받기 마무리 어구 풀 5개(서로 안 겹침)를 둔다.
 측정 원칙(묻는 순서·하위역량·예산)은 백엔드가 정하고 여기서는 건드리지 않는다.
@@ -30,18 +30,39 @@ PERSONA_TAILS: dict[str, list[str]] = {
 PROBE_PREFERENCE: dict[str, str] = {
     "Ella":    "되받기는 관찰 문장 2문장까지 허용(리더가 쓴 명사만). 탐침은 장면·행동을 차분히 따라간다.",
     "Jessica": "되받기는 1문장. 탐침은 숫자·기간·횟수·비율을 먼저 묻는다(언제·며칠·몇 명·몇 %). 완곡어('혹시', '조금')는 쓰지 않는다.",
-    "Olivia":  "되받기는 1~2문장. 챕터에 한 번은 대조 탐침('반대로 했다면 어땠을까요?', '안 했다면 무엇이 달라졌을까요?')을 쓴다 — 이미 썼으면 쓰지 않는다. 질문 앞에 다른 각도 한 줄.",
+    "Olivia":  "되받기는 1~2문장. 챕터에 한 번은 대조 탐침('반대로 했다면 어땠을까요?', '안 했다면 무엇이 달라졌을까요?')을 쓴다 — 이미 썼으면 쓰지 않는다. 대조 질문일 때만 '거꾸로 보면요,' 같은 도입구를 쓰고, 다른 질문 앞에는 붙이지 않는다.",
     "Daniel":  "되받기는 관찰 문장 2문장까지 허용. 격식 어미('~하셨습니까', '~시겠습니까'). 탐침은 결정의 기준과 책임을 묻는다.",
     "Michael": "되받기는 1~2문장, 짧고 힘 있게. 탐침은 리더가 직접 한 행동을 먼저 묻는다('직접 뭘 하셨어요'). 질문 앞에 '좋습니다,'.",
     "Lucas":   "되받기는 1문장, 최단문. 도입구·'리더님' 호칭 없이 바로 묻는다. 숫자·기간·결과를 먼저 묻는다.",
 }
 
-_CONTRAST_RE = re.compile(r"(반대로|거꾸로|안 했다면|않았다면|하지 않으셨다면|달리 했다면|만약[^?]{0,20}(않|안)|그러지 않았다면)")
+# 대조 탐침 판정 — 도입구('거꾸로 보면요,')를 뗀 '질문 본문'에 반대 경우·안 했다면·다른 사람이라면이 있을 때만.
+_CONTRAST_RE = re.compile(r"(반대로 (했|하셨|갔|가셨|움직)|거꾸로 (했|하셨|갔|가셨)|안 했다면|않았다면|않으셨다면|하지 않으셨다면|달리 했다면|"
+                          r"다른 (사람|분|팀원)이(라면|었다면| 맡았다면)|만약[^?]{0,24}(않|안 )|그러지 않았다면|그대로 두셨다면)")
+CONTRAST_LEADS = ["거꾸로 보면요,", "거꾸로 보면,", "다른 쪽에서 보면,", "조금 비켜서 보면,", "질문을 뒤집어 볼게요.", "한 발 물러서서요,", "반대로 보면,", "반대로 보면요,"]
+_LEAD_RE = re.compile(r"^(?:" + "|".join(re.escape(l) for l in CONTRAST_LEADS) + r")\s*")
+
+
+def strip_contrast_lead(text: str | None) -> tuple[str, int]:
+    """질문이 실제 대조가 아니면 문장 앞의 대조 도입구를 뗀다(문장 단위). (뗀 수)"""
+    from diag_project.services.output_guard import split_sentences
+    out, n = [], 0
+    for sent in split_sentences(text or ""):
+        sent = sent.strip()
+        if not sent:
+            continue
+        stripped = _LEAD_RE.sub("", sent)
+        if stripped != sent and not _CONTRAST_RE.search(stripped):
+            n += 1
+            sent = stripped
+        out.append(sent)
+    return " ".join(out), n
 
 
 def is_contrast_question(text: str | None) -> bool:
-    """Olivia 대조 탐침('반대로 했다면?') 판정 — 챕터당 1회 집계용."""
-    return bool(_CONTRAST_RE.search(text or ""))
+    """Olivia 대조 탐침('반대로 했다면?') 판정 — 챕터당 1회 집계용. 도입구만으로는 대조가 아니다."""
+    body = _LEAD_RE.sub("", (text or "").strip())
+    return bool(_CONTRAST_RE.search(body))
 
 
 def tails_for(persona_name: str | None) -> list[str]:
@@ -93,6 +114,12 @@ _ENDINGS: list[tuple[str, str, str]] = [
     (r"예요\?$",              "입니까?",                "인지 말씀해 주시겠습니까?"),
     (r"어요\?$",              "습니까?",                "는지 말씀해 주시겠습니까?"),
     (r"나요\?$",              "습니까?",                "는지 말씀해 주시겠습니까?"),
+    (r"있으신가요\?$",        "있으십니까?",            "있으십니까?"),
+    (r"신가요\?$",            "십니까?",                "십니까?"),
+    (r"있으실까요\?$",        "있으십니까?",            "있으십니까?"),
+    (r"실까요\?$",            "십니까?",                "십니까?"),
+    (r"었을까요\?$",          "었습니까?",              "었습니까?"),
+    (r"을까요\?$",            "습니까?",                "습니까?"),
     (r"까요\?$",              "까요?",                  "을지 말씀해 주시겠습니까?"),
 ]
 _LUCAS_CUTS = [(r"^(그때|그 당시|최근에|요즘|그중)\s+", ""), (r"\b리더님(은|이|께서|께서는)?\s*", ""), (r"\b직접\s+", ""),
@@ -109,13 +136,32 @@ def _apply_endings(text: str, col: int) -> str:
     return text
 
 
-def voice_question(persona_name: str | None, text: str) -> str:
-    """사전 질문 한 문장을 페르소나 어미로. 내용 불변, 물음표 1개 유지. 모르는 페르소나·빈 문장은 그대로."""
+DANIEL_VARIANTS = 3
+
+
+def _daniel(t: str, variant: int) -> str:
+    """Daniel 격식 꼬리 3개 변주(2턴 연속 같은 꼬리 금지는 호출자가 variant 를 돌려서 보장)."""
+    base = _apply_endings(t, 1)                     # "~습니까?" 형으로 먼저
+    v = variant % DANIEL_VARIANTS
+    if v == 0:
+        out = re.sub(r"입니까\?$", "인지 말씀해 주시겠습니까?", base)
+        out = re.sub(r"습니까\?$", "는지 말씀해 주시겠습니까?", out) if out == base else out
+        return out if out != base else base
+    if v == 1:
+        out = re.sub(r"입니까\?$", "인지요?", base)
+        out = re.sub(r"습니까\?$", "는지요?", out) if out == base else out
+        return out
+    return base if "리더님" in base else re.sub(r"^", "리더님께서는 ", base, count=1)
+
+
+def voice_question(persona_name: str | None, text: str, *, variant: int = 0) -> str:
+    """사전 질문 한 문장을 페르소나 어미로. 내용 불변, 물음표 1개 유지. 모르는 페르소나·빈 문장은 그대로.
+    variant: Daniel 꼬리 변주 인덱스(호출자가 턴마다 돌린다)."""
     t = (text or "").strip()
     if not t or t.count("?") != 1 or not t.endswith("?"):
         return text
     k = persona_key(persona_name)
-    if k == "Ella":
+    if k in ("Ella", "Olivia"):
         return t
     if k == "Jessica":
         t = re.sub(r"^(혹시|조금|한번|한 번)\s+", "", t)
@@ -123,14 +169,10 @@ def voice_question(persona_name: str | None, text: str) -> str:
         return _apply_endings(t, 1)
     if k == "Daniel":
         t = t.replace("뭘 ", "무엇을 ").replace("걸 ", "것을 ")
-        return _apply_endings(t, 2)
-    if k == "Olivia":
-        lead = _OLIVIA_LEADS[sum(map(ord, t)) % len(_OLIVIA_LEADS)]
-        return f"{lead} {t[0].lower() + t[1:] if t[0].isascii() else t}"
+        return _daniel(t, variant)
     if k == "Michael":
-        body = re.sub(r"^(좋습니다,\s*)", "", t)
-        body = re.sub(r"하신 적", "직접 하신 적", body, count=1) if "직접" not in body else body
-        return f"좋습니다, {body}"
+        body = re.sub(r"^(좋습니다[,!.]?\s*)", "", t)
+        return re.sub(r"하신 적", "직접 하신 적", body, count=1) if "직접" not in body else body
     if k == "Lucas":
         s = t
         for pat, rep in _LUCAS_CUTS:
@@ -138,3 +180,21 @@ def voice_question(persona_name: str | None, text: str) -> str:
         s = re.sub(r"\s{2,}", " ", s).strip()
         return s if s.count("?") == 1 else t
     return t
+
+
+_GOOD_RE = re.compile(r"좋습니다[!,.]?\s*")
+
+
+def michael_lead_guard(text: str, allow: bool) -> tuple[str, bool]:
+    """Michael '좋습니다' 도입: 턴당 최대 1회, 허용 턴이면 정확히 1회(없으면 붙인다), 비허용 턴이면 전부 뗀다. (텍스트, 사용 여부)"""
+    t = (text or "").strip()
+    if not t:
+        return text, False
+    n = len(_GOOD_RE.findall(t))
+    if not allow:
+        return _GOOD_RE.sub("", t).strip(), False
+    if n == 0:
+        return f"좋습니다, {t}", True
+    first = _GOOD_RE.search(t)
+    rest = _GOOD_RE.sub("", t[first.end():])
+    return (t[:first.start()] + "좋습니다, " + rest).strip(), True

@@ -46,7 +46,7 @@ def test_ladder_ledger_once_per_target():
 def test_route_and_prompt_wiring():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
     # 추가가 아니라 교체: S-A-R 완비 블록 안에서만 사다리를 만들고, 그 턴의 질문을 사전 질문으로 바꾼다
-    assert 'state["force_ladder_probe"] = {"q": _lq_text' in src and '_vq_l((state.get("coach_persona") or {}).get("name"), _lp["q"])' in src
+    assert 'state["force_ladder_probe"] = {"q": _lq_text' in src and '_vq_l((state.get("coach_persona") or {}).get("name"), _lp["q"],' in src
     assert '"ladder_probe": _tm.get("ladder")' in src and "mark_ladder_probed as _mlp_g" in src
     # 감정 질문은 S-A-R 미완일 때만
     assert 'or state.get("sar_complete_answer") or state.get("force_ladder_probe")' in src
