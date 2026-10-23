@@ -2445,7 +2445,8 @@ async def _submit_message_phase3a(
             logger.info("✂️ 최종 한 턴 한 질문: %d문장 제거", _n_qo)
 
     # 8-p. (2026-10-23 6번 보정) Michael "좋습니다" 도입: 턴당 최대 1회, 챕터에서 2턴에 1회 이하(직전 턴에 썼으면 이번 턴은 뗀다).
-    if (system_override_text is None and not _llm_error and clean_reply
+    #   고정 문장 턴(안내·확인 템플릿)도 센다 — 재생에서 4·5·6턴 연속 '좋습니다' 가 템플릿 턴에서 났다.
+    if (not _llm_error and clean_reply and not needs_user_decision
             and (state.get("coach_persona") or {}).get("name", "").startswith("Michael")):
         from diag_project.services.persona_voice import michael_lead_guard as _mlg
         _good_prev = list(((session.self_assessment_data or {}).get("good_turns") or {}).get(chapter or "_", []))
