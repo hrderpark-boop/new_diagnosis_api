@@ -93,9 +93,8 @@ SECTION_INTRO = (
     "아래 과정을 통해 다음 레벨의 리더십으로 나아가시기 바랍니다."
 )
 
-# 강점(D) 후보 자격 기준
-STRENGTH_MIN_SCORE = 3.5
-STRENGTH_MIN_EVIDENCE = 2
+# 강점(D) 후보 자격: 병합 원장 level ≥ 4 (= 점수 4.0) 이고 stability ≠ weak. (옛 score≥3.5·근거 2건·LLM 게이트는 폐지)
+STRENGTH_MIN_LEVEL = 4
 
 
 def _sub_level(score: float | None) -> int | None:
@@ -126,6 +125,8 @@ def _flatten_measured(details: dict) -> list[dict]:
                 "evidence": [q for q in (e.get("evidence") or []) if q],
                 # E-2c/R-1: 확신도(1/N 탐지·레벨갈림) — tie-break·배지에 사용.
                 "borderline": e.get("borderline"),
+                # (2026-10-23) outer 병합 안정성(stable/semi/weak). 단일 경로(레거시)는 None.
+                "stability": e.get("stability"),
             })
     return out
 
@@ -192,75 +193,6 @@ def _build_entry(item: dict, track: str, used_citations: set[str], *,
     }
 
 
-def _lv4_reference(comp_key: str, sub_name: str) -> str:
-    """해당 하위역량의 Lv.4 levels + examples 서술 (게이트 판정 기준)."""
-    fw = COMPETENCY_FRAMEWORK.get(comp_key, {})
-    for ind in fw.get("indicators", {}).values():
-        if ind.get("name") == sub_name:
-            lv = ind.get("levels", {}).get(4, "")
-            ex = ind.get("examples", {}).get(4, "")
-            return f"{lv} / {ex}"
-    return ""
-
-
-async def _strength_gate_pass(item: dict, llm) -> bool:
-    """P0-5 근거 검증 게이트 — 인용 발화가 해당 하위역량 Lv.4 서술과 의미적으로
-    매칭되는지 LLM 으로 검증. llm 없으면 보수적으로 False(카드 생성 안 함).
-    판정은 '매칭 여부 + 근거 한 줄' 로 구조화해 로깅한다."""
-    if llm is None:
-        return False
-    ref = _lv4_reference(item["comp_key"], item["sub_name"])
-    quotes = " / ".join(item["evidence"][:3])
-    prompt = (
-        "[역할] 리더십 평가 검증관. 아래 '리더 발화'가 해당 하위역량의 "
-        "'Lv.4(최고 수준) 기준'에 실제로 부합하는지 냉정하게 판정하라.\n"
-        f"[하위역량] {item['sub_name']}\n"
-        f"[Lv.4 기준] {ref}\n"
-        f"[리더 발화] {quotes}\n\n"
-        "주의: 발화 표면의 단어가 아니라 '행동의 수준'으로 판정하라. 예: "
-        "'제가 직접 나서서 처리해 마감을 맞췄다'는 실무자적 직접 개입(Lv.1~2)"
-        "이며, 시스템·조직 차원의 혁신(Lv.4)이 아니다.\n"
-        '출력(JSON): {"match": true|false, "reason": "판정 근거 한 줄"}'
-    )
-    import time as _time
-    _t0 = _time.monotonic()
-    try:
-        raw = await llm._generate_with_retry(
-            prompt, max_tokens=4096, json_mode=True,
-            temperature=0, call_type="dtrack_gate",  # T-1: 판정 결정론
-        )
-        logger.info("⏱️ dgate[%s] %.1fs", item["sub_name"],
-                    _time.monotonic() - _t0)
-    except Exception as e:  # noqa: BLE001
-        # 🚨 V-1#4: '빈 응답/오류로 미검증'(fail-closed) 과 '판단에 의한 차단'을
-        #   로그에서 구분한다. 이건 판단이 아니라 게이트가 못 돈 것이다.
-        logger.warning(
-            "🚧 D트랙 게이트 미검증(빈응답/오류 → fail-closed 미생성, '판단 아님') "
-            "[%s]: %s", item["sub_name"], str(e)[:100],
-        )
-        return False
-    try:
-        import json as _json
-        raw = (raw or "").replace("```json", "").replace("```", "").strip()
-        if not raw:
-            logger.warning(
-                "🚧 D트랙 게이트 빈 응답 → fail-closed 미생성('판단 아님') [%s]",
-                item["sub_name"])
-            return False
-        res = _json.loads(raw)
-        match = bool(res.get("match"))
-        logger.info(
-            "🔎 D트랙 게이트 판단 [%s] match=%s · %s",
-            item["sub_name"], match, str(res.get("reason"))[:80],
-        )
-        return match
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "🚧 D트랙 게이트 파싱 실패 → fail-closed 미생성('판단 아님') [%s]: %s",
-            item["sub_name"], str(e)[:80])
-        return False
-
-
 async def build_course_recommendation(
     details: dict, transcript: str = "", job_weights: dict | None = None,
     llm=None,
@@ -293,21 +225,17 @@ async def build_course_recommendation(
     MAX_PER_COMP = 2
     picks: list[dict] = []
 
-    # ── 강점(D) 후보: score≥3.5 & 근거 2건+ & 게이트 통과 ──
+    # ── 강점(D) 후보: 병합 원장 level ≥ 4 & stability ≠ weak (LLM 게이트 없음, 2026-10-23) ──
     strength_entry = None
     d_cands = sorted(
-        [m for m in measured
-         if m["score"] >= STRENGTH_MIN_SCORE
-         and len(m["evidence"]) >= STRENGTH_MIN_EVIDENCE],
+        [m for m in measured if m["level"] >= STRENGTH_MIN_LEVEL and m.get("stability") != "weak"],
         key=_strength_candidate_key,  # R-1: 점수 동점도 완전 결정론
     )
-    for cand in d_cands:
-        if await _strength_gate_pass(cand, llm):
-            strength_entry = _build_entry(
-                cand, "D", used_citations, is_strength=True)
-            per_comp[cand["comp_key"]] = 1
-            picks.append((cand["comp_key"], cand["sub_name"]))
-            break
+    if d_cands:
+        cand = d_cands[0]
+        strength_entry = _build_entry(cand, "D", used_citations, is_strength=True)
+        per_comp[cand["comp_key"]] = 1
+        picks.append((cand["comp_key"], cand["sub_name"]))
 
     # ── 성장(A~C): measured & level<4, 추천점수 상위, 대역량 max2 ──
     growth: list[dict] = []
@@ -328,9 +256,9 @@ async def build_course_recommendation(
         per_comp[m["comp_key"]] = per_comp.get(m["comp_key"], 0) + 1
 
     logger.info(
-        "🎯 Level-Up 추천: 성장 %d + 강점 %d (D게이트 %s)",
+        "🎯 Level-Up 추천: 성장 %d + 강점 %d (D 후보 level≥4·stability≠weak %s)",
         len(growth), 1 if strength_entry else 0,
-        "통과" if strength_entry else "미생성",
+        strength_entry["sub_competency"] if strength_entry else "없음",
     )
 
     # T5 #4: 추천 카드 본문이 완전히 동일한 쌍이 있으면 경고 로깅.
