@@ -209,6 +209,18 @@ def next_analysis_marker(prev: dict | None, error_competencies) -> dict:
     return out
 
 
+def reset_analysis_marker(prev: dict | None, by: str) -> dict:
+    """(2026-10-23 파일럿 전 2) 관리자 재분석: degraded/failed 마커를 초기화한다.
+    fail_count 를 0 으로 되돌려 다음 실패가 1회차부터 다시 세어지게 하고, 누가 언제 초기화했는지와
+    직전 마커(error_id·fail_count)를 남겨 /admin/alerts·로그와 대조할 수 있게 한다."""
+    prev = dict(prev or {})
+    return {
+        "status": "reset", "at": datetime.now().isoformat(), "by": by, "fail_count": 0,
+        "prev_status": prev.get("status"), "prev_fail_count": int(prev.get("fail_count") or 0),
+        "prev_error_id": prev.get("error_id"),
+    }
+
+
 @router.get("/{session_id}/progress")
 async def get_analysis_progress(session_id: str):
     """analyze 진행 상태 {stage, done, total, label, started_at, elapsed_s}.

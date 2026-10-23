@@ -262,7 +262,10 @@ async def get_active_session(
     ).order_by(desc(DiagnosisSession.created_at))
     s = (await db.execute(q)).scalars().first()
     if not s:
-        return {"has_active": False}
+        # (2026-10-23 파일럿 전 1) 재개 세션이 없으면 '가장 최근 completed 세션'을 함께 돌려준다.
+        #   프론트는 이 값이 있으면 새 세션을 만들지 않고 리포트 화면(/report?session_id=)으로 보낸다.
+        #   리포트 미생성(degraded/failed)이면 같은 화면이 안내를 보여 준다. 새 진단은 리포트 화면의 버튼으로만.
+        return {"has_active": False, "completed": await latest_completed_summary(db, participant_id)}
     key = _coach_key_from_id(s.coach_id)
     return {
         "has_active": True,
@@ -270,6 +273,46 @@ async def get_active_session(
         "coach_id": str(s.coach_id),
         "coach_name": COACHES_PERSONA[key]["name"],
     }
+
+
+def analysis_status_of(session) -> Optional[str]:
+    """세션 JSONB 의 last_analysis.status ("degraded" | "failed" | "ok" | "reset" | None)."""
+    sd = getattr(session, "self_assessment_data", None) or {}
+    la = sd.get("last_analysis") or {}
+    return la.get("status") or None
+
+
+def completed_summary(session, has_report: bool) -> dict:
+    """completed 세션 한 건의 요약(프론트 분기용). 순수 함수 — 테스트에서 직접 검증."""
+    try:
+        cname = COACHES_PERSONA[_coach_key_from_id(session.coach_id)]["name"]
+    except Exception:  # noqa: BLE001 — 코치 매핑이 없어도 요약은 돌려준다
+        cname = None
+    return {
+        "session_id": str(session.id),
+        "coach_id": str(session.coach_id),
+        "coach_name": cname,
+        "has_report": bool(has_report),
+        "analysis_status": analysis_status_of(session),
+        "completed_at": (session.updated_at or session.created_at).isoformat()
+        if (session.updated_at or session.created_at) else None,
+    }
+
+
+async def latest_completed_summary(db: AsyncSession, participant_id: uuid.UUID) -> Optional[dict]:
+    """참가자의 가장 최근 completed 세션 + 리포트 존재 여부. 없으면 None."""
+    from diag_project.models.diagnosis_report import DiagnosisReport
+    q = select(DiagnosisSession).where(
+        DiagnosisSession.user_id == participant_id,
+        DiagnosisSession.status == "completed",
+    ).order_by(desc(DiagnosisSession.updated_at), desc(DiagnosisSession.created_at))
+    s = (await db.execute(q)).scalars().first()
+    if not s:
+        return None
+    rep = (await db.execute(
+        select(DiagnosisReport.id).where(DiagnosisReport.session_id == s.id).limit(1)
+    )).first()
+    return completed_summary(s, rep is not None)
 
 
 # ------------------------------------------------------------------

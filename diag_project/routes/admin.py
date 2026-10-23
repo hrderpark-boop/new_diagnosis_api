@@ -439,7 +439,7 @@ async def list_participants(
         lambda: {
             "total": 0, "completed": 0, "last_status": "미시작",
             "last_at": None, "last_topic": None, "last_session_id": None,
-            "last_provider": None,
+            "last_provider": None, "last_analysis": {},
         }
     )
     # 4(b) 관리자 복원: 참여자별 abandoned(보관) 세션 목록 — [복원] 버튼용
@@ -462,6 +462,7 @@ async def list_participants(
                 stat["last_topic"] = s.current_topic
                 stat["last_session_id"] = s.id
                 stat["last_provider"] = s.llm_provider
+                stat["last_analysis"] = session_analysis_marker(s)
 
     # 행동 태그용: 사용자 발화 길이를 참여자별로 배치 집계 (단일 쿼리, N+1 없음)
     user_len_by_pid: Dict[UUID, List[int]] = defaultdict(list)
@@ -547,6 +548,10 @@ async def list_participants(
                 # (2026-10-15) 최근 세션에 고정된 LLM provider(null = 환경 기본값/구 세션)
                 "llm_provider": stat["last_provider"],
                 "report_id": report_by_pid.get(p.id),
+                # (2026-10-23 파일럿 전 2) 최근 세션의 리포트 분석 마커 — [재분석] 버튼·'리포트 미생성' 표시용
+                "last_analysis_status": stat["last_analysis"].get("status"),
+                "last_analysis_fail_count": stat["last_analysis"].get("fail_count"),
+                "report_missing": last_status == "completed" and report_by_pid.get(p.id) is None,
                 # 4(b): 보관(abandoned) 세션 — 관리자가 [복원] 으로 되살릴 수 있다
                 "abandoned_sessions": _abandoned_rows(p.id),
             }
@@ -581,6 +586,48 @@ async def admin_restore_session(
     result = await restore_session_by_id(db, session_id)
     logger.info("♻️ 관리자 복원: admin=%s session=%s", getattr(ctx.admin, "email", "?"), session_id)
     return result
+
+
+# ===========================================================================
+# 2-a-2. 관리자 재분석 (2026-10-23 파일럿 전 2) — super_admin 전용
+#   리포트 생성이 3회 실패(failed)해 참가자 화면에 [다시 시도] 가 사라진 세션을 운영자가 되살린다.
+#   ① last_analysis 마커 초기화(fail_count 0) + 알림 목록 정리 → ② 참가자 경로와 같은 analyze 를 동기 실행.
+#   완주(completed) 세션만 대상. analyze 의 409(진행 중)·503(또 실패)은 그대로 전달한다.
+# ===========================================================================
+@router.post("/sessions/{session_id}/reanalyze")
+async def admin_reanalyze_session(
+    session_id: UUID,
+    ctx: AdminContext = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy.orm.attributes import flag_modified
+    from diag_project.llm_service import GeminiService
+    from diag_project.routes.reports import analyze_session, reset_analysis_marker
+    from diag_project.services.ops_monitor import clear_report_failure
+
+    s = await db.get(DiagnosisSession, session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+    if s.status != "completed":
+        raise HTTPException(status_code=409, detail=f"완주(completed) 세션만 재분석할 수 있습니다. 현재 상태: {s.status}")
+
+    sd = dict(s.self_assessment_data or {})
+    prev = sd.get("last_analysis") or {}
+    marker = reset_analysis_marker(prev, getattr(ctx.admin, "email", "?"))
+    sd["last_analysis"] = marker
+    s.self_assessment_data = sd
+    flag_modified(s, "self_assessment_data")
+    db.add(s)
+    await db.commit()
+    clear_report_failure(str(session_id))
+    logger.info("🔁 관리자 재분석: admin=%s session=%s prev=%s/%d",
+                marker["by"], session_id, marker["prev_status"], marker["prev_fail_count"])
+
+    out = await analyze_session(str(session_id), db, GeminiService())
+    if hasattr(out, "body"):            # 관리자 교정본 보호 → JSONResponse(200, skipped=human_edited)
+        import json as _json
+        out = _json.loads(out.body)
+    return {"reset": marker, "analysis": out}
 
 
 # ===========================================================================
@@ -731,6 +778,69 @@ async def bulk_delete_participants(
 # ===========================================================================
 # 3. 리포트 목록 — 검색 + 페이지네이션 + 회사 격리
 # ===========================================================================
+def session_analysis_marker(s) -> Dict[str, Any]:
+    """세션 JSONB 의 last_analysis 마커(없으면 빈 dict)."""
+    return ((getattr(s, "self_assessment_data", None) or {}).get("last_analysis") or {})
+
+
+def missing_report_item(s, p, cmap: Dict[Any, str]) -> Dict[str, Any]:
+    """(2026-10-23) 리포트 행이 없는 완주 세션 → 리포트 목록용 '리포트 미생성' 행. id 는 None(상세 없음)."""
+    la = session_analysis_marker(s)
+    return {
+        "id": None,
+        "session_id": str(s.id),
+        "user_id": str(s.user_id),
+        "user_name": p.name or "익명",
+        "user_email": p.email,
+        "company_name": cmap.get(p.company_id, "미지정") if p.company_id else "미지정",
+        "group_code": p.group_code or "-",
+        "total_score": None,
+        "scores": {},
+        "summary": None,
+        "top_competency": None,
+        "bottom_competency": None,
+        "created_at": s.updated_at or s.created_at,
+        "is_human_edited": False,
+        "edited_at": None,
+        "edited_by": None,
+        "report_missing": True,
+        "analysis_status": la.get("status") or "analyzing",
+        "fail_count": la.get("fail_count"),
+        "error_id": la.get("error_id"),
+    }
+
+
+async def completed_sessions_without_report(db: AsyncSession, ctx: AdminContext, cmap: Dict[Any, str], *,
+                                            company_id: Optional[UUID] = None, search: Optional[str] = None,
+                                            ) -> List[Dict[str, Any]]:
+    """리포트 행이 없는 완주 세션을 '리포트 미생성' 행으로. 세션 → 참가자 두 단계 조회(SQL 조인 없음).
+    participants.id(GUID) 와 diagnosis_sessions.user_id(SQLModel UUID) 는 sqlite 에서 저장 형식이 달라 조인이 비므로
+    (운영 Postgres 는 둘 다 uuid 라 무관) 값 바인딩으로 묶는다. 건수가 적어(실패 세션만) Python 필터로 충분하다."""
+    sq = select(DiagnosisSession).where(
+        DiagnosisSession.status == "completed",
+        ~DiagnosisSession.id.in_(select(DiagnosisReport.session_id)),
+    ).order_by(DiagnosisSession.updated_at.desc())
+    sessions = (await db.execute(sq)).scalars().all()
+    if not sessions:
+        return []
+    pr = await db.execute(select(Participant).where(Participant.id.in_({s.user_id for s in sessions})))
+    by_id = {p.id: p for p in pr.scalars().all()}
+    kw = (search or "").strip().lower()
+    out: List[Dict[str, Any]] = []
+    for s in sessions:
+        p = by_id.get(s.user_id)
+        if not p:
+            continue
+        if not ctx.is_super_admin and p.company_id != ctx.company_id:          # 회사 격리(scope_query 와 같은 규칙)
+            continue
+        if company_id and ctx.is_super_admin and p.company_id != company_id:
+            continue
+        if kw and kw not in (p.name or "").lower() and kw not in (p.email or "").lower():
+            continue
+        out.append(missing_report_item(s, p, cmap))
+    return out
+
+
 @router.get("/reports", response_model=PaginatedResponse)
 async def list_reports(
     search: Optional[str] = Query(None, description="대상자 이름/이메일 검색어"),
@@ -767,6 +877,12 @@ async def list_reports(
     rows = result.all()
 
     cmap = await _company_map(db)
+    # (2026-10-23 파일럿 전 2) 리포트 행이 없는 완주 세션 — 종합 실패(degraded/failed)로 리포트가 안 만들어진
+    #   리더가 목록에서 보이지 않던 문제. 1페이지 상단에 "리포트 미생성" 행으로 넣고 total 에도 더한다.
+    missing_items: List[Dict[str, Any]] = []
+    if page == 1:
+        missing_items = await completed_sessions_without_report(
+            db, ctx, cmap, company_id=company_id, search=search)
     items = [
         {
             "id": str(r.id),
@@ -789,6 +905,8 @@ async def list_reports(
         }
         for r, p in rows
     ]
+    items = missing_items + items
+    total += len(missing_items)
 
     return PaginatedResponse(
         items=items,
