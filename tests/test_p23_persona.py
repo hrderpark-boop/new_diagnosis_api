@@ -93,3 +93,15 @@ def test_persona_lines_complete_and_structural():
     assert "달려오셨습니다" in pause_suggestion_text(47, "Michael") and "47분째" in pause_suggestion_text(47, "Michael")
     assert G.result_fallback_question("두 달 걸렸어요", None, alt=1, persona="Jessica") == "결과는 어떻게 나왔습니까?"
     assert align_topic_bridge("delegation", None, "Lucas") == "먼저 맡기는 쪽부터요."
+
+
+def test_rapport_fixed_question_binds_persona_name():
+    """(2026-10-23 핫픽스) 9fad8ae 회귀: _pl_r("role_q") 가 persona_line 별칭이라 TypeError → 운영 라포 3턴 500. 이름을 묶은 호출자여야 한다."""
+    src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
+    assert "def _pl_r(key: str, **fmt) -> str:" in src and "_persona_line_r(_persona_name_r, key, **fmt)" in src
+    assert "import persona_line as _pl_r" not in src
+    # 다른 별칭은 모두 (이름, 키) 두 인자로 부른다
+    import re
+    for alias in ("_pl_i", "_pl_q", "_pl_a", "_pl_om"):
+        for m in re.finditer(alias + r"\(([^)]*)\)", src):
+            assert "coach_persona" in m.group(1), (alias, m.group(0)[:80])

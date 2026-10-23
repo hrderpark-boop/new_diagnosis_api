@@ -1563,7 +1563,12 @@ async def _submit_message_phase3a(
         _rc = state.get("rapport_turn_count", 0)
         _smalltalk = _rc == 1
 
-        from diag_project.services.intro_messages import persona_line as _pl_r
+        from diag_project.services.intro_messages import persona_line as _persona_line_r
+        # (2026-10-23 핫픽스) 9fad8ae 에서 persona_line 을 별칭만 바꿔 한 인자로 불렀다 → 라포 3턴마다 TypeError 500(운영 전 세션).
+        #   페르소나 이름을 묶은 호출자로 고정한다.
+        _persona_name_r = (state.get("coach_persona") or {}).get("name")
+        def _pl_r(key: str, **fmt) -> str:
+            return _persona_line_r(_persona_name_r, key, **fmt)
         from diag_project.services.output_guard import persona_lead_cap as _plc
         _pn_r = (state.get("coach_persona") or {}).get("name")
         _cap_p = _plc(_pn_r)   # (2026-10-22 P2-3) 페르소나별 되받기 상한
