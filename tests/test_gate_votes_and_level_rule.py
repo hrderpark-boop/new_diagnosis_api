@@ -5,6 +5,11 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:   # 실 LLM 테스트의 skip 판정은 .env 의 키도 본다(수집 시점에 앱이 아직 load_dotenv 를 안 했을 수 있다)
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+except Exception:  # noqa: BLE001
+    pass
 
 from diag_project.services import level_gate as LG  # noqa: E402
 
