@@ -1,0 +1,23 @@
+# (2026-10-23 B) 백엔드 전체 테스트 + 운영 스모크(6 코치 × 세션 시작→자가진단→라포 3턴→정의→ALIGN, FM_LLM_STUB).
+#   9fad8ae(라포 3턴 500)처럼 단위 테스트는 통과하는데 실제 라우트가 깨지는 회귀를 push 전에 잡는다.
+name: tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: pytest (임시 sqlite · LLM 스텁 · 실호출 없음)
+        env:
+          FM_SYNTHETIC_CHECK: "0"
+          GEMINI_API_KEYS: dummy
+        run: python -m pytest tests -q -p no:cacheprovider -W ignore
