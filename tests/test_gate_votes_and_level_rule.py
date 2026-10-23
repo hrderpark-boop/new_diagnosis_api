@@ -39,8 +39,8 @@ def test_gate_votes_env(monkeypatch):
 
 def test_gate_prompt_level_rule():
     p = LG._build_gate_prompt([{"sub_name": "전략적 사고", "evidence": ["e"], "claimed_level": 2, "ref": LG.level_reference("organization_management", "전략적 사고")}])
-    assert "서술을 모두 대조해 발화에 가장 잘 맞는 것" in p and "자동으로 Lv.n-1 로 내리지 않는다" in p
-    assert "Lv.1 은 Lv.1 서술" in p and "실제로 맞을 때만" in p and "강등 또는 유지만" in p
+    # (E-2 로 교체) 결락이면 n-1, Lv.1 은 부정형 서술이 실제로 맞을 때만
+    assert "결락이면 Lv.n-1" in p and "n-1 이 Lv.1 이면" in p and "실제로 맞을 때만 1" in p and "강등 또는 유지만" in p
 
 
 def test_cache_keys_gemini_unchanged_claude_versioned():

@@ -90,13 +90,12 @@ def _build_gate_prompt(items: list) -> str:
         "   · 부재 진술('그런 경험은 없습니다') — 오히려 낮은 수준의 신호\n"
         "2. 구체 행동 사례라면, 그 행동이 '실제로 도달한 가장 높은 레벨'을 고른다. "
         "서술이 유창하다고 레벨을 올리지 말 것. 기준 서술과의 '행동 수준' 일치만 본다.\n"
-        "3. 레벨은 Lv.1~4 '서술을 모두 대조해 발화에 가장 잘 맞는 것'으로 고른다. 주장 레벨보다 높게 올리지 말 것"
-        "(게이트는 강등 또는 유지만 한다).\n"
-        "4. Lv.n 요건이 '일부만' 충족돼도 자동으로 Lv.n-1 로 내리지 않는다. 그때는 Lv.n 서술과 Lv.n-1 서술 중 "
-        "발화의 행동에 더 잘 맞는 쪽을 고른다(예: 조직 목표와의 연결은 없지만 중장기 흐름을 고려한 결정이면 "
-        "Lv.2 서술이 Lv.1 서술보다 맞다).\n"
-        "5. Lv.1 은 Lv.1 서술(역할 인식 부재·단기 수습·전달 수준)이 발화에 실제로 맞을 때만 준다. Lv.2 요건이 "
-        "부분 충족인데 Lv.1 서술은 맞지 않으면 Lv.2 다. 구체 행동 사례가 아니면(태도·일반화·부재) 0.\n\n"
+        "3. 레벨 n 은 'Lv.n 서술의 핵심 행동'이 근거 문장에 실제로 있을 때만 준다. Lv.n 요건이 일부라도 "
+        "결락이면 Lv.n-1 이다. '~는 없지만/부족하지만 Lv.n 이 더 맞다' 식으로 상위 레벨을 주지 말 것 — "
+        "사유에 결락을 적었으면 레벨은 n-1 이어야 한다.\n"
+        "4. 단 n-1 이 Lv.1 이면: Lv.1 서술(역할 인식 부재·단기 수습 같은 부정형)이 발화에 실제로 맞을 때만 1, "
+        "아니면 2 다.\n"
+        "5. 주장 레벨보다 높게 올리지 말 것(게이트는 강등 또는 유지만 한다). 구체 행동 사례가 아니면(태도·일반화·부재) 0.\n\n"
         f"{body}\n\n"
         '출력(JSON, 마크다운 금지): {"results": [{"idx": <번호>, '
         '"supported_level": <0~4>, "category": "구체행동|태도|일반화|부재", '
@@ -118,7 +117,7 @@ GATE_MAX_RETRIES = 3  # 지수 백오프 재시도 횟수
 GATE_VOTES_DEFAULT = 3  # (2026-10-23 D) 같은 근거 5회 측정: 업무계획 [2,3,X,X,2] 처럼 2개 레벨에 걸쳐 3표 중앙값으로 고정
 GATE_PROMPT_VERSION = "2026-08-17.v1"
 # (2026-10-23 E) claude 경로의 게이트 캐시만 새 판정 규칙 버전으로 가른다 — gemini 키(420f1341 캐시)는 그대로 둔다(사용자 결정).
-GATE_PROMPT_VERSION_CLAUDE = "2026-10-23.v2"
+GATE_PROMPT_VERSION_CLAUDE = "2026-10-23.v3"   # E-2: 결락 → n-1, Lv.1 은 부정형 서술이 맞을 때만
 
 
 def _cache_key(competency_key: str, sub: str, evidence, claimed: int,
@@ -146,6 +145,59 @@ def _persist_key(competency_key: str, sub: str, evidence, claimed: int,
                         os.getenv("ANALYSIS_TEMPERATURE", "temp0"),
                         f"tb{os.getenv('GATE_TB', 'dyn')}",
                         *_lp.cache_key_parts(provider), *_claude_version_parts(provider))
+
+
+# (2026-10-23 E-2) 사유 검증 — "~는 없지만/부족하나 … Lv.n" 처럼 결락 요건을 적고도 n 을 줬으면 n-1 로 내린다.
+#   같은 문장 안에서 더 높은 레벨(Lv.n+1 이상)의 결락을 말한 것은 정상(그 레벨을 안 준 이유)이라 건드리지 않는다.
+#   n-1 이 Lv.1 이면 Lv.1 서술 일치를 알 수 없으므로 2 에 둔다(규칙 4).
+_CONCESSION_RE = re.compile(
+    r"(없지만|없으나|없어도|없더라도|없는데도|않지만|않으나|않았지만|않더라도|못하지만|못했지만|부족하지만|부족하나|부족해도|"
+    r"약하지만|약하나|약해도|미흡하지만|미흡하나|불충분하지만|불충분하나|"
+    r"(부합하나|해당하나|맞으나|부합하지만|해당하지만|맞지만)[^.]{0,80}(없음|없다|없어|않음|않았|부족|미흡)|"
+    r"다만[^.]{0,40}(없|않|부족|미흡|약하|불충분))"
+)
+# 문장 경계를 넘는 꼴: "… 근거는 없음. 그래도 Lv.3 …"
+_CONCESSION_CROSS_RE = re.compile(r"(없음|없다|없었다|않음|않는다|부족하다|부족함)\.\s*(그래도|그러나|하지만|그렇지만|다만)[^.]{0,80}Lv\.?\s?(\d)")
+_LV_RE = re.compile(r"Lv\.?\s?(\d)")
+
+
+def concession_fix(verified: int | None, reason: str) -> tuple:
+    """(verified_level, fixed:bool, note). 결락 서술 + 같은 레벨 수여 → n-1(최소 2)."""
+    if not verified or verified < 2 or not reason:
+        return verified, False, ""
+    mx = _CONCESSION_CROSS_RE.search(reason)
+    if mx and int(mx.group(3)) == verified:
+        new = max(2, verified - 1)
+        if new != verified:
+            return new, True, f"결락 서술 후 Lv.{verified} 수여 → Lv.{new} (E-2): {mx.group(0)[:80]}"
+    for sent in re.split(r"(?<=[.!?。])\s+", reason):
+        m = _CONCESSION_RE.search(sent)
+        if not m:
+            continue
+        higher = [int(x) for x in _LV_RE.findall(sent) if int(x) > verified]
+        if higher:
+            continue                      # 상위 레벨 결락 언급 — 정상
+        new = max(2, verified - 1)
+        if new == verified:
+            return verified, False, ""
+        return new, True, f"결락 서술 후 Lv.{verified} 수여 → Lv.{new} (E-2): {sent.strip()[:80]}"
+    return verified, False, ""
+
+
+# (2026-10-23 E-3) 일반화 결정론 전처리 — 시점 표지 없음 + 습관 표지 있는 근거 문장은 게이트 전에 '일반화'로 고정(4번 탐침과 같은 사전).
+def split_generalized(evidence: list) -> tuple:
+    """(남는 근거, 일반화로 걸러진 근거)."""
+    from diag_project.services.avoidance_detector import is_generalized_answer
+    keep, gen = [], []
+    for e in evidence or []:
+        (gen if is_generalized_answer(e) else keep).append(e)
+    return keep, gen
+
+
+def deterministic_generalization_verdict(gen: list) -> Dict[str, Any]:
+    return {"verified_level": None, "category": "일반화",
+            "reason": f"결정론: 시점 표지 없음·습관 표지(~일수록·~때는·~하는 편·늘·항상·보통) — 근거 {len(gen)}문장 전부 일반화",
+            "downgraded": False, "dropped": True, "pending": False, "deterministic": True}
 
 
 def _pending(reason: str) -> Dict[str, Any]:
@@ -355,13 +407,18 @@ async def _judge_batch(competency_key: str, items: list, llm,
             sup = int(sup) if isinstance(sup, (int, float)) else claimed
             sup = max(0, min(sup, claimed))  # 강등/유지만, 상향 금지
             verified = None if sup <= 0 else sup
+            _reason_full = str(r.get("reason", ""))
+            verified, _cfix, _cnote = concession_fix(verified, _reason_full)      # (E-2) 결락 서술 검증
+            if _cfix:
+                logger.info("🔧 레벨게이트 사유 검증 [%s/%s] %s", competency_key, it["sub_name"], _cnote)
             verdict = {
                 "verified_level": verified,
                 "category": r.get("category", "구체행동"),
-                "reason": str(r.get("reason", ""))[:120],
+                "reason": _reason_full[:120],
                 "downgraded": verified is not None and verified < claimed,
                 "dropped": verified is None,
                 "pending": False,
+                **({"concession_fix": True} if _cfix else {}),
             }
             out[it["sub_name"]] = verdict
             if cache:

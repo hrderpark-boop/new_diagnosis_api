@@ -1937,11 +1937,24 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 for s, p in parsed.items()
                 if s in asked_set and p.get("evidence")
             }
-            gate = {}
+            # (2026-10-23 E-3) 일반화 결정론 전처리: 시점 없음+습관 표지 문장은 근거에서 빼고, 전부 그렇면 게이트 없이 '일반화' 탈락.
+            from diag_project.services.level_gate import deterministic_generalization_verdict, split_generalized
+            _det_gate: Dict[str, Dict] = {}
+            for _s, _c in list(candidates.items()):
+                _keep, _gen = split_generalized(_c["evidence"])
+                if _gen and not _keep:
+                    _det_gate[_s] = deterministic_generalization_verdict(_gen)
+                    candidates.pop(_s)
+                    logger.info("🧭 일반화 결정론 탈락 [%s/%s] %d문장", ckey, _s, len(_gen))
+                elif _gen:
+                    _c["evidence"] = _keep
+                    parsed[_s]["evidence"] = _keep
+                    logger.info("🧭 일반화 문장 %d개 제외 [%s/%s] → 남은 근거 %d", len(_gen), ckey, _s, len(_keep))
+            gate = dict(_det_gate)
             if candidates:
                 _t_g = time.monotonic()
-                gate = await gate_verify_levels(ckey, candidates, _gate_llm,
-                                                provider=self.provider())
+                gate.update(await gate_verify_levels(ckey, candidates, _gate_llm,
+                                                     provider=self.provider()))
                 logger.info("⏱️ gate[%s] %.1fs (후보 %d, 대기 포함)", ckey,
                             time.monotonic() - _t_g, len(candidates))
                 # (2026-10-23 A) 태도·일반화로 거절된 후보는 같은 답변에서 '행동 문장'을 1회 다시 골라 재판정한다.
@@ -1973,12 +1986,14 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                     temperature=_JUDGMENT_TEMPERATURE, thinking_budget=_GATE_TB,
                     call_type="evidence_reselect", json_schema=_schemas.evidence_reselect_schema())
 
+        from diag_project.services.level_gate import split_generalized as _split_gen
         for sub in targets:
-            old_ev = list(candidates.get(sub, {}).get("evidence") or [])
-            claimed = int(candidates.get(sub, {}).get("claimed_level") or 1)
+            old_ev = list(candidates.get(sub, {}).get("evidence") or (parsed.get(sub) or {}).get("evidence") or [])
+            claimed = int(candidates.get(sub, {}).get("claimed_level") or (parsed.get(sub) or {}).get("level") or 1)
             first = dict(gate[sub])
             new_ev = await reselect_evidence(_sel_llm, ckey, sub, old_ev, chapter_text, provider=self.provider())
             new_ev = [e for e in new_ev if e not in old_ev]
+            new_ev, _gen2 = _split_gen(new_ev)        # (E-3) 재선택 문장도 일반화면 버린다
             if not new_ev:
                 gate[sub] = {**first, "reselected": True, "reselect_result": "no_action_sentence"}
                 logger.info("🔁 근거 재선택 [%s/%s] 행동 문장 없음 → 원 판정 유지(%s)", ckey, sub, first.get("category"))
