@@ -84,3 +84,29 @@ async def must_ask_covered(llm, question: str, must_ask: Iterable[str]) -> bool 
         f"[조건]\n" + "\n".join(f"- {k}" for k in keys) + f"\n\n[질문]\n{question.strip()}",
         call_type="judge_must_ask",
     )
+
+
+async def judge_rubric_level(llm, competency_key: str, sub_name: str, answer: str) -> int | None:
+    """(2026-10-23 P3 사다리) 리더 답변이 하위역량 루브릭(Lv.1~4 서술+예시) 중 어느 레벨까지 실제로 도달했는지 1~4 한 숫자.
+    대화 중 다음 사다리 질문(현재 레벨 +1)을 고르기 위한 보조 신호다. 실패·모호·스텁이면 None(호출자는 Lv.2 기준으로 폴백)."""
+    if os.getenv("FM_LLM_STUB") or not (answer or "").strip():
+        return None
+    from diag_project.services.level_gate import level_reference
+    ref = level_reference(competency_key, sub_name)
+    if not ref:
+        return None
+    ref_txt = "\n".join(f"Lv.{lv}: {ref.get(lv, '')}" for lv in (1, 2, 3, 4))
+    prompt = ("아래 리더 답변이 레벨 서술 중 어느 레벨의 행동까지 실제로 담고 있는지 판정하세요. 서술의 핵심 행동이 답변에 "
+              "실제로 있을 때만 그 레벨입니다(일부 결락이면 한 단계 아래). 구체 사례가 아니면 1.\n\n"
+              f"[레벨 서술]\n{ref_txt}\n\n[리더 답변]\n{answer.strip()[:1500]}\n\n답은 1, 2, 3, 4 중 숫자 하나만 출력하세요.")
+    try:
+        out = await llm._generate_with_retry(prompt=prompt, max_tokens=4, thinking_budget=0,
+                                             call_type="judge_level", temperature=0.0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("레벨 판정 실패: %s", e)
+        return None
+    t = (out or "").strip()
+    for ch in t[:3]:
+        if ch in "1234":
+            return int(ch)
+    return None

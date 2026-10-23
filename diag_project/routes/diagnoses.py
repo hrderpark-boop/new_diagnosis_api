@@ -976,6 +976,19 @@ async def _submit_message_phase3a(
             state["sar_complete_answer"] = True
             _tm["sar_full"] = 1
             logger.info("🧭 S-A-R 완비 답변 → [%s] %s 탐침 1회 후 전진", chapter, current_target_sub)
+            # (2026-10-23 P3) 레벨 사다리 탐침 — 추가가 아니라 교체: 이 '탐침 1회'를 현재 레벨 +1 의 루브릭 차별 행동 질문으로.
+            #   현재 레벨은 flash 판정(실패면 Lv.2 기준). Lv.4 면 사다리 없음. 타겟당 1회. 답이 일반화든 아니든 다음 턴에 전진.
+            from diag_project.data.competencies import find_sub_key_by_name as _fsk_l
+            from diag_project.data.ladder_questions import ladder_question as _lq
+            from diag_project.services.llm_judge import judge_rubric_level as _jrl
+            from diag_project.services.traversal import ladder_probed as _lpd
+            _sub_key_l = _fsk_l(chapter, current_target_sub)
+            if _sub_key_l and not _lpd(_store, chapter, current_target_sub):
+                _lvl = await _jrl(llm, chapter, current_target_sub, request.content)
+                _lq_text, _lq_step = _lq(_sub_key_l, _lvl if _lvl is not None else 2)
+                if _lq_text:
+                    state["force_ladder_probe"] = {"q": _lq_text, "step": _lq_step, "level": _lvl, "sub": current_target_sub}
+                    logger.info("🪜 사다리 탐침: [%s] %s 판정 Lv.%s → %s", chapter, current_target_sub, _lvl, _lq_step)
         session.self_assessment_data = _store
         from sqlalchemy.orm.attributes import flag_modified as _flag_mod
         _flag_mod(session, "self_assessment_data")
@@ -2140,7 +2153,8 @@ async def _submit_message_phase3a(
             _eq_store = dict(session.self_assessment_data or {})
             _eq_n = int((_eq_store.get("emotion_q_count") or {}).get(chapter, 0) or 0)
             _cur_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
-            if _cur_q and _ieq(_cur_q) and _eq_n >= 1:
+            # (2026-10-23 P3) 감정·표정·마음 질문은 S-A-R 미완일 때만, 챕터당 1회 — 완비·사다리 턴이면 바로 교체 대상
+            if _cur_q and _ieq(_cur_q) and (_eq_n >= 1 or state.get("sar_complete_answer") or state.get("force_ladder_probe")):
                 _tm["emotion"] = 1
                 _e_txt = ""
                 try:
@@ -2174,6 +2188,13 @@ async def _submit_message_phase3a(
                 clean_reply = " ".join(_lead_g + [_pl_a((state.get("coach_persona") or {}).get("name"), "generalize")]).strip()
                 _tm["generalize"] = 1
                 logger.info("🧭 일반화 탐침 질문 삽입")
+            # (2026-10-23 P3) 사다리 탐침 턴: 되받기 1문장 + 사전 질문(현재 레벨 +1). LLM 질문은 버린다.
+            if state.get("force_ladder_probe"):
+                _lp = state["force_ladder_probe"]
+                _lead_l = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
+                clean_reply = " ".join(_lead_l + [_lp["q"]]).strip()
+                _tm["ladder"] = _lp["step"]
+                logger.info("🪜 사다리 질문 삽입 [%s] %s", _lp.get("sub"), _lp["step"])
             _new_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
             _prev_qs = [x for t in _recent_coach_texts for x in split_sentences(t) if is_question_sentence(x)]
             if _new_q and _prev_qs:
@@ -2675,6 +2696,9 @@ async def _submit_message_phase3a(
             if _tm.get("generalize"):
                 from diag_project.services.traversal import mark_generalize_probed as _mgp_g
                 _gl_store = _mgp_g(_gl_store, chapter, current_target_sub)
+            if _tm.get("ladder"):
+                from diag_project.services.traversal import mark_ladder_probed as _mlp_g
+                _gl_store = _mlp_g(_gl_store, chapter, (state.get("force_ladder_probe") or {}).get("sub") or current_target_sub)
         if system_override_text is None and not _llm_error:
             # (2026-10-22 P2-1) 이번 턴 되받기 마무리 어구를 세션 카운터에 누적(최근 60개)
             from diag_project.services.output_guard import lead_tails as _lts_g
@@ -2713,6 +2737,8 @@ async def _submit_message_phase3a(
             "lead_cap": int(_tm.get("lead_cap") or 0), "bridge_added": int(_tm.get("bridge_added") or 0),
             # (2026-10-23, 4-1) generalize_probe: 일반화 답변에 '가장 최근 일 하나' 탐침을 붙인 턴
             "generalize_probe": int(_tm.get("generalize") or 0),
+            # (2026-10-23 P3) ladder_probe: 사다리 질문 단계("2_3"|"3_4") · ladder_level: flash 판정 레벨
+            "ladder_probe": _tm.get("ladder"), "ladder_level": (state.get("force_ladder_probe") or {}).get("level") if _tm.get("ladder") else None,
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

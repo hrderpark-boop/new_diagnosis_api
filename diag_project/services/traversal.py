@@ -265,6 +265,23 @@ def mark_generalize_probed(store: dict, chapter: str, sub: str | None) -> dict:
     return store
 
 
+def ladder_probed(store: dict, chapter: str, sub: str | None) -> bool:
+    """(2026-10-23 P3) 이 챕터의 이 하위역량에 사다리 질문을 이미 썼는가."""
+    return bool(sub) and sub in (((store or {}).get("ladder_probed") or {}).get(chapter) or [])
+
+
+def mark_ladder_probed(store: dict, chapter: str, sub: str | None) -> dict:
+    store = dict(store or {})
+    if not sub:
+        return store
+    lp = {k: list(v) for k, v in (store.get("ladder_probed") or {}).items()}
+    lp.setdefault(chapter, [])
+    if sub not in lp[chapter]:
+        lp[chapter].append(sub)
+    store["ladder_probed"] = lp
+    return store
+
+
 def mark_result_probed(store: dict, chapter: str) -> dict:
     """이번 코치 턴이 R 을 물었다 — 현재 타겟에 기록(호출자가 영속화)."""
     store = dict(store or {})
