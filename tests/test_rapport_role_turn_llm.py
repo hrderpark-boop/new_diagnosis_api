@@ -97,9 +97,9 @@ def test_ready_for_intro_forced_at_expectation_turn_and_next_is_intro():
 
 def test_route_wiring():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
-    assert "RAPPORT_ROLE_QUESTION if _rc == 2 else RAPPORT_EXPECTATION_QUESTION" in src
+    assert '_pl_r("role_q") if _rc == 2 else _pl_r("expect_q")' in src   # 페르소나별 고정 질문
     assert 'probe_type_used = "ROLE_ASK"' in src
-    assert "RAPPORT_INTRO_BRIDGE_NO_EXPECTATION}\\n\\n{build_intro_anchor_section()}" in src   # 기대 없음 → 고정 다리 + 안내
+    assert "'intro_bridge')}\\n\\n{build_intro_anchor_section()}" in src   # 기대 없음 → 페르소나 다리 + 안내
     assert "어떤 일을 맡고 계신지도 간단히 알려주시겠어요" not in src
     dec = open(os.path.join(ROOT, "diag_project", "services", "instruction_decider.py"), encoding="utf-8").read()
     assert "force_ready_for_intro = rapport_turn_count >= 3" in dec

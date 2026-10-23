@@ -1232,8 +1232,8 @@ async def _submit_message_phase3a(
             and not _expectation_usable(state.get("expectation_answer"))):
         # (2026-10-19) 기대 답변이 없거나('없어요'·'모르겠어요'·동의만) 기대라 할 내용이 없으면 받는 문장 없이
         #   바로 안내 — LLM 미호출. '괜찮습니다, 뚜렷하지 않으셔도' 류 위로 문장은 INTRO 에서 제거.
-        from diag_project.services.intro_messages import RAPPORT_INTRO_BRIDGE_NO_EXPECTATION
-        system_override_text = f"{RAPPORT_INTRO_BRIDGE_NO_EXPECTATION}\n\n{build_intro_anchor_section()}"
+        from diag_project.services.intro_messages import persona_line as _pl_i
+        system_override_text = f"{_pl_i((state.get('coach_persona') or {}).get('name'), 'intro_bridge')}\n\n{build_intro_anchor_section()}"
     elif instruction_used == "CHAPTER_OPENING":
         # 챕터 도입 — 첫 BEI 앵커 질문. item4: LLM 대신 백엔드 '템플릿 풀'로
         #   문장 틀을 챕터마다 다르게 골라(무반복·결정론) '시점+인물+행동·은유금지'
@@ -1520,8 +1520,10 @@ async def _submit_message_phase3a(
         _rc = state.get("rapport_turn_count", 0)
         _smalltalk = _rc == 1
 
+        from diag_project.services.intro_messages import persona_line as _pl_r
         from diag_project.services.output_guard import persona_lead_cap as _plc
-        _cap_p = _plc((state.get("coach_persona") or {}).get("name"))   # (2026-10-22 P2-3) 페르소나별 되받기 상한
+        _pn_r = (state.get("coach_persona") or {}).get("name")
+        _cap_p = _plc(_pn_r)   # (2026-10-22 P2-3) 페르소나별 되받기 상한
 
         def _take(txt: str) -> str:
             return _recv_multi(txt, max_statements=_cap_p, allow_question=True) if _smalltalk else _recv_sent(txt)
@@ -1561,18 +1563,17 @@ async def _submit_message_phase3a(
         from diag_project.prompts.phase3a.layer3_state import is_consent_only as _consent_only
         _consent_in = _consent_only(request.content)
         if _smalltalk:
-            from diag_project.services.intro_messages import RAPPORT_SMALLTALK_FALLBACK_QUESTION
             if _consent_in:
-                clean_reply = RAPPORT_SMALLTALK_FALLBACK_QUESTION
+                clean_reply = _pl_r("smalltalk_q")
                 _tm["no_q_fix"] = "smalltalk_consent"
             elif not any(is_question_g(x) for x in split_sentences_g(_recv)):
                 # 10/22 2턴 "그러셨군요." 단독 출력 차단 — 모든 코치 턴은 질문 하나로 끝난다
-                clean_reply = f"{_recv} {RAPPORT_SMALLTALK_FALLBACK_QUESTION}"
+                clean_reply = f"{_recv} {_pl_r('smalltalk_q')}"
                 _tm["no_q_fix"] = "smalltalk"
             else:
                 clean_reply = _recv
         else:
-            _fixed_q = RAPPORT_ROLE_QUESTION if _rc == 2 else RAPPORT_EXPECTATION_QUESTION
+            _fixed_q = _pl_r("role_q") if _rc == 2 else _pl_r("expect_q")   # 페르소나별 고정 질문
             clean_reply = _fixed_q if _consent_in else f"{_recv} {_fixed_q}"
             if _consent_in:
                 _tm["no_q_fix"] = "consent_skip_receive"
@@ -1664,7 +1665,7 @@ async def _submit_message_phase3a(
             clean_reply, _n_llm_br = _sats(clean_reply)
             if _n_llm_br:
                 logger.info("✂️ ALIGN 목록 뒤 LLM 다리 %d문장 제거", _n_llm_br)
-            _br = _atb(_fsk_ab(chapter, current_target_sub), current_target_sub)
+            _br = _atb(_fsk_ab(chapter, current_target_sub), current_target_sub, (state.get("coach_persona") or {}).get("name"))
             clean_reply = f"{clean_reply.rstrip()}\n\n{_br}"
             del align_has_bridge, align_default_bridge
             _anchor = strip_frame_lead(_anchor)
@@ -1718,7 +1719,7 @@ async def _submit_message_phase3a(
             _sum = " ".join([x.strip() for x in _ss_e(_sum) if x.strip()][:2]).strip()
             if not _sum:
                 _sum = "이 영역에서 들려주신 이야기는 여기서 정리하겠습니다."
-            wrap_up = f"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch))}"
+            wrap_up = f"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch), (state.get('coach_persona') or {}).get('name'))}"
         else:
             wrap_up = final_closing_message((state.get("coach_persona") or {}).get("name"))
         if not _next_ch:
@@ -1859,7 +1860,8 @@ async def _submit_message_phase3a(
             if chapter:
                 from diag_project.services.output_guard import result_fallback_question as _rfq
                 _alt = sum(1 for _t in _recent_coach_texts if "그 뒤에는 어떻게 됐어요" in _t)   # 직전 폴백이 A 면 B
-                return _rfq((state.get("resume_pending") or {}).get("user_text") or request.content, _prev_user_text, alt=_alt)
+                return _rfq((state.get("resume_pending") or {}).get("user_text") or request.content, _prev_user_text, alt=_alt,
+                            persona=(state.get("coach_persona") or {}).get("name"))
             return template_anchor(_tgt_q)
         from diag_project.data.competencies import (
             COMPETENCY_FRAMEWORK as _CF, find_sub_key_by_name as _fsk, get_anchor_questions as _gaq,
@@ -2021,7 +2023,7 @@ async def _submit_message_phase3a(
                 from diag_project.services.output_guard import bare_demonstrative_questions as _bdq2, result_fallback_question as _rfq2
                 from diag_project.services.output_guard import followup_from_user as _ffu
                 for _bq in _bdq2(clean_reply, request.content):
-                    clean_reply = clean_reply.replace(_bq, _rfq2(request.content, _prev_user_text, alt=len(_recent_coach_texts)) if state.get("force_result_probe")
+                    clean_reply = clean_reply.replace(_bq, _rfq2(request.content, _prev_user_text, alt=len(_recent_coach_texts), persona=(state.get("coach_persona") or {}).get("name")) if state.get("force_result_probe")
                                                       else _ffu(request.content), 1)
                     logger.info("🧹 대명사 단독 질문 교체: %s", _bq[:40])
             # (2026-09-22, 4번) 전환 선언·되받기 리드는 자르지 않는다 — 자른 문장이 어색하다. 위반은 guard_log 에만 남는다.
@@ -2041,11 +2043,12 @@ async def _submit_message_phase3a(
         # (2026-10-22 P1-2) 결과 강제 턴 + 정도 부사·숫자 없음 → 수치 질문 우선(LLM 질문이 수치를 묻지 않으면 교체)
         if (_is_probe and not _is_anchor and not _llm_error and not _guard_replaced
                 and state.get("force_result_probe") and state.get("result_quantify")):
-            from diag_project.services.output_guard import RESULT_QUANTIFY_QUESTION as _RQQ, is_quantify_question as _isq
+            from diag_project.services.intro_messages import persona_line as _pl_q
+            from diag_project.services.output_guard import is_quantify_question as _isq
             _qs_now = [x for x in split_sentences(clean_reply) if is_question_sentence(x)]
             if not _qs_now or not _isq(_qs_now[-1]):
                 _lead_q = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                clean_reply = " ".join(_lead_q + [_RQQ]).strip()
+                clean_reply = " ".join(_lead_q + [_pl_q((state.get("coach_persona") or {}).get("name"), "quantify")]).strip()
                 _tm["quantify"] = 1
                 logger.info("📏 정도 부사·숫자 없음 → 수치 질문으로 교체")
 
@@ -2066,7 +2069,9 @@ async def _submit_message_phase3a(
                 _tm["lead_cap"] = _n_cap
             # (2026-10-22 P2-2) 감정·표정·마음속 질문은 챕터당 1회 — 초과면 재생성 1회, 그래도면 행동 질문으로 교체
             from diag_project.services.output_guard import is_emotion_question as _ieq
-            from diag_project.services.traversal import ACTION_FALLBACK_QUESTION as _AFQ, is_action_probe_text as _iapt
+            from diag_project.services.intro_messages import persona_line as _pl_a
+            from diag_project.services.traversal import is_action_probe_text as _iapt
+            _AFQ = _pl_a((state.get("coach_persona") or {}).get("name"), "action")   # 페르소나별 행동 질문
             _eq_store = dict(session.self_assessment_data or {})
             _eq_n = int((_eq_store.get("emotion_q_count") or {}).get(chapter, 0) or 0)
             _cur_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
@@ -2196,7 +2201,7 @@ async def _submit_message_phase3a(
                 " ".join(q for q in split_sentences(clean_reply) if is_question_sentence(q))):
             from diag_project.services.output_guard import result_fallback_question as _rfq3
             _lead3 = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-            clean_reply = " ".join(_lead3 + [_rfq3(request.content, _prev_user_text)]).strip()
+            clean_reply = " ".join(_lead3 + [_rfq3(request.content, _prev_user_text, persona=(state.get("coach_persona") or {}).get("name"))]).strip()
             _tm["hard"] = True
             logger.info("🎯 결과 질문 없음 → 명사구 폴백: %s", clean_reply[-50:])
 
@@ -2318,7 +2323,8 @@ async def _submit_message_phase3a(
         _recv_text = _recv_om(clean_reply, fallback="네, 이 영역은 충분히 들려주셨어요.")
         _next_sub = _snt_om(asked_for_chapter(session.self_assessment_data, chapter), state.get("all_subcompetencies") or [], [])
         _om_q = _dict_anchor_om(_fsk_om(chapter, _next_sub) if _next_sub else None)
-        clean_reply = f"{_recv_text} 하나만 더 여쭤봐도 될까요? {_om_q}"
+        from diag_project.services.intro_messages import persona_line as _pl_om
+        clean_reply = f"{_recv_text} {_pl_om((state.get('coach_persona') or {}).get('name'), 'one_more')} {_om_q}"
         _tm["one_more"] = _next_sub or "-"
         logger.info("🙏 종료 요청(넓이 미충족) → 하나만 더: [%s] %s", chapter, _next_sub)
 
@@ -2332,7 +2338,7 @@ async def _submit_message_phase3a(
         if not _hq_k(clean_reply):
             from diag_project.services.intro_messages import definition_question
             _cn_k = COMPETENCY_FRAMEWORK.get(chapter, {}).get("name", "이 역량")
-            clean_reply = f"{clean_reply.rstrip()} {definition_question(_cn_k)}"
+            clean_reply = f"{clean_reply.rstrip()} {definition_question(_cn_k, (state.get('coach_persona') or {}).get('name'))}"
             _tm["no_q_fix"] = "definition"
             logger.info("❓ 질문 없는 정의 턴 → 고정 정의 질문 결합")
 
@@ -2388,7 +2394,7 @@ async def _submit_message_phase3a(
         from diag_project.services.output_guard import receive_sentence as _recv_pause
         from diag_project.services.traversal import restore_ledger as _restore_ledger
         _recv_only = _recv_pause(clean_reply, fallback="")
-        clean_reply = f"{_recv_only}\n\n{pause_suggestion_text(_sit_elapsed)}".strip()
+        clean_reply = f"{_recv_only}\n\n{pause_suggestion_text(_sit_elapsed, (state.get('coach_persona') or {}).get('name'))}".strip()
         _pst = dict(session.self_assessment_data or {})
         if _ledger_snapshot is not None:
             _pst = _restore_ledger(_pst, _ledger_snapshot)

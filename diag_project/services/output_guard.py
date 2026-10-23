@@ -740,12 +740,14 @@ def needs_quantify_probe(user_text: str | None) -> bool:
     return False
 
 
-def result_fallback_question(user_text: str | None, prev_user_text: str | None = None, alt: int = 0) -> str:
+def result_fallback_question(user_text: str | None, prev_user_text: str | None = None, alt: int = 0,
+                             persona: str | None = None) -> str:
     """(2026-10-22 P1-2) 결과 질문 폴백 — 명사 따옴표 끼우기("'X' 이후로는 어떻게 됐습니까?") 폐지.
-    정도 부사+숫자 없음이면 수치 질문, 아니면 두 문장을 번갈아(alt 짝/홀)."""
+    정도 부사+숫자 없음이면 수치 질문, 아니면 두 문장을 번갈아(alt 짝/홀). 문장은 페르소나(persona_line)."""
+    from diag_project.services.intro_messages import persona_line
     if needs_quantify_probe(user_text):
-        return RESULT_QUANTIFY_QUESTION
-    return RESULT_FALLBACKS[int(alt) % len(RESULT_FALLBACKS)]
+        return persona_line(persona, "quantify")
+    return persona_line(persona, "result_a" if int(alt) % 2 == 0 else "result_b")
 
 
 def is_quantify_question(text: str | None) -> bool:

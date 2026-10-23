@@ -40,7 +40,7 @@ def test_emotion_question_detection():
 def test_route_wiring():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
     assert 'state["force_action_probe"] = _force_a' in src and 'state["sar_complete_answer"] = True' in src
-    assert "ACTION_FALLBACK_QUESTION as _AFQ" in src and '_gl_store["emotion_q_count"] = _eqc' in src
+    assert '"action")   # 페르소나별 행동 질문' in src and '_gl_store["emotion_q_count"] = _eqc' in src
     assert "_map_g(_gl_store, chapter)" in src
     l3 = open(os.path.join(ROOT, "diag_project", "prompts", "phase3a", "layer3_state.py"), encoding="utf-8").read()
     assert "[🎯 행동 탐침 — 시스템 계산, 반드시 준수]" in l3

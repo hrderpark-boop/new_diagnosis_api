@@ -181,7 +181,7 @@ def test_praise_list_covers_wrapup_phrases_and_wrapup_is_template():
     import inspect
     from diag_project.routes import diagnoses as D
     src = inspect.getsource(D)
-    assert "chapter_end_bridge(chapter_to_topic(_next_ch))" in src   # (2026-10-21) 요약 2문장 + 고정 다리
+    assert "chapter_end_bridge(chapter_to_topic(_next_ch)" in src   # (2026-10-21) 요약 2문장 + 고정 다리(페르소나 인자 추가)
     # ALIGN 은 리드 교정 대상에서 제외(정의·목록이 지워지던 버그)
     assert 'instruction_used not in ("COMPETENCY_ALIGN", "CHAPTER_OPENING")' in src
 

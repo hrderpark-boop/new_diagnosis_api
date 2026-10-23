@@ -57,7 +57,7 @@ def test_decider_runs_pending_on_continue_and_pauses_on_later():
 
 def test_route_wiring():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
-    assert 'pause_suggestion_text(_sit_elapsed)' in src and '_pst["pending_instruction"]' in src
+    assert 'pause_suggestion_text(_sit_elapsed, ' in src and '_pst["pending_instruction"]' in src
     assert "_restore_ledger(_pst, _ledger_snapshot)" in src                     # 제안 턴은 프로브 턴을 소비하지 않는다
     assert "user_message=_llm_user_text" in src and "[시스템 — 재개]" in src
     assert '_gl_store.pop("pending_instruction", None)' in src

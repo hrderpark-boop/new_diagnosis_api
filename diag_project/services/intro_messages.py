@@ -75,9 +75,9 @@ RAPPORT_INTRO_BRIDGE_NO_EXPECTATION = "네, 그러면 제가 오늘 흐름부터
 RAPPORT_SMALLTALK_FALLBACK_QUESTION = "오늘 하루는 바쁜 쪽이었어요, 여유 있는 쪽이었어요?"
 
 
-def definition_question(chapter_name: str) -> str:
+def definition_question(chapter_name: str, persona_name: str | None = None) -> str:
     from diag_project.services.korean import with_josa
-    return f"리더님께서는 {with_josa(chapter_name, '을/를', quote=True)} 무엇이라고 생각하시나요?"
+    return persona_line(persona_name, "definition", cn_eul=with_josa(chapter_name, '을/를', quote=True))
 
 
 # (2026-10-22 P2-3) 전환 턴 다리 문장 — 페르소나별 3개. 되받기 뒤, 앵커 앞. 단독 금지(되받기가 먼저).
@@ -109,23 +109,146 @@ def transition_bridge(persona_name: str | None, pos: int = 0) -> str:
     return pool[pos % len(pool)]
 
 
-def align_topic_bridge(sub_key: str | None, sub_name: str | None = None) -> str:
-    """(2026-10-22 P2-3) ALIGN 끝 고정 다리 — '먼저 ~쪽부터 볼게요'. 하위역량 이름은 노출하지 않고 설명어로."""
+def align_topic_bridge(sub_key: str | None, sub_name: str | None = None, persona_name: str | None = None) -> str:
+    """(2026-10-22 P2-3) ALIGN 끝 고정 다리 — '먼저 ~쪽부터 볼게요'. 하위역량 이름은 노출하지 않고 설명어로. 문장은 페르소나."""
     from diag_project.data.competencies import SUBCOMPETENCY_TOPIC_PHRASE
     phrase = SUBCOMPETENCY_TOPIC_PHRASE.get(sub_key or "") or "실제로 겪으신 장면 쪽"
-    return f"먼저 {phrase}부터 볼게요."
+    return persona_line(persona_name, "align_bridge", phrase=phrase)
 
 
-def pause_suggestion_text(elapsed_min: int) -> str:
+def pause_suggestion_text(elapsed_min: int, persona_name: str | None = None) -> str:
     """(2026-10-22 P1-1) 일시정지 제안 안내 — 질문 없음. 선택은 프론트 버튼('계속 진행하기'/'다음에 하기')이 받는다."""
-    _lead = (f"리더님, 한 자리에서 {int(elapsed_min)}분째 이어오고 있습니다." if int(elapsed_min) >= 5
-             else "리더님, 한 자리에서 꽤 길게 이어오고 있습니다.")   # 턴 수 기준 제안(경과 분이 작을 때)은 분을 말하지 않는다
-    return f"{_lead} 오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. 이어가실지, 다음에 하실지 아래에서 골라 주세요."
+    _lead = (persona_line(persona_name, "pause_lead", min=int(elapsed_min)) if int(elapsed_min) >= 5
+             else persona_line(persona_name, "pause_lead_short"))   # 턴 수 기준 제안(경과 분이 작을 때)은 분을 말하지 않는다
+    return f"{_lead} {persona_line(persona_name, 'pause_body')}"
 
 
-def chapter_end_bridge(next_topic: str) -> str:
+# (2026-10-22) 고정 문장의 페르소나별 변형 — 구조는 하나(어느 자리에 무엇을 붙이는가), 문장은 페르소나. 없는 키·코치는 Ella 로.
+PERSONA_LINES: dict[str, dict[str, str]] = {
+    "Ella": {
+        "role_q": "평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
+        "expect_q": "이번 진단에서 기대하시는 것이 있으세요?",
+        "smalltalk_q": "오늘 하루는 바쁜 쪽이었어요, 여유 있는 쪽이었어요?",
+        "intro_bridge": "네, 그러면 제가 오늘 흐름부터 설명드릴게요.",
+        "definition": "리더님께서는 {cn_eul} 무엇이라고 생각하시나요?",
+        "result_a": "그래서 그 뒤에는 어떻게 됐어요?",
+        "result_b": "결과는 어떻게 나왔어요?",
+        "quantify": "어느 정도였어요? 숫자나 기간으로 기억나시는 게 있으면 좋겠어요.",
+        "action": "그때 리더님은 직접 어떻게 하셨어요?",
+        "one_more": "하나만 더 여쭤봐도 될까요?",
+        "end_bridge": "이제 '{next}'로 이어가 보겠습니다.",
+        "align_bridge": "먼저 {phrase}부터 볼게요.",
+        "pause_lead": "리더님, 한 자리에서 {min}분째 이어오고 있습니다.",
+        "pause_lead_short": "리더님, 한 자리에서 꽤 길게 이어오고 있습니다.",
+        "pause_body": "오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. 이어가실지, 다음에 하실지 아래에서 골라 주세요.",
+    },
+    "Jessica": {
+        "role_q": "평소 어떤 일을 맡고 계신지 간단히 말씀해 주시겠습니까? 팀 규모와 주요 업무 정도면 됩니다.",
+        "expect_q": "이번 진단에서 기대하시는 것이 있습니까?",
+        "smalltalk_q": "오늘은 바쁜 쪽이었습니까, 여유 있는 쪽이었습니까?",
+        "intro_bridge": "알겠습니다. 그러면 오늘 흐름부터 설명드리겠습니다.",
+        "definition": "리더님께서는 {cn_eul} 무엇이라고 보십니까?",
+        "result_a": "그래서 그 뒤에는 어떻게 됐습니까?",
+        "result_b": "결과는 어떻게 나왔습니까?",
+        "quantify": "어느 정도였습니까? 숫자나 기간으로 기억나는 것이 있으면 말씀해 주십시오.",
+        "action": "리더님이 직접 하신 일은 무엇입니까?",
+        "one_more": "하나만 더 여쭤봐도 되겠습니까?",
+        "end_bridge": "이제 '{next}'로 넘어가겠습니다.",
+        "align_bridge": "먼저 {phrase}부터 보겠습니다.",
+        "pause_lead": "리더님, 한 자리에서 {min}분째입니다.",
+        "pause_lead_short": "리더님, 한 자리에서 꽤 길게 이어왔습니다.",
+        "pause_body": "오늘은 여기서 잠시 쉬어가셔도 됩니다. 이어갈지, 다음에 할지 아래에서 선택해 주십시오.",
+    },
+    "Olivia": {
+        "role_q": "평소 어떤 일을 맡고 계세요? 팀 규모나 주로 하시는 업무 정도면 충분해요.",
+        "expect_q": "이번 진단에서 기대하는 게 있다면 뭐예요?",
+        "smalltalk_q": "오늘은 바쁜 쪽이었어요, 아니면 여유 있는 쪽이었어요?",
+        "intro_bridge": "좋아요, 그럼 오늘 흐름부터 바로 설명드릴게요.",
+        "definition": "리더님은 {cn_eul} 뭐라고 생각하세요?",
+        "result_a": "그래서 그 뒤에는 어떻게 흘러갔어요?",
+        "result_b": "결과는 어떻게 나왔어요?",
+        "quantify": "어느 정도였어요? 숫자나 기간으로 떠오르는 게 있으면 좋겠어요.",
+        "action": "그 순간 리더님이 직접 움직이신 건 뭐였어요?",
+        "one_more": "하나만 더 물어봐도 될까요?",
+        "end_bridge": "이제 '{next}' 쪽으로 각도를 바꿔 볼게요.",
+        "align_bridge": "먼저 {phrase}부터 열어 볼게요.",
+        "pause_lead": "리더님, 한 자리에서 {min}분째 달려오셨어요.",
+        "pause_lead_short": "리더님, 한 자리에서 꽤 길게 달려오셨어요.",
+        "pause_body": "오늘은 여기서 잠시 쉬어가도 괜찮아요. 이어갈지, 다음에 할지 아래에서 골라 주세요.",
+    },
+    "Daniel": {
+        "role_q": "평소 어떤 일을 맡고 계신지 간단히 들려주시겠습니까? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
+        "expect_q": "이번 진단에서 기대하시는 바가 있으십니까?",
+        "smalltalk_q": "오늘 하루는 바쁜 쪽이셨습니까, 여유 있는 쪽이셨습니까?",
+        "intro_bridge": "네, 그러면 오늘 흐름부터 안내드리겠습니다.",
+        "definition": "리더님께서는 {cn_eul} 무엇이라고 생각하십니까?",
+        "result_a": "그래서 그 뒤에는 어떻게 되었습니까?",
+        "result_b": "결과는 어떻게 나왔습니까?",
+        "quantify": "어느 정도였습니까? 숫자나 기간으로 기억나시는 것이 있으면 좋겠습니다.",
+        "action": "그때 리더님께서 직접 하신 일은 무엇이었습니까?",
+        "one_more": "하나만 더 여쭤봐도 되겠습니까?",
+        "end_bridge": "이제 '{next}'로 이어가겠습니다.",
+        "align_bridge": "먼저 {phrase}부터 보겠습니다.",
+        "pause_lead": "리더님, 한 자리에서 {min}분째 이어오고 계십니다.",
+        "pause_lead_short": "리더님, 한 자리에서 꽤 길게 이어오고 계십니다.",
+        "pause_body": "오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. 이어가실지, 다음에 하실지 아래에서 골라 주십시오.",
+    },
+    "Michael": {
+        "role_q": "좋습니다, 평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
+        "expect_q": "이번 진단에서 기대하시는 게 있으세요?",
+        "smalltalk_q": "오늘은 바쁜 쪽이었어요, 여유 있는 쪽이었어요?",
+        "intro_bridge": "좋습니다, 그러면 오늘 흐름부터 바로 설명드릴게요.",
+        "definition": "리더님께서는 {cn_eul} 뭐라고 생각하세요?",
+        "result_a": "그래서 그 뒤에는 어떻게 됐어요?",
+        "result_b": "결과는 어떻게 나왔어요?",
+        "quantify": "어느 정도였어요? 숫자나 기간으로 기억나는 게 있으면 바로 말씀해 주세요.",
+        "action": "좋습니다, 그때 리더님이 직접 움직이신 건 뭐였어요?",
+        "one_more": "좋습니다, 하나만 더 여쭤봐도 될까요?",
+        "end_bridge": "좋습니다, 이제 '{next}'로 바로 가 보겠습니다.",
+        "align_bridge": "먼저 {phrase}부터 바로 가 볼게요.",
+        "pause_lead": "리더님, 한 자리에서 {min}분째 달려오셨습니다.",
+        "pause_lead_short": "리더님, 한 자리에서 꽤 길게 달려오셨습니다.",
+        "pause_body": "오늘은 여기서 잠시 쉬어가셔도 좋습니다. 이어가실지, 다음에 하실지 아래에서 골라 주세요.",
+    },
+    "Lucas": {
+        "role_q": "평소 맡고 계신 일은요? 팀 규모와 주요 업무 정도면 됩니다.",
+        "expect_q": "이번 진단에서 기대하시는 건요?",
+        "smalltalk_q": "오늘은 바쁜 쪽이었습니까, 여유 있는 쪽이었습니까?",
+        "intro_bridge": "알겠습니다. 오늘 흐름부터 짚겠습니다.",
+        "definition": "리더님께서는 {cn_eul} 무엇이라고 정의하십니까?",
+        "result_a": "그래서 그 뒤에는요?",
+        "result_b": "결과는요?",
+        "quantify": "어느 정도였습니까? 숫자나 기간으로요.",
+        "action": "그때 리더님이 직접 하신 일은요?",
+        "one_more": "하나만 더 여쭤도 되겠습니까?",
+        "end_bridge": "이제 '{next}'입니다.",
+        "align_bridge": "먼저 {phrase}부터요.",
+        "pause_lead": "리더님, 한 자리에서 {min}분째입니다.",
+        "pause_lead_short": "리더님, 한 자리에서 꽤 길어졌습니다.",
+        "pause_body": "오늘은 여기서 쉬어가셔도 됩니다. 이어갈지, 다음에 할지 아래에서 고르십시오.",
+    },
+}
+# 하위호환 상수(Ella 기본값) — 테스트·도구가 참조
+RAPPORT_ROLE_QUESTION = PERSONA_LINES["Ella"]["role_q"]
+RAPPORT_EXPECTATION_QUESTION = PERSONA_LINES["Ella"]["expect_q"]
+RAPPORT_INTRO_BRIDGE_NO_EXPECTATION = PERSONA_LINES["Ella"]["intro_bridge"]
+RAPPORT_SMALLTALK_FALLBACK_QUESTION = PERSONA_LINES["Ella"]["smalltalk_q"]
+
+
+def persona_key(persona_name: str | None) -> str:
+    key = (persona_name or "").split(" ")[0]
+    return key if key in PERSONA_LINES else "Ella"
+
+
+def persona_line(persona_name: str | None, key: str, **fmt) -> str:
+    """페르소나별 고정 문장. fmt 는 {cn_eul}·{next}·{phrase}·{min} 자리."""
+    line = PERSONA_LINES[persona_key(persona_name)].get(key) or PERSONA_LINES["Ella"][key]
+    return line.format(**fmt) if fmt else line
+
+
+def chapter_end_bridge(next_topic: str, persona_name: str | None = None) -> str:
     """(2026-10-21) 챕터 종료: 들은 것 요약(LLM, 사실만) 뒤에 붙는 고정 다리."""
-    return f"이제 '{next_topic}'로 이어가 보겠습니다."
+    return persona_line(persona_name, "end_bridge", next=next_topic)
 
 
 def build_diagnosis_intro_message(user_name: str = "리더님") -> str:

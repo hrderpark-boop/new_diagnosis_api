@@ -72,3 +72,24 @@ def test_route_wiring():
     assert "align_topic_bridge as _atb" in src and "strip_align_tail_statements as _sats" in src
     assert "transition_bridge as _tbr" in src and "cap_leads_persona as _clp" in src
     assert "max_statements=_cap_p" in src
+
+
+def test_persona_lines_complete_and_structural():
+    """(2026-10-22) 고정 문장 전부 페르소나별 변형 — 구조는 하나, 문장은 페르소나."""
+    from diag_project.services.intro_messages import PERSONA_LINES, definition_question, pause_suggestion_text, persona_line
+    keys = set(PERSONA_LINES["Ella"])
+    assert set(PERSONA_LINES) == {"Ella", "Jessica", "Olivia", "Daniel", "Michael", "Lucas"}
+    for p, d in PERSONA_LINES.items():
+        assert set(d) == keys, p
+        for k in ("role_q", "expect_q", "smalltalk_q", "result_a", "result_b", "quantify", "action", "one_more"):
+            assert G.has_question(d[k]), (p, k)
+        for v in d.values():
+            assert not G.find_banned_tail(v)
+    assert persona_line("Michael (마이클)", "action") == "좋습니다, 그때 리더님이 직접 움직이신 건 뭐였어요?"
+    assert persona_line("Jessica", "action") == "리더님이 직접 하신 일은 무엇입니까?"
+    assert persona_line("Ella", "action") == "그때 리더님은 직접 어떻게 하셨어요?"
+    assert persona_line("없는코치", "role_q") == PERSONA_LINES["Ella"]["role_q"]          # 폴백 Ella
+    assert definition_question("성과관리", "Lucas") == "리더님께서는 '성과관리'를 무엇이라고 정의하십니까?"
+    assert "달려오셨습니다" in pause_suggestion_text(47, "Michael") and "47분째" in pause_suggestion_text(47, "Michael")
+    assert G.result_fallback_question("두 달 걸렸어요", None, alt=1, persona="Jessica") == "결과는 어떻게 나왔습니까?"
+    assert align_topic_bridge("delegation", None, "Lucas") == "먼저 맡기는 쪽부터요."

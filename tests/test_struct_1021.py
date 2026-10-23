@@ -112,7 +112,7 @@ def test_chapter_end_summary_contract():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
     code_only = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
     assert "여기까지 충분히 들었습니다" not in code_only          # 주석 제외, 출력 경로에는 없다
-    assert "wrap_up = f\"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch))}\"" in src
+    assert "wrap_up = f\"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch), " in src
 
 
 # ── C. 탐침 품질 ──

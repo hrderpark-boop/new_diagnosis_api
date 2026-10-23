@@ -52,9 +52,9 @@ def test_fixed_questions_for_questionless_turns():
 
 def test_route_wiring():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
-    assert "RAPPORT_SMALLTALK_FALLBACK_QUESTION" in src and '_tm["no_q_fix"] = "smalltalk"' in src
+    assert "_pl_r('smalltalk_q')" in src and '_tm["no_q_fix"] = "smalltalk"' in src
     assert "_fixed_q if _consent_in else" in src                       # '네' 단답 → 되받기 생략
-    assert "# 8-k." in src and "definition_question(_cn_k)" in src
+    assert "# 8-k." in src and "definition_question(_cn_k, " in src   # 페르소나 인자
     assert 'state["result_quantify"]' in src and "RESULT_QUANTIFY_QUESTION as _RQQ" in src
     assert "_sts_e(_sum)" in src                                        # 챕터 종료 요약에서 전환 문장 제거
     for alt in (0, 1, 2):
