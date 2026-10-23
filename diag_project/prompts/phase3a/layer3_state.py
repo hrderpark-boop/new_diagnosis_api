@@ -152,6 +152,9 @@ def format_turn_state_for_llm(state: dict) -> str:
             "아래 가이드의 예시 문장은 '내용의 결'만 참고하고, 문장 길이·종결어미·"
             "호응 방식은 시스템 프롬프트의 【말투 프로필】대로 바꿔 쓰세요.\n\n"
         )
+        # (2026-10-23 P4) 페르소나별 탐침 선호·마무리 어구 풀(측정 원칙은 그대로, 묻는 순서·하위역량은 백엔드)
+        from diag_project.services.persona_voice import persona_guide_block
+        persona_block += persona_guide_block(_persona["name"], contrast_used=bool(state.get("contrast_used")))
     # (2026-09-18) 문체 제약은 프롬프트 맨 끝(사용자 메시지 직전)에 둔다 — 850줄 중간에 있으면 LLM 이 놓친다.
     #   style_at_tail=True 면 여기서는 비우고 build_style_tail() 이 꼬리 블록을 만든다.
     style_block = "" if state.get("style_at_tail") else format_style_constraints(

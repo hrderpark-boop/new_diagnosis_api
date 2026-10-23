@@ -1077,6 +1077,7 @@ async def _submit_message_phase3a(
                         and _iga((state.get("resume_pending") or {}).get("user_text") or request.content)
                         and not _gpd(session.self_assessment_data, chapter, current_target_sub))
         state["force_generalize_probe"] = _force_g
+        state["contrast_used"] = int(((session.self_assessment_data or {}).get("contrast_q_count") or {}).get(chapter, 0) or 0) >= 1
         if _force_g:
             _force_a = False
             _force_r = False
@@ -1573,10 +1574,15 @@ async def _submit_message_phase3a(
         from diag_project.data.competencies import find_sub_key_by_name as _fsk_ar
         from diag_project.services.anchor_render import render_anchor
         _k = _fsk_ar(chapter, sub_name) if (chapter and sub_name) else None
-        return await render_anchor(
+        _q, _mode = await render_anchor(
             llm, _k, recent_turns=[_prev_coach_text, request.content or ""],
             role_summary=(state.get("participant_context") or {}).get("role_summary"), pos=0,
         )
+        # (2026-10-23 P4) 사전 문장(dict/fallback)은 페르소나 어미 변환 계층을 거친다. llm 렌더링 문장은 그대로.
+        if _mode in ("dict", "fallback"):
+            from diag_project.services.persona_voice import voice_question as _vq
+            _q = _vq((state.get("coach_persona") or {}).get("name"), _q)
+        return _q, _mode
 
     # 8-0. 라포 2·3·4턴 — LLM 은 되받기만, 질문은 백엔드 고정 문장(기록=발화 결합과 같은 방식). (2026-10-19 → 10-21 개편)
     #   count 1 스몰톡: 되받기 1~2문장 + 리더 발화에서 나온 되물음 1개 허용(고정 질문 없음)
@@ -2192,7 +2198,8 @@ async def _submit_message_phase3a(
             if state.get("force_ladder_probe"):
                 _lp = state["force_ladder_probe"]
                 _lead_l = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                clean_reply = " ".join(_lead_l + [_lp["q"]]).strip()
+                from diag_project.services.persona_voice import voice_question as _vq_l
+                clean_reply = " ".join(_lead_l + [_vq_l((state.get("coach_persona") or {}).get("name"), _lp["q"])]).strip()
                 _tm["ladder"] = _lp["step"]
                 logger.info("🪜 사다리 질문 삽입 [%s] %s", _lp.get("sub"), _lp["step"])
             _new_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
@@ -2693,6 +2700,13 @@ async def _submit_message_phase3a(
                 _gl_store["emotion_q_count"] = _eqc
             if _fq and _iapt_g(_fq):
                 _gl_store = _map_g(_gl_store, chapter)
+            # (2026-10-23 P4) Olivia 대조 탐침 챕터당 1회 집계
+            from diag_project.services.persona_voice import is_contrast_question as _icq_g
+            if _fq and _icq_g(_fq):
+                _cqc = dict(_gl_store.get("contrast_q_count") or {})
+                _cqc[chapter] = int(_cqc.get(chapter, 0) or 0) + 1
+                _gl_store["contrast_q_count"] = _cqc
+                _tm["contrast_q"] = 1
             if _tm.get("generalize"):
                 from diag_project.services.traversal import mark_generalize_probed as _mgp_g
                 _gl_store = _mgp_g(_gl_store, chapter, current_target_sub)
@@ -2739,6 +2753,7 @@ async def _submit_message_phase3a(
             "generalize_probe": int(_tm.get("generalize") or 0),
             # (2026-10-23 P3) ladder_probe: 사다리 질문 단계("2_3"|"3_4") · ladder_level: flash 판정 레벨
             "ladder_probe": _tm.get("ladder"), "ladder_level": (state.get("force_ladder_probe") or {}).get("level") if _tm.get("ladder") else None,
+            "contrast_q": int(_tm.get("contrast_q") or 0),   # (2026-10-23 P4) 대조 탐침 질문 턴
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):
