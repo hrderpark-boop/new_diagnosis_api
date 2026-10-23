@@ -1014,8 +1014,16 @@ class GeminiService:
             client = _provider.get_client(LLM_HTTP_TIMEOUT_MS)
             return await client.messages.create(**_req)
 
-        response = await _call_with_retry(_do_call, max_retries=3,
-                                          provider=_provider.CLAUDE)
+        # (2026-10-23) stop_reason=refusal 은 비결정적이라 같은 요청을 최대 2회 더 보낸다 — cbd5210b 로컬 재분석에서
+        #   사람관리 심층분석 3회 중 2회가 refusal 로 떨어져 챕터 측정 0 이 됐다. 3회 연속이면 그대로 올려 호출자가 실패 처리.
+        for _ref_attempt in range(3):
+            response = await _call_with_retry(_do_call, max_retries=3,
+                                              provider=_provider.CLAUDE)
+            if getattr(response, "stop_reason", None) == "refusal" and _ref_attempt < 2:
+                logger.warning("🚫 Claude refusal(stop_reason=refusal) → 재시도 %d/2 [%s, model=%s]",
+                               _ref_attempt + 1, call_type, model_name)
+                continue
+            break
 
         # D-1 과 동일: max_tokens 로 잘린 응답은 깨진 JSON 위험 → 경고(상향 신호).
         if getattr(response, "stop_reason", None) == "max_tokens":
