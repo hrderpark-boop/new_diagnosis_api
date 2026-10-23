@@ -44,7 +44,11 @@ def test_persona_generalize_lines_six_variants():
     from diag_project.services.output_guard import split_sentences
     for p, q in lines.items():
         assert len([x for x in split_sentences(q) if x.strip()]) == 1, (p, q)
-    assert persona_line("Ella", "generalize") == "그중 가장 최근 일 하나만요, 어떤 일이었고 언제쯤이었어요?"
+    assert persona_line("Ella", "generalize") == "그중 가장 최근 일 하나만요 — 어떤 일이었고 언제쯤이었어요?"
+    # 가드가 자르지 않는다: 되받기 1문장 + 이 줄 → 한 턴 한 질문·되받기 상한(Jessica 1)을 거쳐도 그대로
+    from diag_project.services.output_guard import keep_last_question, cap_leads_persona
+    t = "신중하게 가시는 편이군요. " + persona_line("Ella", "generalize")
+    assert keep_last_question(t)[0] == t and cap_leads_persona(t, 1, "큰 변화는 늘 조심스럽게 가는 편이에요")[0] == t
     assert persona_line("Michael", "generalize").startswith("좋습니다,") and persona_line("Jessica", "generalize").endswith("습니까?")
 
 
