@@ -2451,7 +2451,7 @@ async def _submit_message_phase3a(
         from diag_project.services.persona_voice import michael_lead_guard as _mlg
         _good_prev = list(((session.self_assessment_data or {}).get("good_turns") or {}).get(chapter or "_", []))
         _allow_good = (_turn_index - 1) not in _good_prev
-        clean_reply, _used_good = _mlg(clean_reply, _allow_good)
+        clean_reply, _used_good = _mlg(clean_reply, _allow_good, add=bool(chapter))   # 챕터 밖(라포·인사)에는 붙이지 않는다
         _tm["good_lead"] = 1 if _used_good else 0
         if not _allow_good:
             _tm["good_lead_cut"] = 1
@@ -2748,10 +2748,6 @@ async def _submit_message_phase3a(
                 _vvc = dict(_gl_store.get("voice_variant_count") or {})
                 _vvc[chapter] = int(_vvc.get(chapter, 0) or 0) + 1
                 _gl_store["voice_variant_count"] = _vvc
-            if _tm.get("good_lead"):
-                _gt = {k_: list(v_) for k_, v_ in (_gl_store.get("good_turns") or {}).items()}
-                _gt.setdefault(chapter or "_", []).append(_turn_index)
-                _gl_store["good_turns"] = _gt
             # (2026-10-23 P4) Olivia 대조 탐침 챕터당 1회 집계
             from diag_project.services.persona_voice import is_contrast_question as _icq_g
             if _fq and _icq_g(_fq):
@@ -2774,6 +2770,10 @@ async def _submit_message_phase3a(
             if len(_tcg) > 60:
                 _tcg = dict(list(_tcg.items())[-60:])
             _gl_store["tail_counts"] = _tcg
+        if _tm.get("good_lead"):      # (6번 보정) Michael '좋습니다' 사용 턴 — 템플릿 턴 포함
+            _gt = {k_: list(v_) for k_, v_ in (_gl_store.get("good_turns") or {}).items()}
+            _gt.setdefault(chapter or "_", []).append(_turn_index)
+            _gl_store["good_turns"] = _gt
         _gl = list(_gl_store.get("guard_log") or [])[-199:]
         _gl.append({
             "t": _turn_index, "ch": chapter, "instr": instruction_used,

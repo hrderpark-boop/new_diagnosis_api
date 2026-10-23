@@ -55,6 +55,7 @@ def test_michael_lead_guard():
     assert not used2 and "좋습니다" not in out2 and out2.startswith("그 방향을")
     out3, used3 = V.michael_lead_guard("그때 직접 뭘 하셨어요?", allow=True)
     assert used3 and out3 == "좋습니다, 그때 직접 뭘 하셨어요?"
+    assert V.michael_lead_guard("반갑습니다, 박기진 리더님!", allow=True, add=False) == ("반갑습니다, 박기진 리더님!", False)   # 챕터 밖에는 안 붙임
     t4 = "좋습니다, 기초를 다지신 결정이네요. 좋습니다, 그 아이디어를 작게 시험해 보셨어요?"
     out4, _ = V.michael_lead_guard(t4, allow=True)
     assert out4.count("좋습니다") == 1 and out4.endswith("시험해 보셨어요?")

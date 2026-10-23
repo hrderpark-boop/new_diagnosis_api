@@ -185,8 +185,9 @@ def voice_question(persona_name: str | None, text: str, *, variant: int = 0) -> 
 _GOOD_RE = re.compile(r"좋습니다[!,.]?\s*")
 
 
-def michael_lead_guard(text: str, allow: bool) -> tuple[str, bool]:
-    """Michael '좋습니다' 도입: 턴당 최대 1회, 허용 턴이면 정확히 1회(없으면 붙인다), 비허용 턴이면 전부 뗀다. (텍스트, 사용 여부)"""
+def michael_lead_guard(text: str, allow: bool, *, add: bool = True) -> tuple[str, bool]:
+    """Michael '좋습니다' 도입: 턴당 최대 1회, 허용 턴이면 정확히 1회(없고 add=True 면 붙인다), 비허용 턴이면 전부 뗀다. (텍스트, 사용 여부)
+    add=False(라포·인사 등 챕터 밖 턴)에서는 붙이지 않고 중복만 정리한다."""
     t = (text or "").strip()
     if not t:
         return text, False
@@ -194,7 +195,7 @@ def michael_lead_guard(text: str, allow: bool) -> tuple[str, bool]:
     if not allow:
         return _GOOD_RE.sub("", t).strip(), False
     if n == 0:
-        return f"좋습니다, {t}", True
+        return (f"좋습니다, {t}", True) if add else (t, False)
     first = _GOOD_RE.search(t)
     rest = _GOOD_RE.sub("", t[first.end():])
     return (t[:first.start()] + "좋습니다, " + rest).strip(), True
