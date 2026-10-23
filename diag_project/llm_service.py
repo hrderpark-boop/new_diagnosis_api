@@ -96,6 +96,30 @@ _DEEP_INFLIGHT: dict = {}
 DEEP_TRANSCRIPT_CAP = 16000  # 심층분석 프롬프트의 '전체 대화 로그' 상한(앞부분)
 
 
+def _build_rubric_block(competency_key: str, sub_indicators: list) -> str:
+    """(2026-10-23) 심층분석 프롬프트용 하위역량 루브릭 블록. 게이트와 같은 원문(level_reference)."""
+    from diag_project.services.level_gate import level_reference
+    lines = []
+    for sub in sub_indicators or []:
+        ref = level_reference(competency_key, sub)
+        if not ref:
+            continue
+        lines.append(f"[{sub}]")
+        for lv in (1, 2, 3, 4):
+            txt = (ref.get(lv) or "").replace("\n", " ")
+            lines.append(f"  · Lv.{lv}: {txt}")
+    if not lines:
+        return ""
+    return (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "[하위역량 루브릭 — level 판정의 유일한 기준 (레벨 서술 + 행동 예시)]\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "각 하위역량의 level 은 아래 서술·예시 중 근거 발화의 행동이 실제로 도달한 가장 높은 Lv 로 정한다.\n"
+        "상위 Lv 의 예시 행동이 발화에 없으면 그 Lv 를 주지 않는다. 태도·일반화·부재 진술은 어느 Lv 의 근거도 아니다.\n"
+        + "\n".join(lines) + "\n\n"
+    )
+
+
 def _deep_cache_keys(competency_key: str, relevant_utterances: str,
                      full_transcript: str, asked_subs, outer_idx: int,
                      provider: str | None = None) -> list:
@@ -1418,6 +1442,11 @@ class GeminiService:
         else:
             _focus_block = ""
 
+        # (2026-10-23 레벨 기준 일원화) 이 대역량의 하위역량 루브릭(levels + examples)을 그대로 주입한다.
+        #   레벨 주장은 이 루브릭 기준으로만. 게이트(level_gate.level_reference)와 같은 원문을 쓰므로
+        #   '분석이 주장한 레벨'과 '게이트가 검증한 레벨'이 같은 잣대로 매겨진다.
+        #   ※ 캐시 키(_ANALYSIS_PROMPT_VERSION)는 올리지 않는다 — 420f1341 gemini 캐시 보존(사용자 결정).
+        _rubric_block = _build_rubric_block(competency_key, sub_indicators)
         # 2026-09-17 온보딩 담당 업무 맥락(참고 플래그): 근거 사례가 담당 업무와 명백히 무관한 직무 사례면
         #   consistency_flag=true. 점수에는 반영하지 않고 리포트 관리자 뷰에만 노출한다.
         _role_block = (
@@ -1459,11 +1488,12 @@ class GeminiService:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [평가 방법론 — 3단계 채점]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-STEP A — 행동 지표 루브릭 (Base Score: 1.0 ~ 4.0)
-  Level 1 (1.0~1.5): 역량 발현 증거 없음 / 피상적 언급만
-  Level 2 (2.0~2.5): 단편적 사례 1개, STAR 구조 불완전
-  Level 3 (3.0~3.5): 구체적 사례 2개 이상, 행동-결과 연결 명확
-  Level 4 (4.0):     조직적 파급력 있는 행동, 시스템화·재현 가능성 확인
+STEP A — 근거 충분성 (Base Score: 1.0 ~ 4.0) — 대역량 서술·점수용. 하위역량 level 결정에는 쓰지 않는다.
+  1.0~1.5: 역량 발현 증거 없음 / 피상적 언급만
+  2.0~2.5: 단편적 사례 1개, STAR 구조 불완전
+  3.0~3.5: 구체적 사례 2개 이상, 행동-결과 연결 명확
+  4.0:     조직적 파급력 있는 행동, 시스템화·재현 가능성 확인
+  ※ 하위역량 level(1~4)은 아래 [하위역량 루브릭]의 '행동 수준'으로만 매긴다. 사례 수·서술 길이는 레벨 근거가 아니다.
 
 STEP B — STAR+R 구조 완성도 보너스 (+0.0 ~ +0.5)
   Situation / Task / Action / Result 4요소 모두 명확: +0.3~0.5
@@ -1533,8 +1563,9 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
           · 일반화 서술: "보통 제가 직접 처리하는 편입니다", "가끔 ~하는 정도"
           · 부재 진술: "그런 경험은 없습니다" (오히려 낮은 수준의 신호일 뿐)
         BEI 의 원칙은 '행동 사례'다. 태도·일반화는 아무리 명확해도 근거가 아니다.
-규칙 3. measured=true 인 지표만 level(1~4)을 부여한다. level 은
-        [평가 방법론] STEP A 루브릭(Lv1 증거 없음~Lv4 시스템화)을 그대로 적용.
+규칙 3. measured=true 인 지표만 level(1~4)을 부여한다. level 은 아래
+        [하위역량 루브릭] 의 그 하위역량 Lv.1~4 서술·예시와 대조해, 근거 발화의 행동이
+        '실제로 도달한 가장 높은 레벨'로 정한다. STEP A 의 사례 수 규칙은 레벨에 쓰지 않는다.
         🚨 서술의 유창함이 아니라 '행동이 실제로 도달한 수준'으로 레벨을 매긴다.
         예: "제가 직접 떠안아 처리했다"는 위임·팀워크에서는 낮은 수준(Lv.1~2)
         신호다 — 문장이 구체적이라고 레벨을 올리지 말 것.
@@ -1563,7 +1594,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 - 반드시 포함: ① 그 행동/상황의 '비즈니스적 임팩트' ② 리더의 '내적
   딜레마와 극복 논리' — 전문 HR 컨설턴트의 밀도로 서술하되 단문 유지.
 
-{_role_block}{_focus_block}━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{_rubric_block}{_role_block}{_focus_block}━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [분석 대상 발언 — {korean_name} 관련 (챕터 태그로 1차 분리)]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {relevant_utterances}
