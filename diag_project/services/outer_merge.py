@@ -89,7 +89,7 @@ def gate_run_summary(run_result: Dict[str, Any], sub: str) -> Dict[str, Any]:
     """한 outer run 의 (게이트 판정, 원장) 을 한 줄로. 게이트가 안 돌았으면(근거 후보 없음) verdict=None."""
     g = ((run_result or {}).get("level_gate") or {}).get(sub) or None
     row = ((run_result or {}).get("sub_ledger") or {}).get(sub) or {}
-    claimed = ((run_result or {}).get("_parsed") or {}).get(sub, {}).get("level")
+    claimed = row.get("claimed_level")      # _parsed 는 병합 전에 지워지므로 원장 행에서 읽는다
     return {
         "claimed_level": claimed,
         "verified_level": g.get("verified_level") if g else None,

@@ -23,8 +23,8 @@ def test_normalize_logs_unmatched_name(caplog):
 
 def _run(measured, level, gate):
     return {"sub_ledger": {"전략적 사고": {"measured": measured, "level": level, "evidence": ["q"] if measured else [],
-                                        "gate_status": "passed" if measured else "failed", "asked": True}},
-            "level_gate": {"전략적 사고": gate}, "_parsed": {"전략적 사고": {"level": 3, "evidence": ["q"]}},
+                                        "gate_status": "passed" if measured else "failed", "asked": True, "claimed_level": 3}},
+            "level_gate": {"전략적 사고": gate},
             "score": 2.0, "behavior_score": 2.0}
 
 

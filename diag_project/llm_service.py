@@ -1803,6 +1803,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 "level": level, "score": score, "evidence": disp_ev,
                 "status": status, "gate_status": gate_status,
                 "borderline": bl,
+                # (2026-10-23) 판정기(LLM)가 주장한 레벨 — 게이트 강등 폭을 run 별로 되짚기 위해 남긴다(점수 무관)
+                "claimed_level": claimed if candidate else None,
                 # 2026-09-17: 담당 업무 맥락과 무관한 직무 사례 표식(점수 무관, 관리자 뷰용)
                 "consistency_flag": bool(p.get("consistency_flag")) if candidate else False,
             }
