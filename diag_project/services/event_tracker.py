@@ -28,6 +28,14 @@ NON_SUBSTANTIVE_INSTRUCTIONS = frozenset({
     # 정의·안내·동의 턴의 답(역량 정의, "네, 다음으로 이어가 주세요")은 사건 서술이 아니다 (리플레이 H 에서 situation 오기록)
     "COMPETENCY_ASK", "COMPETENCY_ALIGN", "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "RAPPORT_BUILDING",
     "CHAPTER_READY_TO_END", "CHAPTER_OPENING",
+    # (2026-10-28 P0-4) 입력 이상 턴(반복·질문 되돌아옴·비실질 입력·정의 재요청): 사건 서술이 아니다
+    "INPUT_REPEATED", "INPUT_DUPLICATE", "QUESTION_RETURNED", "QUESTION_REASK", "CONFIRM_REASK",
+    "DEFINITION_REASK", "ANCHOR_REASK",
+})
+# (2026-10-28 P0-4) 입력 이상 턴 instruction 이름 — 원장·사건·챕터 BEI 카운트 어디에도 전진을 남기지 않는다.
+INPUT_ANOMALY_INSTRUCTIONS = frozenset({
+    "INPUT_REPEATED", "INPUT_DUPLICATE", "QUESTION_RETURNED", "QUESTION_REASK", "CONFIRM_REASK",
+    "DEFINITION_REASK", "ANCHOR_REASK",
 })
 _CONSENT_RE = re.compile(r"^(네|넵|예|좋습니다|알겠습니다)[,.!\s]*(다음|이어|계속|시작|편하게|말씀)")
 

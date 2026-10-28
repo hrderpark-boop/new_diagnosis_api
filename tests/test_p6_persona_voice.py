@@ -32,7 +32,9 @@ def test_voice_keeps_one_question_and_content():
                 out = V.voice_question(p, q, variant=v)
                 assert out.count("?") == 1 and is_question(out), (p, q, out)
     q = "그때 리더님은 직접 어떻게 하셨어요?"
-    assert V.voice_question("Ella", q) == q and V.voice_question("Olivia", q) == q        # Olivia: 사전 질문에 도입구를 붙이지 않는다
+    assert V.voice_question("Ella", q) == q
+    o = V.voice_question("Olivia", q)
+    assert o != q and o.endswith("을까요?") and not o.startswith(("거꾸로", "다른 쪽", "조금 비켜", "질문을 뒤집", "한 발"))   # (2026-10-28 P0-3) 어미만 바꾸고 도입구는 없다
     assert V.voice_question("Jessica", q).endswith("하셨습니까?")
     assert not V.voice_question("Michael", q).startswith("좋습니다")                       # '좋습니다' 는 턴 가드가 관리
     lucas = V.voice_question("Lucas", q)

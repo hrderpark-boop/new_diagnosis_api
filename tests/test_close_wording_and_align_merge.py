@@ -117,5 +117,6 @@ def test_decider_skips_chapter_opening_when_merged():
 
 def test_align_guide_forbids_confirmation_question():
     g = L3._get_instruction_guide("COMPETENCY_ALIGN", _state(False))
-    assert "다리는 쓰지 않습니다" in g and "물음표·확인 요청" in g  # (2026-10-22 P2-3) 다리는 시스템이 붙인다
-    assert "탐색 전환 예고" not in g
+    # (2026-10-28 P0-1) ALIGN 은 백엔드 결정론 조립 — LLM 은 되받기만. 다리·목록·질문은 시스템이 붙인다.
+    assert "질문은 전부 시스템이 뒤에 붙이므로" in g and "확인 질문('크게 다르지 않죠?')" in g
+    assert "탐색 전환 예고" not in g and "크게 다르지 않죠?처럼" not in g

@@ -1321,13 +1321,29 @@ class GeminiService:
 
         # (2026-09-18) tail_block: 이번 턴 문체 제약을 사용자 메시지 '직전'에 — 가장 잘 지켜지는 자리.
         _tail = f"{tail_block.strip()}\n\n" if (tail_block or "").strip() else ""
-        user_content = (
-            f"{chapter_context}\n\n"
-            f"{turn_state_text}\n\n"
-            f"[Conversation History]\n{history_text}\n\n"
-            f"{_tail}"
-            f"[Latest User Message]\n{user_message}"
-        )
+        # (2026-10-28 P0-2) 턴 instruction(Layer2 챕터 가이드 + Layer3 턴 상태)은 system 쪽으로.
+        #   user 메시지 안에 지시가 들어가면 모델이 지시문을 '대화 내용'처럼 되읽어 내부 어휘(되받기·탐침·사건…)가
+        #   코치 출력에 누설됐다(10/26~28 운영 세션 Jessica 3·Olivia 4·Daniel 2건). FM_INSTR_IN_USER=1 이면 구 배치(비교용).
+        if os.getenv("FM_INSTR_IN_USER") == "1":
+            _system_for_call = system_prompt
+            user_content = (
+                f"{chapter_context}\n\n"
+                f"{turn_state_text}\n\n"
+                f"[Conversation History]\n{history_text}\n\n"
+                f"{_tail}"
+                f"[Latest User Message]\n{user_message}"
+            )
+        else:
+            _system_for_call = (
+                f"{system_prompt}\n\n"
+                f"{chapter_context}\n\n"
+                f"{turn_state_text}"
+            )
+            user_content = (
+                f"[Conversation History]\n{history_text}\n\n"
+                f"{_tail}"
+                f"[Latest User Message]\n{user_message}"
+            )
 
         # (2026-09-22) FM_LLM_STUB=1: LLM 호출 없이 정형 답변 — DB·후처리 지연 측정용 리플레이(크레딧 소진 시에도 가능).
         #   턴마다 문장을 바꿔 앵무새·같은 질문 가드에 걸리지 않게 한다. 프로덕션에서는 절대 켜지 않는다.
@@ -1353,7 +1369,7 @@ class GeminiService:
         try:
             response_text = await self._generate_with_retry(
                 prompt=user_content,
-                system_instruction=system_prompt,
+                system_instruction=_system_for_call,
                 max_tokens=PHASE3A_MAX_TOKENS_LIGHT,
                 thinking_budget=0,
                 call_type=("coach_light" if light_mode else "coach_heavy"),

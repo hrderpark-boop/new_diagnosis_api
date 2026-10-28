@@ -253,7 +253,8 @@ def test_guard_block_source_contract_2026_09_21():
     i = src.index("# 8-i.")
     j = src.index("# 8-h.")
     blk = src[i:j]
-    assert '_REGEN_KEYS = {"names", "off_target", "no_question", "same_question", "bare_ref", "anchor_missing"}' in blk
+    # (2026-10-28 P0-2) 내부 어휘 누설(leak)도 재생성 1회 대상
+    assert '_REGEN_KEYS = {"names", "off_target", "no_question", "same_question", "bare_ref", "anchor_missing", "leak"}' in blk
     assert 'instruction_used != "ABSENCE_PROBE"' in blk
     assert "질문 없는 출력 → 결과 질문 대체" not in blk           # 질문 없는 출력 → 풀 대체 폐기
     assert "template_anchor(_tgt_q)" in blk

@@ -883,6 +883,68 @@ async def _submit_message_phase3a(
             await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
             state["participant_context"] = _pc_store["participant_context"]
             logger.info("🧩 participant_context 저장: team_size=%s role='%s'", _m.group(1) if _m else None, _rt[:40])
+    # (2026-10-28 P0-3) 사전 질문(앵커 폴백·챕터 오프닝·고정 질문)은 전부 이 헬퍼로 페르소나 어미를 입힌다.
+    #   10/26~28 운영: _anchor_fallback(template_anchor)·CHAPTER_OPENING 시스템 출력이 voice_question 을 거치지 않아
+    #   6명이 같은 앵커 문장을 냈다(ALIGN 앵커만 _render_anchor_for 에서 변환됐다).
+    def _voiced_q(q: str) -> str:
+        from diag_project.services.persona_voice import voice_question as _vq0
+        _tm["voiced"] = 1
+        return _vq0((state.get("coach_persona") or {}).get("name"), q,
+                    variant=int(((session.self_assessment_data or {}).get("voice_variant_count") or {}).get(chapter, 0) or 0))
+
+    # (2026-10-28 P0-4·P0-7) 사용자 입력 이상 — LLM 호출·원장 전진 없이 시스템 고정 응답으로 직전 질문을 다시 낸다.
+    #   종류: 직전 입력 반복 / 세션 앞 답변·기존 사건과 중복 / 코치 질문 되돌아옴 / 일시정지 문구 오입력 /
+    #   안내 뒤 비실질 입력 / 정의 답 10자 미만 / 질문 뒤 '네·sp·??'. 판정은 services/input_anomaly.detect(순수 함수).
+    _anomaly_override_text = None
+    _align_ctx = None   # (2026-10-28 P0-1) ALIGN 조립 재료 — 후처리 끝에 render_align 으로 조립
+    try:
+        from diag_project.services import input_anomaly as _ia
+        from diag_project.services.intro_messages import persona_line as _pl_an
+        _prev_model_msgs_a = [m for m in history_messages if (m.role == MessageRole.MODEL or m.role == "model")]
+        _prev_instr_a = _prev_model_msgs_a[-1].instruction_used if _prev_model_msgs_a else None
+        _prev_probe_a = _prev_model_msgs_a[-1].probe_type_used if _prev_model_msgs_a else None
+        _store_a = dict(session.self_assessment_data or {})
+        _anomaly = _ia.detect(
+            user_text=request.content, prev_user_text=_prev_user_text,
+            earlier_user_texts=_prev_user_texts[:-2] if len(_prev_user_texts) >= 2 else [],
+            prev_coach_text=_prev_coach_text, prev_instruction=_prev_instr_a,
+            event_texts=[" ".join(x for x in (e.situation, e.task, e.action, e.result) if x) for e in all_events],
+            pause_pending=bool(state.get("resume_pending")) or _prev_instr_a == "USER_REQUESTS_PAUSE" or _prev_probe_a == "SUGGEST_PAUSE",
+            awaiting_choice=bool(state.get("awaiting_next_chapter_choice")) or session.status != "in_progress",
+            definition_reasked=bool((_store_a.get("definition_reasked") or {}).get(chapter)) if chapter else False,
+        ) if (request.content or "").strip() else None
+        if _anomaly is not None:
+            _pn_a = (state.get("coach_persona") or {}).get("name")
+            _q_a = _anomaly.question
+            if _anomaly.kind == "repeat_prev":
+                _anomaly_override_text = f"{_pl_an(_pn_a, 'same_input')} {_q_a}"; instruction_used = "INPUT_REPEATED"
+            elif _anomaly.kind == "repeat_any":
+                _anomaly_override_text = f"{_pl_an(_pn_a, 'repeat_event')} {_q_a}"; instruction_used = "INPUT_DUPLICATE"
+            elif _anomaly.kind == "returned_q":
+                _anomaly_override_text = f"{_pl_an(_pn_a, 'question_returned')} {_q_a}"; instruction_used = "QUESTION_RETURNED"
+            elif _anomaly.kind == "pause_phrase":
+                _anomaly_override_text = f"{_pl_an(_pn_a, 'continue_ack')} {_q_a}"; instruction_used = "QUESTION_REASK"
+            elif _anomaly.kind == "confirm_reask":
+                _anomaly_override_text = _pl_an(_pn_a, "confirm_reask"); instruction_used = "CONFIRM_REASK"
+            elif _anomaly.kind == "def_reask":
+                from diag_project.services.korean import with_josa as _wj_an
+                _cn_an = COMPETENCY_FRAMEWORK.get(chapter, {}).get("name", "이 역량") if chapter else "이 역량"
+                _anomaly_override_text = _pl_an(_pn_a, "definition_reask", cn_eul=_wj_an(_cn_an, "을/를"))
+                instruction_used = "DEFINITION_REASK"
+                if chapter:
+                    _dr = dict(_store_a.get("definition_reasked") or {}); _dr[chapter] = True
+                    _store_a["definition_reasked"] = _dr
+                    session.self_assessment_data = _store_a
+                    from sqlalchemy.orm.attributes import flag_modified as _fm_dr
+                    _fm_dr(session, "self_assessment_data")
+            else:   # ack_reask
+                _anomaly_override_text = f"{_pl_an(_pn_a, 'reask_anchor')} {_q_a}"; instruction_used = "ANCHOR_REASK"
+            state["instruction_for_this_turn"] = instruction_used
+            _tm["anomaly"] = _anomaly.kind
+            logger.info("🧷 입력 이상(%s): %s → %s", _anomaly.kind, _anomaly.detail, instruction_used)
+    except Exception as _ae:
+        logger.warning("입력 이상 판정 실패(무시): %s", _ae)
+
     PRE_DIAGNOSIS_INSTRUCTIONS = {
         "RAPPORT_BUILDING",
         "DIAGNOSIS_INTRO",
@@ -1320,12 +1382,16 @@ async def _submit_message_phase3a(
             if _kw:
                 _bridge_ctx = _kw
                 break
-        system_override_text = build_chapter_opening_with_user_def(
+        system_override_text = _voiced_q(build_chapter_opening_with_user_def(
             chapter=chapter,
             user_definition=state.get("last_user_response", "") or "",
             first_subcompetency_name=state.get("first_subcompetency_name", ""),
             bridge_context=_bridge_ctx,
-        )
+        ))
+
+    # (2026-10-28 P0-4) 입력 이상 턴은 위 어떤 분기보다 우선 — 고정 응답, LLM 미호출
+    if _anomaly_override_text is not None:
+        system_override_text = _anomaly_override_text
 
     if system_override_text is not None:
         reply = system_override_text
@@ -1715,47 +1781,63 @@ async def _submit_message_phase3a(
         #   볼까요?" → "네" 확인 턴(정보 없음) 제거. 타겟(asked)은 위 프로브 스텝에서
         #   LLM 호출 이전에 기록됐고, 여기서는 출력만 조립한다. 브릿지 리드 없이
         #   앵커 본문만 붙인다(정의 뒤라 리드가 어색).
+        # (2026-10-28 P0-2) ALIGN 되받기의 내부 어휘 누설은 조립 '전'에 처리한다 — 조립 뒤 8-i 가 재생성하면 LLM 새 출력이
+        #   정의·목록·다리·앵커를 통째로 덮었다(10/28 재생 1라운드: 챕터 2~4 ALIGN 목록 누락의 원인). 8-i 는 ALIGN 을 재생성하지 않는다.
+        try:
+            from diag_project.services.leak_lexicon import find_leaks as _fl_al, strip_leak_sentences as _sls_al
+            _lk_al = _fl_al(clean_reply, _prev_user_texts + [request.content or ""])
+        except Exception as _le_al:   # noqa: BLE001
+            logger.warning("ALIGN 누설 검사 실패(무시): %s", _le_al)
+            _lk_al = []
+        if _lk_al:
+            _tm["align_leak"] = list(_lk_al)
+            logger.info("🛡️ ALIGN 되받기 내부 어휘 누설 %s → 재생성 1회", _lk_al)
+            try:
+                _al_regen = await _timed_regen(
+                    system_prompt=system_prompt, chapter_context=chapter_context,
+                    turn_state_text=turn_state_text + (
+                        "\n\n🚨 [시스템 — 재생성 지시] 방금 응답에 코치가 리더님께 쓰는 말이 아닌 내부 용어가 있습니다: "
+                        + ", ".join(str(x) for x in _lk_al[:6]) + ". 그 문장을 빼거나 리더님께 하는 자연스러운 말로 바꿔, "
+                        "되받기 평서문 2~3문장만 다시 쓰세요."),
+                    compressed_history=compressed_history, user_message=request.content, light_mode=True)
+                _al_reply = _MARKER_RE.sub("", _al_regen.get("reply") or "").strip()
+            except Exception as _e_al:   # noqa: BLE001
+                logger.error("ALIGN 누설 재생성 실패: %s", _e_al)
+                _al_reply = ""
+            _lk_al2 = _fl_al(_al_reply, _prev_user_texts + [request.content or ""]) if _al_reply else list(_lk_al)
+            if _al_reply and not _lk_al2:
+                clean_reply = _al_reply
+            else:
+                clean_reply, _n_al = _sls_al(_al_reply or clean_reply, _lk_al2 or _lk_al)
+                _tm["align_leak_stripped"] = _n_al
         if chapter and current_target_sub:
-            # 1(2026-09-16) ALIGN 이중 질문: LLM 이 정의 제시를 자기 질문으로 끝내면 그 문장을
-            #   지우고 템플릿 앵커만 질문으로 남긴다(최종 출력의 물음표는 앵커 하나).
-            from diag_project.services.output_guard import strip_trailing_question
-            clean_reply, _n_tail = strip_trailing_question(clean_reply)
-            if _n_tail:
-                logger.info("✂️ ALIGN 꼬리 질문 %d문장 제거 후 앵커 결합", _n_tail)
+            # (2026-10-28 P0-1) ALIGN 조립은 백엔드 결정론(services/align_render.render_align):
+            #   [LLM 공감 되받기 2~3문장] + [고정 정의 1문장] + [목록 · 줄 전부] + [고정 안내] + [고정 다리] + [앵커 1개].
+            #   LLM 출력의 질문·목록·다른 챕터 문구·선택 넘기기 문장은 전부 제거. 고정 문장은 페르소나 어미. 챕터 크기와 무관하게 같은 렌더러.
             _anchor = build_chapter_opening_with_user_def(
                 chapter=chapter,
                 user_definition=request.content or "",
                 first_subcompetency_name=current_target_sub,
                 bridge_context=None,
             )
-            # (2026-10-21) ANCHOR_RENDER=llm 이면 렌더링 질문으로(판정 불합격·실패는 사전 문장 폴백). dict 모드는 그대로.
+            # (2026-10-21) ANCHOR_RENDER=llm 이면 렌더링 질문으로(판정 불합격·실패는 사전 문장 폴백). dict 모드는 그대로(어미 변환 포함).
             _ar_q, _ar_mode = await _render_anchor_for(current_target_sub)
             _tm["anchor_render"] = _ar_mode
-            if _ar_mode == "llm":
-                _anchor = _ar_q
-            # (2026-09-29) 정의 블록 뒤·앵커 앞 다리 한 문장 보장. LLM 이 안 썼으면 페르소나 기본 다리({kw}=정의 핵심 단어).
-            #   앵커 프레임의 자체 리드('먼저 하나 여쭤볼게요.')는 이중 도입이 되므로 뗀다.
-            from diag_project.services.output_guard import align_has_bridge, align_default_bridge, strip_frame_lead, ensure_align_list
-            from diag_project.services.output_guard import drop_question_sentences as _dqs
-            clean_reply, _nq_mid = _dqs(clean_reply)   # 본문 중간의 확인 질문('크게 다르지 않지요?')도 제거 — 질문은 앵커 하나
-            if _nq_mid:
-                logger.info("✂️ ALIGN 본문 질문 %d문장 제거", _nq_mid)
-            clean_reply, _list_added = ensure_align_list(clean_reply, state.get("all_subcompetencies") or [])
-            if _list_added:
-                logger.info("📋 ALIGN 하위역량 목록 누락 → 삽입")
-            # (2026-10-22 P2-3) ALIGN 끝 다리는 고정: LLM 이 목록 뒤에 쓴 평서문은 지우고 "먼저 ~쪽부터 볼게요." 를 붙인다
-            #   (하위역량 이름 미노출·설명어). 과거의 페르소나 풀(align_default_bridge)은 쓰지 않는다.
+            _anchor = _ar_q if _ar_mode in ("llm", "dict", "fallback") else _anchor
+            from diag_project.services.output_guard import strip_frame_lead
             from diag_project.data.competencies import find_sub_key_by_name as _fsk_ab
-            from diag_project.services.intro_messages import align_topic_bridge as _atb
-            from diag_project.services.output_guard import strip_align_tail_statements as _sats
-            clean_reply, _n_llm_br = _sats(clean_reply)
-            if _n_llm_br:
-                logger.info("✂️ ALIGN 목록 뒤 LLM 다리 %d문장 제거", _n_llm_br)
-            _br = _atb(_fsk_ab(chapter, current_target_sub), current_target_sub, (state.get("coach_persona") or {}).get("name"))
-            clean_reply = f"{clean_reply.rstrip()}\n\n{_br}"
-            del align_has_bridge, align_default_bridge
+            from diag_project.services.align_render import align_shape_ok as _aso, render_align as _ra
             _anchor = strip_frame_lead(_anchor)
-            clean_reply = f"{clean_reply.rstrip()}\n\n{_anchor}"
+            # 조립은 모든 후처리(8-i 가드·8-n 입버릇·8-h 느낌표 …)가 끝난 뒤 '마지막'에 한다 — 중간 단계의 재생성이
+            #   조립 결과를 덮지 못하게(10/28 재생 1~3라운드: 8-i·8-n·8-h 재생성이 각각 ALIGN 목록을 지웠다).
+            #   여기서는 재료만 보관하고, clean_reply 는 LLM 되받기 원문 그대로 가드를 통과시킨다.
+            _align_ctx = dict(
+                sub_names=list(state.get("all_subcompetencies") or []),
+                persona_name=(state.get("coach_persona") or {}).get("name"),
+                bridge_sub_key=_fsk_ab(chapter, current_target_sub), bridge_sub_name=current_target_sub,
+                anchor=_anchor, user_text=request.content or "",
+            )
+            del _ra, _aso
             # 다음 턴 decider 가 CHAPTER_OPENING 을 다시 내지 않도록 원장에 표식.
             _st_om = dict(session.self_assessment_data or {})
             _om = dict(_st_om.get("opening_merged") or {})
@@ -1941,14 +2023,15 @@ async def _submit_message_phase3a(
             # (2026-09-29) 직전 2턴이 아니라 이 챕터에서 한 번이라도 나간 앵커면 반복하지 않는다
             _ch_coach_texts = " ".join((m.content or "") for m in history_messages
                                        if (m.role == MessageRole.MODEL or m.role == "model") and m.chapter == chapter)
+            # (2026-10-28 P0-3) 사전 앵커 폴백도 페르소나 어미를 거친다(운영에서 6명 동일 앵커의 주 원인).
             if _tgt_q and chapter and _ns_fb(_tgt_q) not in _ns_fb(_ch_coach_texts + " " + " ".join(_recent_coach_texts)):
-                return template_anchor(_tgt_q)
+                return _voiced_q(template_anchor(_tgt_q))
             if chapter:
                 from diag_project.services.output_guard import result_fallback_question as _rfq
                 _alt = sum(1 for _t in _recent_coach_texts if "그 뒤에는 어떻게 됐어요" in _t)   # 직전 폴백이 A 면 B
                 return _rfq((state.get("resume_pending") or {}).get("user_text") or request.content, _prev_user_text, alt=_alt,
                             persona=(state.get("coach_persona") or {}).get("name"))
-            return template_anchor(_tgt_q)
+            return _voiced_q(template_anchor(_tgt_q))
         from diag_project.data.competencies import (
             COMPETENCY_FRAMEWORK as _CF, find_sub_key_by_name as _fsk, get_anchor_questions as _gaq,
         )
@@ -1982,6 +2065,16 @@ async def _submit_message_phase3a(
             sl = find_state_leak(txt)
             if sl:
                 v["state_leak"] = sl        # (2026-10-21) '새로운 사례를 들려주셨네요'·'충분히 들었습니다' 류 상태 누설
+            # (2026-10-28 P0-2) 내부 어휘 누설 — 프롬프트 템플릿에서 자동 추출한 사전(services/leak_lexicon, 린트와 동일).
+            #   리더가 쓴 어절 되받기는 제외. 재생성 1회 → 그래도 남으면 그 문장 삭제(질문 보존).
+            try:
+                from diag_project.services.leak_lexicon import find_leaks as _find_leaks
+                lk = _find_leaks(txt, _prev_user_texts + [request.content or ""])
+                lk = [w for w in lk if w not in (sl or [])]
+                if lk:
+                    v["leak"] = lk
+            except Exception as _le:   # noqa: BLE001 — 사전 로드 실패가 턴을 막지 않게
+                logger.warning("누설 사전 검사 실패(무시): %s", _le)
             if instruction_used not in TRANSITION_ALLOWED_INSTRUCTIONS and has_transition_claim(txt):
                 v["transition"] = True
             if _is_anchor:
@@ -2022,8 +2115,9 @@ async def _submit_message_phase3a(
         # (2026-09-18 A/B 측정) recap·lead_stack·praise·transition·ne_opening 은 재생성해도 대부분 그대로 남는다
         #   (19턴 중 recap 12 → 재생성 후 11 잔존) → 재생성 없이 바로 교정. 재생성은 문장 교체가 어색한
         #   names·off_target 과, 출력 자체에 질문이 없는 no_question·same_question 에만.
-        _REGEN_KEYS = {"names", "off_target", "no_question", "same_question", "bare_ref", "anchor_missing"}
-        _need_regen = bool(set(_v) & _REGEN_KEYS)
+        _REGEN_KEYS = {"names", "off_target", "no_question", "same_question", "bare_ref", "anchor_missing", "leak"}
+        # (2026-10-28 P0-1) ALIGN 은 재생성하지 않는다 — 조립(정의·목록·다리·앵커)을 LLM 새 출력이 덮는다. 남은 위반은 하드 교정만.
+        _need_regen = bool(set(_v) & _REGEN_KEYS) and instruction_used != "COMPETENCY_ALIGN"
         if _v and not _need_regen:
             logger.info("🛡️ 출력 가드 위반(재생성 생략): %s (instr=%s)", _v, instruction_used)
         if _need_regen:
@@ -2047,6 +2141,9 @@ async def _submit_message_phase3a(
                               "(주제가 이어지지 않으면 '다른 이야기를 하나 여쭤볼게요.' 한 문장 후 질문)")
             if "bare_ref" in _v:
                 _notes.append("- 질문이 '그것·그럴 때·그렇게'로만 대상을 가리킵니다. 리더님이 방금 쓴 말(명사구)을 질문에 넣어 무엇을 묻는지 분명히 하세요.")
+            if "leak" in _v:
+                _notes.append("- 다음 말은 코치가 리더님께 쓰는 말이 아니라 내부 용어입니다: " + ", ".join(str(x) for x in _v["leak"][:6])
+                              + ". 그 문장을 빼거나 리더님께 하는 자연스러운 말로 바꾸세요. 진행 상태·방법을 설명하지 말고 대화만 하세요.")
             try:
                 _g_regen = await _timed_regen(
                     system_prompt=system_prompt,
@@ -2105,6 +2202,14 @@ async def _submit_message_phase3a(
                 if _c2.strip() and (has_question(_c2) or not has_question(clean_reply)):
                     clean_reply = _c2
                     logger.info("🛡️ 상태 누설 %d문장 제거", _n)
+            if "leak" in _v:
+                # (2026-10-28 P0-2) 재생성 후에도 내부 어휘가 남으면 그 문장을 지운다(질문 문장이면 어절만 뗀다)
+                from diag_project.services.leak_lexicon import strip_leak_sentences as _sls
+                _c2, _n = _sls(clean_reply, list(_v["leak"]))
+                if _c2.strip() and (has_question(_c2) or not has_question(clean_reply)):
+                    clean_reply = _c2
+                    _tm["leak_stripped"] = _n
+                    logger.info("🛡️ 내부 어휘 누설 %d문장 제거: %s", _n, _v["leak"])
             if "bare_ref" in _v and _is_probe:
                 from diag_project.services.output_guard import bare_demonstrative_questions as _bdq2, result_fallback_question as _rfq2
                 from diag_project.services.output_guard import followup_from_user as _ffu
@@ -2383,7 +2488,9 @@ async def _submit_message_phase3a(
     # 8-n. (2026-10-22 P2-1) 입버릇 반복 가드 — 되받기 마무리 어구(마지막 어절 2개)를 세션 단위로 센다.
     #   같은 어구 2회째 → 재생성 1회, 3회째(또는 재생성 후에도) → 그 문장 삭제. 금지 어구(마음에 남아요·짐작이 되네요·
     #   인상에 남네요·그려지네요·분명하게 들어왔어요)는 1회째부터 재생성. '리더님,' 문두 호칭은 3턴에 1회(직전 2턴에 있으면 뗀다).
-    _TAIL_EXEMPT = {"DIAGNOSIS_INTRO", "USER_REQUESTS_PAUSE", "CHAPTER_READY_TO_END", "AWAIT_NEXT_CHAPTER_CHOICE"}
+    # (2026-10-28 P0-1) COMPETENCY_ALIGN 제외 — 조립된 고정 정의 문장의 어미('…이끌어내는 능력입니다')를 입버릇으로 세어
+    #   재생성하면 LLM 새 출력이 정의·목록·다리·앵커를 통째로 덮는다(10/28 재생 2라운드 챕터 2~4 ALIGN 목록 누락의 원인).
+    _TAIL_EXEMPT = {"DIAGNOSIS_INTRO", "USER_REQUESTS_PAUSE", "CHAPTER_READY_TO_END", "AWAIT_NEXT_CHAPTER_CHOICE", "COMPETENCY_ALIGN"}
     if (system_override_text is None and not _llm_error and clean_reply and instruction_used not in _TAIL_EXEMPT
             and not needs_user_decision):
         from diag_project.services.output_guard import (
@@ -2477,13 +2584,17 @@ async def _submit_message_phase3a(
     #   챕터 종료 다리·세션 종료)은 제외.
     if (system_override_text is None and not _llm_error and clean_reply
             and instruction_used in ("DIAGNOSIS_CONFIRM", "COMPETENCY_ASK")):
-        from diag_project.services.output_guard import has_question as _hq_k
-        if not _hq_k(clean_reply):
-            from diag_project.services.intro_messages import definition_question
-            _cn_k = COMPETENCY_FRAMEWORK.get(chapter, {}).get("name", "이 역량")
-            clean_reply = f"{clean_reply.rstrip()} {definition_question(_cn_k, (state.get('coach_persona') or {}).get('name'))}"
-            _tm["no_q_fix"] = "definition"
-            logger.info("❓ 질문 없는 정의 턴 → 고정 정의 질문 결합")
+        # (2026-10-28 P0-4) 정의 턴의 질문은 '고정 정의 질문' 하나뿐 — LLM 이 다른 질문(간접 질문 포함)으로 끝내면
+        #   그 질문을 지우고 고정 질문을 붙인다(10/28 재생: 리더가 코치 앵커를 붙여넣자 CONFIRM 이 정의 질문 없이 사례를 청했다).
+        from diag_project.services.intro_messages import definition_question
+        from diag_project.services.output_guard import drop_question_sentences as _dqs_k
+        _cn_k = COMPETENCY_FRAMEWORK.get(chapter, {}).get("name", "이 역량")
+        _defq_k = definition_question(_cn_k, (state.get('coach_persona') or {}).get('name'))
+        if _defq_k not in clean_reply:
+            _body_k, _nq_k = _dqs_k(clean_reply)
+            clean_reply = f"{_body_k.rstrip()} {_defq_k}".strip()
+            _tm["no_q_fix"] = "definition" if _nq_k == 0 else f"definition(replaced {_nq_k})"
+            logger.info("❓ 정의 턴 질문 고정: LLM 질문 %d문장 제거 후 고정 정의 질문 결합", _nq_k)
 
     # 8-h. 느낌표 상한(2026-09-15): 페르소나별 상한(Michael 1·안내턴 0, 나머지 0)을 백엔드가 센다.
     #   초과 → 재생성 1회(같은 프롬프트 + 상한 지시) → 그래도 초과면 초과분을 마침표로 치환.
@@ -2550,6 +2661,15 @@ async def _submit_message_phase3a(
         _fm_pst(session, "self_assessment_data")
         logger.info("⏸️ 일시정지 제안: 질문 보류 → pending=%s target=%s (원장 되돌림=%s)",
                     instruction_used, current_target_sub, _ledger_snapshot is not None)
+
+    # 8-z. (2026-10-28 P0-1) ALIGN 최종 조립 — 모든 후처리 뒤. 되받기(가드 통과본) + 고정 정의 + 목록 + 안내 + 다리 + 앵커.
+    if _align_ctx is not None and system_override_text is None and not _llm_error and chapter:
+        from diag_project.services.align_render import align_shape_ok as _aso_z, render_align as _ra_z
+        clean_reply = _ra_z(llm_text=clean_reply, chapter=chapter, **_align_ctx)
+        _ok_z, _why_z = _aso_z(clean_reply, _align_ctx["sub_names"])
+        _tm["align_shape"] = "ok" if _ok_z else ";".join(_why_z)
+        if not _ok_z:
+            logger.warning("📐 ALIGN 형식 자가점검 실패: %s", _why_z)
 
     # 9. 사건 생명주기 처리 + AI 메시지 저장
     #   (2026-09-22) 탐침 종류는 LLM 자기보고가 아니라 instruction·문장 표지로(event_tracker.probe_type_for).

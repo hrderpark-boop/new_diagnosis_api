@@ -970,9 +970,10 @@ async def build_turn_state(
     # 진단 전 단계(INTRO/CONFIRM/ALIGN/INTRO)는 제외 — 아직 BEI 시작 전이므로.
     # ⚠️ DIAGNOSIS_CONFIRM 은 START_CHAPTER 마커 때문에 chapter 로 태깅되므로
     #    반드시 제외해야 CHAPTER_OPENING(첫 BEI 템플릿)이 정상 발화함.
+    from diag_project.services.event_tracker import INPUT_ANOMALY_INSTRUCTIONS as _IAI
     _NON_BEI = {"COMPETENCY_INTRO", "COMPETENCY_ALIGN", "DIAGNOSIS_CONFIRM", "DIAGNOSIS_INTRO",
                 # 종결+전환 경계·'계속' 브릿지는 다음 챕터로 태깅되므로 제외해야 첫 BEI(CHAPTER_OPENING) 판별이 맞는다
-                "CHAPTER_READY_TO_END", "CHAPTER_CONTINUE_CONFIRMED"}
+                "CHAPTER_READY_TO_END", "CHAPTER_CONTINUE_CONFIRMED"} | set(_IAI)   # (2026-10-28 P0-4) 입력 이상 턴도 BEI 아님
     # SQL NOT IN 은 NULL 을 제외했으므로 instruction_used 가 None 인 행도 세지 않는다(동일 의미 유지)
     chapter_message_count = sum(1 for m in _ch_model if m.instruction_used is not None and m.instruction_used not in _NON_BEI)
 

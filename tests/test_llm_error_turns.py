@@ -69,7 +69,13 @@ def test_llm_error_three_times_pauses_session_without_state_change(server):
         errors = []
         for i in range(8):
             n0 = _count()
-            r = c.post(f"{base}/diagnoses/submit_message", json={"session_id": sid, "diagnosis_id": sid, "content": f"안녕하세요, 박기진입니다. {i}번째 답변이에요."})
+            # (2026-10-28 P0-4) 입력 반복 가드(직전 메시지와 90% 동일 → 고정 응답, LLM 미호출)에 걸리지 않게 턴마다 다른 문장
+            _msgs = ["안녕하세요, 박기진입니다.", "오늘은 오후 내내 회의가 많았어요.", "영업팀을 맡고 있고 팀원은 여덟 명입니다.",
+                     "이번 진단으로 제 강점을 객관적으로 보고 싶습니다.", "네, 시작하겠습니다.",
+                     "조직관리는 방향을 정하고 사람을 모으는 일이라고 생각합니다.",
+                     "지난달에 팀 목표를 다시 세우면서 팀원 전원과 일대일 면담을 했습니다.",
+                     "면담 뒤에 두 명이 역할을 바꾸겠다고 먼저 제안했고 결과적으로 이탈 없이 분기를 마쳤습니다."]
+            r = c.post(f"{base}/diagnoses/submit_message", json={"session_id": sid, "diagnosis_id": sid, "content": _msgs[i % len(_msgs)]})
             assert r.status_code in (200, 201), r.text
             d = r.json()
             if d.get("llm_error") is True:

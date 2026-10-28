@@ -8,8 +8,27 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 
-def get_time_greeting() -> dict[str, str]:
-    """현재 시간 기반 인사 정보 생성.
+# (2026-10-28 P0-6) 시간대 경계 — KST 기준. 05~11 오전 / 11~14 점심 / 14~18 오후 / 18~ 저녁(23시 이후는 '늦은 시간').
+#   10/28 Lucas 세션: 13:49 에 "점심 시간" 이 나갔다(구 경계 12~14). 경계를 한 곳(이 표)에서만 정한다.
+DAYPART_BOUNDS = ((5, 11, "오전"), (11, 14, "점심"), (14, 18, "오후"), (18, 23, "저녁"))
+
+
+def daypart(hour: int) -> str:
+    for lo, hi, name in DAYPART_BOUNDS:
+        if lo <= hour < hi:
+            return name
+    return "늦은 시간"
+
+
+def _now_seoul(now: datetime | None = None) -> datetime:
+    seoul = ZoneInfo("Asia/Seoul")
+    if now is None:
+        return datetime.now(seoul)
+    return now.astimezone(seoul) if now.tzinfo else now.replace(tzinfo=seoul)
+
+
+def get_time_greeting(now: datetime | None = None) -> dict[str, str]:
+    """현재 시간 기반 인사 정보 생성(now 는 테스트 주입용).
 
     Returns:
         {
@@ -19,8 +38,7 @@ def get_time_greeting() -> dict[str, str]:
             "reflective_phrase": 시간대에 맞는 두 번째 문장,
         }
     """
-    seoul = ZoneInfo("Asia/Seoul")
-    now = datetime.now(seoul)
+    now = _now_seoul(now)
     hour = now.hour
     minute = now.minute
 
@@ -36,48 +54,35 @@ def get_time_greeting() -> dict[str, str]:
     else:
         hour_text = f"오후 {rounded_hour - 12}시"
 
-    # 시간대 톤 분류는 원래 hour 사용 (사용자 활동 시간대 기준)
-    if 5 <= hour < 8:
-        tone = "이른 아침"
-        ampm_phrase = "이른 아침"
-        reflective_phrase = (
-            "이른 아침부터 시간 내주셨네요. "
-            "차분한 마음으로 시작해보면 좋을 것 같아요."
-        )
-    elif 8 <= hour < 12:
-        tone = "상쾌한 아침"
+    # 시간대 톤 분류는 원래 hour 사용 (사용자 활동 시간대 기준) — 경계는 DAYPART_BOUNDS 하나로.
+    part = daypart(hour)
+    if part == "오전":
+        tone = "상쾌한 오전"
         ampm_phrase = "오전"
         reflective_phrase = (
             "하루를 새롭게 열어가는 시간이네요. "
             "잠시 마음을 정돈하며 시작해볼까요?"
         )
-    elif 12 <= hour < 14:
+    elif part == "점심":
         tone = "분주한 점심"
         ampm_phrase = "점심"
         reflective_phrase = (
             "한창 분주하실 시간에 함께해주셔서 고맙습니다. "
             "잠깐 호흡 가다듬는 시간이 됐으면 좋겠어요."
         )
-    elif 14 <= hour < 17:
+    elif part == "오후":
         tone = "활기찬 오후"
         ampm_phrase = "오후"
         reflective_phrase = (
             "오후의 흐름 속에서 잠깐 한 호흡 쉬어가는 "
             "시간이 됐으면 좋겠어요."
         )
-    elif 17 <= hour < 20:
+    elif part == "저녁":
         tone = "차분한 저녁"
         ampm_phrase = "저녁"
         reflective_phrase = (
             "하루를 마무리해가는 시간이네요. "
             "잠시 돌아보는 시간이 될 것 같아요."
-        )
-    elif 20 <= hour < 23:
-        tone = "조용한 밤"
-        ampm_phrase = "밤"
-        reflective_phrase = (
-            "오늘 하루를 차분히 돌아보기 좋은 시간이네요. "
-            "편안하게 함께해요."
         )
     else:
         tone = "늦은 시간"
@@ -95,26 +100,23 @@ def get_time_greeting() -> dict[str, str]:
     }
 
 
-def get_time_phrase() -> str:
-    """첫 인사 템플릿용 간결한 시간대 문구.
+def get_time_phrase(now: datetime | None = None) -> str:
+    """첫 인사 템플릿용 간결한 시간대 문구(now 는 테스트 주입용).
 
-    Returns: 예) "활기찬 아침", "오전", "점심 무렵", "오후 3시 무렵", "저녁", "늦은 시간"
+    Returns: 예) "오전", "점심 무렵", "오후 3시 무렵", "저녁", "늦은 시간"
     """
-    seoul = ZoneInfo("Asia/Seoul")
-    hour = datetime.now(seoul).hour
-
-    if 5 <= hour < 10:
-        return "활기찬 아침"
-    elif 10 <= hour < 12:
+    now = _now_seoul(now)
+    hour = now.hour
+    part = daypart(hour)
+    if part == "오전":
         return "오전"
-    elif 12 <= hour < 14:
+    if part == "점심":
         return "점심 무렵"
-    elif 14 <= hour < 18:
+    if part == "오후":
         return f"오후 {hour - 12}시 무렵"
-    elif 18 <= hour < 21:
+    if part == "저녁":
         return "저녁"
-    else:
-        return "늦은 시간"
+    return "늦은 시간"
 
 
 def build_rapport_first_turn_response(

@@ -33,12 +33,17 @@ def is_question(sentence: str) -> bool:
     # (2026-10-21) "~시겠어요" 제외 — "분주하시겠어요" 같은 추측 문장이 질문으로 잘려 나갔다. 추측은 추측 규칙(프롬프트)이 맡는다.
     # (2026-10-22 P1-3) 간접 질문도 질문: "…궁금해요/궁금합니다/들려주세요/떠올려 주세요/말씀해 주세요" 로 끝나는 문장.
     #   챕터 종료·전환 턴에서는 제거되고, 탐침 턴에서는 '한 턴 한 질문' 에 포함된다.
-    return s.endswith("?") or bool(re.search(r"(까요|습니까|을까요|나요|시겠습니까|실까요)[.!?…]?$", s)) \
+    # (2026-10-28 P0-5) "~는지요/~셨는지요" 도 질문 — 평서문으로 보여 리드 상한이 복합 질문의 앞 절을 잘랐다.
+    return s.endswith("?") or bool(re.search(r"(까요|습니까|을까요|나요|시겠습니까|실까요|는지요|은지요|인지요)[.!?…]?$", s)) \
         or bool(_INDIRECT_Q_RE.search(s))
 
 
-_INDIRECT_Q_RE = re.compile(r"(궁금(해요|합니다|하네요|한데요)|들려주(세요|시죠|실래요)|떠올려\s*주세요|말씀해\s*주세요|"
-                            r"말씀해\s*주시(면|겠)|들려주시(면|겠)|이야기해\s*주세요|알려주세요)[.!…]?$")
+# (2026-10-28 P0-4) '떠올려 주시면 좋겠습니다'·'들려주시지요' 류 청유도 간접 질문 — 정의 턴에서 LLM 질문으로 남아 고정 정의 질문과 겹쳤다.
+_INDIRECT_Q_RE = re.compile(r"(궁금(해요|합니다|하네요|한데요|해지네요)|들려주(세요|시죠|시지요|실래요)|떠올려\s*주세요|말씀해\s*주세요|"
+                            r"말씀해\s*주시(면|겠)|들려주시(면|겠)|이야기해\s*주세요|알려주세요|"
+                            r"(떠올려|들려|말씀해|이야기해|알려|보여|설명해)\s*주시면\s*(좋겠|감사|됩니다|돼요)[가-힣]*|"
+                            r"(떠올려|들려|말씀해|이야기해|알려|보여|설명해)\s*주(시겠|십시오|실까요|시지요|시죠)[가-힣]*|"
+                            r"(는지|은지|인지)\s*(를|도)?\s*(구체적으로\s*|먼저\s*)?(여쭙니다|여쭙겠습니다|여쭤보겠습니다|여쭤봅니다))[.!…]?$")
 
 
 # ── 1) ALIGN: 꼬리 질문 제거 ──
@@ -309,7 +314,8 @@ def keep_last_question(text: str) -> tuple[str, int]:
     if len(qs) < 2:
         return text, 0
     # (2026-10-22) "A? 아니면 B?" 양자택일 쌍은 한 질문 — 마지막이 '아니면'으로 시작하면 바로 앞 질문도 남긴다
-    keep = qs[-2:] if qs[-1].lstrip().startswith(("아니면", "혹은", "또는")) else qs[-1:]
+    # (2026-10-28 P0-5) "…있었나요? 있었다면 언제였고…?" 처럼 마지막 질문이 조건절로 시작하면 앞 질문이 주절 — 함께 남긴다
+    keep = qs[-2:] if (qs[-1].lstrip().startswith(("아니면", "혹은", "또는")) or starts_without_main_clause(qs[-1])) else qs[-1:]
     if len(keep) == len(qs):
         return text, 0
     out = text
@@ -583,14 +589,35 @@ def first_lead(text: str) -> str:
 #    LLM 의 되받기 한 문장이 다리 역할을 한다. 폴백은 template_anchor(질문)만 쓴다. ──
 
 
+# (2026-10-28 P0-5) 주절 없이 시작하는 질문: 조건절·연결어미로 시작하면 앞 문장이 질문의 일부다.
+_DEPENDENT_START_RE = re.compile(
+    r"^(있었다면|있으셨다면|있다면|없었다면|했다면|하셨다면|됐다면|되었다면|그렇다면|그랬다면|아니라면|아니면|혹은|또는|"
+    r"[가-힣]+(이라면|라면|다면|으면|면),?\s|[가-힣]+(였는지|이었는지|었는지|는지|인지),?\s)")
+
+
+def starts_without_main_clause(sentence: str) -> bool:
+    """'있었다면 어떻게 설득하셨는지' 처럼 조건절·연결 절로 시작하는 문장(앞 절이 잘린 흔적)."""
+    return bool(_DEPENDENT_START_RE.match((sentence or "").strip()))
+
+
 def cap_lead_sentences(text: str) -> tuple[str, int]:
     """첫 질문 앞의 리드를 최대 1문장으로(2026-09-22 결정). 2문장 이상이면 첫 문장만 남긴다.
-    첫 질문부터는 절대 건드리지 않는다(postprocess_pipeline 원칙). 질문이 없는 출력은 그대로. (결과, 지운 문장 수)"""
+    첫 질문부터는 절대 건드리지 않는다(postprocess_pipeline 원칙). 질문이 없는 출력은 그대로. (결과, 지운 문장 수)
+    (2026-10-28 P0-5) 상한은 평서문에만: 첫 질문이 조건절·연결 절로 시작하면 바로 앞 문장은 질문의 앞 절이므로 함께 남긴다.
+    자른 뒤에도 질문이 주절 없이 시작하면 원문을 돌려준다."""
     sents = split_sentences(text)
     qi = next((i for i, s in enumerate(sents) if is_question(s)), None)
     if qi is None or qi <= 1:
         return text, 0
-    return " ".join([sents[0]] + sents[qi:]).strip(), qi - 1
+    start = qi
+    while start > 1 and starts_without_main_clause(sents[start]):
+        start -= 1          # 앞 절을 질문에 붙여 보존
+    if start <= 1:
+        return text, 0
+    out = " ".join([sents[0]] + sents[start:]).strip()
+    if starts_without_main_clause(sents[start]):
+        return text, 0
+    return out, start - 1
 
 
 # ── Result 탐침 문장 반복(2026-09-17): 같은 문장은 한 챕터에 한 번 ──

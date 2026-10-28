@@ -47,7 +47,7 @@ def test_align_topic_bridge_and_phrases():
     assert set(SUBCOMPETENCY_TOPIC_PHRASE) == set(SUBCOMPETENCY_ANCHOR_QUESTIONS)
     for k, v in SUBCOMPETENCY_TOPIC_PHRASE.items():
         assert v.endswith("쪽") and "제시" not in v and "사고" not in v, k        # 이름 노출 없이 설명어
-    assert align_topic_bridge("vision_sharing") == "먼저 방향을 세우고 사람을 모으는 쪽부터 볼게요."
+    assert align_topic_bridge("vision_sharing") == "먼저 방향을 세우고 사람을 모으는 쪽부터요."   # (2026-10-28 P0-1) '먼저 ~쪽부터요' 
     # 설명어는 앵커 문장과 겹치지 않게 짧게(앵커 핵심어 '반신반의' 미포함)
     assert all(len(v) <= 20 and "반신반의" not in v for v in SUBCOMPETENCY_TOPIC_PHRASE.values())
     assert align_topic_bridge(None).startswith("먼저 ")
@@ -63,13 +63,15 @@ def test_align_guide_no_bridge_instruction():
             "coach_persona": {"name": "Ella"}, "all_subcompetencies": ["비전 제시 및 공유", "전략적 사고"],
             "last_user_response": "조직을 효율적으로 관리하는 거요"}
     g = L._get_instruction_guide("COMPETENCY_ALIGN", base)
-    assert "다리는 쓰지 않습니다" in g and "먼저 ~쪽부터 볼게요" in g
-    assert "들어보고 싶네요" not in g.split("예시 서식")[1]      # 서식 예시에서 다리 줄 제거
+    # (2026-10-28 P0-1) 정의·목록·안내·다리·질문은 시스템이 붙인다 — 프롬프트에는 서식 예시도 하위역량 목록도 없다
+    assert "'먼저 ~부터' 류 다리" in g and "예시 서식" not in g
+    assert "들어보고 싶네요" not in g and "· (하위역량 1)" not in g
 
 
 def test_route_wiring():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
-    assert "align_topic_bridge as _atb" in src and "strip_align_tail_statements as _sats" in src
+    assert "render_align as _ra" in src and "align_shape_ok as _aso" in src      # (2026-10-28 P0-1) ALIGN 결정론 조립
+    assert "align_topic_bridge" in open(os.path.join(ROOT, "diag_project", "services", "align_render.py"), encoding="utf-8").read()
     assert "transition_bridge as _tbr" in src and "cap_leads_persona as _clp" in src
     assert "max_statements=_cap_p" in src
 

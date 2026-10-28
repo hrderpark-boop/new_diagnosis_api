@@ -50,18 +50,18 @@ def test_align_without_definition_has_no_quote_instruction_or_quote_examples():
     assert "효과적으로 관리한다고 하셨는데" not in g   # 예시 인용문이 통째로 빠진다
     assert "'효과적'이라는 말씀" not in g
     assert "[인용 금지 — 최우선]" in g
-    assert "리더님 표현 되받기" not in g
+    assert "되받기는 리더님이 실제로 쓴 단어" not in g
     assert "말씀하신 것과 크게 다르지 않죠" not in g
-    assert "하위역량 네 가지 안내" in g           # 정의·목록 안내는 그대로
-    assert "· (하위역량 1)" in g
+    # (2026-10-28 P0-1) 정의·목록·안내·다리는 시스템이 붙인다 — 프롬프트에 목록 서식이 없다
+    assert "· (하위역량 1)" not in g and "하위역량 목록" in g
 
 
 def test_align_with_definition_keeps_quote_instruction_and_labels_examples():
     g = _guide("COMPETENCY_ALIGN", last_user_response="조직을 효율적으로 관리하는 거요")
-    assert "리더님 표현 되받기(필수)" in g
+    assert "되받기는 리더님이 실제로 쓴 단어·구절을" in g
     assert "[인용 금지 — 최우선]" not in g
-    assert "효과적으로 관리한다고 하셨는데" in g       # 예시는 남되
-    assert g.count(L.EXAMPLE_LABEL) >= 3          # 라벨이 붙는다(1) 예 · 3) 예 · 서식 · 담당 업무)
+    # (2026-10-28 P0-1) 다른 챕터 예시('조직을 효과적으로…')는 일관리 ALIGN 에 그대로 유입됐다 — 예시 자체를 뺐다
+    assert "효과적으로 관리한다고 하셨는데" not in g
 
 
 # ── INTRO ──

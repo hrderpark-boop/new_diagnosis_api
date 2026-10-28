@@ -74,7 +74,7 @@ def test_question_ending_geteoyo_not_question_and_smalltalk_rules():
 # ── B. 앵커 접착 ──
 def test_align_guide_forbids_questions_and_foreign_quotes():
     g = _g("COMPETENCY_ALIGN", last_user_response="조직을 효율적으로 관리하는 거요")
-    assert "질문 금지" in g and "인용 규칙" in g and "description 의 말" in g
+    assert "질문은 전부 시스템이 뒤에 붙이므로" in g and "따옴표 인용은 리더님이 실제로 쓴 어절만" in g   # (2026-10-28 P0-1)
 
 
 def test_foreign_quote_guard():

@@ -57,18 +57,21 @@ def test_no_reask_gate_is_per_chapter():
 
 
 def test_align_sublist_matches_competencies():
-    """item2: ALIGN 지시문의 하위역량 목록이 competencies.py 와 정확히 일치."""
-    from diag_project.prompts.phase3a.layer3_state import _get_instruction_guide
+    """item2 → (2026-10-28 P0-1) ALIGN 하위역량 목록은 프롬프트가 아니라 백엔드 렌더러(render_align)가 붙인다.
+    competencies.py 의 목록이 '· ' 줄로 전부 들어가는지 렌더 결과로 확인."""
+    from diag_project.services.align_render import render_align, align_shape_ok
     from diag_project.data.competencies import COMPETENCY_FRAMEWORK
     for ck, cv in COMPETENCY_FRAMEWORK.items():
         if ck == "supplementary":
             continue
         subs = [v["name"] for v in cv.get("indicators", {}).values()
                 if v.get("name")]
-        g = _get_instruction_guide(
-            "COMPETENCY_ALIGN", {"current_chapter": ck, "chapter": ck})
+        out = render_align(llm_text="말씀 잘 들었어요.", chapter=ck, sub_names=subs, persona_name="Ella",
+                           bridge_sub_key=None, bridge_sub_name=subs[0], anchor="그런 일이 최근에 있었어요?")
+        ok, why = align_shape_ok(out, subs)
+        assert ok, (ck, why)
         for s in subs:
-            assert s in g, f"{ck}: '{s}' 누락"
+            assert f"· {s}" in out, f"{ck}: '{s}' 누락"
 
 
 if __name__ == "__main__":
