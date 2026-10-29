@@ -2662,6 +2662,33 @@ async def _submit_message_phase3a(
         logger.info("⏸️ 일시정지 제안: 질문 보류 → pending=%s target=%s (원장 되돌림=%s)",
                     instruction_used, current_target_sub, _ledger_snapshot is not None)
 
+    # 8-y. (2026-10-29) 최종 누설 소거 — 8-i 뒤의 재생성(8-j 전환·8-n 입버릇·8-h 느낌표)이 만든 새 LLM 출력은 8-i 의 누설 검사를
+    #   거치지 않았다(s291 Jessica t10: 8-n 재생성 출력이 '되받기 한 문장 + 다리 한 문장으로 답하겠습니다.'로 시작). 엄격 사전 어휘·
+    #   상태 보고문이 든 평서문만 지운다(질문 보존). ALIGN 은 조립(8-z) 전의 되받기에 걸리므로 고정 문장은 건드리지 않는다.
+    if system_override_text is None and not _llm_error and (clean_reply or "").strip():
+        try:
+            from diag_project.services.leak_lexicon import find_leaks as _fl_y, find_state_report as _fsr_y, strip_leak_sentences as _sls_y
+            from diag_project.services.output_guard import strip_state_leak as _ssl_y
+            _lk_y = _fl_y(clean_reply, _prev_user_texts + [request.content or ""])
+            _sr_y = _fsr_y(clean_reply)
+            if _lk_y or _sr_y:
+                _c_y, _n_y = clean_reply, 0
+                if _lk_y:
+                    _c_y, _n_y = _sls_y(_c_y, list(_lk_y))
+                if _sr_y:
+                    _c_y2, _n_y2 = _ssl_y(_c_y)
+                    for _s_y in _sr_y:      # 정규식 상태 보고문(strip_state_leak 이 모르는 문장)은 문장 단위로 뗀다
+                        if _s_y in _c_y2:
+                            _c_y2 = _c_y2.replace(_s_y, "").strip(); _n_y2 += 1
+                    _c_y, _n_y = _c_y2, _n_y + _n_y2
+                _c_y = re.sub(r"\n{3,}", "\n\n", _c_y).strip()
+                if _c_y and (has_question(_c_y) or not has_question(clean_reply)):
+                    clean_reply = _c_y
+                    _tm["leak_final"] = {"words": list(_lk_y)[:6], "state": _sr_y[:3], "stripped": _n_y}
+                    logger.info("🛡️ 최종 누설 소거 %d문장: 어휘=%s 상태=%s", _n_y, _lk_y, _sr_y)
+        except Exception as _le_y:   # noqa: BLE001 — 소거 실패가 턴을 막지 않게
+            logger.warning("최종 누설 소거 실패(무시): %s", _le_y)
+
     # 8-z. (2026-10-28 P0-1) ALIGN 최종 조립 — 모든 후처리 뒤. 되받기(가드 통과본) + 고정 정의 + 목록 + 안내 + 다리 + 앵커.
     if _align_ctx is not None and system_override_text is None and not _llm_error and chapter:
         from diag_project.services.align_render import align_shape_ok as _aso_z, render_align as _ra_z

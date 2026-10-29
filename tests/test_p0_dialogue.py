@@ -250,3 +250,34 @@ def test_tail_guard_runs_on_align_receive_before_assembly():
     # 조립 결과에 입버릇 삭제를 걸어도(실제 파이프라인에서는 걸리지 않음) 목록·앵커는 그대로다
     out2, _ = strip_lead_sentences(out, set(lead_tails(out)))
     assert "· 자기인식" in out2 and out2.rstrip().endswith("있었어요?")
+
+
+def test_definition_answer_with_rest_word_is_not_pause_at_h4():
+    """s291 Lucas: 자기관리 정의 답의 '잠깐 쉬면서'가 H4(챕터 중 일시정지 감지)에서 USER_REQUESTS_PAUSE 로 새지 않는다."""
+    from diag_project.services.instruction_decider import detect_pause_request, _is_substantive_definition_answer
+    txt = ("저는 자기관리라고 하면 일이 몰리거나 예상치 못한 문제가 생겨도 감정적으로 흔들리지 않고, 우선순위를 정해 차분하게 처리하는 "
+           "모습이 먼저 떠올라요. 그래서 업무 일정뿐 아니라 제 컨디션을 챙기고, 필요할 때는 잠깐 쉬면서 다시 집중하는 것도 중요하게 보고 있어요.")
+    assert detect_pause_request(txt)       # 낱말 감지 자체는 그대로(전제)
+    assert _is_substantive_definition_answer({"last_instruction": "COMPETENCY_ASK", "last_user_response": txt})
+    assert not _is_substantive_definition_answer({"last_instruction": "STAR_INCOMPLETE", "last_user_response": txt})
+    assert not _is_substantive_definition_answer({"last_instruction": "COMPETENCY_ASK", "last_user_response": "잠깐 쉬었다 할게요"})
+    import inspect
+    from diag_project.services import instruction_decider as d
+    src = inspect.getsource(d.decide_instruction) if hasattr(d, "decide_instruction") else inspect.getsource(d)
+    h4 = src.index("H4: 휴식·미루기 요청")
+    assert "_is_substantive_definition_answer(state)" in src[h4: h4 + 900]
+
+
+def test_final_leak_sweep_runs_after_tail_regen_and_before_align_assembly():
+    """8-n 재생성 출력이 '되받기 한 문장 + 다리 한 문장으로 답하겠습니다.'로 시작해도 8-y 가 지운다(질문 보존)."""
+    import inspect
+    from diag_project.routes import diagnoses as d
+    src = inspect.getsource(d._submit_message_phase3a)
+    assert src.index("# 8-n.") < src.index("# 8-y.") < src.index("# 8-z.")
+    from diag_project.services.leak_lexicon import find_leaks, strip_leak_sentences
+    t = ("되받기 한 문장 + 다리 한 문장으로 답하겠습니다.\n\n앞선 질문이 어렵게 들리셨다면 제 쪽 잘못입니다. "
+         "최근에 방향을 바꾸는 결정을 내리셨을 때, 팀원들이 처음 들었던 순간이 어땠는지 떠올려 주실 수 있을까요?")
+    lk = find_leaks(t, [])
+    assert "되받기" in lk
+    out, n = strip_leak_sentences(t, lk)
+    assert n == 1 and "되받기" not in out and out.endswith("있을까요?")

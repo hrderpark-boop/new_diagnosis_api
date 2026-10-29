@@ -422,6 +422,14 @@ def detect_duplicate_claim(user_response: str | None) -> bool:
     return any(kw in t for kw in DUPLICATE_CLAIM_KEYWORDS)
 
 
+def _is_substantive_definition_answer(state: dict) -> bool:
+    """직전 코치 턴이 정의 질문(COMPETENCY_ASK·DIAGNOSIS_CONFIRM)이고 리더 답이 30자 이상이면 '정의 답변'이다.
+    일시정지·항의·메타 감지의 예외(정의 답 속 '쉬어'·'왜' 같은 낱말이 의도로 오인되는 것을 막는다)."""
+    _last = state.get("last_user_response") or ""
+    return (state.get("last_instruction") in ("COMPETENCY_ASK", "DIAGNOSIS_CONFIRM")
+            and len(_last.replace(" ", "")) >= 30)
+
+
 def decide_instruction(state: dict) -> InstructionType:
     """현재 상태 기반으로 LLM 에게 줄 instruction 결정.
 
@@ -472,7 +480,9 @@ def decide_instruction(state: dict) -> InstructionType:
         #   USER_REQUESTS_PAUSE 로 분기한다(→ 11-b paused, 재개 가능). 프론트의
         #   '잠시 쉬기/다음에 하기' 버튼 문구가 이 경로를 탄다. (과거엔 A-2 가
         #   먼저 평가돼 pause 문구가 ABORT_CONFIRM → aborted_disengaged 로 갔다.)
-        if detect_pause_request(state.get("last_user_response")):
+        #   (2026-10-29) 정의 질문에 대한 실질 답변(30자 이상)은 예외 — s291 Lucas 자기관리 정의 답 '…잠깐 쉬면서 다시 집중하는 것도'
+        #   의 '쉬면서'가 여기(H4)서 일시정지로 읽혀 Stage 4 의 예외에 닿기 전에 USER_REQUESTS_PAUSE 가 나갔다.
+        if detect_pause_request(state.get("last_user_response")) and not _is_substantive_definition_answer(state):
             return "USER_REQUESTS_PAUSE"
         # A-2: 중단 확인 진입 — 명시적 거부(즉시) OR 연속 3회 이탈 & 최소 5사이클.
         #   (계속 선택 시 diagnoses.py 가 streak 리셋 → 여기 재진입 안 함)
@@ -610,8 +620,7 @@ def decide_instruction(state: dict) -> InstructionType:
         _last = state.get("last_user_response") or ""
         # (2026-10-29) 정의 질문(COMPETENCY_ASK·DIAGNOSIS_CONFIRM)에 대한 '실질 답변'(30자 이상)은 일시정지·메타로 돌리지 않는다.
         #   10/28 Lucas 자기관리: 정의 답 "…잠깐 쉬어가는 것도 중요하게" 의 '쉬어'가 일시정지로 읽혀 정의→ALIGN 사이에 탐침 턴이 끼었다.
-        _is_definition_answer = (state.get("last_instruction") in ("COMPETENCY_ASK", "DIAGNOSIS_CONFIRM")
-                                 and len(_last.replace(" ", "")) >= 30)
+        _is_definition_answer = _is_substantive_definition_answer(state)
         if detect_user_objection(_last) and not _is_definition_answer:
             state["route_reason"] = "objection"
             return "META_QUESTION_FROM_USER"
