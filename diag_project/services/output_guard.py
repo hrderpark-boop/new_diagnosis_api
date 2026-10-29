@@ -788,6 +788,15 @@ def needs_quantify_probe(user_text: str | None) -> bool:
 _DIRECT_ACTION_Q_RE = re.compile(r"직접\s*(하신|어떻게|뭘|무엇을|무엇이|움직이신|하셨|한\s*일|하는|해\s*보신|해보신|한\s*행동)")
 
 
+_NUMBER_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?\s*(?:%|퍼센트|명|건|주|일|개월|년|배|시간|분|회|차|억|만원|천만|백만|점|개)")
+
+
+def number_token(text: str | None) -> str | None:
+    """(2026-10-29 P2-1 Jessica) 리더 답에 든 첫 수치 표현('8%', '두 달'은 제외 — 아라비아 숫자+단위만)."""
+    m = _NUMBER_TOKEN_RE.search(text or "")
+    return re.sub(r"\s+", "", m.group(0)) if m else None
+
+
 def is_direct_action_question(q: str | None) -> bool:
     """(2026-10-29 P1-2) '리더님이 직접 하신 일은?' 류 — 하위역량당 1회 상한 대상(린트 _DIRECT_Q_RE 와 같은 표지)."""
     return bool(_DIRECT_ACTION_Q_RE.search(q or ""))

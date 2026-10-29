@@ -431,3 +431,22 @@ def test_ladder_overridden_question_is_not_marked_used():
     q = "그 아이디어를 작게 먼저 시험해 보고 고치신 적이 있었어요?"
     assert len({c for c in _content_chunks(q) if len(c) >= 2} & set(_content_chunks("들으셨군요. 그 아이디어를 작게 먼저 시험해 보고 고치신 적이 있었던가요?"))) >= 3
     assert len({c for c in _content_chunks(q) if len(c) >= 2} & set(_content_chunks("네, 그러셨군요. 이제 '사람관리'로 이어가겠습니다."))) < 3
+
+
+# ── P2-1 페르소나 고정 슬롯 ────────────────────────────────────────────────────
+def test_persona_slot_lines_and_wiring():
+    import inspect
+    from diag_project.services.intro_messages import PERSONA_LINES, DANIEL_OBSERVATIONS
+    from diag_project.services.output_guard import number_token
+    from diag_project.services.persona_voice import is_contrast_question
+    from diag_project.routes import diagnoses as d
+    assert PERSONA_LINES["Jessica"]["slot_q"].endswith("무엇이었습니까?")
+    assert is_contrast_question(PERSONA_LINES["Olivia"]["slot_q"]) and is_contrast_question(PERSONA_LINES["Olivia"]["slot_q2"])
+    assert len(DANIEL_OBSERVATIONS) == 5 and PERSONA_LINES["Michael"]["slot_lead"] and PERSONA_LINES["Michael"]["slot_q"].endswith("?")
+    assert "한 줄로" in PERSONA_LINES["Lucas"]["slot_q"] and PERSONA_LINES["Ella"]["slot_q"] == ""
+    assert number_token("재구매율이 8% 올랐습니다") == "8%" and number_token("두 달 걸렸어요") is None and number_token("3명을 새로 뽑았어요") == "3명"
+    src = inspect.getsource(d._submit_message_phase3a)
+    i = src.index("페르소나 고정 슬롯")
+    blk = src[i: i + 4000]
+    assert all(k in blk for k in ('_pn_s == "Jessica"', '_pn_s == "Olivia"', '_pn_s == "Daniel"', '_pn_s == "Michael"', "Lucas", '_tm["slot"] = _pn_s'))
+    assert "persona_slot_used" in src and "j_number_restated" in src

@@ -2483,6 +2483,53 @@ async def _submit_message_phase3a(
                     logger.info("🧭 '직접 하신' 질문 교체(%s): [%s] %s", _tm["direct_q_fix"], chapter, current_target_sub)
                 else:
                     _tm["direct_q"] = 1
+            # (2026-10-29 P2-1) 페르소나 고정 슬롯 — 어미가 아니라 '하는 일'. 챕터당 1회, 타겟 2~3번째 턴, 사다리·일반화 턴이 아닐 때.
+            #   Jessica 기준 질문 / Olivia 대조 질문(챕터 홀짝으로 두 문형) / Daniel 선배 관찰 1문장(질문 유지) /
+            #   Michael 응원 1문장 + 실행 의지 질문 / Lucas '한 줄로' 질문. Ella 는 슬롯 없음.
+            from diag_project.services.persona_voice import persona_key as _pk_s
+            _pn_s = _pk_s((state.get("coach_persona") or {}).get("name"))
+            _ans_s = (state.get("resume_pending") or {}).get("user_text") or request.content or ""
+            _sd_s = session.self_assessment_data or {}
+            if _pn_s == "Jessica" and not state.get("force_ladder_probe") and not state.get("force_generalize_probe"):
+                # 수치 탐침 최우선 — 정도부사·'향상' 류 답이면 챕터당 1회 수치 질문으로 교체. 되받기에 숫자 재진술.
+                from diag_project.services.output_guard import needs_quantify_probe as _nqp_s, number_token as _ntk
+                if (_nqp_s(_ans_s) and not int(((_sd_s.get("quantify_used") or {}).get(chapter, 0)) or 0) and not _tm.get("quantify")):
+                    _lead_j = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
+                    clean_reply = " ".join(_lead_j + [_pl_a((state.get("coach_persona") or {}).get("name"), "quantify")]).strip()
+                    _tm["quantify"] = 1; _tm["j_quantify_first"] = 1
+                    logger.info("🔢 Jessica 수치 탐침 최우선: [%s] %s", chapter, current_target_sub)
+                _num = _ntk(_ans_s)
+                if _num and _num.replace(" ", "") not in clean_reply.replace(" ", ""):
+                    clean_reply = f"{_num}이라고 하셨죠. {clean_reply}".strip()
+                    _tm["j_number_restated"] = _num
+            _slot_used = ((_sd_s.get("persona_slot_used") or {}).get(chapter)) if chapter else "x"
+            _tot_s = int((_sd_s.get("turns_on_target") or {}).get(chapter, 0) or 0)
+            if (_pn_s in ("Jessica", "Olivia", "Daniel", "Michael", "Lucas") and chapter and current_target_sub and not _slot_used
+                    and _tot_s in (2, 3) and not state.get("force_ladder_probe") and not state.get("force_generalize_probe")
+                    and not _tm.get("quantify")):
+                from diag_project.data.competencies import COMPETENCY_FRAMEWORK as _CF_s
+                _ch_i = [k for k in _CF_s if k != "supplementary"].index(chapter) if chapter in _CF_s else 0
+                _lead_s = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
+                _q_now_s = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
+                if _pn_s == "Jessica":
+                    clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip()
+                elif _pn_s == "Olivia":
+                    _cq_used = int(((_sd_s.get("contrast_q_count") or {}).get(chapter, 0)) or 0)
+                    if _cq_used:
+                        _slot_used = "contrast_already"   # LLM 이 이미 대조 질문을 했으면 그것이 슬롯
+                    else:
+                        clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q2" if _ch_i % 2 else "slot_q")]).strip()
+                        _tm["contrast_q"] = 1
+                elif _pn_s == "Daniel":
+                    from diag_project.services.intro_messages import DANIEL_OBSERVATIONS as _DOBS
+                    clean_reply = " ".join([_DOBS[_ch_i % len(_DOBS)]] + _lead_s + ([_q_now_s] if _q_now_s else [])).strip()
+                elif _pn_s == "Michael":
+                    clean_reply = " ".join([_pl_a((state.get("coach_persona") or {}).get("name"), "slot_lead")] + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip()
+                else:   # Lucas
+                    clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip()
+                if _slot_used != "contrast_already":
+                    _tm["slot"] = _pn_s
+                    logger.info("🎭 페르소나 슬롯(%s): [%s] %s", _pn_s, chapter, current_target_sub)
             _new_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
             _prev_qs = [x for t in _recent_coach_texts for x in split_sentences(t) if is_question_sentence(x)]
             if _new_q and _prev_qs:
@@ -3060,6 +3107,10 @@ async def _submit_message_phase3a(
                 # (2026-10-29 P1-3) 다음 턴 답이 여전히 시점 없는 일반화면 generalized 원장에 남긴다(리포트 P2-3)
                 _gp = dict(_gl_store.get("generalize_pending") or {}); _gp[chapter] = current_target_sub
                 _gl_store["generalize_pending"] = _gp
+            if _tm.get("slot") and chapter:
+                _psu = dict(_gl_store.get("persona_slot_used") or {}); _psu[chapter] = _tm["slot"]; _gl_store["persona_slot_used"] = _psu
+            if _tm.get("quantify") and chapter:
+                _qu = dict(_gl_store.get("quantify_used") or {}); _qu[chapter] = int(_qu.get(chapter, 0) or 0) + 1; _gl_store["quantify_used"] = _qu
             if _tm.get("direct_q") and current_target_sub:
                 # (2026-10-29 P1-2) '직접 하신' 질문 사용 횟수 — 하위역량당 1회 상한
                 _dqc_g = dict(_gl_store.get("direct_q_count") or {}); _dqc_ch = dict(_dqc_g.get(chapter) or {})
@@ -3139,6 +3190,8 @@ async def _submit_message_phase3a(
             "direct_q": int(_tm.get("direct_q") or 0), "direct_q_fix": _tm.get("direct_q_fix"),
             "generalized": _tm.get("generalized"), "skip_bridge": int(_tm.get("skip_bridge") or 0), "unconfirmed": _tm.get("unconfirmed"),
             "anomaly": _tm.get("anomaly"),
+            # (2026-10-29 P2-1) slot: 페르소나 고정 슬롯 발동(챕터당 1) · Jessica 수치 우선/숫자 재진술
+            "slot": _tm.get("slot"), "j_quantify_first": int(_tm.get("j_quantify_first") or 0), "j_number_restated": _tm.get("j_number_restated"),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

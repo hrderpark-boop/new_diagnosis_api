@@ -212,6 +212,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         "truncated": [], "truncated_total": 0,
         "repeat_a_cases": 0, "repeat_a_missed": 0, "repeat_b_cases": 0, "repeat_b_missed": 0, "repeat_missed": [],
         "ladder_turns": 0, "ladder_by_chapter": {}, "ladder_short_chapters": [], "ladder_skipped": 0, "ladder_swapped": 0, "leak_final_turns": 0,
+        "slot_by_chapter": {}, "slot_chapters": 0,
         "generalize_turns": 0, "generalize_by_chapter": {}, "direct_q_by_target": {}, "direct_excess": 0,
         "endings": {}, "anchors": [],
     }
@@ -289,6 +290,8 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
             res["ladder_by_chapter"][chapter or "-"] = res["ladder_by_chapter"].get(chapter or "-", 0) + 1   # 챕터당 2회 목표에는 포함
         if g.get("ladder_swap"):
             res["ladder_swapped"] += 1
+        if g.get("slot"):
+            res["slot_by_chapter"][chapter or "-"] = res["slot_by_chapter"].get(chapter or "-", 0) + 1   # (2026-10-29 P2-1) 페르소나 슬롯
         if g.get("leak_final"):
             res["leak_final_turns"] += 1          # (2026-10-29 P1) 8-y 최종 누설 소거 발동 턴 — 목표 0(상류 프롬프트에서 원인 제거)
         if g.get("generalize_probe") or g.get("generalize"):
@@ -313,6 +316,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
     # (2026-10-29 P1-1) 사다리 2회 미만인 챕터(라포 제외, 5챕터 기준)
     _ch_all = ["organization_management", "performance_management", "people_management", "work_management", "self_management"]
     res["ladder_short_chapters"] = [c for c in _ch_all if res["ladder_by_chapter"].get(c, 0) < 2]
+    res["slot_chapters"] = sum(1 for c in _ch_all if res["slot_by_chapter"].get(c, 0) >= 1)   # 챕터당 1 = 5 통과(Ella 는 0)
     res["endings"] = dict(endings.most_common())
     return res
 
@@ -345,14 +349,14 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
     L: list[str] = []
     L.append("## 코치 재생 전문 린트 요약")
     L.append("")
-    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total | 잘림 | 미감지 a/b | 사다리(<2 챕터) | 사다리 건너뜀/교체 | 일반화 | 직접하신 초과 | 동일앵커 |")
-    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total | 잘림 | 미감지 a/b | 사다리(<2 챕터) | 사다리 건너뜀/교체 | 슬롯 챕터 | 일반화 | 직접하신 초과 | 동일앵커 |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for r in results:
         same = cross["per_coach"].get(r["coach"], 0)
         L.append(f"| {r['coach_name']}({r['coach']}) | {os.path.basename(r['file'])} | {r['leak_total']}/{r['leak_strict_total']} | {r['leak_final_turns']} | "
                  f"{r['align_pass']}/{r['align_total']} | {r['truncated_total']} | "
                  f"{r['repeat_a_missed']}/{r['repeat_a_cases']} · {r['repeat_b_missed']}/{r['repeat_b_cases']} | "
-                 f"{r['ladder_turns']}({len(r['ladder_short_chapters'])}) | {r['ladder_skipped']}/{r['ladder_swapped']} | {r['generalize_turns']} | {r['direct_excess']} | {same} |")
+                 f"{r['ladder_turns']}({len(r['ladder_short_chapters'])}) | {r['ladder_skipped']}/{r['ladder_swapped']} | {r['slot_chapters']}/5 | {r['generalize_turns']} | {r['direct_excess']} | {same} |")
     L.append("")
     L.append("- 미감지 a/b: (직전 사용자 턴 반복 미감지/발생) · (코치 질문 붙여넣기 미감지/발생)")
     L.append(f"- 코치 간 동일 앵커 문장 쌍 합계: **{cross['pairs']}** (0 이어야 함)")
