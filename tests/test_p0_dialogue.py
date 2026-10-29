@@ -259,7 +259,8 @@ def test_definition_answer_with_rest_word_is_not_pause_at_h4():
            "모습이 먼저 떠올라요. 그래서 업무 일정뿐 아니라 제 컨디션을 챙기고, 필요할 때는 잠깐 쉬면서 다시 집중하는 것도 중요하게 보고 있어요.")
     assert detect_pause_request(txt)       # 낱말 감지 자체는 그대로(전제)
     assert _is_substantive_definition_answer({"last_instruction": "COMPETENCY_ASK", "last_user_response": txt})
-    assert not _is_substantive_definition_answer({"last_instruction": "STAR_INCOMPLETE", "last_user_response": txt})
+    assert _is_substantive_definition_answer({"last_instruction": "STAR_INCOMPLETE", "last_user_response": txt})   # 60자 이상 실질 답은 어디서든 예외
+    assert not _is_substantive_definition_answer({"last_instruction": "STAR_INCOMPLETE", "last_user_response": "오늘은 좀 지쳐서 잠깐 쉬었다가 다시 이어가도 될까요?"})
     assert not _is_substantive_definition_answer({"last_instruction": "COMPETENCY_ASK", "last_user_response": "잠깐 쉬었다 할게요"})
     import inspect
     from diag_project.services import instruction_decider as d
@@ -398,3 +399,10 @@ def test_ladder_duplicate_guard_wired():
     assert "ladder_already_answered" in inspect.getsource(j)
     h = src.index("async def _choose_ladder"); body = src[h: h + 1400]
     assert '"swapped"' in body and '"answered"' in body and "ladder_skip" in body
+
+
+def test_indirect_question_with_yeojjwo_bolgeyo_pairs_conditional_followup():
+    """p121_6 Lucas: '…있었는지 여쭤볼게요. 있었다면 그때 무엇을 바꾸셨는지 한 줄로 알려주세요.' 는 한 쌍 — 잘림이 아니다."""
+    from diag_project.services.output_guard import is_question
+    assert is_question("그 기준으로 최근에 본인 방식이 팀에서 예상과 다르게 받아들여졌던 일이 있었는지 여쭤볼게요.")
+    assert not is_question("하나 여쭤볼게요.")

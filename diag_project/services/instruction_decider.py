@@ -426,8 +426,12 @@ def _is_substantive_definition_answer(state: dict) -> bool:
     """직전 코치 턴이 정의 질문(COMPETENCY_ASK·DIAGNOSIS_CONFIRM)이고 리더 답이 30자 이상이면 '정의 답변'이다.
     일시정지·항의·메타 감지의 예외(정의 답 속 '쉬어'·'왜' 같은 낱말이 의도로 오인되는 것을 막는다)."""
     _last = state.get("last_user_response") or ""
-    return (state.get("last_instruction") in ("COMPETENCY_ASK", "DIAGNOSIS_CONFIRM")
-            and len(_last.replace(" ", "")) >= 30)
+    _n = len(_last.replace(" ", ""))
+    # (2026-10-29 P1 p12) 정의 질문 뒤가 아니어도 60자 이상의 실질 답변은 일시정지 요청이 아니다 — p121_6: 정의 답이 ALIGN 뒤 한 턴 늦게 와
+    #   '잠깐 쉬면서'로 세션이 paused 됐다. 실제 일시정지 요청은 짧다('잠시 쉬었다 할게요').
+    if _n >= 60:
+        return True
+    return (state.get("last_instruction") in ("COMPETENCY_ASK", "DIAGNOSIS_CONFIRM") and _n >= 30)
 
 
 def decide_instruction(state: dict) -> InstructionType:
