@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete, func, or_
@@ -255,8 +255,14 @@ def _paginate(page: int, page_size: int) -> tuple[int, int]:
 # 1. 인증
 # ===========================================================================
 @router.post("/auth/login", response_model=AdminLoginResponse)
-async def admin_login(body: AdminLoginRequest, db: AsyncSession = Depends(get_db)):
-    """관리자 로그인. 이메일/비밀번호 검증 후 JWT 발급."""
+async def admin_login(body: AdminLoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """관리자 로그인. 이메일/비밀번호 검증 후 JWT 발급.
+
+    (2026-10-29 보안) 같은 IP·이메일로 15분 안에 5번 틀리면 15분 잠금(429). services/rate_limit.py
+    """
+    from diag_project.services import rate_limit
+    _ip = rate_limit.client_ip(request)
+    rate_limit.check_admin_login(_ip, body.email)
     result = await db.execute(
         select(AdminUser).where(AdminUser.email == body.email.strip().lower())
     )
@@ -264,6 +270,7 @@ async def admin_login(body: AdminLoginRequest, db: AsyncSession = Depends(get_db
 
     # 계정 존재 여부를 노출하지 않도록 실패 메시지를 통일한다.
     if not admin or not verify_password(body.password, admin.password_hash):
+        rate_limit.record_admin_failure(_ip, body.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="이메일 또는 비밀번호가 올바르지 않습니다.",
@@ -274,6 +281,7 @@ async def admin_login(body: AdminLoginRequest, db: AsyncSession = Depends(get_db
             detail="비활성화된 계정입니다. 운영자에게 문의하세요.",
         )
 
+    rate_limit.clear_admin_failures(_ip, body.email)
     admin.last_login_at = datetime.now(timezone.utc)
     db.add(admin)
     await db.commit()

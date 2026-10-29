@@ -5,7 +5,7 @@ import uuid
 import logging
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Request, APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from pydantic import BaseModel
@@ -69,9 +69,14 @@ class TokenResponse(BaseModel):
 # 로그인 API
 @router.post("/token", response_model=TokenResponse)
 async def login_for_access_token(
-    form_data: LoginRequest, 
+    form_data: LoginRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
+    # (2026-10-29 보안) 같은 IP 접속 시도 속도 제한 + 서명된 참여자 토큰(JWT) 발급
+    from diag_project.services import rate_limit
+    from diag_project.services.participant_auth import create_participant_token
+    rate_limit.check_participant_login(rate_limit.client_ip(request))
     logger.info(f"🔐 로그인 시도: {form_data.email} / {form_data.name}")
 
     # 1. 사용자 조회
@@ -98,7 +103,7 @@ async def login_for_access_token(
             await db.commit()
             await db.refresh(_personal)
         return {
-            "access_token": f"fake-jwt-token-for-{_personal.id}",
+            "access_token": create_participant_token(_personal.id),
             "token_type": "bearer",
             "participant_id": str(_personal.id),
             "name": _personal.name or "",
@@ -172,7 +177,7 @@ async def login_for_access_token(
 
     # 4. 토큰 응답
     return {
-        "access_token": f"fake-jwt-token-for-{participant.id}",
+        "access_token": create_participant_token(participant.id),
         "token_type": "bearer",
         "participant_id": str(participant.id),
         "name": participant.name if participant.name else ""

@@ -92,9 +92,15 @@ def _make_rows(client, *, status="completed", marker=None, with_report=False):
     return client.portal.call(_mk)
 
 
+def _ph(pid):
+    """(2026-10-29) 참여자 API 는 본인 토큰 필수."""
+    from diag_project.services.participant_auth import create_participant_token
+    return {"Authorization": f"Bearer {create_participant_token(pid)}"}
+
+
 def test_active_returns_completed_summary_when_no_resumable(client):
     pid, sid = _make_rows(client, marker={"status": "failed", "fail_count": 3, "error_id": "e1"})
-    r = client.get("/api/v1/diagnoses/active", params={"participant_id": pid})
+    r = client.get("/api/v1/diagnoses/active", params={"participant_id": pid}, headers=_ph(pid))
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["has_active"] is False
@@ -102,11 +108,11 @@ def test_active_returns_completed_summary_when_no_resumable(client):
     assert body["completed"]["analysis_status"] == "failed"
     # 리포트가 있으면 has_report=True
     pid2, sid2 = _make_rows(client, with_report=True)
-    c2 = client.get("/api/v1/diagnoses/active", params={"participant_id": pid2}).json()["completed"]
+    c2 = client.get("/api/v1/diagnoses/active", params={"participant_id": pid2}, headers=_ph(pid2)).json()["completed"]
     assert c2["session_id"] == sid2 and c2["has_report"] is True and c2["analysis_status"] is None
     # 완주 세션이 없으면 None
     pid3, _ = _make_rows(client, status="in_progress")
-    b3 = client.get("/api/v1/diagnoses/active", params={"participant_id": pid3}).json()
+    b3 = client.get("/api/v1/diagnoses/active", params={"participant_id": pid3}, headers=_ph(pid3)).json()
     assert b3["has_active"] is True and "completed" not in b3
 
 

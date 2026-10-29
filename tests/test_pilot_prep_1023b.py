@@ -55,13 +55,15 @@ def test_self_eval_requires_all_five_scores(client):
             db.add(p); await db.flush()
             s = DiagnosisSession(user_id=p.id, coach_id=ELLA, status="in_progress")
             db.add(s); await db.commit()
-            return str(s.id)
-    sid = client.portal.call(_mk)
-    r = client.patch(f"/api/v1/sessions/{sid}/self-eval", json={"scores": {"organization_management": 3, "people_management": 4}})
+            return str(p.id), str(s.id)
+    pid, sid = client.portal.call(_mk)
+    from diag_project.services.participant_auth import create_participant_token
+    hdr = {"Authorization": f"Bearer {create_participant_token(pid)}"}  # (2026-10-29) 본인 토큰 필수
+    r = client.patch(f"/api/v1/sessions/{sid}/self-eval", json={"scores": {"organization_management": 3, "people_management": 4}}, headers=hdr)
     assert r.status_code == 400 and "누락" in r.json()["detail"]
-    r2 = client.patch(f"/api/v1/sessions/{sid}/self-eval", json={"scores": {}})
+    r2 = client.patch(f"/api/v1/sessions/{sid}/self-eval", json={"scores": {}}, headers=hdr)
     assert r2.status_code == 400
     full = {k: 3.5 for k in ("organization_management", "performance_management", "people_management", "work_management", "self_management")}
-    r3 = client.patch(f"/api/v1/sessions/{sid}/self-eval", json={"scores": full})
+    r3 = client.patch(f"/api/v1/sessions/{sid}/self-eval", json={"scores": full}, headers=hdr)
     assert r3.status_code == 200 and r3.json()["self_assessment"]["self_average"] == 3.5
-    assert client.get(f"/api/v1/sessions/{sid}/self-eval").json()["submitted"] is True
+    assert client.get(f"/api/v1/sessions/{sid}/self-eval", headers=hdr).json()["submitted"] is True

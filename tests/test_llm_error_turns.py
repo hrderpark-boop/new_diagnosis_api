@@ -55,7 +55,9 @@ def test_llm_error_three_times_pauses_session_without_state_change(server):
     from diag_project.routes.diagnoses import COACH_UUID_TO_KEY
     coach_uuid = {v: k for k, v in COACH_UUID_TO_KEY.items()}["4"]
     pid = str(uuid.uuid4())
-    with httpx.Client(timeout=60) as c:
+    from diag_project.services.participant_auth import create_participant_token
+    # (2026-10-29) 참여자 API 는 본인 토큰 필수(서버 프로세스와 같은 환경의 서명 키)
+    with httpx.Client(timeout=60, headers={"Authorization": f"Bearer {create_participant_token(pid)}"}) as c:
         r = c.post(f"{base}/diagnoses/start", json={"coach_id": coach_uuid, "participant_id": pid, "template_id": TEMPLATE_ID})
         assert r.status_code == 201, r.text
         sid = r.json()["session_id"]

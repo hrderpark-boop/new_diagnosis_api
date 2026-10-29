@@ -47,21 +47,22 @@ def test_smoke_start_to_align_every_coach(client: TestClient, seed_data, monkeyp
         "name": "박기진", "group_code": "G-TEST"})
     assert login.status_code == 200, login.text
     pid = login.json()["participant_id"]
+    hdr = {"Authorization": f"Bearer {login.json()['access_token']}"}  # (2026-10-29) 참여자 API 는 토큰 필수
 
     start = client.post("/api/v1/diagnoses/start", json={
-        "coach_id": coach_uuid, "participant_id": pid, "template_id": TEMPLATE_ID, "force_new": True})
+        "coach_id": coach_uuid, "participant_id": pid, "template_id": TEMPLATE_ID, "force_new": True}, headers=hdr)
     assert start.status_code == 201, start.text
     sid = start.json()["session_id"]
 
     se = client.patch(f"/api/v1/sessions/{sid}/self-eval", json={"scores": {
         "organization_management": 3.5, "performance_management": 3, "people_management": 4,
-        "work_management": 2.5, "self_management": 3}})
+        "work_management": 2.5, "self_management": 3}}, headers=hdr)
     assert se.status_code == 200, se.text
 
     reached = False
     for i, content in enumerate(INPUTS, 1):
         r = client.post("/api/v1/diagnoses/submit_message",
-                        json={"session_id": sid, "diagnosis_id": sid, "content": content})
+                        json={"session_id": sid, "diagnosis_id": sid, "content": content}, headers=hdr)
         assert r.status_code < 500, f"코치 {coach_key} 턴 {i} HTTP {r.status_code}: {r.text[:300]}"
         assert r.status_code in (200, 201), f"코치 {coach_key} 턴 {i} HTTP {r.status_code}: {r.text[:300]}"
         body = r.json()

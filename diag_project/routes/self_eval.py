@@ -7,6 +7,7 @@
 # '메타인지(자기 객관화) 격차'를 산출하는 근거가 된다.
 
 import logging
+from diag_project.services.participant_auth import Caller, get_caller, assert_can_access_participant, assert_can_access_session  # (2026-10-29 보안) 참여자 API 소유자 확인
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import UUID
@@ -58,6 +59,7 @@ async def submit_self_evaluation(
     session_id: UUID,
     body: SelfEvalRequest,
     db: AsyncSession = Depends(get_db),
+    caller: Caller = Depends(get_caller),
 ):
     """세션에 자가진단 결과를 저장한다.
 
@@ -65,6 +67,7 @@ async def submit_self_evaluation(
     이미 완료된 세션에 대해서는 거부한다 — 사후 입력은 '진단 전 자기 인식'이
     아니어서 갭 분석의 전제가 깨지기 때문이다.
     """
+    await assert_can_access_session(caller, session_id, db)
     session = (
         await db.execute(
             select(DiagnosisSession).where(DiagnosisSession.id == session_id)
@@ -148,8 +151,10 @@ async def submit_self_evaluation(
 async def get_self_evaluation(
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
+    caller: Caller = Depends(get_caller),
 ):
     """저장된 자가진단 조회. 미제출이면 submitted=false 로 응답한다."""
+    await assert_can_access_session(caller, session_id, db)
     session = (
         await db.execute(
             select(DiagnosisSession).where(DiagnosisSession.id == session_id)

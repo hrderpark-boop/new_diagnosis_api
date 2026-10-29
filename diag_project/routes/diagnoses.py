@@ -1,6 +1,7 @@
 import logging
 import os
 import uuid
+from diag_project.services.participant_auth import Caller, get_caller, assert_can_access_participant, assert_can_access_session  # (2026-10-29 보안) 참여자 API 소유자 확인
 from uuid import UUID
 import re
 import json
@@ -255,7 +256,9 @@ async def restore_session_by_id(db: AsyncSession, session_id: uuid.UUID) -> dict
 async def get_active_session(
     participant_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    caller: Caller = Depends(get_caller),
 ):
+    await assert_can_access_participant(caller, participant_id, db)
     q = select(DiagnosisSession).where(
         DiagnosisSession.user_id == participant_id,
         DiagnosisSession.status.in_(list(RESUMABLE_STATUSES)),
@@ -325,7 +328,9 @@ async def latest_completed_summary(db: AsyncSession, participant_id: uuid.UUID) 
 async def abandon_resumable_sessions(
     request: AbandonRequest,
     db: AsyncSession = Depends(get_db),
+    caller: Caller = Depends(get_caller),
 ):
+    await assert_can_access_participant(caller, request.participant_id, db)
     q = select(DiagnosisSession).where(
         DiagnosisSession.user_id == request.participant_id,
         DiagnosisSession.status.in_(list(RESUMABLE_STATUSES)),
@@ -360,7 +365,9 @@ async def abandon_resumable_sessions(
 async def restore_abandoned_session(
     request: RestoreRequest,
     db: AsyncSession = Depends(get_db),
+    caller: Caller = Depends(get_caller),
 ):
+    await assert_can_access_session(caller, request.session_id, db)
     return await restore_session_by_id(db, request.session_id)
 
 
@@ -371,8 +378,8 @@ async def restore_abandoned_session(
 async def start_diagnosis(
     request: DiagnosisStartRequest, 
     db: AsyncSession = Depends(get_db),
-    llm: GeminiService = Depends(GeminiService) 
-):
+    llm: GeminiService = Depends(GeminiService), caller: Caller = Depends(get_caller)):
+    await assert_can_access_participant(caller, request.participant_id, db)
     user = await db.get(Participant, request.participant_id)
     user_name = user.name if user else "리더"
 
@@ -529,7 +536,9 @@ async def submit_message(
     request: ChatMessageRequest,
     db: AsyncSession = Depends(get_db),
     llm: GeminiService = Depends(GeminiService),
+    caller: Caller = Depends(get_caller),
 ):
+    await assert_can_access_session(caller, request.session_id, db)
     use_phase3a = phase3a_enabled()
     if use_phase3a:
         return await _submit_message_phase3a(request, db, llm)
@@ -3274,8 +3283,8 @@ async def _handle_event_lifecycle(
 @router.get("/{session_id}/state")
 async def get_session_state(
     session_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db)
-):
+    db: AsyncSession = Depends(get_db), caller: Caller = Depends(get_caller)):
+    await assert_can_access_session(caller, session_id, db)
     session = await db.get(DiagnosisSession, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")

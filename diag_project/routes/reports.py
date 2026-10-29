@@ -3,6 +3,7 @@ import time
 import uuid
 import json
 import logging
+from diag_project.services.participant_auth import Caller, get_caller, assert_can_access_participant, assert_can_access_session  # (2026-10-29 보안) 참여자 API 소유자 확인
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -20,7 +21,7 @@ from diag_project.models.coach_persona import CoachPersona
 from diag_project.models.event import Event
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 from diag_project.llm_service import GeminiService
-from diag_project.services.auth import AdminContext, get_current_admin
+from diag_project.services.auth import AdminContext, get_current_admin, require_super_admin
 from diag_project.services import analysis_progress
 
 logger = logging.getLogger(__name__)
@@ -165,7 +166,9 @@ class ReportUpdateRequest(BaseModel):
 # [신규] 관리자용 전체 리포트 목록 조회 (GET /)
 # --------------------------------------------------------------------------
 @router.get("/")
-async def get_all_reports(db: AsyncSession = Depends(get_db)):
+async def get_all_reports(db: AsyncSession = Depends(get_db),
+                          ctx: AdminContext = Depends(require_super_admin)):
+    # (2026-10-29 보안) 인증 없이 전 리포트를 내주던 경로 → 마스터 전용
     # 1. 전체 리포트 최신순 조회
     report_query = select(DiagnosisReport).order_by(DiagnosisReport.created_at.desc())
     report_res = await db.execute(report_query)
@@ -222,12 +225,14 @@ def reset_analysis_marker(prev: dict | None, by: str) -> dict:
 
 
 @router.get("/{session_id}/progress")
-async def get_analysis_progress(session_id: str):
+async def get_analysis_progress(session_id: str, caller: Caller = Depends(get_caller),
+                                db: AsyncSession = Depends(get_db)):
     """analyze 진행 상태 {stage, done, total, label, started_at, elapsed_s}.
 
     프로세스 메모리 상태라 DB 를 읽지 않는다(2초 폴링 부담 없음). 분석이 시작된
     적 없거나 서버가 재시작됐으면 404 — 프론트는 리포트 폴링으로 폴백한다.
     """
+    await assert_can_access_session(caller, session_id, db)
     try:
         uuid.UUID(session_id)
     except ValueError:
@@ -243,12 +248,13 @@ async def get_analysis_progress(session_id: str):
 # --------------------------------------------------------------------------
 @router.get("/{session_id}/estimate")
 async def get_analysis_estimate(session_id: str,
-                                db: AsyncSession = Depends(get_db)):
+                                db: AsyncSession = Depends(get_db), caller: Caller = Depends(get_caller)):
     """완료 시 analyze 가 얼마나 걸릴지: 챕터 사전분석 캐시 상태로 계산(읽기 전용).
 
     {cached_chapters, remaining_chapters, inflight_chapters, eta_seconds,
      eta_label, chapters:[{key, name, cached, inflight}]}
     """
+    await assert_can_access_session(caller, session_id, db)
     try:
         target_uuid = uuid.UUID(session_id)
     except ValueError:
@@ -289,7 +295,8 @@ async def get_analysis_estimate(session_id: str,
 # [1] 개별 결과 조회 (GET /{session_id}) - 프론트엔드 호출용
 # --------------------------------------------------------------------------
 @router.get("/{session_id}")
-async def get_report(session_id: str, db: AsyncSession = Depends(get_db)):
+async def get_report(session_id: str, db: AsyncSession = Depends(get_db), caller: Caller = Depends(get_caller)):
+    await assert_can_access_session(caller, session_id, db)
     try:
         target_uuid = uuid.UUID(session_id)
     except ValueError:
@@ -613,8 +620,8 @@ def status_after_analyze(current_status: str | None, completed_count: int) -> st
 async def analyze_session(
     session_id: str,
     db: AsyncSession = Depends(get_db),
-    llm: GeminiService = Depends(GeminiService)
-):
+    llm: GeminiService = Depends(GeminiService), caller: Caller = Depends(get_caller)):
+    await assert_can_access_session(caller, session_id, db)
     logger.info(f"🧠 리포트 분석 요청: {session_id}")
     try:
         session_uuid = uuid.UUID(session_id)

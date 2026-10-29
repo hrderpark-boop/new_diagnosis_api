@@ -18,6 +18,7 @@ def test_chat_flow_with_seed_data(client: TestClient, seed_data, monkeypatch):
                         json={"email": "test@example.com", "password": "password", "name": "박기진", "group_code": "G-TEST"})
     assert login.status_code == 200, f"로그인 실패: {login.text}"
     participant_id = login.json()["participant_id"]
+    hdr = {"Authorization": f"Bearer {login.json()['access_token']}"}  # (2026-10-29) 참여자 API 는 토큰 필수
 
     # 2. 세션 시작 — 코치 id 는 런타임 매핑(COACH_UUID_TO_KEY)에서 가져온다(키 '1' = …0011).
     from diag_project.routes.diagnoses import COACH_UUID_TO_KEY
@@ -26,7 +27,7 @@ def test_chat_flow_with_seed_data(client: TestClient, seed_data, monkeypatch):
     start = client.post("/api/v1/diagnoses/start", json={
         "coach_id": coach_uuid, "participant_id": participant_id,
         "template_id": TEMPLATE_ID, "force_new": True,
-    })
+    }, headers=hdr)
     assert start.status_code == 201, f"진단 생성 실패: {start.text}"
     data = start.json()
     session_id = data["session_id"]
@@ -35,7 +36,7 @@ def test_chat_flow_with_seed_data(client: TestClient, seed_data, monkeypatch):
     # 3. 턴 2개 — 라포 첫 턴은 템플릿, 이후 LLM 턴은 FM_LLM_STUB 정형 답변. 오류 턴이 아니어야 한다.
     for content in ("안녕하세요, 저는 박기진입니다.", "요즘은 팀 리딩과 신규 사업 검토가 제 주요 업무입니다."):
         r = client.post("/api/v1/diagnoses/submit_message",
-                        json={"session_id": session_id, "diagnosis_id": session_id, "content": content})
+                        json={"session_id": session_id, "diagnosis_id": session_id, "content": content}, headers=hdr)
         assert r.status_code in (200, 201), f"메시지 전송 실패: {r.text}"
         body = r.json()
         assert body.get("llm_error") is not True, body

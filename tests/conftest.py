@@ -58,6 +58,14 @@ def pytest_configure(config):
 
 # ── 공용 fixture ────────────────────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """(2026-10-29) 로그인 시도 제한은 메모리 상태라 테스트끼리 섞이지 않게 매번 비운다(TestClient IP 가 같다)."""
+    from diag_project.services import rate_limit
+    rate_limit.reset_all()
+    yield
+
+
 @pytest.fixture(scope="session")
 def client():
     """FastAPI TestClient. with-문으로 startup 이벤트(SECRET_KEY 검증·init_db·경량 마이그레이션)를 실행한다."""
