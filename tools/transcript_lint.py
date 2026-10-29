@@ -285,7 +285,8 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
             res["ladder_turns"] += 1
             res["ladder_by_chapter"][chapter or "-"] = res["ladder_by_chapter"].get(chapter or "-", 0) + 1
         if g.get("ladder_skip"):
-            res["ladder_skipped"] += 1          # (2026-10-29 P1) 사다리 건너뜀 — 답에 이미 그 행동이 있었음(ladder_probed 표시)
+            res["ladder_skipped"] += 1          # (2026-10-29 P1) 사다리 건너뜀 — 답에 이미 그 행동이 있었음(ladder_probed 표시, 미발동 아님)
+            res["ladder_by_chapter"][chapter or "-"] = res["ladder_by_chapter"].get(chapter or "-", 0) + 1   # 챕터당 2회 목표에는 포함
         if g.get("ladder_swap"):
             res["ladder_swapped"] += 1
         if g.get("leak_final"):
