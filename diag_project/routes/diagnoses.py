@@ -2488,9 +2488,9 @@ async def _submit_message_phase3a(
     # 8-n. (2026-10-22 P2-1) 입버릇 반복 가드 — 되받기 마무리 어구(마지막 어절 2개)를 세션 단위로 센다.
     #   같은 어구 2회째 → 재생성 1회, 3회째(또는 재생성 후에도) → 그 문장 삭제. 금지 어구(마음에 남아요·짐작이 되네요·
     #   인상에 남네요·그려지네요·분명하게 들어왔어요)는 1회째부터 재생성. '리더님,' 문두 호칭은 3턴에 1회(직전 2턴에 있으면 뗀다).
-    # (2026-10-28 P0-1) COMPETENCY_ALIGN 제외 — 조립된 고정 정의 문장의 어미('…이끌어내는 능력입니다')를 입버릇으로 세어
-    #   재생성하면 LLM 새 출력이 정의·목록·다리·앵커를 통째로 덮는다(10/28 재생 2라운드 챕터 2~4 ALIGN 목록 누락의 원인).
-    _TAIL_EXEMPT = {"DIAGNOSIS_INTRO", "USER_REQUESTS_PAUSE", "CHAPTER_READY_TO_END", "AWAIT_NEXT_CHAPTER_CHOICE", "COMPETENCY_ALIGN"}
+    # (2026-10-29) COMPETENCY_ALIGN 도 대상 — 조립이 8-z(맨 끝)로 옮겨져 여기서는 LLM 되받기 2~3문장만 다룬다.
+    #   (10/28 에는 조립이 8-b 에 있어 고정 정의 문장 어미가 입버릇으로 세어지고 재생성이 조립을 덮어 제외했었다.)
+    _TAIL_EXEMPT = {"DIAGNOSIS_INTRO", "USER_REQUESTS_PAUSE", "CHAPTER_READY_TO_END", "AWAIT_NEXT_CHAPTER_CHOICE"}
     if (system_override_text is None and not _llm_error and clean_reply and instruction_used not in _TAIL_EXEMPT
             and not needs_user_decision):
         from diag_project.services.output_guard import (

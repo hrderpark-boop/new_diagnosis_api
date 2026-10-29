@@ -463,6 +463,10 @@ def cached_lexicon() -> dict:
 #   템플릿에도 나오지만 코치가 써도 누설이 아니다. 가드(문장 삭제)는 이 어절을 제외한 '엄격 사전'만 쓴다. 린트는 전체 사전으로 센다.
 _FIXTURE_DIR = ROOT / "tests" / "fixtures"
 EVERYDAY_MIN_COUNT = 3
+# (2026-10-29) 운영 세션 리더 입력(tests/fixtures/sessions_1028/*_users.json)에 '한 번이라도' 나온 어절은 엄격 사전에서 뺀다 —
+#   템플릿 빈도가 높아도 리더가 쓰는 말이면 누설 근거가 못 된다(전환·응답·요약·종료·안내·없음·최대·인사 류).
+_LEADER_DIR = _FIXTURE_DIR / "sessions_1028"
+LEADER_MIN_COUNT = 1
 # 가드(문장 삭제)는 템플릿에 10회 이상 나오는 어절만 쓴다 — 5회 안팎의 어절('말하지'·'선언'·'인정'·'관찰')은 예시 문장 조각이거나
 #   일반 명사라 삭제가 오히려 대화를 깬다(10/28 재생 2라운드). 린트는 전체 사전으로 세어 보고한다.
 GUARD_MIN_COUNT = 10
@@ -503,8 +507,35 @@ def guard_lexicon() -> dict:
                     counts[w] += 1
                     break
     everyday = {w for w, n in counts.items() if n >= EVERYDAY_MIN_COUNT}
-    return {"korean": {w: c for w, c in lex["korean"].items() if w not in everyday and c >= GUARD_MIN_COUNT},
-            "english": dict(lex["english"]), "everyday_excluded": sorted(everyday)}
+    leader_counts: Counter = Counter()
+    for t in _leader_texts():
+        for tok in _raw_tokens(t):
+            if not _HANGUL_RE.match(tok):
+                continue
+            for w in lex["korean"]:
+                if _match_korean_word(tok, w):
+                    leader_counts[w] += 1
+                    break
+    leader_words = {w for w, n in leader_counts.items() if n >= LEADER_MIN_COUNT}
+    excluded = everyday | leader_words
+    return {"korean": {w: c for w, c in lex["korean"].items() if w not in excluded and c >= GUARD_MIN_COUNT},
+            "english": dict(lex["english"]), "everyday_excluded": sorted(excluded),
+            "leader_excluded": sorted(w for w in leader_words if lex["korean"].get(w, 0) >= GUARD_MIN_COUNT)}
+
+
+def _leader_texts() -> list[str]:
+    """운영 세션 5건의 리더 입력(json 리스트)."""
+    import json
+    out: list[str] = []
+    if not _LEADER_DIR.exists():
+        return out
+    for f in sorted(_LEADER_DIR.glob("*_users.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:   # noqa: BLE001
+            continue
+        out.extend(x for x in data if isinstance(x, str))
+    return out
 
 
 def user_token_set(user_texts: list[str]) -> set[str]:

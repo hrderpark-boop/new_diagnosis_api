@@ -220,3 +220,33 @@ def test_definition_answer_mentioning_rest_is_not_pause_request():
     src = inspect.getsource(D)
     assert "_is_definition_answer" in src and "not _is_definition_answer" in src
     assert isinstance(detect_pause_request(ans), bool)
+
+
+def test_strict_lexicon_excludes_leader_vocabulary_but_keeps_internal_words():
+    from diag_project.services.leak_lexicon import guard_lexicon
+    g = guard_lexicon()
+    for w in ("턴", "탐침", "되받기", "앵커", "반례", "페르소나", "라포", "재생성", "발화"):
+        assert w in g["korean"], w
+    # 운영 세션 리더 입력에 한 번이라도 나온 말 — '태그'는 Olivia 가 '분류 태그'로 써서 규칙상 빠진다(보고됨)
+    for w in ("전환", "응답", "요약", "안내", "태그", "직전", "현재", "메시지"):
+        assert w not in g["korean"], w
+        assert w in g["leader_excluded"], w
+
+
+def test_tail_guard_runs_on_align_receive_before_assembly():
+    """8-n(입버릇)은 ALIGN 되받기에도 적용되고, 조립(8-z)은 그 뒤에 온다 — 조립 후 문장은 건드리지 않는다."""
+    import inspect
+    from diag_project.routes import diagnoses as d
+    src = inspect.getsource(d._submit_message_phase3a)
+    tail = src.index("_TAIL_EXEMPT = {")
+    assert '"COMPETENCY_ALIGN"' not in src[tail: src.index("\n", tail)]
+    assert src.index("# 8-n.") < src.index("# 8-h.") < src.index("# 8-z.") < src.index("# 9. 사건 생명주기")
+    from diag_project.services.align_render import render_align, align_shape_ok
+    from diag_project.services.output_guard import strip_lead_sentences, lead_tails
+    out = render_align(llm_text="말씀 잘 들었어요. 그 결이 선명하게 들어왔어요.", chapter="self_management",
+                       sub_names=["자기인식", "회복탄력성", "중심성"], persona_name="Ella", bridge_sub_key=None,
+                       bridge_sub_name="자기인식", anchor="그런 순간이 최근에 있었어요?")
+    assert align_shape_ok(out, ["자기인식", "회복탄력성", "중심성"])[0]
+    # 조립 결과에 입버릇 삭제를 걸어도(실제 파이프라인에서는 걸리지 않음) 목록·앵커는 그대로다
+    out2, _ = strip_lead_sentences(out, set(lead_tails(out)))
+    assert "· 자기인식" in out2 and out2.rstrip().endswith("있었어요?")
