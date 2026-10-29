@@ -419,3 +419,15 @@ def test_strip_praise_keeps_question_sentence_and_pause_single_entry():
     st = {"last_user_response": "저는 자기관리라고 하면 일이 몰리거나 예상치 못한 문제가 생겨도 감정적으로 흔들리지 않고 우선순위를 정해 차분하게 처리하는 모습이 먼저 떠올라요. 필요할 때는 잠깐 쉬면서 다시 집중하는 것도 중요하게 보고 있어요.",
           "last_instruction": "COMPETENCY_ALIGN"}
     assert not d._pause_req(st) and d._pause_req({"last_user_response": "잠깐 쉬었다 할게요", "last_instruction": "STAR_INCOMPLETE"})
+
+
+def test_ladder_overridden_question_is_not_marked_used():
+    import inspect
+    from diag_project.routes import diagnoses as d
+    from diag_project.services.output_guard import _content_chunks
+    src = inspect.getsource(d._submit_message_phase3a)
+    i = src.index('_tm["ladder_dropped"] = "overridden"')
+    assert i < src.index("mark_ladder_probed as _mlp_g")
+    q = "그 아이디어를 작게 먼저 시험해 보고 고치신 적이 있었어요?"
+    assert len({c for c in _content_chunks(q) if len(c) >= 2} & set(_content_chunks("들으셨군요. 그 아이디어를 작게 먼저 시험해 보고 고치신 적이 있었던가요?"))) >= 3
+    assert len({c for c in _content_chunks(q) if len(c) >= 2} & set(_content_chunks("네, 그러셨군요. 이제 '사람관리'로 이어가겠습니다."))) < 3

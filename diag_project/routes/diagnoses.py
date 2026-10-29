@@ -3054,6 +3054,15 @@ async def _submit_message_phase3a(
                 _dqc_ch[current_target_sub] = int(_dqc_ch.get(current_target_sub, 0) or 0) + 1
                 _dqc_g[chapter] = _dqc_ch; _gl_store["direct_q_count"] = _dqc_g
             if _tm.get("ladder"):
+                # (2026-10-29 P1 p14) 사다리 문장이 실제로 나갔는지 확인 — 뒤 단계(입버릇 재생성·하드 교정·늦은 챕터 전환)가 질문을 덮으면
+                #   사용으로 남기지 않는다(p14 샘플 15건 중 3건이 사다리로 집계됐지만 다른 문장이 나갔다).
+                from diag_project.services.output_guard import _content_chunks as _cc_l
+                _lq_raw = (state.get("force_ladder_probe") or {}).get("q") or ""
+                _ov_l = len({c for c in _cc_l(_lq_raw) if len(c) >= 2} & set(_cc_l(clean_reply)))
+                if _lq_raw and _ov_l < 3:
+                    _tm.pop("ladder", None); _tm["ladder_dropped"] = "overridden"
+                    logger.info("🪜 사다리 문장이 뒤 단계에 덮임 → 사용 표시 제거(겹침 %d)", _ov_l)
+            if _tm.get("ladder"):
                 from diag_project.services.traversal import mark_ladder_probed as _mlp_g
                 _gl_store = _mlp_g(_gl_store, chapter, (state.get("force_ladder_probe") or {}).get("sub") or current_target_sub)
                 # (2026-10-29 P1-4) 세션 간 회전용: 어느 사다리 단계를 썼는지 하위역량 키로 남긴다(다음 세션 시작 시 ladder_avoid 로 모음)
