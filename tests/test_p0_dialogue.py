@@ -147,8 +147,8 @@ def test_lead_cap_keeps_dependent_clause_of_compound_question():
 
 # ── P0-6 시간 인사 ─────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("hour,part", [(4, "늦은 시간"), (5, "오전"), (10, "오전"), (11, "점심"), (13, "점심"),
-                                       (14, "오후"), (17, "오후"), (18, "저녁"), (22, "저녁"), (23, "늦은 시간")])
+@pytest.mark.parametrize("hour,part", [(4, "늦은 시간"), (5, "오전"), (10, "오전"), (11, "점심"), (12, "점심"),
+                                       (13, "오후"), (14, "오후"), (17, "오후"), (18, "저녁"), (22, "저녁"), (23, "늦은 시간")])
 def test_daypart_boundaries_kst(hour, part):
     now = datetime(2026, 10, 28, hour, 49, tzinfo=KST)
     assert daypart(hour) == part
@@ -158,7 +158,7 @@ def test_daypart_boundaries_kst(hour, part):
 
 def test_lucas_1349_is_afternoon_not_lunch():
     now = datetime(2026, 10, 28, 13, 49, tzinfo=KST)
-    assert daypart(now.hour) == "점심"   # 13:49 는 11~14 점심 구간
+    assert daypart(now.hour) == "오후"   # (2026-10-29 P1) 13:49 는 13~18 오후 구간
     now2 = datetime(2026, 10, 28, 14, 5, tzinfo=KST)
     assert get_time_phrase(now2).startswith("오후") and "점심" not in get_time_greeting(now2)["ampm_phrase"]
 
