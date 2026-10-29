@@ -1520,7 +1520,8 @@ class GeminiService:
         ) if (role_summary or "").strip() else ""
 
         # (2026-10-29 P2-4) prompt caching 을 위해 프롬프트를 [정적 지시(system)] + [전체 대화 로그 블록] + [역량 블록] + [꼬리] 로 나눈다.
-        #   접두 일치 규칙: system(모든 호출 공통) → 전체 로그(세션의 15콜 공통) → 역량 블록(outer 3회 공통) → 꼬리. 내용은 기존과 같고 순서만 다르다.
+        #   접두: system(모든 호출 공통) → 역량 블록 → 전체 로그 → 꼬리 = 기존 프롬프트와 '같은 순서'(블록 경계만 추가). outer 3회가 역량 블록+로그를 공유한다.
+        #   (전체 로그를 역량 블록 앞에 두는 배치는 15콜 공유가 되지만 실측에서 근거 선택이 무너졌다 — measured 25→9, 일반화 탈락 45. 채택하지 않는다.)
         _deep_system = f"""
 [Role] Senior HR Assessment Expert & Executive Coach (C-Level 컨설팅 경력 15년 이상)
 [Task] 아래 리더의 BEI(행동사건면접) 발언을 분석하여 [평가 대상 역량] 블록에 적힌 역량을 심층 평가하세요.
@@ -1686,7 +1687,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 
 위 [평가 대상 역량] 블록의 역량에 대해 [출력 형식]의 JSON 만 출력하세요.
 """
-        _deep_prefix = [_transcript_block, _comp_block]
+        _deep_prefix = [_comp_block, _transcript_block]
         try:
             from diag_project.services import analysis_cache as _ac
             #  🔒 T1: asked 는 '실제 앵커 발화'(코드가 준 asked_subs)로만 결정.
@@ -2390,12 +2391,26 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         units = [(k, o) for k in competency_keys for o in range(n_outer)]
         logger.info("🔁 outer run %d회 병렬 — %d 단위, 동시 LLM 상한 %d",
                     n_outer, len(units), _ANALYSIS_CONCURRENCY)
-        results = await asyncio.gather(*[
-            self._analyze_unit(k, _chapter_data(k), _full_for(k),
-                               _asked.get(k) or set(), o, role_summary,
-                               progress)
-            for k, o in units])
-        by_unit = dict(zip(units, results))
+        # (2026-10-29 P2-4) prompt cache 는 '먼저 끝난 호출'의 접두만 재사용한다 — 15단위를 한꺼번에 띄우면 전부 캐시 기록만 하고
+        #   읽기가 0 이었다(실측: 기록 389k·읽기 0). 3단계로 나눈다: ① 첫 대역량 outer0 단독(시스템+전체 로그 접두 기록)
+        #   → ② 나머지 대역량 outer0 병렬(접두 읽기 + 역량 블록 기록) → ③ outer1~ 전부 병렬(역량 블록까지 읽기).
+        #   캐시가 이미 차 있는 단위(파일 캐시 적중)는 LLM 을 부르지 않으므로 비용·순서에 영향 없다.
+        by_unit: Dict = {}
+
+        async def _run(batch):
+            res = await asyncio.gather(*[
+                self._analyze_unit(k, _chapter_data(k), _full_for(k),
+                                   _asked.get(k) or set(), o, role_summary,
+                                   progress)
+                for k, o in batch])
+            by_unit.update(dict(zip(batch, res)))
+
+        _stage1 = [u for u in units if u == (competency_keys[0], 0)]
+        _stage2 = [u for u in units if u[1] == 0 and u not in _stage1]
+        _stage3 = [u for u in units if u[1] != 0]
+        for _batch in (_stage1, _stage2, _stage3):
+            if _batch:
+                await _run(_batch)
         return [{k: by_unit[(k, o)] for k in competency_keys}
                 for o in range(n_outer)]
 
@@ -2409,11 +2424,15 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         _chapter_data, _full_for = self._chapter_inputs(
             history, chapter_transcripts)
         _asked = asked_subcompetencies or {}
-        await asyncio.gather(*[
-            self._analyze_unit(chapter, _chapter_data(chapter),
-                               _full_for(chapter),
-                               _asked.get(chapter) or set(), o, role_summary)
-            for o in range(_ANALYSIS_OUTER_RUNS)])
+        # (2026-10-29 P2-4) outer0 를 먼저 끝내 접두(시스템+로그+역량 블록)를 캐시에 올린 뒤 나머지 outer 를 병렬로.
+        await self._analyze_unit(chapter, _chapter_data(chapter), _full_for(chapter),
+                                 _asked.get(chapter) or set(), 0, role_summary)
+        if _ANALYSIS_OUTER_RUNS > 1:
+            await asyncio.gather(*[
+                self._analyze_unit(chapter, _chapter_data(chapter),
+                                   _full_for(chapter),
+                                   _asked.get(chapter) or set(), o, role_summary)
+                for o in range(1, _ANALYSIS_OUTER_RUNS)])
 
     @classmethod
     def chapter_deep_cached(cls, history, chapter_transcripts,

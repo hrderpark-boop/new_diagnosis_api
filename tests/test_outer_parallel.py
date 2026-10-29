@@ -118,9 +118,10 @@ def test_outer_runs_are_concurrent_and_merge_matches_sequential(monkeypatch):
     # 순차: 한 번에 한 outer run(5-wide) / 병렬: 15 단위가 동시에, outer 섞임
     assert seq_probe.max_inflight == 5
     assert all(len(set(s)) <= 1 for s in seq_probe.outers_seen_together)
-    assert par_probe.max_inflight == 15
-    assert any(len(set(s)) == 3 for s in par_probe.outers_seen_together)
-    assert par_t < seq_t * 0.7, (par_t, seq_t)
+    # (2026-10-29 P2-4) prompt cache 접두 재사용을 위해 3단계(첫 단위 1 → outer0 나머지 4 → outer1~ 10)로 띄운다 — 최대 동시 10
+    assert par_probe.max_inflight == 10
+    assert any(len(set(s)) == 2 for s in par_probe.outers_seen_together)
+    assert par_t <= seq_t * 1.1, (par_t, seq_t)   # (P2-4) 3단계 스케줄은 순차보다 느리지 않다(동시 상한 안에서 캐시 접두를 먼저 올림)
 
     # 병합 결과는 순차 경로와 완전히 같다(run 순서·대역량 순서 포함).
     assert list(par["details"].keys()) == list(seq["details"].keys())
