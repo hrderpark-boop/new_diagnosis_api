@@ -18,8 +18,8 @@ _END_RE = re.compile(r"([가-힣]{2})[가-힣]{1,6}([?.!])(\s|$)")
 
 def mask(text: str) -> str:
     t = NAME_RE.sub("●●", text or "")
-    t = re.sub(r"박기진|기진", "리더", t)
-    t = _END_RE.sub(lambda m: f"{m.group(1)}~{m.group(2)}{m.group(3)}", t)
+    t = re.sub(r"박기진\s*(님|리더님)?|기진\s*(님|리더님)?", "리더님", t)
+    t = _END_RE.sub(lambda m: m.group(0) if m.group(0).startswith("리더님") else f"{m.group(1)}~{m.group(2)}{m.group(3)}", t)
     return t
 
 
