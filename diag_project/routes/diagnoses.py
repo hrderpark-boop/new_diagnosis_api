@@ -3069,6 +3069,12 @@ async def _submit_message_phase3a(
             # (2026-10-23 6번 보정) contrast_fix 1 재생성/2 교체 · contrast_lead_fix 도입구 제거 수 · good_lead Michael 도입 사용 · good_lead_cut 직전 턴 사용으로 제거
             "contrast_fix": int(_tm.get("contrast_fix") or 0), "contrast_lead_fix": int(_tm.get("contrast_lead_fix") or 0),
             "good_lead": int(_tm.get("good_lead") or 0), "good_lead_cut": int(_tm.get("good_lead_cut") or 0),
+            # (2026-10-29 P1) leak_final: 8-y 최종 누설 소거(어휘·상태) · ladder_trigger: 'turns'=턴 조건 사다리 · direct_q/direct_q_fix: '직접 하신' 상한 ·
+            #   generalized: 일반화 탐침 뒤에도 시점 없음(원장 기록) · skip_bridge/unconfirmed: 입력 이상 3회째 전진 · anomaly: 종류(#n 회차)
+            "leak_final": _tm.get("leak_final"), "ladder_trigger": _tm.get("ladder_trigger"),
+            "direct_q": int(_tm.get("direct_q") or 0), "direct_q_fix": _tm.get("direct_q_fix"),
+            "generalized": _tm.get("generalized"), "skip_bridge": int(_tm.get("skip_bridge") or 0), "unconfirmed": _tm.get("unconfirmed"),
+            "anomaly": _tm.get("anomaly"),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

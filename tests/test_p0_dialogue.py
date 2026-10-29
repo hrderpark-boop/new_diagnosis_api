@@ -344,6 +344,7 @@ def test_generalized_answer_rule_time_marker_alone():
     from diag_project.services.avoidance_detector import is_generalized_answer as G
     assert G("저는 팀원들과 먼저 이야기를 나누고 역할을 나눈 뒤에 일정을 다시 잡는 식으로 진행합니다.")   # 시점 없음·습관 표지 없음·20자 이상
     assert not G("지난달에 팀원들과 먼저 이야기를 나누고 역할을 나눈 뒤에 일정을 다시 잡았습니다.")       # 시점 표지
+    assert not G("기존 대면교육 일부를 온라인 사전학습으로 바꾸자고 했을 때 팀원들이 효과를 의심했어요. 한 과정에만 시범 적용해 보자고 했습니다.")  # 시점 없어도 서술된 사건(과거형 2+)
     assert G("보통 제가 먼저 정리해서 공유하는 편입니다.")                                            # 짧아도 습관 표지
     assert not G("네, 그렇게 했습니다.")                                                            # 짧고 표지 없음 → 보류
 
@@ -376,3 +377,13 @@ def test_anchor_rotation_second_session_first_questions_all_differ():
         a = build_chapter_opening_with_user_def(ch, "정의", "", variant=0)
         b = build_chapter_opening_with_user_def(ch, "정의", "", variant=1)
         assert a != b
+
+
+def test_michael_voice_does_not_split_verb_before_hasin_jeok():
+    from diag_project.services.persona_voice import voice_question
+    out = voice_question("Michael", "성과가 기대와 달랐던 팀원에게 솔직한 피드백을 전하신 적이 최근에 있었다면 어떤 상황이었을까요?")
+    assert "전직접" not in out and "전하신 적" in out
+    out2 = voice_question("Michael", "경험이 적은 팀원에게 일부러 비중 있는 일을 맡기신 적, 근래에 있으세요?")
+    assert "직접" in out2 or "맡기신" in out2
+    out3 = voice_question("Michael", "팀 목표를 다시 세우신 뒤 팀원들과 같이 하신 적이 있었어요?")
+    assert "같이 직접 하신 적" in out3

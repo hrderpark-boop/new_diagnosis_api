@@ -169,7 +169,15 @@ def is_generalized_answer(text: str | None) -> bool:
     #   프로젝트 '이름'은 패턴으로 못 잡으므로 과탐 가능 — 타겟당 1회만 묻고 그래도 일반화면 generalized 원장에 기록.
     if _TIME_MARK_RE.search(t):
         return False
-    return bool(_HABIT_MARK_RE.search(t)) or len(t.replace(" ", "")) >= 20
+    if _HABIT_MARK_RE.search(t):
+        return True
+    # (2026-10-29 P1-3 보정) 시점 표지가 없어도 과거형 동사 2개 이상으로 '일어난 일'을 서술했으면 일반화가 아니다 —
+    #   p11 재생: 시점 없음 단독 규칙이 세션당 10.5회 발동했고 대부분 구체 사건("…바꾸자고 했을 때 … 시범 적용하자고 했습니다")이었다.
+    return len(t.replace(" ", "")) >= 20 and len(_PAST_LOOSE_RE.findall(t)) < 2
+
+
+# 일반화 판정용 과거형 세기 — _PAST_VERB_RE 는 어간 앞 글자를 요구해 어절 첫머리의 '했을 때'·'했습니다'를 놓친다(has_full_star 는 그대로 둔다)
+_PAST_LOOSE_RE = re.compile(r"(았|었|했|됐|였|갔|왔|냈|봤|줬|렸|졌)(어요|습니다|죠|고|는데|고요|어|지요|습니까|다|던|을|네요|거든요|잖아요)")
 
 
 # 부재 진술(absence statement) 표지 — "그런 경험은 없다 / 만들어두지 못했다 /

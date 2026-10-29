@@ -213,7 +213,8 @@ def voice_question(persona_name: str | None, text: str, *, variant: int = 0) -> 
     if k == "Michael":
         # (2026-10-28 P0-3) Michael 은 '~었나요?/~나요?' 의 밝고 빠른 어미 + '직접'. 어미 변환이 없으면 Ella 와 같은 문장이 나갔다.
         body = re.sub(r"^(좋습니다[,!.]?\s*)", "", t)
-        body = re.sub(r"하신 적", "직접 하신 적", body, count=1) if "직접" not in body else body
+        # (2026-10-29 P1-2) 어절 첫머리의 '하신 적'에만 — '전하신 적·조정하신 적·배려하신 적'이 '전직접 하신 적'으로 깨지던 것(p11 Michael 앵커 4종)
+        body = re.sub(r"(?<![가-힣])하신 적", "직접 하신 적", body, count=1) if "직접" not in body else body
         for pat, rep in _MICHAEL_ENDINGS:
             if re.search(pat, body):
                 return re.sub(pat, rep, body)
