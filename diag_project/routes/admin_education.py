@@ -282,3 +282,27 @@ async def education_catalog(
         "format": m.get("format"), "format_desc": m.get("format_desc"),
     } for t, m in TRACK_META.items()]
     return {"tracks": tracks, "competencies": comps, "completed": len(reports), "cohort_min": COHORT_MIN}
+
+
+@router.get("/curriculum")
+async def education_curriculum(
+    company_id: Optional[UUID] = Query(None, description="마스터 전용 고객사"),
+    org_unit_id: Optional[UUID] = Query(None, description="본부·실·팀(고르면 그 조직 결과로 구성, 회사 전체와 비교)"),
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """맞춤 교육체계도: 고른 범위의 진단 결과로 Pool 에서 필수·선택·강점 확산 과정을 골라 구성(services/curriculum.py)."""
+    from diag_project.services.curriculum import build_curriculum
+
+    participants = (await db.execute(
+        await _scoped_participants(db, ctx, company_id, org_unit_id)
+    )).scalars().all()
+    reports = await _latest_reports(db, [p.id for p in participants])
+    details = [((r.scores or {}).get("details")) or {} for r in reports.values()]
+
+    baseline = None
+    if org_unit_id:   # 조직을 골랐으면 같은 회사 전체를 비교 기준으로
+        all_ps = (await db.execute(await _scoped_participants(db, ctx, company_id, None))).scalars().all()
+        all_reports = await _latest_reports(db, [p.id for p in all_ps])
+        baseline = [((r.scores or {}).get("details")) or {} for r in all_reports.values()]
+    return build_curriculum(details, baseline)
