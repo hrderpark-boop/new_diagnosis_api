@@ -6,7 +6,7 @@
 
 from typing import Optional
 from uuid import UUID, uuid4
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlmodel import Field, SQLModel
 from sqlalchemy import Column, DateTime, func
@@ -28,6 +28,9 @@ class CompanyBase(SQLModel):
     # (2026-10-29) 조직 참여 코드 접두어(영문 1~3자, 예: A → 영업1팀 AS1). null 이면 조직 코드 미사용.
     #   조직 단위가 생긴 뒤에는 바꿀 수 없다(이미 배포한 코드가 깨지므로). 규칙: services/org_codes.py
     org_prefix: Optional[str] = Field(default=None, max_length=10)
+    # (2026-10-29) 진단 기간(시작·종료일, 포함). HR 관리자·마스터가 정한다. 진단 현황의 '기간 내 추이' 기준.
+    diagnosis_start: Optional[date] = Field(default=None)
+    diagnosis_end: Optional[date] = Field(default=None)
 
 
 class Company(CompanyBase, table=True):

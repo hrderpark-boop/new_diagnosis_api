@@ -95,6 +95,9 @@ _LIGHT_MIGRATIONS = [
     # (2026-10-29) 조직 참여 코드(AS1): 회사 접두어 + 참여자 소속 단위. org_units 테이블은 create_all 이 만든다.
     "ALTER TABLE companies ADD COLUMN org_prefix VARCHAR(10)",
     "ALTER TABLE participants ADD COLUMN org_unit_id UUID",
+    # (2026-10-29) 고객사 진단 기간
+    "ALTER TABLE companies ADD COLUMN diagnosis_start DATE",
+    "ALTER TABLE companies ADD COLUMN diagnosis_end DATE",
 ]
 
 

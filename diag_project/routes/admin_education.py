@@ -229,3 +229,56 @@ async def education_people(
     start = (page - 1) * page_size
     return {"items": rows[start:start + page_size], "total": total, "page": page, "page_size": page_size,
             "total_pages": max(1, (total + page_size - 1) // page_size)}
+
+
+@router.get("/catalog")
+async def education_catalog(
+    company_id: Optional[UUID] = Query(None, description="마스터 전용 고객사 필터"),
+    org_unit_id: Optional[UUID] = Query(None),
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """교육 체계도·과정 안내서: 전체 과정 카탈로그(역량 → 하위역량 × 트랙 A~D) + 범위 안 추천 인원.
+
+    과정명·교육목표(수료 후 행동)·학습 방식은 data/course_matrix.py 그대로. 추천 인원은 저장된 리포트의
+    course_recommendation 을 (역량, 하위역량, 트랙)으로 맞춰 센다.
+    """
+    from diag_project.data.course_matrix import COURSE_CATALOG, TRACK_META, VOD_BASE
+
+    participants = (await db.execute(
+        await _scoped_participants(db, ctx, company_id, org_unit_id)
+    )).scalars().all()
+    reports = await _latest_reports(db, [p.id for p in participants])
+    counts: Dict[Tuple[str, str, str], Dict[str, int]] = defaultdict(lambda: {"growth": 0, "strength": 0})
+    for rep in reports.values():
+        for c in courses_of(rep.scores or {}):
+            counts[(c.get("category") or "", c.get("sub_competency") or "", c.get("track") or "")][c["kind"]] += 1
+
+    comps = []
+    for ck in _ORDER:
+        subs = []
+        for (k, sub_name), entry in COURSE_CATALOG.items():
+            if k != ck:
+                continue
+            courses = {}
+            for t in ("A", "B", "C", "D"):
+                c = entry.get(t)
+                if not c:
+                    continue
+                n = counts.get((_NAMES[ck], sub_name, t), {"growth": 0, "strength": 0})
+                total = n["growth"] + n["strength"]
+                courses[t] = {
+                    "course": c.get("course"), "goal": c.get("subtitle"),
+                    # VOD 주소가 아직 자리표시(example.com)면 내보내지 않는다(깨진 링크 방지)
+                    "vod_url": (f"{VOD_BASE}/{entry.get('slug')}-{t.lower()}"
+                                if entry.get("slug") and "example.com" not in VOD_BASE else None),
+                    "growth": n["growth"], "strength": n["strength"], "total": total, "cohort": total >= COHORT_MIN,
+                }
+            subs.append({"name": sub_name, "courses": courses})
+        comps.append({"key": ck, "name": _NAMES[ck], "subs": subs})
+
+    tracks = [{
+        "track": t, "from_level": m.get("diagnosed_level"), "to_level": m.get("target_level"),
+        "format": m.get("format"), "format_desc": m.get("format_desc"),
+    } for t, m in TRACK_META.items()]
+    return {"tracks": tracks, "competencies": comps, "completed": len(reports), "cohort_min": COHORT_MIN}

@@ -1,10 +1,12 @@
 # diag_project/routes/org_units.py
 #
 # 조직 참여 코드(AS1 형식) 관리 API.
-#   - 마스터(super_admin): 고객사 접두어 지정, 본부·팀 등록·수정·삭제, 일괄 등록
-#   - 고객사 HR(client_admin): 자사 조직 트리 조회만
+#   - 마스터(super_admin): 고객사 접두어 지정, 본부·실·팀 등록·수정·삭제, 일괄 등록
+#   - 고객사 HR(client_admin): 자사 조직 트리·조직별 통계 조회, 자사 진단 기간 설정
+#   - 진단 기간: 마스터·HR 모두 설정(HR 은 자사만)
 # 코드 규칙은 services/org_codes.py, 트리·집계는 services/org_units.py.
 
+from datetime import date
 from typing import List, Optional
 from uuid import UUID
 
@@ -35,11 +37,11 @@ class CompanyUpdateRequest(BaseModel):
 
 
 class OrgUnitCreateRequest(BaseModel):
-    level: str = Field(..., description="division | team")
+    level: str = Field(..., description="division | office | team")
     name: str
-    # 본부: 영문 1~2자 코드(필수). 팀: 무시.
+    # 본부·실: 영문 1~2자 코드(필수). 팀: 무시.
     short_code: Optional[str] = None
-    # 팀: 소속 본부 id(필수)와 번호(비우면 다음 번호)
+    # 실: 소속 본부 id(필수). 팀: 소속 본부 또는 실 id(필수)와 번호(비우면 다음 번호)
     parent_id: Optional[UUID] = None
     number: Optional[int] = None
 
@@ -53,7 +55,14 @@ class OrgUnitUpdateRequest(BaseModel):
 class OrgBulkRow(BaseModel):
     division: str
     division_code: str
+    office: Optional[str] = None
+    office_code: Optional[str] = None
     team: Optional[str] = None
+
+
+class PeriodRequest(BaseModel):
+    diagnosis_start: Optional[date] = None
+    diagnosis_end: Optional[date] = None
 
 
 class OrgBulkRequest(BaseModel):
@@ -90,10 +99,26 @@ async def _create_division(db: AsyncSession, company: Company, name: str, short:
     return unit
 
 
+async def _create_office(db: AsyncSession, company: Company, parent: OrgUnit, name: str, short: str) -> OrgUnit:
+    if parent.company_id != company.id or parent.level != "division":
+        raise HTTPException(status_code=400, detail="실은 같은 고객사의 본부 아래에만 만들 수 있습니다.")
+    err = org_codes.validate_office_code(short)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    code = org_codes.office_code(parent.code, short)
+    if await code_in_use(db, code):
+        raise HTTPException(status_code=409, detail=f"이미 쓰는 코드입니다({code}).")
+    unit = OrgUnit(company_id=company.id, parent_id=parent.id, level="office", name=name.strip(),
+                   short_code=org_codes.normalize(short), code=code)
+    db.add(unit)
+    await db.flush()
+    return unit
+
+
 async def _create_team(db: AsyncSession, company: Company, parent: OrgUnit, name: str,
                        number: Optional[int]) -> OrgUnit:
-    if parent.company_id != company.id or parent.level != "division":
-        raise HTTPException(status_code=400, detail="팀은 같은 고객사의 본부 아래에만 만들 수 있습니다.")
+    if parent.company_id != company.id or parent.level not in ("division", "office"):
+        raise HTTPException(status_code=400, detail="팀은 같은 고객사의 본부나 실 아래에만 만들 수 있습니다.")
     if number is None:
         existing = (await db.execute(
             select(OrgUnit.short_code).where(OrgUnit.parent_id == parent.id)
@@ -189,15 +214,18 @@ async def create_org_unit(
         raise HTTPException(status_code=400, detail="이름을 입력해 주세요.")
     if body.level == "division":
         unit = await _create_division(db, company, body.name, body.short_code or "")
-    elif body.level == "team":
+    elif body.level in ("office", "team"):
         if not body.parent_id:
-            raise HTTPException(status_code=400, detail="팀은 소속 본부를 골라야 합니다.")
+            raise HTTPException(status_code=400, detail="소속 본부(또는 실)를 골라야 합니다.")
         parent = await db.get(OrgUnit, body.parent_id)
         if parent is None:
-            raise HTTPException(status_code=404, detail="본부를 찾을 수 없습니다.")
-        unit = await _create_team(db, company, parent, body.name, body.number)
+            raise HTTPException(status_code=404, detail="상위 조직을 찾을 수 없습니다.")
+        if body.level == "office":
+            unit = await _create_office(db, company, parent, body.name, body.short_code or "")
+        else:
+            unit = await _create_team(db, company, parent, body.name, body.number)
     else:
-        raise HTTPException(status_code=400, detail="level 은 division 또는 team 입니다.")
+        raise HTTPException(status_code=400, detail="level 은 division, office, team 중 하나입니다.")
     await db.commit()
     return {"id": str(unit.id), "code": unit.code, "name": unit.name, "level": unit.level,
             "parent_id": str(unit.parent_id) if unit.parent_id else None}
@@ -210,7 +238,7 @@ async def bulk_create_org_units(
     ctx: AdminContext = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """엑셀 붙여넣기용 일괄 등록. 행 = (본부, 본부 코드, 팀). 이미 있는 본부·팀(같은 이름)은 건너뛴다.
+    """엑셀 붙여넣기용 일괄 등록. 행 = (본부, 본부 코드, [실, 실 코드], 팀). 이미 있는 본부·실·팀은 건너뛴다.
 
     한 행이라도 규칙 위반이면 전부 되돌린다(부분 등록 방지).
     """
@@ -235,17 +263,35 @@ async def bulk_create_org_units(
             elif div.name != row.division.strip():
                 raise HTTPException(status_code=400,
                                     detail=f"{i}행: 본부 코드 {div.code} 는 이미 '{div.name}' 입니다.")
+            parent = div
+            office_name = (row.office or "").strip()
+            if office_name:
+                oshort = org_codes.normalize(row.office_code)
+                off = (await db.execute(
+                    select(OrgUnit).where(OrgUnit.parent_id == div.id, OrgUnit.level == "office",
+                                          OrgUnit.short_code == oshort)
+                )).scalars().first()
+                if off is None:
+                    try:
+                        off = await _create_office(db, company, div, office_name, oshort)
+                    except HTTPException as e:
+                        raise HTTPException(status_code=e.status_code, detail=f"{i}행: {e.detail}")
+                    created.append({"code": off.code, "name": off.name, "level": "office"})
+                elif off.name != office_name:
+                    raise HTTPException(status_code=400,
+                                        detail=f"{i}행: 실 코드 {off.code} 는 이미 '{off.name}' 입니다.")
+                parent = off
             team_name = (row.team or "").strip()
             if not team_name:
                 continue
             same = (await db.execute(
-                select(OrgUnit.id).where(OrgUnit.parent_id == div.id, OrgUnit.name == team_name)
+                select(OrgUnit.id).where(OrgUnit.parent_id == parent.id, OrgUnit.name == team_name)
             )).first()
             if same:
                 skipped += 1
                 continue
             try:
-                t = await _create_team(db, company, div, team_name, None)
+                t = await _create_team(db, company, parent, team_name, None)
             except HTTPException as e:
                 raise HTTPException(status_code=e.status_code, detail=f"{i}행: {e.detail}")
             created.append({"code": t.code, "name": t.name, "level": "team"})
@@ -300,3 +346,68 @@ async def delete_org_unit(
     await db.delete(unit)
     await db.commit()
     return {"deleted": True}
+
+
+
+# ---------------------------------------------------------------------------
+# 진단 기간 — 마스터는 모든 고객사, HR 은 자사만
+# ---------------------------------------------------------------------------
+def _period_out(c: Company) -> dict:
+    return {"company_id": str(c.id), "diagnosis_start": c.diagnosis_start, "diagnosis_end": c.diagnosis_end}
+
+
+@router.get("/companies/{company_id}/period")
+async def get_period(
+    company_id: UUID,
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    ctx.assert_can_access_company(company_id)
+    return _period_out(await _get_company(db, company_id))
+
+
+@router.put("/companies/{company_id}/period")
+async def set_period(
+    company_id: UUID,
+    body: PeriodRequest,
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """시작·종료일을 함께 정하거나(둘 다) 함께 지운다(둘 다 null). 최대 1년."""
+    ctx.assert_can_access_company(company_id)
+    company = await _get_company(db, company_id)
+    s, e = body.diagnosis_start, body.diagnosis_end
+    if (s is None) != (e is None):
+        raise HTTPException(status_code=400, detail="시작일과 종료일을 함께 정해 주세요.")
+    if s and e:
+        if s > e:
+            raise HTTPException(status_code=400, detail="종료일이 시작일보다 빠릅니다.")
+        if (e - s).days > 366:
+            raise HTTPException(status_code=400, detail="진단 기간은 1년을 넘을 수 없습니다.")
+    company.diagnosis_start, company.diagnosis_end = s, e
+    db.add(company)
+    await db.commit()
+    await db.refresh(company)
+    return _period_out(company)
+
+
+# ---------------------------------------------------------------------------
+# 조직별 진행 현황 · 역량 평균 — 마스터는 모든 고객사, HR 은 자사만
+# ---------------------------------------------------------------------------
+@router.get("/companies/{company_id}/org-stats")
+async def get_org_stats(
+    company_id: UUID,
+    level: str = "division",
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if level not in ("division", "office", "team"):
+        raise HTTPException(status_code=400, detail="level 은 division, office, team 중 하나입니다.")
+    ctx.assert_can_access_company(company_id)
+    await _get_company(db, company_id)
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK
+    from diag_project.services.org_units import org_stats
+    order = list(COMPETENCY_FRAMEWORK.keys())
+    out = await org_stats(db, company_id, level, order)
+    out["competencies"] = [{"key": k, "name": COMPETENCY_FRAMEWORK[k].get("name", k)} for k in order]
+    return out

@@ -181,3 +181,63 @@ def test_bulk_create_and_row_error_rollback(client, auth_headers):
     tree = client.get(f"{base}/companies/{cid}/org-units", headers=auth_headers).json()
     assert [d["code"] for d in tree["divisions"]] == ["WBM", "WBP"] or [d["code"] for d in tree["divisions"]] == ["WBP", "WBM"]
     assert all(d["code"] != "WBR" for d in tree["divisions"])
+
+
+def test_office_period_stats_status_and_catalog(client, auth_headers):
+    cid = _new_company(client, auth_headers, "ORGO-" + uuid.uuid4().hex[:6])
+    base = "/api/v1/admin"
+    assert client.patch(f"{base}/companies/{cid}", json={"org_prefix": "WO"}, headers=auth_headers).status_code == 200
+
+    # 본부 → 실 → 팀, 본부 직속 팀
+    div = client.post(f"{base}/companies/{cid}/org-units", json={"level": "division", "name": "영업본부", "short_code": "S"}, headers=auth_headers).json()
+    off = client.post(f"{base}/companies/{cid}/org-units", json={"level": "office", "name": "마케팅실", "short_code": "M", "parent_id": div["id"]}, headers=auth_headers)
+    assert off.status_code == 201 and off.json()["code"] == "WOSM"
+    t1 = client.post(f"{base}/companies/{cid}/org-units", json={"level": "team", "name": "브랜드팀", "parent_id": off.json()["id"]}, headers=auth_headers).json()
+    t2 = client.post(f"{base}/companies/{cid}/org-units", json={"level": "team", "name": "영업1팀", "parent_id": div["id"]}, headers=auth_headers).json()
+    assert (t1["code"], t2["code"]) == ("WOSM1", "WOS1")
+    # 실 아래 실은 안 됨
+    assert client.post(f"{base}/companies/{cid}/org-units", json={"level": "office", "name": "x", "short_code": "X", "parent_id": off.json()["id"]}, headers=auth_headers).status_code == 400
+
+    tree = client.get(f"{base}/companies/{cid}/org-units", headers=auth_headers).json()
+    d = tree["divisions"][0]
+    assert [o["code"] for o in d["offices"]] == ["WOSM"] and [t["code"] for t in d["offices"][0]["teams"]] == ["WOSM1"]
+    assert [t["code"] for t in d["teams"]] == ["WOS1"]
+
+    # 참여자 2명: 실 소속 팀 1, 본부 직속 팀 1
+    for code in ("wosm1", "wos1"):
+        r = client.post("/api/v1/participants/token", json={"email": f"o-{uuid.uuid4().hex[:8]}@test.local", "name": "o", "group_code": code, "password": "pw"})
+        assert r.status_code == 200, r.text
+
+    # 조직별 통계: 본부는 하위 전체(2명), 실은 1명, 팀 2행. 리포트 없으니 모두 미시작, 평균 None
+    st = client.get(f"{base}/companies/{cid}/org-stats", params={"level": "division"}, headers=auth_headers).json()
+    assert st["total"]["registered"] == 2 and st["total"]["not_started"] == 2
+    assert st["rows"][0]["registered"] == 2 and st["rows"][0]["averages"]["people_management"] is None
+    so = client.get(f"{base}/companies/{cid}/org-stats", params={"level": "office"}, headers=auth_headers).json()
+    assert [(r["code"], r["registered"]) for r in so["rows"]] == [("WOSM", 1)]
+    stt = client.get(f"{base}/companies/{cid}/org-stats", params={"level": "team"}, headers=auth_headers).json()
+    assert sorted(r["code"] for r in stt["rows"]) == ["WOS1", "WOSM1"]
+    assert client.get(f"{base}/companies/{cid}/org-stats", params={"level": "x"}, headers=auth_headers).status_code == 400
+
+    # 참여자 목록: 미완료 필터 + 조직순 정렬 + 실 이름
+    lst = client.get(f"{base}/participants", params={"company_id": cid, "status": "incomplete", "sort": "org"}, headers=auth_headers).json()
+    assert [i["org_code"] for i in lst["items"]] == ["WOS1", "WOSM1"]
+    assert lst["items"][1]["office_name"] == "마케팅실" and lst["items"][1]["progress_status"] == "not_started"
+    assert client.get(f"{base}/participants", params={"company_id": cid, "status": "completed"}, headers=auth_headers).json()["total"] == 0
+
+    # 진단 기간: HR 도 자사는 설정 가능, 한쪽만·역순은 거부, 일별 추이는 기간 길이만큼
+    hr = _client_admin_headers(client, cid)
+    assert client.put(f"{base}/companies/{cid}/period", json={"diagnosis_start": "2026-11-01"}, headers=hr).status_code == 400
+    assert client.put(f"{base}/companies/{cid}/period", json={"diagnosis_start": "2026-11-10", "diagnosis_end": "2026-11-01"}, headers=hr).status_code == 400
+    r = client.put(f"{base}/companies/{cid}/period", json={"diagnosis_start": "2026-11-01", "diagnosis_end": "2026-11-15"}, headers=hr)
+    assert r.status_code == 200 and r.json()["diagnosis_end"] == "2026-11-15"
+    daily = client.get(f"{base}/stats/daily", params={"start": "2026-11-01", "end": "2026-11-15"}, headers=hr).json()
+    assert len(daily) == 15 and daily[0]["date"] == "2026-11-01" and "누적완료" in daily[0]
+    other = _new_company(client, auth_headers, "ORGO-" + uuid.uuid4().hex[:6])
+    assert client.put(f"{base}/companies/{other}/period", json={"diagnosis_start": None, "diagnosis_end": None}, headers=hr).status_code == 403
+
+    # 과정 안내서: 5개 역량 × 하위역량 × A~D, 교육목표 포함, 자리표시 VOD 주소는 숨김
+    cat = client.get(f"{base}/education/catalog", headers=hr).json()
+    assert len(cat["competencies"]) == 5 and [t["track"] for t in cat["tracks"]] == ["A", "B", "C", "D"]
+    sub = cat["competencies"][0]["subs"][0]
+    assert set(sub["courses"]) == {"A", "B", "C", "D"} and sub["courses"]["A"]["goal"]
+    assert sum(len(c["subs"]) for c in cat["competencies"]) == 26

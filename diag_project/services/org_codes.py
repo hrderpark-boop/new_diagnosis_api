@@ -3,7 +3,9 @@
 규칙
   - 회사 접두어: 영문 대문자 1~3자 (예: A, ACM)
   - 본부 코드  : 영문 대문자 1~2자 (예: S)  → 본부 참여 코드 = 접두어 + 본부 코드 (AS)
-  - 팀 번호    : 1~99                       → 팀 참여 코드   = 본부 참여 코드 + 번호 (AS1, AS10)
+  - 실 코드    : 영문 대문자 1~2자 (예: M)  → 실 참여 코드   = 본부 참여 코드 + 실 코드 (ASM). 실은 선택 단계
+  - 팀 번호    : 1~99                       → 팀 참여 코드   = 상위(본부 또는 실) 코드 + 번호 (AS1, ASM1)
+  - 코드는 전 고객사에서 유일해야 한다(겹치면 등록 단계에서 거부).
   - 접두어끼리는 서로의 앞부분이 될 수 없다(A 와 AS 를 함께 쓰면 'AS1' 이 어느 회사인지 모호해진다).
 """
 import re
@@ -40,6 +42,17 @@ def validate_division_code(short: str) -> Optional[str]:
     if not DIVISION_RE.match(s):
         return "본부 코드는 영문 1~2자입니다."
     return None
+
+
+def validate_office_code(short: str) -> Optional[str]:
+    s = normalize(short)
+    if not DIVISION_RE.match(s):
+        return "실 코드는 영문 1~2자입니다."
+    return None
+
+
+def office_code(division_full_code: str, short: str) -> str:
+    return normalize(division_full_code) + normalize(short)
 
 
 def division_code(prefix: str, short: str) -> str:
