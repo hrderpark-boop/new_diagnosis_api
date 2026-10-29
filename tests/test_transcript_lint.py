@@ -205,7 +205,7 @@ def test_render_markdown_and_cli(tmp_path, capsys, lex):
     out_json = tmp_path / "out.json"
     assert tl.main([str(f1), str(f2), "--json", str(out_json)]) == 0
     out = capsys.readouterr().out
-    assert "| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total |" in out   # (2026-10-29 P1) 8-y 열 추가
+    assert "| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total |" in out and "사다리 건너뜀/교체" in out   # (2026-10-29 P1)
     assert "| Ella(1) |" in out and "| Jessica(2) |" in out
     assert "동일 앵커 문장 쌍 합계: **1**" in out
     assert "누설 사전 크기:" in out and "상위 50개" in out

@@ -211,7 +211,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         "align": [], "align_pass": 0, "align_total": 0,
         "truncated": [], "truncated_total": 0,
         "repeat_a_cases": 0, "repeat_a_missed": 0, "repeat_b_cases": 0, "repeat_b_missed": 0, "repeat_missed": [],
-        "ladder_turns": 0, "ladder_by_chapter": {}, "ladder_short_chapters": [], "leak_final_turns": 0,
+        "ladder_turns": 0, "ladder_by_chapter": {}, "ladder_short_chapters": [], "ladder_skipped": 0, "ladder_swapped": 0, "leak_final_turns": 0,
         "generalize_turns": 0, "generalize_by_chapter": {}, "direct_q_by_target": {}, "direct_excess": 0,
         "endings": {}, "anchors": [],
     }
@@ -284,6 +284,10 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         if g.get("ladder_probe") or g.get("ladder"):
             res["ladder_turns"] += 1
             res["ladder_by_chapter"][chapter or "-"] = res["ladder_by_chapter"].get(chapter or "-", 0) + 1
+        if g.get("ladder_skip"):
+            res["ladder_skipped"] += 1          # (2026-10-29 P1) 사다리 건너뜀 — 답에 이미 그 행동이 있었음(ladder_probed 표시)
+        if g.get("ladder_swap"):
+            res["ladder_swapped"] += 1
         if g.get("leak_final"):
             res["leak_final_turns"] += 1          # (2026-10-29 P1) 8-y 최종 누설 소거 발동 턴 — 목표 0(상류 프롬프트에서 원인 제거)
         if g.get("generalize_probe") or g.get("generalize"):
@@ -340,14 +344,14 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
     L: list[str] = []
     L.append("## 코치 재생 전문 린트 요약")
     L.append("")
-    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total | 잘림 | 미감지 a/b | 사다리(<2 챕터) | 일반화 | 직접하신 초과 | 동일앵커 |")
-    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total | 잘림 | 미감지 a/b | 사다리(<2 챕터) | 사다리 건너뜀/교체 | 일반화 | 직접하신 초과 | 동일앵커 |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for r in results:
         same = cross["per_coach"].get(r["coach"], 0)
         L.append(f"| {r['coach_name']}({r['coach']}) | {os.path.basename(r['file'])} | {r['leak_total']}/{r['leak_strict_total']} | {r['leak_final_turns']} | "
                  f"{r['align_pass']}/{r['align_total']} | {r['truncated_total']} | "
                  f"{r['repeat_a_missed']}/{r['repeat_a_cases']} · {r['repeat_b_missed']}/{r['repeat_b_cases']} | "
-                 f"{r['ladder_turns']}({len(r['ladder_short_chapters'])}) | {r['generalize_turns']} | {r['direct_excess']} | {same} |")
+                 f"{r['ladder_turns']}({len(r['ladder_short_chapters'])}) | {r['ladder_skipped']}/{r['ladder_swapped']} | {r['generalize_turns']} | {r['direct_excess']} | {same} |")
     L.append("")
     L.append("- 미감지 a/b: (직전 사용자 턴 반복 미감지/발생) · (코치 질문 붙여넣기 미감지/발생)")
     L.append(f"- 코치 간 동일 앵커 문장 쌍 합계: **{cross['pairs']}** (0 이어야 함)")

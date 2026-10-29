@@ -387,3 +387,14 @@ def test_michael_voice_does_not_split_verb_before_hasin_jeok():
     assert "직접" in out2 or "맡기신" in out2
     out3 = voice_question("Michael", "팀 목표를 다시 세우신 뒤 팀원들과 같이 하신 적이 있었어요?")
     assert "같이 직접 하신 적" in out3
+
+
+def test_ladder_duplicate_guard_wired():
+    import inspect
+    from diag_project.routes import diagnoses as d
+    from diag_project.services import llm_judge as j
+    src = inspect.getsource(d._submit_message_phase3a)
+    assert src.count("await _choose_ladder(") == 2 and src.count("_mark_ladder_answered(_store") == 2
+    assert "ladder_already_answered" in inspect.getsource(j)
+    h = src.index("async def _choose_ladder"); body = src[h: h + 1400]
+    assert '"swapped"' in body and '"answered"' in body and "ladder_skip" in body

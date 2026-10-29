@@ -1066,6 +1066,33 @@ async def _submit_message_phase3a(
         # (2026-10-22 P2-2) 리더 답변이 S-A-R 을 이미 다 담았으면(과거형 행동 2+ · 결과 표지 · 80자+) 이번 턴 탐침 1회로 줄이고
         #   다음 턴에 전진 — 현재 타겟 turns 를 상한으로 올리고 result_probed 를 True 로(답에 결과가 있으므로 R 강제 불필요).
         #   되받기(다음 전환 턴의 8-j 본문)가 들은 것을 요약하고 넘어간다.
+        # (2026-10-29 P1) 사다리 중복 방지 — 사다리 문장을 내기 전에 직전 리더 답에 그 행동이 이미 있는지 Haiku 1콜로 판정.
+        #   있으면 2단계 중 미사용 단계로 교체, 둘 다 이미 있으면 건너뛰고 ladder_probed 표시('답에 있었음'으로 기록, 미발동 아님).
+        async def _choose_ladder(sub_key: str, lvl, answer: str):
+            from diag_project.data.ladder_questions import LADDER_QUESTIONS as _LQS, ladder_question as _lq_c
+            from diag_project.services.llm_judge import ladder_already_answered as _laa
+            _avoid = ((_store.get("ladder_avoid") or {}).get(sub_key) or [])
+            q, step = _lq_c(sub_key, lvl if lvl is not None else 2, avoid=_avoid)
+            if not q:
+                return None, None, None
+            if await _laa(llm, answer, q) is not True:
+                return q, step, None
+            other = "3_4" if step == "2_3" else "2_3"
+            q2 = (_LQS.get(sub_key) or {}).get(other)
+            if q2 and await _laa(llm, answer, q2) is not True:
+                _tm["ladder_swap"] = 1
+                return q2, other, "swapped"
+            _tm["ladder_skip"] = "answered"
+            return None, None, "answered"
+
+        def _mark_ladder_answered(store: dict, sub: str) -> dict:
+            from diag_project.services.traversal import mark_ladder_probed as _mlp_a
+            store = _mlp_a(store, chapter, sub)
+            _ls = dict(store.get("ladder_skipped") or {}); _lsc = dict(_ls.get(chapter) or {}); _lsc[sub] = "answered"
+            _ls[chapter] = _lsc; store["ladder_skipped"] = _ls
+            logger.info("🪜 사다리 건너뜀(답에 이미 있음): [%s] %s", chapter, sub)
+            return store
+
         from diag_project.services.avoidance_detector import has_full_star as _hfs
         from diag_project.services.traversal import MAX_TURNS_PER_SUB as _MAXT_sar, advanced_to_new_target as _adv_sar
         if (current_target_sub and not _adv_sar(_cur_before, current_target_sub) and _hfs(request.content)
@@ -1084,10 +1111,12 @@ async def _submit_message_phase3a(
             _sub_key_l = _fsk_l(chapter, current_target_sub)
             if _sub_key_l and not _lpd(_store, chapter, current_target_sub):
                 _lvl = await _jrl(llm, chapter, current_target_sub, request.content)
-                _lq_text, _lq_step = _lq(_sub_key_l, _lvl if _lvl is not None else 2)
+                _lq_text, _lq_step, _lq_why = await _choose_ladder(_sub_key_l, _lvl, request.content)
                 if _lq_text:
                     state["force_ladder_probe"] = {"q": _lq_text, "step": _lq_step, "level": _lvl, "sub": current_target_sub}
-                    logger.info("🪜 사다리 탐침: [%s] %s 판정 Lv.%s → %s", chapter, current_target_sub, _lvl, _lq_step)
+                    logger.info("🪜 사다리 탐침: [%s] %s 판정 Lv.%s → %s%s", chapter, current_target_sub, _lvl, _lq_step, " (미사용 단계로 교체)" if _lq_why == "swapped" else "")
+                elif _lq_why == "answered":
+                    _store = _mark_ladder_answered(_store, current_target_sub)
         # (2026-10-29 P1-1) 사다리 발동 조건 확장 — S-A-R 완비 판정과 무관하게, 이 타겟에 탐침을 2턴 이상 썼고(이번이 3번째 턴)
         #   사다리를 아직 안 썼으면 이번 탐침은 사다리. s31 25세션: Michael 세션당 1.2회·Jessica 조직관리 0회 — 완비 판정이 실세션에
         #   안 맞았다. 목표 챕터당 2회 이상(린트 집계). 사다리 턴은 R·A·일반화 강제보다 우선한다(아래 force 블록).
@@ -1103,12 +1132,13 @@ async def _submit_message_phase3a(
             _sub_key_l2 = _fsk_l2(chapter, current_target_sub)
             if _sub_key_l2 and not _lpd2(_store, chapter, current_target_sub):
                 _lvl2 = await _jrl2(llm, chapter, current_target_sub, request.content)
-                _avoid2 = ((_store.get("ladder_avoid") or {}).get(_sub_key_l2) or [])
-                _lq_text2, _lq_step2 = _lq2(_sub_key_l2, _lvl2 if _lvl2 is not None else 2, avoid=_avoid2)
+                _lq_text2, _lq_step2, _lq_why2 = await _choose_ladder(_sub_key_l2, _lvl2, request.content)
                 if _lq_text2:
                     state["force_ladder_probe"] = {"q": _lq_text2, "step": _lq_step2, "level": _lvl2, "sub": current_target_sub}
                     _tm["ladder_trigger"] = "turns"
-                    logger.info("🪜 사다리 탐침(턴 조건): [%s] %s 판정 Lv.%s → %s", chapter, current_target_sub, _lvl2, _lq_step2)
+                    logger.info("🪜 사다리 탐침(턴 조건): [%s] %s 판정 Lv.%s → %s%s", chapter, current_target_sub, _lvl2, _lq_step2, " (미사용 단계로 교체)" if _lq_why2 == "swapped" else "")
+                elif _lq_why2 == "answered":
+                    _store = _mark_ladder_answered(_store, current_target_sub)
         session.self_assessment_data = _store
         from sqlalchemy.orm.attributes import flag_modified as _flag_mod
         _flag_mod(session, "self_assessment_data")
@@ -3078,6 +3108,7 @@ async def _submit_message_phase3a(
             # (2026-10-29 P1) leak_final: 8-y 최종 누설 소거(어휘·상태) · ladder_trigger: 'turns'=턴 조건 사다리 · direct_q/direct_q_fix: '직접 하신' 상한 ·
             #   generalized: 일반화 탐침 뒤에도 시점 없음(원장 기록) · skip_bridge/unconfirmed: 입력 이상 3회째 전진 · anomaly: 종류(#n 회차)
             "leak_final": _tm.get("leak_final"), "ladder_trigger": _tm.get("ladder_trigger"),
+            "ladder_skip": _tm.get("ladder_skip"), "ladder_swap": int(_tm.get("ladder_swap") or 0), "ladder_dropped": _tm.get("ladder_dropped"),
             "direct_q": int(_tm.get("direct_q") or 0), "direct_q_fix": _tm.get("direct_q_fix"),
             "generalized": _tm.get("generalized"), "skip_bridge": int(_tm.get("skip_bridge") or 0), "unconfirmed": _tm.get("unconfirmed"),
             "anomaly": _tm.get("anomaly"),

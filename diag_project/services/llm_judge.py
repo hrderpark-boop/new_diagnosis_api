@@ -86,6 +86,19 @@ async def must_ask_covered(llm, question: str, must_ask: Iterable[str]) -> bool 
     )
 
 
+async def ladder_already_answered(llm, answer: str, ladder_question: str) -> bool | None:
+    """(2026-10-29 P1) 사다리 질문이 묻는 행동이 직전 리더 답에 이미 서술돼 있는가 — Haiku 1콜. 실패·스텁이면 None(호출자는 '없음'으로 처리)."""
+    if os.getenv("FM_LLM_STUB") or not (answer or "").strip() or not (ladder_question or "").strip():
+        return None
+    return await judge_yes_no(
+        llm,
+        "아래 [질문]은 리더가 어떤 행동을 한 적이 있는지 묻습니다. [리더 답변]에 그 행동이 실제로 한 일로 이미 서술돼 있으면 YES, "
+        "없거나 다짐·계획·일반론뿐이면 NO. 낱말이 같지 않아도 뜻이 같으면 YES.\n\n"
+        f"[질문]\n{ladder_question.strip()}\n\n[리더 답변]\n{answer.strip()[:1500]}",
+        call_type="judge_ladder_dup",
+    )
+
+
 async def judge_rubric_level(llm, competency_key: str, sub_name: str, answer: str) -> int | None:
     """(2026-10-23 P3 사다리) 리더 답변이 하위역량 루브릭(Lv.1~4 서술+예시) 중 어느 레벨까지 실제로 도달했는지 1~4 한 숫자.
     대화 중 다음 사다리 질문(현재 레벨 +1)을 고르기 위한 보조 신호다. 실패·모호·스텁이면 None(호출자는 Lv.2 기준으로 폴백)."""
