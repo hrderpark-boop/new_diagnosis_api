@@ -46,7 +46,7 @@ def test_fixed_questions():
 def test_receive_only_guides():
     for cat in ("담당업무", "기대"):
         g = _rapport_guide(cat, "그럭저럭 지내고 있어요")
-        assert ("되받기 한 문장" in g or "반응 한 문장" in g) and "시스템이 뒤에 붙이므로" in g
+        assert ("받는 문장 하나" in g or "반응 한 문장" in g) and "시스템이 뒤에 붙이므로" in g
         assert "그대로 반복하지 않는다" in g and "추측을 보태지 않는다" in g
         assert "(반복)" in g and "(추측)" in g                 # 금지 예 둘 다(입력과 겹치지 않는 문장)
         assert "그럭저럭" not in g                            # 2026-10-19: 금지 예가 입력과 겹쳐 복사됐던 문장 제거

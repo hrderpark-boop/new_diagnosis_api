@@ -35,7 +35,7 @@ ALIGN_OK = ("조직관리를 '방향을 맞추는 일'이라고 하셨군요. �
 def test_lexicon_contains_example_internal_words(lex):
     kor = lex["korean"]
     # '가이드' 는 사다리 질문("가이드로 만드신 적")에 코치 발화로 쓰여 사전에서 빠진다(코치 어휘 우선, 2026-10-28)
-    for w in ("되받기", "다리", "탐침", "턴", "사건", "태그", "지시", "반례", "오버라이드"):
+    for w in ("되받기", "다리", "탐침", "턴", "사건", "태그", "지시", "오버라이드"):   # (2026-10-29 P1) '반례'는 프롬프트에서 뺐다(예외 사례)
         assert w in kor, f"누설 사전에 '{w}' 가 없다"
     eng = lex["english"]
     for w in ("star", "instruction", "probe"):
@@ -61,7 +61,7 @@ def test_lexicon_excludes_coach_speech_vocab(lex):
 def test_lexicon_dump_and_sources(lex):
     txt = tl.render_lexicon(lex)
     assert "되받기" in txt and "# 누설 사전" in txt
-    assert any("layer3_state.py" in f for f in lex["sources"]["되받기"])
+    assert any("layer3_state.py" in f for f in lex["sources"]["탐침"])   # (2026-10-29 P1) 되받기는 layer3 에서 뺐다
 
 
 # ── 1. 누설 탐지 ──────────────────────────────────────────────────────────────

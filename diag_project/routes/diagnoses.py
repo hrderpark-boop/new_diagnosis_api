@@ -1775,7 +1775,7 @@ async def _submit_message_phase3a(
                 _e_regen = await _timed_regen(
                     system_prompt=system_prompt, chapter_context=chapter_context,
                     turn_state_text=turn_state_text + (
-                        "\n\n🚨 [시스템 — 재생성 지시] 방금 만든 되받기가 리더님이 쓴 말을 그대로 반복했습니다. "
+                        "\n\n🚨 [시스템 — 재생성 지시] 방금 만든 첫 문장이 리더님이 쓴 말을 그대로 반복했습니다. "
                         "리더님 단어를 그대로 가져오지 말고, 뜻만 받아 다른 말로 다시 쓰세요."),
                     compressed_history=compressed_history, user_message=request.content, light_mode=True)
                 _e_recv = _take(_MARKER_RE.sub("", _e_regen.get("reply") or ""))
@@ -1875,7 +1875,7 @@ async def _submit_message_phase3a(
                     turn_state_text=turn_state_text + (
                         "\n\n🚨 [시스템 — 재생성 지시] 방금 응답에 코치가 리더님께 쓰는 말이 아닌 내부 용어가 있습니다: "
                         + ", ".join(str(x) for x in _lk_al[:6]) + ". 그 문장을 빼거나 리더님께 하는 자연스러운 말로 바꿔, "
-                        "되받기 평서문 2~3문장만 다시 쓰세요."),
+                        "리더님 말을 받아 주는 평서문 2~3개만 다시 쓰세요."),
                     compressed_history=compressed_history, user_message=request.content, light_mode=True)
                 _al_reply = _MARKER_RE.sub("", _al_regen.get("reply") or "").strip()
             except Exception as _e_al:   # noqa: BLE001
@@ -2032,7 +2032,7 @@ async def _submit_message_phase3a(
                 _tq = get_anchor_questions(_k) if _k else []
             _retry_note = (
                 "\n\n🚨 [시스템 — 재생성 지시] 방금 만든 응답이 직전 코치 발화와 "
-                "완전히 동일합니다. 같은 문장을 다시 쓰지 마세요. 요약 되받기 없이, "
+                "완전히 동일합니다. 같은 문장을 다시 쓰지 마세요. 요약하는 첫 문장 없이, "
                 "'네,'로 시작하지 말고, 바로 새로운 질문 하나로 대화를 앞으로 미세요."
                 + (
                     "\n이번 질문 본문(하위역량 이름 언급 금지): "
@@ -2484,7 +2484,7 @@ async def _submit_message_phase3a(
                     _b_out = await _timed_regen(
                         system_prompt=system_prompt, chapter_context=chapter_context,
                         turn_state_text=turn_state_text + (
-                            "\n\n🚨 [시스템 — 재생성 지시] 되받기 없이 전환 문장만 냈습니다. 방금 리더님 답변의 핵심 사실 한 문장을 먼저 쓰고, "
+                            "\n\n🚨 [시스템 — 재생성 지시] 리더님 말을 받는 첫 문장 없이 전환 문장만 냈습니다. 방금 리더님 답변의 핵심 사실 한 문장을 먼저 쓰고, "
                             "그 뒤에 다리 한 문장. 질문은 쓰지 마세요."),
                         compressed_history=compressed_history, user_message=request.content, light_mode=True)
                     _b2 = _body_of(_MARKER_RE.sub("", _b_out.get("reply") or ""))
@@ -2612,8 +2612,8 @@ async def _submit_message_phase3a(
                     _t_out = await _timed_regen(
                         system_prompt=system_prompt, chapter_context=chapter_context,
                         turn_state_text=turn_state_text + (
-                            "\n\n🚨 [시스템 — 재생성 지시] 되받기 마무리 어구 '" + "', '".join(_b0 + _r0)
-                            + "' 는 이 세션에서 이미 썼거나 금지된 입버릇입니다. 되받기를 다른 마무리로 다시 쓰세요(질문은 유지)."),
+                            "\n\n🚨 [시스템 — 재생성 지시] 첫 문장의 마무리 어구 '" + "', '".join(_b0 + _r0)
+                            + "' 는 이 세션에서 이미 썼거나 금지된 표현입니다. 첫 문장을 다른 마무리로 다시 쓰세요(질문은 유지). 이 지시문의 단어를 답에 옮기지 마세요."),
                         compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
                     _t_txt = _MARKER_RE.sub("", _t_out.get("reply") or "").strip()
                     _b1, _r1 = _tail_hits(_t_txt) if _t_txt else (["(빈 응답)"], [])

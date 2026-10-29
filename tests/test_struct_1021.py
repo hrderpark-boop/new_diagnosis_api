@@ -29,7 +29,7 @@ def _g(instr, **over):
 def test_smalltalk_guide_allows_one_followup_from_leader_words():
     g = L._get_instruction_guide("RAPPORT_BUILDING", {"instruction_for_this_turn": "RAPPORT_BUILDING", "forced_rapport_category": "스몰톡",
                                                        "current_hour_text": "오후 4시", "current_time_tone": "활기찬 오후", "last_user_response": "요즘 바빠요"})
-    assert "스몰톡 받기" in g and "되물음 1개" in g and "리더님 발화에서 나온 것만" in g
+    assert "스몰톡 받기" in g and "되물음 1개" in g and "리더님 말에서 나온 것만" in g
     assert "일·업무·역할·팀을 묻지 않는다" in g
     assert "담당 업무·기대 질문은 다음 턴" in g
     assert "요즘 바빠요" not in g.split("리더님이 방금")[0]      # 입력과 겹치는 예시 없음(금지·허용 예 모두)
@@ -91,9 +91,9 @@ def test_foreign_quote_guard():
 
 def test_transition_guide_two_sentences_no_question_anchor_by_system():
     g = _g("STAR_COMPLETE_NEW_EVENT")
-    assert "질문은 쓰지 않습니다" in g and "되받기(1문장, 필수)" in g and "다리(1문장, 필수)" in g
+    assert "질문은 쓰지 않습니다" in g and "받는 문장(1문장, 필수)" in g and "다리(1문장, 필수)" in g
     assert "단독 출력 금지" in g and "시스템이 붙일 앵커" in g
-    assert "새로운 사례를 들려주셨네요" in g       # 금지 목록에 명시
+    assert "새로운 사례를 들려주셨네요" not in g and "진행 상태를 알리는 문장 금지" in g   # (2026-10-29 P1) 금지 예시도 베낀다(s31 '새로운 사건') → 예시 삭제
     assert G.is_transition_only("이번엔 조금 다른 장면입니다.")
     assert not G.is_transition_only("반발한 팀원을 따로 만나 이유부터 설명하신 거군요. 이번엔 조금 다른 장면입니다.")
 

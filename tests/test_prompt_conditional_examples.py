@@ -50,7 +50,7 @@ def test_align_without_definition_has_no_quote_instruction_or_quote_examples():
     assert "효과적으로 관리한다고 하셨는데" not in g   # 예시 인용문이 통째로 빠진다
     assert "'효과적'이라는 말씀" not in g
     assert "[인용 금지 — 최우선]" in g
-    assert "되받기는 리더님이 실제로 쓴 단어" not in g
+    assert "받는 문장은 리더님이 실제로 쓴 단어" not in g
     assert "말씀하신 것과 크게 다르지 않죠" not in g
     # (2026-10-28 P0-1) 정의·목록·안내·다리는 시스템이 붙인다 — 프롬프트에 목록 서식이 없다
     assert "· (하위역량 1)" not in g and "하위역량 목록" in g
@@ -58,7 +58,7 @@ def test_align_without_definition_has_no_quote_instruction_or_quote_examples():
 
 def test_align_with_definition_keeps_quote_instruction_and_labels_examples():
     g = _guide("COMPETENCY_ALIGN", last_user_response="조직을 효율적으로 관리하는 거요")
-    assert "되받기는 리더님이 실제로 쓴 단어·구절을" in g
+    assert "받는 문장은 리더님이 실제로 쓴 단어·구절을" in g
     assert "[인용 금지 — 최우선]" not in g
     # (2026-10-28 P0-1) 다른 챕터 예시('조직을 효과적으로…')는 일관리 ALIGN 에 그대로 유입됐다 — 예시 자체를 뺐다
     assert "효과적으로 관리한다고 하셨는데" not in g
@@ -76,7 +76,7 @@ def test_intro_without_expectation_is_system_only_no_consolation():
 def test_intro_with_expectation_receives_one_sentence_only():
     g = _guide("DIAGNOSIS_INTRO", last_user_response="네", expectation_answer="저의 리더십 역량을 파악하고 싶어요")
     assert "실제로 하신 답**: '저의 리더십 역량을 파악하고 싶어요'" in g
-    assert "되받기 한 문장" in g and "두 문장 이상" in g
+    assert "받는 문장 하나" in g and "두 문장 이상" in g
     assert "다시 뵙게 되어" in g                       # 재방문 인사 금지 명시
     assert "괜찮습니다' 류" in g                       # 위로 금지
     assert g.count(L.EXAMPLE_LABEL) >= 1
@@ -87,7 +87,7 @@ def test_cross_chapter_quote_only_with_signals():
     g0 = _guide("CROSS_CHAPTER_OPPORTUNITY", last_user_response="네", cross_chapter_signals=None)
     assert "인용 없이" in g0 and "아까 X 말씀하셨는데" not in g0
     g1 = _guide("CROSS_CHAPTER_OPPORTUNITY", last_user_response="네", cross_chapter_signals=["팀원과 부딪혔다"])
-    assert "실제 발화" in g1
+    assert "실제 말" in g1
 
 
 # ── 기대 답변 추출 (라포 순서: ROLE_ASK → user(담당) → model(기대 질문) → user(기대 답)) ──
