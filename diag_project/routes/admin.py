@@ -74,6 +74,8 @@ class AdminMeResponse(BaseModel):
     role: str
     company_id: Optional[str]
     company_name: Optional[str]
+    # (2026-10-29) 마스터가 고객사로 들어간 상태(X-Act-As-Company). company_* 는 그 고객사
+    acting: bool = False
 
 
 class PasswordChangeRequest(BaseModel):
@@ -328,6 +330,7 @@ async def admin_me(
         role=ctx.admin.role,
         company_id=str(ctx.company_id) if ctx.company_id else None,
         company_name=await _company_name(db, ctx.company_id),
+        acting=ctx.is_acting,
     )
 
 
@@ -870,7 +873,7 @@ async def completed_sessions_without_report(db: AsyncSession, ctx: AdminContext,
         p = by_id.get(s.user_id)
         if not p:
             continue
-        if not ctx.is_super_admin and p.company_id != ctx.company_id:          # 회사 격리(scope_query 와 같은 규칙)
+        if (not ctx.is_super_admin or ctx.is_acting) and p.company_id != ctx.company_id:   # 회사 격리(scope_query 와 같은 규칙, 마스터 대리 포함)
             continue
         if company_id and ctx.is_super_admin and p.company_id != company_id:
             continue
@@ -1114,7 +1117,7 @@ async def stats_overview(
 
     if not p_ids:
         return {
-            "scope": "all" if ctx.is_super_admin else "company",
+            "scope": "all" if (ctx.is_super_admin and not ctx.is_acting) else "company",
             "total_participants": 0,
             "total_sessions": 0,
             "completed_sessions": 0,
@@ -1141,12 +1144,12 @@ async def stats_overview(
     total_reports, avg_score = r_result.one()
 
     total_companies = 0
-    if ctx.is_super_admin:
+    if ctx.is_super_admin and not ctx.is_acting:
         c_result = await db.execute(select(func.count(Company.id)))
         total_companies = c_result.scalar() or 0
 
     return {
-        "scope": "all" if ctx.is_super_admin else "company",
+        "scope": "all" if (ctx.is_super_admin and not ctx.is_acting) else "company",
         "total_participants": len(p_ids),
         "total_sessions": total_sessions,
         "completed_sessions": completed,

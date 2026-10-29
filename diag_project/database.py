@@ -98,6 +98,9 @@ _LIGHT_MIGRATIONS = [
     # (2026-10-29) 고객사 진단 기간
     "ALTER TABLE companies ADD COLUMN diagnosis_start DATE",
     "ALTER TABLE companies ADD COLUMN diagnosis_end DATE",
+    # (2026-10-29) 참여자 개인 참여 코드(명단 업로드)
+    "ALTER TABLE participants ADD COLUMN access_code VARCHAR(30)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_participants_access_code ON participants (access_code)",
 ]
 
 

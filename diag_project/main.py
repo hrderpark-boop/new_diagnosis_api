@@ -19,6 +19,7 @@ from diag_project.routes import framework
 from diag_project.routes import admin
 from diag_project.routes import org_units
 from diag_project.routes import admin_education
+from diag_project.routes import roster
 from diag_project.routes import self_eval
 from diag_project.config import settings
 
@@ -137,6 +138,8 @@ app.include_router(admin.router, prefix="/api/v1")
 app.include_router(org_units.router, prefix="/api/v1")
 # HR 콘솔 결과 → 교육: /api/v1/admin/education/summary · /people
 app.include_router(admin_education.router, prefix="/api/v1")
+# 참여자 명단 업로드 → 조직 자동 세팅 + 개인 참여 코드 · 엑셀
+app.include_router(roster.router, prefix="/api/v1")
 # 자가진단: 라우터가 prefix="/sessions" 를 가지므로 최종 경로는
 # /api/v1/sessions/{session_id}/self-eval 이 된다.
 app.include_router(self_eval.router, prefix="/api/v1")

@@ -103,9 +103,26 @@ def next_letter_code(used: Iterable[str], max_len: int = 2) -> str:
     raise ValueError("더 이상 쓸 수 있는 코드가 없습니다.")
 
 
-def auto_prefix(other_prefixes: Iterable[str]) -> str:
-    """다른 고객사 접두어와 겹치지 않는(앞부분 포함) 가장 짧은 접두어."""
+def prefix_candidates(hints: Iterable[str]) -> list:
+    """회사 코드·이름에서 접두어 후보를 뽑는다. 영문만 남겨 앞 1~3자(예: 'HCS-01' → H, HC, HCS).
+    한글 이름처럼 영문이 없으면 후보가 없다(그때는 A, B, … 순서로)."""
+    out = []
+    for h in hints:
+        letters = "".join(ch for ch in normalize(h) if "A" <= ch <= "Z")
+        for n in (1, 2, 3):
+            if len(letters) >= n and letters[:n] not in out:
+                out.append(letters[:n])
+    # 짧은 것부터(같은 길이면 힌트 순서)
+    return sorted(out, key=len)
+
+
+def auto_prefix(other_prefixes: Iterable[str], hints: Iterable[str] = ()) -> str:
+    """다른 고객사 접두어와 겹치지 않는(앞부분 포함) 가장 짧은 접두어.
+    회사 코드·이름의 영문 후보를 먼저 쓰고, 없거나 다 겹치면 A, B, … 순서."""
     others = [normalize(o) for o in other_prefixes if o]
+    for code in prefix_candidates(hints):
+        if validate_prefix(code, others) is None:
+            return code
     for code in _letter_seq(3):
         if validate_prefix(code, others) is None:
             return code

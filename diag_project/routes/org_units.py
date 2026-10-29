@@ -86,7 +86,7 @@ async def _ensure_prefix(db: AsyncSession, company: Company) -> str:
     others = (await db.execute(
         select(Company.org_prefix).where(Company.id != company.id, Company.org_prefix.is_not(None))
     )).scalars().all()
-    company.org_prefix = org_codes.auto_prefix(others)
+    company.org_prefix = org_codes.auto_prefix(others, hints=[company.code or "", company.name or ""])
     db.add(company)
     await db.flush()
     return company.org_prefix
@@ -550,3 +550,61 @@ async def export_org_codes(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=org_codes.xlsx; filename*=UTF-8''{quote(fname)}"},
     )
+
+
+# ---------------------------------------------------------------------------
+# 마스터 대시보드: 고객사별 진행·유지보수 현황 (마스터 전용)
+# ---------------------------------------------------------------------------
+@router.get("/companies/overview")
+async def companies_overview(
+    ctx: AdminContext = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """고객사마다 대상·완료·진행 중·중단·미시작·완료율, 리포트 미생성(유지보수 필요), 최근 활동, 준비 상태."""
+    from sqlalchemy import func
+
+    from diag_project.models.admin_user import AdminUser
+    from diag_project.models.diagnosis_report import DiagnosisReport
+    from diag_project.models.diagnosis_session import DiagnosisSession
+    from diag_project.services.org_units import participant_statuses
+
+    companies = (await db.execute(select(Company).order_by(Company.name))).scalars().all()
+    hr_counts = dict((await db.execute(
+        select(AdminUser.company_id, func.count(AdminUser.id)).where(AdminUser.company_id.is_not(None))
+        .group_by(AdminUser.company_id)
+    )).all())
+    unit_counts = dict((await db.execute(
+        select(OrgUnit.company_id, func.count(OrgUnit.id)).where(OrgUnit.is_active.is_(True)).group_by(OrgUnit.company_id)
+    )).all())
+    rows = []
+    for c in companies:
+        ps = (await db.execute(select(Participant.id, Participant.access_code).where(Participant.company_id == c.id))).all()
+        pids = [p[0] for p in ps]
+        st = await participant_statuses(db, pids)
+        counts = {k: 0 for k in ("completed", "in_progress", "abandoned", "not_started")}
+        for v in st.values():
+            counts[v] += 1
+        missing = 0
+        last = None
+        if pids:
+            done_sessions = set((await db.execute(
+                select(DiagnosisSession.user_id).where(DiagnosisSession.user_id.in_(pids), DiagnosisSession.status == "completed")
+            )).scalars().all())
+            with_report = set((await db.execute(
+                select(DiagnosisReport.user_id).where(DiagnosisReport.user_id.in_(pids))
+            )).scalars().all())
+            # 완주했는데 리포트가 없는 사람 = 분석 실패 등 유지보수가 필요한 사람
+            missing = len({str(u) for u in done_sessions} - {str(u) for u in with_report})
+            last = (await db.execute(
+                select(func.max(DiagnosisSession.updated_at)).where(DiagnosisSession.user_id.in_(pids))
+            )).scalar()
+        reg = len(pids)
+        rows.append({
+            "id": str(c.id), "name": c.name, "code": c.code, "org_prefix": c.org_prefix, "is_active": c.is_active,
+            "diagnosis_start": c.diagnosis_start, "diagnosis_end": c.diagnosis_end,
+            "registered": reg, "roster": sum(1 for p in ps if p[1]), **counts,
+            "completion_rate": round(counts["completed"] / reg * 100) if reg else 0,
+            "report_missing": missing, "last_activity": last,
+            "hr_accounts": int(hr_counts.get(c.id, 0)), "org_unit_count": int(unit_counts.get(c.id, 0)),
+        })
+    return {"companies": rows}

@@ -79,6 +79,31 @@ async def login_for_access_token(
     result = await db.execute(query)
     participant = result.scalars().first()
 
+    # 1-a. (2026-10-29) 개인 참여 코드(명단 업로드로 발급): 그 사람으로 들어온다. 이메일이 명단과 다르면 거부.
+    _raw_code = _normalize_group_code(form_data.group_code)
+    _personal = (await db.execute(
+        select(Participant).where(Participant.access_code == _raw_code)
+    )).scalars().first() if _raw_code else None
+    if _personal is not None:
+        if (_personal.email or "").strip().lower() != (form_data.email or "").strip().lower():
+            logger.warning("🔒 로그인 거부(개인 코드·이메일 불일치, 코드=%r): %s", _raw_code, form_data.email)
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="개인 참여 코드와 이메일이 명단과 맞지 않습니다. 담당자에게 문의해 주세요.")
+        _pc = await db.get(Company, _personal.company_id) if _personal.company_id else None
+        if _pc is None or not _pc.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_GATE_MSG)
+        if form_data.name and _personal.name != form_data.name:
+            _personal.name = form_data.name
+            db.add(_personal)
+            await db.commit()
+            await db.refresh(_personal)
+        return {
+            "access_token": f"fake-jwt-token-for-{_personal.id}",
+            "token_type": "bearer",
+            "participant_id": str(_personal.id),
+            "name": _personal.name or "",
+        }
+
     # 1-b. A 게이트: group_code 정규화 → companies.code 대조 + 소속 매핑.
     #   ENFORCED=True 면 미존재/비활성/빈값을 거부(사유는 로그로 구분, 사용자
     #   문구는 통일). company_id 는 활성 회사일 때만 채운다.
