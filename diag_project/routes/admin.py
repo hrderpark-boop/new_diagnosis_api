@@ -572,6 +572,8 @@ async def list_participants(
                 "team_name": _org["team_name"] if _org else None,
                 # (2026-10-29) 진행 상태 4가지: completed · in_progress · abandoned · not_started
                 "progress_status": pstatus.get(p.id, "not_started"),
+                # 개인 참여 코드(명단 업로드로 발급). 명단 밖에서 들어온 사람은 None
+                "access_code": p.access_code,
                 "gender": p.gender or "-",
                 "age_group": p.age_group or "-",
                 "total_sessions": stat["total"],
