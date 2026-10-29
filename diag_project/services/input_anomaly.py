@@ -58,13 +58,20 @@ def jaccard_words(a: str | None, b: str | None) -> float:
 
 
 def last_question_of(coach_text: str | None) -> str:
-    """코치 발화의 마지막 질문 문장(없으면 빈 문자열). 목록 줄은 제외한다."""
+    """코치 발화의 마지막 질문(없으면 빈 문자열). 목록 줄은 제외한다.
+    (2026-10-29) "…있으셨습니까? 있었다면 언제쯤이었는지부터 알려주시면 됩니다." 처럼 마지막 문장이 조건절로 시작하면
+    바로 앞 질문과 한 쌍이므로 둘을 함께 돌려준다(재생 s281 Jessica: '있었다면 …' 만 되묻는 사고)."""
+    from diag_project.services.output_guard import starts_without_main_clause
     for line in reversed((coach_text or "").split("\n")):
         if line.strip().startswith("·"):
             continue
-        for s in reversed(split_sentences(line)):
-            if is_question(s):
-                return s.strip()
+        sents = split_sentences(line)
+        for i in range(len(sents) - 1, -1, -1):
+            if is_question(sents[i]):
+                q = sents[i].strip()
+                if i > 0 and starts_without_main_clause(q) and is_question(sents[i - 1]):
+                    return f"{sents[i - 1].strip()} {q}"
+                return q
     return ""
 
 

@@ -90,6 +90,8 @@ _LIGHT_MIGRATIONS = [
     # (2026-10-15) 고객사별 LLM provider + 세션 고정값(null = 환경 기본값)
     "ALTER TABLE companies ADD COLUMN llm_provider VARCHAR(20)",
     "ALTER TABLE diagnosis_sessions ADD COLUMN llm_provider VARCHAR(20)",
+    # (2026-10-29) 새 고객사 기본 provider claude (PostgreSQL 전용 구문 — sqlite 는 실패를 무시)
+    "ALTER TABLE companies ALTER COLUMN llm_provider SET DEFAULT 'claude'",
 ]
 
 

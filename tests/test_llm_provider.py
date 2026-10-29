@@ -27,17 +27,20 @@ from diag_project import llm_service as LS  # noqa: E402
 
 # ── 기본값: gemini ────────────────────────────────────────────────────────────
 
-def test_default_provider_is_gemini_and_needs_no_anthropic_key(monkeypatch):
+def test_default_provider_is_claude(monkeypatch):
+    """(2026-10-29) 기본 provider 는 claude. gemini 는 LLM_PROVIDER=gemini 로 선택하며 키 검사 없이 통과한다."""
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    assert P.provider_name() == "claude" and P.is_claude() is True
+    assert P.validate_provider_config() == "claude"
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert P.provider_name() == "gemini"
-    assert P.is_claude() is False
-    assert P.validate_provider_config() == "gemini"
+    assert P.provider_name() == "gemini" and P.validate_provider_config() == "gemini"
 
 
 def test_gemini_path_never_touches_claude(monkeypatch):
-    """기본값에서 _generate_with_retry 는 claude 분기로 들어가지 않는다(가짜 _generate_claude 가 호출되면 실패)."""
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    """LLM_PROVIDER=gemini 에서 _generate_with_retry 는 claude 분기로 들어가지 않는다(가짜 _generate_claude 가 호출되면 실패)."""
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEYS", "dummy")   # 전체 스위트에서는 .env 의 실제 키가 먼저 로드될 수 있다
     svc = LS.GeminiService()
     assert svc.available_keys == ["dummy"]
@@ -306,8 +309,8 @@ def test_claude_overloaded_is_retried(monkeypatch):
 
 
 def test_gemini_ignores_claude_only_error_phrases(monkeypatch):
-    """기본값 gemini 에서는 claude 전용 판정이 전부 꺼져 있다 — 529 는 재시도 없이 즉시 raise."""
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    """LLM_PROVIDER=gemini 에서는 claude 전용 판정이 전부 꺼져 있다 — 529 는 재시도 없이 즉시 raise."""
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setattr(LS.asyncio, "sleep", _no_sleep)
     n = {"c": 0}
 
@@ -323,13 +326,13 @@ def test_gemini_ignores_claude_only_error_phrases(monkeypatch):
 # ── 고객사·세션별 provider(2026-10-15 ■4) + 캐시 키(■3) ──────────────────────────
 
 def test_resolve_for_company_null_means_env_default(monkeypatch):
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     assert P.resolve_for_company(None) == "gemini"
     assert P.resolve_for_company("") == "gemini"
     assert P.resolve_for_company("claude") == "claude"
     assert P.resolve_for_company(" Claude ") == "claude"
     assert P.resolve_for_company("openai") == "gemini"      # 모르는 값 → 환경 기본값(경고)
-    monkeypatch.setenv("LLM_PROVIDER", "claude")
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)       # (2026-10-29) 미설정 = claude
     assert P.resolve_for_company(None) == "claude"
     assert P.resolve_for_company("gemini") == "gemini"      # 고객사 명시값이 환경값보다 우선
 
@@ -343,7 +346,7 @@ def test_normalize_company_provider_rejects_unknown():
 
 
 def test_cache_key_parts_preserve_gemini_keys(monkeypatch):
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     assert P.cache_key_parts(None) == ()
     assert P.cache_key_parts("gemini") == ()
     assert P.cache_key_parts("claude") == ("provider:claude",)
@@ -356,10 +359,12 @@ def test_cache_key_parts_preserve_gemini_keys(monkeypatch):
     assert LG._persist_key("org", "s", ["e"], 2) != LG._persist_key("org", "s", ["e"], 2, "claude")
     assert LG._cache_key("org", "s", ["e"], 2) == LG._cache_key("org", "s", ["e"], 2, "gemini")
     assert LG._cache_key("org", "s", ["e"], 2) != LG._cache_key("org", "s", ["e"], 2, "claude")
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    assert P.cache_key_parts(None) == ("provider:claude",)   # (2026-10-29) 미설정 = claude → 별도 캐시(gemini 캐시 키는 그대로)
 
 
 def test_bind_provider_fixes_session_provider_over_env(monkeypatch):
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)             # 환경 기본값 gemini
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")                   # 환경값 gemini
     monkeypatch.setenv("GEMINI_API_KEYS", "dummy")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     svc = LS.GeminiService()
@@ -382,7 +387,7 @@ def test_bind_provider_fixes_session_provider_over_env(monkeypatch):
 
 
 def test_bind_provider_claude_without_key_fails(monkeypatch):
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEYS", "dummy")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     svc = LS.GeminiService()

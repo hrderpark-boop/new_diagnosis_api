@@ -41,7 +41,7 @@ def test_chat_flow_with_seed_data(client: TestClient, seed_data, monkeypatch):
         assert body.get("llm_error") is not True, body
         assert body["coach_response_message"].strip()
 
-    # 4. 세션에 LLM provider 가 고정됐다(고객사 값 없음 → 환경 기본값 gemini).
+    # 4. 세션에 LLM provider 가 고정됐다(고객사 값 없음 → 환경 기본값 claude, 2026-10-29).
     import uuid
     from diag_project.database import async_session
     from diag_project.models.diagnosis_session import DiagnosisSession
@@ -52,5 +52,5 @@ def test_chat_flow_with_seed_data(client: TestClient, seed_data, monkeypatch):
 
     session = client.portal.call(_load)
     assert session is not None
-    assert session.llm_provider == "gemini"
+    assert session.llm_provider == "claude"
     assert session.status == "in_progress"

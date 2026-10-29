@@ -1428,7 +1428,7 @@ async def create_company(
 
     try:
         from diag_project.llm_provider import normalize_company_provider
-        _llm_provider = normalize_company_provider(body.llm_provider)
+        _llm_provider = normalize_company_provider(body.llm_provider) or "claude"   # (2026-10-29) 비우면 claude
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

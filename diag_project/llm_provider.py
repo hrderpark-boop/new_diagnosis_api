@@ -1,6 +1,6 @@
 """LLM provider 선택 계층 (2026-10-15).
 
-LLM_PROVIDER=gemini(기본) | claude 가 프로세스 기본값. 고객사(companies.llm_provider)별로 다른 provider 를 줄 수 있고,
+LLM_PROVIDER=claude(기본, 2026-10-29부터) | gemini 가 프로세스 기본값. 고객사(companies.llm_provider)별로 다른 provider 를 줄 수 있고,
 세션 생성 시 그 값이 diagnosis_sessions.llm_provider 에 고정된다(세션 중간에 바뀌지 않음, null 이면 환경 기본값).
   - 기본값(gemini)이면 이 모듈은 provider 조회 외에 아무 일도 하지 않는다 —
     GeminiService._generate_with_retry 의 기존 Gemini 본문이 그대로 돈다(동작 0 변화).
@@ -41,9 +41,12 @@ _NO_THINKING_OFF_AT = ("xhigh", "max")        # 이 effort 에서는 thinking �
 CREDIT_DEPLETED_PHRASES = ("credit balance is too low",)
 
 
+DEFAULT_PROVIDER = CLAUDE   # (2026-10-29) 기본값 claude. gemini 코드는 그대로 두고 LLM_PROVIDER=gemini 로 선택한다.
+
+
 def provider_name() -> str:
-    """프로세스 기본 provider(LLM_PROVIDER). 세션에 고정된 값이 없을 때의 폴백."""
-    return ((os.getenv("LLM_PROVIDER") or GEMINI).strip().lower()) or GEMINI
+    """프로세스 기본 provider(LLM_PROVIDER, 미설정이면 claude). 세션에 고정된 값이 없을 때의 폴백."""
+    return ((os.getenv("LLM_PROVIDER") or DEFAULT_PROVIDER).strip().lower()) or DEFAULT_PROVIDER
 
 
 def anthropic_key_configured() -> bool:
@@ -58,13 +61,13 @@ def is_claude() -> bool:
 def validate_provider_config(name: Optional[str] = None) -> str:
     """provider 설정 검증. name 생략 시 환경 기본값(기동 단계 검증).
 
-    잘못된 값·키 누락·SDK 미설치는 명확한 RuntimeError. gemini 는 아무것도 검사하지 않는다
+    잘못된 값·키 누락·SDK 미설치는 명확한 RuntimeError. claude(기본)는 키·SDK 를 검사하고, gemini 는 아무것도 검사하지 않는다
     (기존과 동일 — GEMINI_API_KEYS 는 서비스 생성 시 검사).
     """
     p = (name or provider_name()).strip().lower()
     if p not in VALID_PROVIDERS:
         raise RuntimeError(
-            f"LLM_PROVIDER={p!r} 는 지원하지 않는 값입니다. 'gemini'(기본) 또는 'claude' 로 설정하세요."
+            f"LLM_PROVIDER={p!r} 는 지원하지 않는 값입니다. 'claude'(기본) 또는 'gemini' 로 설정하세요."
         )
     if p == CLAUDE:
         if not (os.getenv("ANTHROPIC_API_KEY") or "").strip():

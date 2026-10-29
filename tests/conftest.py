@@ -52,6 +52,7 @@ def pytest_configure(config):
     # 테스트 전용 기본값 — .env(load_dotenv)는 기존 env 를 덮지 않으므로 여기서 먼저 잡으면 운영 값이 쓰이지 않는다.
     os.environ.setdefault("SECRET_KEY", "pytest-only-secret-key-" + "0" * 40)
     os.environ.setdefault("GEMINI_API_KEYS", "dummy")
+    os.environ.setdefault("ANTHROPIC_API_KEY", "dummy")   # (2026-10-29) 기본 provider claude — 기동 검증 통과용(실호출 없음)
     os.environ.setdefault("FM_SYNTHETIC_CHECK", "0")
 
 

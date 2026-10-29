@@ -608,12 +608,16 @@ def decide_instruction(state: dict) -> InstructionType:
     # → 이 시점에 사용자 항의가 오면 스크립트 강행 금지
     if chapter_started or state.get("competency_aligned"):
         _last = state.get("last_user_response") or ""
-        if detect_user_objection(_last):
+        # (2026-10-29) 정의 질문(COMPETENCY_ASK·DIAGNOSIS_CONFIRM)에 대한 '실질 답변'(30자 이상)은 일시정지·메타로 돌리지 않는다.
+        #   10/28 Lucas 자기관리: 정의 답 "…잠깐 쉬어가는 것도 중요하게" 의 '쉬어'가 일시정지로 읽혀 정의→ALIGN 사이에 탐침 턴이 끼었다.
+        _is_definition_answer = (state.get("last_instruction") in ("COMPETENCY_ASK", "DIAGNOSIS_CONFIRM")
+                                 and len(_last.replace(" ", "")) >= 30)
+        if detect_user_objection(_last) and not _is_definition_answer:
             state["route_reason"] = "objection"
             return "META_QUESTION_FROM_USER"
-        if detect_pause_request(_last):
+        if detect_pause_request(_last) and not _is_definition_answer:
             return "USER_REQUESTS_PAUSE"
-        if detect_meta_question(_last):
+        if detect_meta_question(_last) and not _is_definition_answer:
             state["route_reason"] = "meta"
             return "META_QUESTION_FROM_USER"
 

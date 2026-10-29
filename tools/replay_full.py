@@ -1,4 +1,4 @@
-"""5챕터 완주 재생 러너 (2026-10-28 P0) — 원본은 .fm_work/replay_full.py, 저장소 사본. replay_server.py 는 .fm_work 에 있다.: 코치 K개 병렬 서버 + 클라이언트, 입력 파일을 끝까지(세션 완료까지) 재생.
+"""5챕터 완주 재생 러너 (2026-10-28 P0): 코치 K개 병렬 서버 + 클라이언트, 입력 파일을 끝까지(세션 완료까지) 재생.
 
 용법: python replay_full.py TAG INPUT_JSON COACHES PROVIDER [REPEAT]
   예: python replay_full.py p0a ../new_diagnosis_api/tests/fixtures/fixture_daniel_full_users.json 2,3,4,5,6 gemini 1
@@ -10,7 +10,7 @@
 import asyncio, json, os, sqlite3, subprocess, sys, time, uuid
 import httpx
 
-W = os.environ.get("RP_WORK", "/Users/daniel/python_new/.fm_work")   # 결과·DB·로그 저장 폴더(저장소 밖, replay_server.py 도 여기)
+W = os.path.dirname(os.path.abspath(__file__))
 REPO = "/Users/daniel/python_new/new_diagnosis_api"
 PY = sys.executable
 TAG, INPUT = sys.argv[1], sys.argv[2]
@@ -19,6 +19,7 @@ PROVIDER = sys.argv[4] if len(sys.argv) > 4 else "gemini"
 REPEAT = int(sys.argv[5]) if len(sys.argv) > 5 else 1
 PORT_BASE = int(os.environ.get("RP_PORT_BASE", "8060"))
 TEMPLATE_ID = "10000000-0000-0000-0000-000000000008"
+COACH_FILE_KEY = {"1": "ella", "2": "jessica", "3": "olivia", "4": "daniel", "5": "michael", "6": "lucas"}   # INPUT 에 {name} 자리표시자
 NEXT = "네, 다음으로 이어가 주세요."
 CONTINUE = "괜찮아요, 계속 진행할게요."
 FILLERS = [
@@ -31,7 +32,8 @@ FILLERS = [
 
 
 def start_server(coach: str, port: int):
-    env = dict(os.environ, RP_PROVIDER=PROVIDER, RP_PORT=str(port), RP_TAG=f"{TAG}_{coach}", RP_REPO=REPO)
+    # FM_PREWARM=0: 대화 재생에서는 챕터 종료 사전분석(Sonnet 심층분석·게이트)을 돌리지 않는다 — 세션당 LLM 호출의 약 1/5, 비용의 대부분.
+    env = dict(os.environ, RP_PROVIDER=PROVIDER, RP_PORT=str(port), RP_TAG=f"{TAG}_{coach}", RP_REPO=REPO, FM_PREWARM=os.environ.get("FM_PREWARM", "0"))
     for f in (f"{W}/replay_{TAG}_{coach}.db", f"{W}/prompt_capture_{TAG}_{coach}.jsonl"):
         if os.path.exists(f):
             os.remove(f)
@@ -40,6 +42,8 @@ def start_server(coach: str, port: int):
 
 
 async def run_client(coach: str, port: int, inputs: list[str]):
+    if "{name}" in INPUT:   # 코치별 자기 세션 입력
+        inputs = json.load(open(INPUT.format(name=COACH_FILE_KEY[coach]), encoding="utf-8"))
     base = f"http://127.0.0.1:{port}/api/v1"
     db = f"{W}/replay_{TAG}_{coach}.db"
     coach_id = f"10000000-0000-0000-0000-0000000000{int(coach) + 10:02d}"
@@ -109,7 +113,7 @@ async def run_client(coach: str, port: int, inputs: list[str]):
 
 
 async def main():
-    inputs = json.load(open(INPUT, encoding="utf-8"))
+    inputs = [] if "{name}" in INPUT else json.load(open(INPUT, encoding="utf-8"))
     for rep in range(REPEAT):
         tag_rep = TAG if REPEAT == 1 else f"{TAG}{rep + 1}"
         globals()["TAG"] = tag_rep

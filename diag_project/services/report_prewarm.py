@@ -125,7 +125,12 @@ def schedule_chapter_prewarm(session_id: str, chapter: str) -> Optional[asyncio.
     """prewarm_chapter_analysis 를 백그라운드 태스크로 띄운다(참조 보관).
 
     실행 중인 이벤트 루프가 없으면 None(아무것도 안 함). 예외를 던지지 않는다.
+    (2026-10-29) FM_PREWARM=0 이면 예약하지 않는다 — 대화 재생(리플레이)에서 Sonnet 분석 비용을 아끼기 위한 스위치. 운영에서는 켜 둔다.
     """
+    import os as _os
+    if _os.getenv("FM_PREWARM", "1") == "0":
+        logger.info("사전분석 예약 건너뜀(FM_PREWARM=0) [%s·%s]", session_id, chapter)
+        return None
     try:
         task = asyncio.get_running_loop().create_task(
             prewarm_chapter_analysis(str(session_id), str(chapter)))

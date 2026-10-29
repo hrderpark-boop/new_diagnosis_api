@@ -23,7 +23,8 @@ class CompanyBase(SQLModel):
     is_active: bool = Field(default=True)
     # (2026-10-15) 고객사별 LLM provider('gemini'|'claude'). null 이면 환경변수(LLM_PROVIDER) 기본값.
     #   세션 생성 시 diagnosis_sessions.llm_provider 에 복사·고정된다(세션 중간에 바뀌지 않음).
-    llm_provider: Optional[str] = Field(default=None, max_length=20)
+    # (2026-10-29) 새 레코드 기본값 claude. 기존 null 레코드는 환경 기본값(claude)으로 풀린다.
+    llm_provider: Optional[str] = Field(default="claude", max_length=20)
 
 
 class Company(CompanyBase, table=True):

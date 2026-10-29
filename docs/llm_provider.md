@@ -1,7 +1,9 @@
 # LLM provider 계층 (2026-10-15)
 
-`LLM_PROVIDER` 환경변수로 LLM 공급자를 고른다. 기본값 `gemini`. 미설정이면 기존 Gemini 경로가 **코드 변경 없이** 그대로 돈다
-(분기는 `GeminiService._generate_with_retry` 첫 줄의 `is_claude()` 한 번만).
+`LLM_PROVIDER` 환경변수로 LLM 공급자를 고른다. **기본값 `claude`(2026-10-29부터, 그 전엔 gemini)**. `LLM_PROVIDER=gemini` 로 두면 기존 Gemini 경로가
+그대로 돈다(분기는 `GeminiService._generate_with_retry` 첫 줄의 `is_claude()` 한 번만). Gemini 코드는 삭제하지 않는다.
+Gemini 키 없이도 기동된다 — `GEMINI_API_KEYS` 는 gemini 를 선택했을 때 서비스 생성 시에만 검사한다(google-genai import 는 키가 필요 없다).
+`companies.llm_provider` 는 새 레코드 기본 `claude`, null 레코드는 환경 기본값(claude)으로 풀린다.
 
 | 구분 | gemini(기본) | claude |
 |---|---|---|

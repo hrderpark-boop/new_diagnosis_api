@@ -193,3 +193,30 @@ def test_route_has_leak_guard_wired():
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
     assert 'v["leak"] = lk' in src and '"leak"}' in src and "strip_leak_sentences as _sls" in src
     assert "_anomaly_override_text" in src and "render_align as _ra" in src and "_voiced_q(template_anchor" in src
+
+
+# ── 2026-10-29 재생(s281) 후속 ─────────────────────────────────────────────────
+
+def test_last_question_keeps_main_clause_of_compound_question():
+    from diag_project.services.input_anomaly import last_question_of
+    q = last_question_of("상황 하나를 떠올려 주시면 됩니다. 팀원 한 명을 따로 만나 이야기를 나눠본 적이 있으셨습니까? 있었다면 언제쯤이었는지부터 알려주시면 됩니다.")
+    assert q.startswith("팀원 한 명을") and q.endswith("알려주시면 됩니다.")
+
+
+def test_transition_bridges_are_not_state_reports():
+    from diag_project.services.intro_messages import TRANSITION_BRIDGES
+    from diag_project.services.leak_lexicon import find_state_report
+    for name, pool in TRANSITION_BRIDGES.items():
+        for b in pool:
+            assert find_state_report(b) == [], (name, b)
+
+
+def test_definition_answer_mentioning_rest_is_not_pause_request():
+    from diag_project.services.avoidance_detector import detect_pause_request
+    ans = "저는 자기관리라고 하면 일이 몰려도 감정적으로 흔들리지 않고 우선순위를 정해 처리하는 모습이 먼저 떠올라요. 컨디션을 챙기고 잠깐 쉬어가는 것도 중요하게 봅니다."
+    # 감지기 자체는 '쉬어'에 반응할 수 있다 — decider 가 정의 답변 턴(30자 이상)에서는 이 판정을 쓰지 않는다
+    import inspect
+    from diag_project.services import instruction_decider as D
+    src = inspect.getsource(D)
+    assert "_is_definition_answer" in src and "not _is_definition_answer" in src
+    assert isinstance(detect_pause_request(ans), bool)
