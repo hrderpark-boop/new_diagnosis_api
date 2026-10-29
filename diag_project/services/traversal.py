@@ -154,6 +154,18 @@ def record_asked(store: dict, chapter: str, sub: str) -> dict:
     return store
 
 
+def record_anchored(store: dict, chapter: str, sub: str) -> dict:
+    """(2026-10-29 P1-5) 실제로 앵커 질문이 나간 하위역량 원장(asked 와 분리 — asked 는 자발적 사례도 포함)."""
+    store = dict(store or {})
+    anc = dict(store.get("anchored_subs") or {})
+    lst = list(anc.get(chapter) or [])
+    if sub and sub not in lst:
+        lst.append(sub)
+    anc[chapter] = lst
+    store["anchored_subs"] = anc
+    return store
+
+
 def asked_for_chapter(store: dict, chapter: str) -> list[str]:
     """이 챕터의 asked 원장(유일 소스). LLM 응답과 무관."""
     return list(((store or {}).get("asked_subs") or {}).get(chapter) or [])
@@ -186,8 +198,16 @@ def apply_probe_turn(
 
     if cur is None or should_advance_target(turns, event_done):
         target = select_next_target(asked, all_subs, priority or [])
+        if target is None:
+            # (2026-10-29 P1-5) 전부 asked 인데 아직 앵커를 못 받은 하위역량(자발적 사례로만 기록된 것)이 있으면 그것을 앵커.
+            #   s31 자기관리: 회복탄력성이 자발적 사례로 asked 돼 앵커 없이 넘어가고, 남은 턴은 같은 타겟에 STAR_INCOMPLETE 3~4회로 소진됐다.
+            anchored = list((store.get("anchored_subs") or {}).get(chapter) or [])
+            target = select_next_target(anchored, all_subs, priority or [])
+            if target == cur:
+                target = None
         if target:
             store = record_asked(store, chapter, target)
+            store = record_anchored(store, chapter, target)
             store.setdefault("current_target", {})[chapter] = target
             # 🧭 앵커(기록) 턴 자체가 이 하위역량의 '1번째 턴'이다. turns=1 로
             #   시작해야 하위역량당 정확히 MAX_TURNS_PER_SUB(3) 프로브 턴을
@@ -230,8 +250,8 @@ def result_probed(store: dict, chapter: str) -> bool:
 
 # (2026-10-22 P2-2) 행동(A) 탐침 원장 — result_probed 와 같은 방식. 현재 타겟에서 '리더가 직접 한 행동'을 물었는가.
 _ACTION_Q_RE = re.compile(r"(어떻게 하셨|무엇을 하셨|뭘 하셨|어떤 행동|어떤 조치|어떻게 대응|어떻게 접근|어떻게 이끄|어떻게 진행|"
-                          r"어떤 방식으로|직접 하신|먼저 하신|어떤 말을|어떻게 말씀|무엇부터|어떻게 설득|어떻게 풀)")
-ACTION_FALLBACK_QUESTION = "그때 리더님이 직접 하신 일은 무엇이었어요?"
+                          r"어떤 방식으로|직접 하신|리더님 몫|손으로 (?:직접 )?하신|손에서 나온|맡으신 부분|먼저 하신|어떤 말을|어떻게 말씀|무엇부터|어떻게 설득|어떻게 풀)")
+ACTION_FALLBACK_QUESTION = "그 자리에서 리더님 몫은 어디까지였어요?"   # (2026-10-29 P1-2) 문안 완화
 
 
 def is_action_probe_text(text: str | None) -> bool:

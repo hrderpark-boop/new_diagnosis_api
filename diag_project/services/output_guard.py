@@ -779,6 +779,14 @@ def needs_quantify_probe(user_text: str | None) -> bool:
     return False
 
 
+_DIRECT_ACTION_Q_RE = re.compile(r"직접\s*(하신|어떻게|뭘|무엇을|무엇이|움직이신|하셨|한\s*일|하는|해\s*보신|해보신|한\s*행동)")
+
+
+def is_direct_action_question(q: str | None) -> bool:
+    """(2026-10-29 P1-2) '리더님이 직접 하신 일은?' 류 — 하위역량당 1회 상한 대상(린트 _DIRECT_Q_RE 와 같은 표지)."""
+    return bool(_DIRECT_ACTION_Q_RE.search(q or ""))
+
+
 def result_fallback_question(user_text: str | None, prev_user_text: str | None = None, alt: int = 0,
                              persona: str | None = None) -> str:
     """(2026-10-22 P1-2) 결과 질문 폴백 — 명사 따옴표 끼우기("'X' 이후로는 어떻게 됐습니까?") 폐지.

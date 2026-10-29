@@ -165,7 +165,11 @@ def is_generalized_answer(text: str | None) -> bool:
     t = (text or "").strip()
     if not t:
         return False
-    return bool(_HABIT_MARK_RE.search(t)) and not _TIME_MARK_RE.search(t)
+    # (2026-10-29 P1-3) 습관 표지가 없어도 '시점 표지 없음' 단독으로 일반화로 본다(짧은 답은 제외 — 20자 미만은 판정 보류).
+    #   프로젝트 '이름'은 패턴으로 못 잡으므로 과탐 가능 — 타겟당 1회만 묻고 그래도 일반화면 generalized 원장에 기록.
+    if _TIME_MARK_RE.search(t):
+        return False
+    return bool(_HABIT_MARK_RE.search(t)) or len(t.replace(" ", "")) >= 20
 
 
 # 부재 진술(absence statement) 표지 — "그런 경험은 없다 / 만들어두지 못했다 /

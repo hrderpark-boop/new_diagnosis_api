@@ -87,9 +87,9 @@ def test_persona_lines_complete_and_structural():
             assert G.has_question(d[k]), (p, k)
         for v in d.values():
             assert not G.find_banned_tail(v)
-    assert persona_line("Michael (마이클)", "action") == "좋습니다, 그때 리더님이 직접 움직이신 건 뭐였어요?"
-    assert persona_line("Jessica", "action") == "리더님이 직접 하신 일은 무엇입니까?"
-    assert persona_line("Ella", "action") == "그때 리더님은 직접 어떻게 하셨어요?"
+    assert persona_line("Michael (마이클)", "action") == "좋습니다, 그때 리더님 몫은 어디까지였어요?"   # (2026-10-29 P1-2) 문안 완화
+    assert persona_line("Jessica", "action") == "리더님 손으로 직접 하신 부분은 어디까지였습니까?"
+    assert persona_line("Ella", "action") == "그 자리에서 리더님 몫은 어디까지였어요?"
     assert persona_line("없는코치", "role_q") == PERSONA_LINES["Ella"]["role_q"]          # 폴백 Ella
     assert definition_question("성과관리", "Lucas") == "리더님께서는 '성과관리'를 무엇이라고 정의하십니까?"
     assert "달려오셨습니다" in pause_suggestion_text(47, "Michael") and "47분째" in pause_suggestion_text(47, "Michael")

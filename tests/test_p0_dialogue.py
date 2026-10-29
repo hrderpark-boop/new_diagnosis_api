@@ -288,3 +288,72 @@ def test_state_report_catches_coach_self_reference_and_question_announcement():
     from diag_project.services.leak_lexicon import find_state_report
     assert find_state_report("Daniel 코치로서 자기관리 영역의 첫 질문을 드리겠습니다. 이제 '자기관리'로 이어가겠습니다.")
     assert not find_state_report("그 결정을 내리셨군요. 하나 여쭙겠습니다. 그때 팀원들 반응은 어땠습니까?")
+
+
+# ── P1 (2026-10-29) ─────────────────────────────────────────────────────────────
+def test_apply_probe_turn_anchors_volunteered_sub_when_all_asked():
+    """P1-5: asked 는 전부지만 앵커를 못 받은(자발적 사례) 하위역량이 남았으면 그것을 다음 타겟으로."""
+    from diag_project.services.traversal import apply_probe_turn, MAX_TURNS_PER_SUB
+    subs = ["자기인식", "회복탄력성", "중심성"]
+    store = {"asked_subs": {"self_management": subs}, "anchored_subs": {"self_management": ["자기인식", "중심성"]},
+             "current_target": {"self_management": "중심성"}, "turns_on_target": {"self_management": MAX_TURNS_PER_SUB}}
+    store2, cur = apply_probe_turn(store, "self_management", subs, event_done=False)
+    assert cur == "회복탄력성" and "회복탄력성" in store2["anchored_subs"]["self_management"]
+    assert store2["turns_on_target"]["self_management"] == 1
+    # 전부 앵커까지 끝났으면 현재 타겟 유지(turns 만 증가하지 않음 — 기존 동작)
+    store3, cur3 = apply_probe_turn(store2 | {"turns_on_target": {"self_management": MAX_TURNS_PER_SUB}}, "self_management", subs, event_done=False)
+    assert cur3 == "회복탄력성"
+
+
+def test_ladder_question_prefers_unused_step():
+    from diag_project.data.ladder_questions import ladder_question, LADDER_QUESTIONS
+    assert ladder_question("vision_sharing", 2)[1] == "2_3"
+    assert ladder_question("vision_sharing", 2, avoid=["2_3"])[1] == "3_4"
+    assert ladder_question("vision_sharing", 3, avoid=["3_4"])[1] == "2_3"
+    assert ladder_question("vision_sharing", 2, avoid=["2_3", "3_4"])[1] == "2_3"
+    assert ladder_question("vision_sharing", 2, avoid=["2_3"])[0] == LADDER_QUESTIONS["vision_sharing"]["3_4"]
+
+
+def test_ladder_turn_trigger_and_precedence_wired():
+    import inspect
+    from diag_project.routes import diagnoses as d
+    from diag_project.services import instruction_decider as dec
+    src = inspect.getsource(d._submit_message_phase3a)
+    i = src.index("사다리 탐침(턴 조건)")
+    assert "turns_on_target" in src[i - 1500: i] and ">= 3" in src[i - 1500: i]
+    j = src.index("사다리 턴 → R/A/일반화 강제 해제")
+    assert i < j < src.index("if _force_r:\n            from diag_project.services.output_guard import needs_quantify_probe")
+    assert 'return "CROSS_CHAPTER_OPPORTUNITY"' not in inspect.getsource(dec.decide_instruction)
+    assert '"이 영역에서 들려주신 이야기는 여기서 정리하겠습니다."' not in src
+
+
+def test_direct_action_question_detector_and_soft_lines():
+    from diag_project.services.output_guard import is_direct_action_question
+    from diag_project.services.intro_messages import PERSONA_LINES
+    from diag_project.services.traversal import is_action_probe_text, ACTION_FALLBACK_QUESTION
+    assert is_direct_action_question("그때 리더님이 직접 하신 일은 무엇이었어요?")
+    assert not is_direct_action_question("그 자리에서 리더님 몫은 어디까지였어요?")
+    assert is_action_probe_text(ACTION_FALLBACK_QUESTION)
+    for p, d in PERSONA_LINES.items():
+        assert is_action_probe_text(d["action"]), (p, d["action"])     # 완화 문안도 행동 질문으로 인식(A 원장)
+        assert "—" not in d["generalize"]
+        assert d["reask_anchor_2"].startswith("비슷한 다른 장면이라도") and "여기까지 듣고 넘어" in d["skip_item"]
+
+
+def test_generalized_answer_rule_time_marker_alone():
+    from diag_project.services.avoidance_detector import is_generalized_answer as G
+    assert G("저는 팀원들과 먼저 이야기를 나누고 역할을 나눈 뒤에 일정을 다시 잡는 식으로 진행합니다.")   # 시점 없음·습관 표지 없음·20자 이상
+    assert not G("지난달에 팀원들과 먼저 이야기를 나누고 역할을 나눈 뒤에 일정을 다시 잡았습니다.")       # 시점 표지
+    assert G("보통 제가 먼저 정리해서 공유하는 편입니다.")                                            # 짧아도 습관 표지
+    assert not G("네, 그렇게 했습니다.")                                                            # 짧고 표지 없음 → 보류
+
+
+def test_p1_anomaly_escalation_and_direct_cap_wired():
+    import inspect
+    from diag_project.routes import diagnoses as d
+    src = inspect.getsource(d._submit_message_phase3a)
+    a = src.index("anomaly_counts"); assert "_ac_n >= 3" in src[a: a + 2500] and "skip_bridge" in src[a: a + 2500]
+    assert "'reask_anchor_2' if _ac_n == 2 else 'reask_anchor'" in src
+    j = src.index("# 8-j."); assert 'state.get("skip_bridge")' in src[j: j + 1500]
+    c = src.index("'직접 하신' 질문 상한"); assert "direct_q_count" in src[c: c + 1500] and "a_present" in src[c: c + 1500]
+    g = src.index("generalize_pending"); assert '"generalized"' in src[g: g + 1200]

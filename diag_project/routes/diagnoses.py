@@ -916,7 +916,33 @@ async def _submit_message_phase3a(
         if _anomaly is not None:
             _pn_a = (state.get("coach_persona") or {}).get("name")
             _q_a = _anomaly.question
-            if _anomaly.kind == "repeat_prev":
+            # (2026-10-29 P1) 같은 타겟에서 같은 종류의 이상이 반복되면 단계적으로: ANCHOR_REASK 2회째 변형 문장, 3회째·INPUT_DUPLICATE 3회째는
+            #   '이 항목은 여기까지 듣고 넘어간다' — 미확인(unconfirmed) 기록 + 타겟 전진(turns 상한). 전진 턴의 본문은 8-j 가 skip_bridge 로 쓴다.
+            _tgt_an = ((_store_a.get("current_target") or {}).get(chapter) or "-") if chapter else "-"
+            _ac_all = dict(_store_a.get("anomaly_counts") or {}); _ac_key = f"{chapter}|{_tgt_an}|{_anomaly.kind}"
+            _ac_n = int(_ac_all.get(_ac_key, 0) or 0) + 1
+            if _anomaly.kind in ("repeat_any", "ack_reask"):
+                _ac_all[_ac_key] = _ac_n; _store_a["anomaly_counts"] = _ac_all
+                session.self_assessment_data = _store_a
+                from sqlalchemy.orm.attributes import flag_modified as _fm_ac
+                _fm_ac(session, "self_assessment_data")
+            _skip_an = _anomaly.kind in ("repeat_any", "ack_reask") and _ac_n >= 3 and chapter and _tgt_an != "-"
+            if _skip_an:
+                from diag_project.services.traversal import MAX_TURNS_PER_SUB as _MAXT_an, mark_result_probed as _mrp_an
+                _unc = dict(_store_a.get("unconfirmed") or {}); _unc[chapter] = sorted(set((_unc.get(chapter) or []) + [_tgt_an]))
+                _store_a["unconfirmed"] = _unc
+                _store_a.setdefault("turns_on_target", {})[chapter] = _MAXT_an
+                _store_a = _mrp_an(_store_a, chapter)
+                session.self_assessment_data = _store_a
+                from sqlalchemy.orm.attributes import flag_modified as _fm_sk
+                _fm_sk(session, "self_assessment_data")
+                state["skip_bridge"] = _pl_an(_pn_a, "skip_item")
+                _tm["anomaly"] = f"{_anomaly.kind}#3→skip"
+                _tm["unconfirmed"] = _tgt_an
+                logger.info("🧷 입력 이상 3회째(%s) → [%s] %s 미확인 기록·전진", _anomaly.kind, chapter, _tgt_an)
+            if _skip_an:
+                pass   # 고정 응답 없이 이번 턴을 정상 진행 — T2 가 다음 타겟으로 전진(STAR_COMPLETE_NEW_EVENT)
+            elif _anomaly.kind == "repeat_prev":
                 _anomaly_override_text = f"{_pl_an(_pn_a, 'same_input')} {_q_a}"; instruction_used = "INPUT_REPEATED"
             elif _anomaly.kind == "repeat_any":
                 _anomaly_override_text = f"{_pl_an(_pn_a, 'repeat_event')} {_q_a}"; instruction_used = "INPUT_DUPLICATE"
@@ -937,11 +963,12 @@ async def _submit_message_phase3a(
                     session.self_assessment_data = _store_a
                     from sqlalchemy.orm.attributes import flag_modified as _fm_dr
                     _fm_dr(session, "self_assessment_data")
-            else:   # ack_reask
-                _anomaly_override_text = f"{_pl_an(_pn_a, 'reask_anchor')} {_q_a}"; instruction_used = "ANCHOR_REASK"
-            state["instruction_for_this_turn"] = instruction_used
-            _tm["anomaly"] = _anomaly.kind
-            logger.info("🧷 입력 이상(%s): %s → %s", _anomaly.kind, _anomaly.detail, instruction_used)
+            else:   # ack_reask — 2회째는 '비슷한 다른 장면이라도 괜찮아요' 변형
+                _anomaly_override_text = f"{_pl_an(_pn_a, 'reask_anchor_2' if _ac_n == 2 else 'reask_anchor')} {_q_a}"; instruction_used = "ANCHOR_REASK"
+            if not _skip_an:
+                state["instruction_for_this_turn"] = instruction_used
+                _tm["anomaly"] = _anomaly.kind if _ac_n < 2 else f"{_anomaly.kind}#{_ac_n}"
+                logger.info("🧷 입력 이상(%s×%d): %s → %s", _anomaly.kind, _ac_n, _anomaly.detail, instruction_used)
     except Exception as _ae:
         logger.warning("입력 이상 판정 실패(무시): %s", _ae)
 
@@ -1051,6 +1078,25 @@ async def _submit_message_phase3a(
                 if _lq_text:
                     state["force_ladder_probe"] = {"q": _lq_text, "step": _lq_step, "level": _lvl, "sub": current_target_sub}
                     logger.info("🪜 사다리 탐침: [%s] %s 판정 Lv.%s → %s", chapter, current_target_sub, _lvl, _lq_step)
+        # (2026-10-29 P1-1) 사다리 발동 조건 확장 — S-A-R 완비 판정과 무관하게, 이 타겟에 탐침을 2턴 이상 썼고(이번이 3번째 턴)
+        #   사다리를 아직 안 썼으면 이번 탐침은 사다리. s31 25세션: Michael 세션당 1.2회·Jessica 조직관리 0회 — 완비 판정이 실세션에
+        #   안 맞았다. 목표 챕터당 2회 이상(린트 집계). 사다리 턴은 R·A·일반화 강제보다 우선한다(아래 force 블록).
+        if (chapter and current_target_sub and not state.get("force_ladder_probe") and not _adv_sar(_cur_before, current_target_sub)
+                and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE")
+                and int((_store.get("turns_on_target") or {}).get(chapter, 0) or 0) >= 3):
+            from diag_project.data.competencies import find_sub_key_by_name as _fsk_l2
+            from diag_project.data.ladder_questions import ladder_question as _lq2
+            from diag_project.services.llm_judge import judge_rubric_level as _jrl2
+            from diag_project.services.traversal import ladder_probed as _lpd2
+            _sub_key_l2 = _fsk_l2(chapter, current_target_sub)
+            if _sub_key_l2 and not _lpd2(_store, chapter, current_target_sub):
+                _lvl2 = await _jrl2(llm, chapter, current_target_sub, request.content)
+                _avoid2 = ((_store.get("ladder_avoid") or {}).get(_sub_key_l2) or [])
+                _lq_text2, _lq_step2 = _lq2(_sub_key_l2, _lvl2 if _lvl2 is not None else 2, avoid=_avoid2)
+                if _lq_text2:
+                    state["force_ladder_probe"] = {"q": _lq_text2, "step": _lq_step2, "level": _lvl2, "sub": current_target_sub}
+                    _tm["ladder_trigger"] = "turns"
+                    logger.info("🪜 사다리 탐침(턴 조건): [%s] %s 판정 Lv.%s → %s", chapter, current_target_sub, _lvl2, _lq_step2)
         session.self_assessment_data = _store
         from sqlalchemy.orm.attributes import flag_modified as _flag_mod
         _flag_mod(session, "self_assessment_data")
@@ -1132,6 +1178,19 @@ async def _submit_message_phase3a(
         #   있으면 이번 질문은 "그중 가장 최근 일 하나만요"(페르소나별). 타겟당 1회, 그래도 일반화면 그대로 전진.
         from diag_project.services.avoidance_detector import is_generalized_answer as _iga
         from diag_project.services.traversal import generalize_probed as _gpd
+        # (2026-10-29 P1-3) 직전 턴이 일반화 탐침이었는데 이번 답도 시점이 없으면 → generalized 원장(챕터별 하위역량 목록)
+        _gp_store = dict(session.self_assessment_data or {})
+        _gp_pending = (_gp_store.get("generalize_pending") or {}).get(chapter) if chapter else None
+        if _gp_pending:
+            _gpd_map = dict(_gp_store.get("generalize_pending") or {}); _gpd_map.pop(chapter, None); _gp_store["generalize_pending"] = _gpd_map
+            if _iga((state.get("resume_pending") or {}).get("user_text") or request.content):
+                _gz = dict(_gp_store.get("generalized") or {}); _gz[chapter] = sorted(set((_gz.get(chapter) or []) + [_gp_pending]))
+                _gp_store["generalized"] = _gz
+                _tm["generalized"] = _gp_pending
+                logger.info("🧭 일반화 탐침 뒤에도 시점 없음 → generalized 기록: [%s] %s", chapter, _gp_pending)
+            session.self_assessment_data = _gp_store
+            from sqlalchemy.orm.attributes import flag_modified as _fm_gp
+            _fm_gp(session, "self_assessment_data")
         _tot_g = int((session.self_assessment_data.get("turns_on_target") or {}).get(chapter, 0) or 0)
         _force_g = bool(chapter and current_target_sub and not _target_advanced_now and _tot_g == 2
                         and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE")
@@ -1146,6 +1205,12 @@ async def _submit_message_phase3a(
             state["force_action_probe"] = False
             state["force_result_probe"] = False
             logger.info("🧭 일반화 탐침: [%s] target=%s (시점 없음·습관 표지)", chapter, current_target_sub)
+        if state.get("force_ladder_probe"):
+            # (2026-10-29 P1-1) 사다리 턴에는 R·A·일반화 강제를 걸지 않는다 — 사다리 질문 하나만 나간다.
+            if _force_r or _force_a or _force_g:
+                logger.info("🪜 사다리 턴 → R/A/일반화 강제 해제 (R=%s A=%s G=%s)", _force_r, _force_a, _force_g)
+            _force_r = False; _force_a = False; _force_g = False
+            state["force_result_probe"] = False; state["force_action_probe"] = False; state["force_generalize_probe"] = False
         if _force_r:
             from diag_project.services.output_guard import needs_quantify_probe as _nqp
             state["result_quantify"] = _nqp((state.get("resume_pending") or {}).get("user_text") or request.content)
@@ -1885,9 +1950,8 @@ async def _submit_message_phase3a(
             from diag_project.services.output_guard import strip_transition_sentences as _sts_e
             _sum, _ = _sts_e(_sum)          # (2026-10-22 P1-3) LLM 이 '이어가 보겠습니다' 를 쓰면 고정 다리와 중복 → 제거
             _sum = " ".join([x.strip() for x in _ss_e(_sum) if x.strip()][:2]).strip()
-            if not _sum:
-                _sum = "이 영역에서 들려주신 이야기는 여기서 정리하겠습니다."
-            wrap_up = f"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch), (state.get('coach_persona') or {}).get('name'))}"
+            # (2026-10-29 P1-6) 요약이 남지 않으면 다리 문장만 — 과거 폴백 '여기서 정리하겠습니다'는 상태 보고문이었다.
+            wrap_up = f"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch), (state.get('coach_persona') or {}).get('name'))}".strip()
         else:
             wrap_up = final_closing_message((state.get("coach_persona") or {}).get("name"))
         if not _next_ch:
@@ -2339,6 +2403,23 @@ async def _submit_message_phase3a(
                 _tm["voiced"] = 1
                 _tm["ladder"] = _lp["step"]
                 logger.info("🪜 사다리 질문 삽입 [%s] %s", _lp.get("sub"), _lp["step"])
+            # (2026-10-29 P1-2) '리더님이 직접 하신 일' 질문 상한 — 하위역량당 1회, 답에 행동(A)이 이미 있으면 묻지 않는다.
+            #   초과·불필요면 결과 질문(페르소나 폴백)으로 교체. s28 운영: Jessica 5회·Michael 5회(공격적으로 들림).
+            from diag_project.services.output_guard import is_direct_action_question as _idaq, result_fallback_question as _rfq_d
+            _dq_now = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
+            if _dq_now and _idaq(_dq_now) and not state.get("force_ladder_probe"):
+                _dqc = ((session.self_assessment_data or {}).get("direct_q_count") or {}).get(chapter) or {}
+                _dq_used = int(_dqc.get(current_target_sub or "", 0) or 0)
+                _a_present = bool((state.get("current_event_star_coverage") or {}).get("A"))
+                if _dq_used >= 1 or _a_present:
+                    _lead_d = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
+                    _alt_d = sum(1 for _t in _recent_coach_texts if "그 뒤에는 어떻게 됐어요" in _t)
+                    clean_reply = " ".join(_lead_d + [_rfq_d(request.content, _prev_user_text, alt=_alt_d,
+                                                              persona=(state.get("coach_persona") or {}).get("name"))]).strip()
+                    _tm["direct_q_fix"] = "a_present" if _a_present else "cap"
+                    logger.info("🧭 '직접 하신' 질문 교체(%s): [%s] %s", _tm["direct_q_fix"], chapter, current_target_sub)
+                else:
+                    _tm["direct_q"] = 1
             _new_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
             _prev_qs = [x for t in _recent_coach_texts for x in split_sentences(t) if is_question_sentence(x)]
             if _new_q and _prev_qs:
@@ -2378,7 +2459,11 @@ async def _submit_message_phase3a(
                 return " ".join([x.strip() for x in split_sentences(_b) if x.strip()][:2])
 
             _body = _body_of(clean_reply)
-            if _ito(_body):
+            if state.get("skip_bridge"):
+                # (2026-10-29 P1) 입력 이상 3회째 전진 턴 — 본문은 고정 '이 항목은 여기까지 듣고 넘어갈게요' 한 문장
+                _body = state["skip_bridge"]
+                _tm["skip_bridge"] = 1
+            elif _ito(_body):
                 _tm["bridge"] = 1
                 logger.info("🌉 전환 턴 본문이 전환 문장뿐(되받기 없음) → 재생성 1회")
                 _b2 = ""
@@ -2905,9 +2990,24 @@ async def _submit_message_phase3a(
             if _tm.get("generalize"):
                 from diag_project.services.traversal import mark_generalize_probed as _mgp_g
                 _gl_store = _mgp_g(_gl_store, chapter, current_target_sub)
+                # (2026-10-29 P1-3) 다음 턴 답이 여전히 시점 없는 일반화면 generalized 원장에 남긴다(리포트 P2-3)
+                _gp = dict(_gl_store.get("generalize_pending") or {}); _gp[chapter] = current_target_sub
+                _gl_store["generalize_pending"] = _gp
+            if _tm.get("direct_q") and current_target_sub:
+                # (2026-10-29 P1-2) '직접 하신' 질문 사용 횟수 — 하위역량당 1회 상한
+                _dqc_g = dict(_gl_store.get("direct_q_count") or {}); _dqc_ch = dict(_dqc_g.get(chapter) or {})
+                _dqc_ch[current_target_sub] = int(_dqc_ch.get(current_target_sub, 0) or 0) + 1
+                _dqc_g[chapter] = _dqc_ch; _gl_store["direct_q_count"] = _dqc_g
             if _tm.get("ladder"):
                 from diag_project.services.traversal import mark_ladder_probed as _mlp_g
                 _gl_store = _mlp_g(_gl_store, chapter, (state.get("force_ladder_probe") or {}).get("sub") or current_target_sub)
+                # (2026-10-29 P1-4) 세션 간 회전용: 어느 사다리 단계를 썼는지 하위역량 키로 남긴다(다음 세션 시작 시 ladder_avoid 로 모음)
+                from diag_project.data.competencies import find_sub_key_by_name as _fsk_lu
+                _lu_key = _fsk_lu(chapter, (state.get("force_ladder_probe") or {}).get("sub") or current_target_sub)
+                if _lu_key:
+                    _lu = dict(_gl_store.get("ladder_used") or {})
+                    _lu[_lu_key] = sorted(set((_lu.get(_lu_key) or []) + [str(_tm.get("ladder"))]))
+                    _gl_store["ladder_used"] = _lu
         if system_override_text is None and not _llm_error:
             # (2026-10-22 P2-1) 이번 턴 되받기 마무리 어구를 세션 카운터에 누적(최근 60개)
             from diag_project.services.output_guard import lead_tails as _lts_g

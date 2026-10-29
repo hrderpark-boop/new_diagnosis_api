@@ -762,10 +762,7 @@ def decide_instruction(state: dict) -> InstructionType:
         return "CONTRARY_NEEDED"
 
     # 11. 자기관리 크로스 챕터 (특수)
-    if (state["chapter"] == "self_management"
-            and state["turn_count"] >= 12
-            and state.get("cross_chapter_signals")):
-        return "CROSS_CHAPTER_OPPORTUNITY"
+    # (2026-10-29 P1-5) 자기관리 전용 CROSS_CHAPTER_OPPORTUNITY 분기 삭제 — 다른 4챕터와 같은 상태기계만 탄다(상수는 호환용으로 유지).
 
     # 12. 사건 진행 상태에 따라
     _all_subs = state.get("all_subcompetencies") or []

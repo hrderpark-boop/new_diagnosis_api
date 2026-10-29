@@ -41,7 +41,7 @@ LADDER_QUESTIONS: dict[str, dict[str, str]] = {
 }
 
 
-def ladder_question(sub_key: str | None, current_level: int | None) -> tuple[str | None, str | None]:
+def ladder_question(sub_key: str | None, current_level: int | None, avoid: list[str] | tuple[str, ...] = ()) -> tuple[str | None, str | None]:
     """(질문, 단계키). current_level 1·2 → "2_3", 3 → "3_4", 4 이상·모름(None)·사전 없음 → (None, None).
 
     규칙(2026-10-23 확정): 사전에는 1→2 단계가 없다. flash 판정이 Lv.1 이면 Lv.2→3 질문을 쓴다 — Lv.1 판정은 대개 '구체 사례 미달'이라
@@ -51,4 +51,9 @@ def ladder_question(sub_key: str | None, current_level: int | None) -> tuple[str
     step = "2_3" if current_level <= 2 else ("3_4" if current_level == 3 else None)
     if step is None:
         return None, None
+    # (2026-10-29 P1-4) 같은 참가자의 이전 세션에서 쓴 단계는 피한다 — 두 단계 중 미사용 우선. 둘 다 썼으면 레벨대로.
+    if step in (avoid or ()):
+        other = "3_4" if step == "2_3" else "2_3"
+        if other not in (avoid or ()):
+            step = other
     return LADDER_QUESTIONS[sub_key][step], step

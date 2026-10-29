@@ -43,8 +43,8 @@ def test_persona_generalize_lines_six_variants():
     # 한 문장이어야 한다 — 두 문장이면 8-o/되받기 상한이 앞 문장("그중 가장 최근 일 하나만요.")을 지운다(g4b 재생 10턴에서 확인)
     from diag_project.services.output_guard import split_sentences
     for p, q in lines.items():
-        assert len([x for x in split_sentences(q) if x.strip()]) == 1, (p, q)
-    assert persona_line("Ella", "generalize") == "그중 가장 최근 일 하나만요 — 어떤 일이었고 언제쯤이었어요?"
+        assert len([x for x in split_sentences(q) if x.strip()]) == 1 and "—" not in q, (p, q)
+    assert persona_line("Ella", "generalize") == "그중 가장 최근 일 하나만요, 어떤 일이었고 언제쯤이었어요?"   # (2026-10-29 P1-3) 줄표 제거, 한 문장 유지
     # 가드가 자르지 않는다: 되받기 1문장 + 이 줄 → 한 턴 한 질문·되받기 상한(Jessica 1)을 거쳐도 그대로
     from diag_project.services.output_guard import keep_last_question, cap_leads_persona
     t = "신중하게 가시는 편이군요. " + persona_line("Ella", "generalize")
