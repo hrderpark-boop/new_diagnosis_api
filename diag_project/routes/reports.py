@@ -328,10 +328,12 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db)):
         "name": None, "email": None, "group_code": None, "company_name": None,
     }
 
+    _org_unit_id = None   # (2026-10-29) 조직 비교(본부·팀)용 소속
     session_res = await db.get(DiagnosisSession, target_uuid)
     if session_res:
         user = await db.get(Participant, session_res.user_id)
         if user:
+            _org_unit_id = getattr(user, "org_unit_id", None)
             user_name = user.name or user_name
             participant_info["name"] = user.name
             participant_info["email"] = user.email
@@ -394,11 +396,19 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db)):
     except Exception as _ge:
         logger.warning("그룹 평균 조회 실패(비교 생략): %s", _ge)
     group_comparison = group_average(_group_details, _order_sv)
+    # (2026-10-29) 전체·본부·팀 비교. 실패해도 리포트는 내보낸다(비교만 생략).
+    try:
+        from diag_project.services.org_units import org_comparison_levels
+        org_comparison = await org_comparison_levels(db, _org_unit_id, _order_sv, group_comparison)
+    except Exception as _oe:
+        logger.warning("조직 비교 계산 실패(생략): %s", _oe)
+        org_comparison = None
 
     return {
         "self_assessment": ({"scores": _self_scores, "self_average": self_view.get("self_average")} if _self_scores else None),
         "self_view": self_view,
         "group_comparison": group_comparison,
+        "org_comparison": org_comparison,
         # 아키타입·IDP 는 저장돼 있었지만 응답에 빠져 있었다(02 섹션이 비어 보이던 원인). blind_spot 은 내보내지 않는다 —
         #   '사각지대' 프레이밍 대신 self_view(스스로 보는 나 / 대화에 드러난 나)를 쓴다.
         "archetype": saved_scores.get("archetype"),

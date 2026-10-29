@@ -399,6 +399,7 @@ async def list_participants(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     company_id: Optional[UUID] = Query(None, description="Super Admin 전용 고객사 필터"),
+    org_unit_id: Optional[UUID] = Query(None, description="조직 단위 필터(본부면 소속 팀 포함)"),
     ctx: AdminContext = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -409,6 +410,10 @@ async def list_participants(
     base = ctx.scope_query(base, Participant.company_id)
     if company_id and ctx.is_super_admin:
         base = base.where(Participant.company_id == company_id)
+    if org_unit_id:
+        # 회사 격리는 위 scope_query 가 이미 강제한다(다른 회사 단위 id 를 넣어도 결과 0건).
+        from diag_project.services.org_units import descendant_ids
+        base = base.where(Participant.org_unit_id.in_(await descendant_ids(db, org_unit_id)))
 
     if search:
         kw = f"%{search.strip()}%"
@@ -518,9 +523,12 @@ async def list_participants(
         return out
 
     cmap = await _company_map(db)
+    from diag_project.services.org_units import unit_labels
+    org_by_id = await unit_labels(db, [p.org_unit_id for p in participants])
     items = []
     for p in participants:
         stat = session_stats[p.id]
+        _org = org_by_id.get(p.org_unit_id) if p.org_unit_id else None
         last_status = stat["last_status"]
         items.append(
             {
@@ -530,6 +538,11 @@ async def list_participants(
                 "group_code": p.group_code or "-",
                 "company_id": str(p.company_id) if p.company_id else None,
                 "company_name": cmap.get(p.company_id, "미지정") if p.company_id else "미지정",
+                # (2026-10-29) 소속 조직(참여 코드 AS1 등). 미분류면 None
+                "org_unit_id": str(p.org_unit_id) if p.org_unit_id else None,
+                "org_code": _org["code"] if _org else None,
+                "org_name": _org["name"] if _org else None,
+                "division_name": _org["division_name"] if _org else None,
                 "gender": p.gender or "-",
                 "age_group": p.age_group or "-",
                 "total_sessions": stat["total"],
@@ -971,6 +984,9 @@ async def get_report_detail(
         "top_keywords": saved.get("top_keywords", []),
         "blind_spot": saved.get("blind_spot"),
         "idp": saved.get("idp", []),
+        # (2026-10-29) HR 개인별 추천 과정 화면용(저장돼 있던 값을 그대로)
+        "archetype": saved.get("archetype"),
+        "course_recommendation": saved.get("course_recommendation"),
         "created_at": report.created_at,
         # Human-in-the-Loop 상태
         "is_human_edited": report.is_human_edited,
@@ -1402,6 +1418,7 @@ async def list_companies(
             "contact_email": c.contact_email,
             "is_active": c.is_active,
             "llm_provider": c.llm_provider,
+            "org_prefix": c.org_prefix,
             "participant_count": p_counts.get(c.id, 0),
             "created_at": c.created_at,
         }

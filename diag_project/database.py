@@ -92,6 +92,9 @@ _LIGHT_MIGRATIONS = [
     "ALTER TABLE diagnosis_sessions ADD COLUMN llm_provider VARCHAR(20)",
     # (2026-10-29) 새 고객사 기본 provider claude (PostgreSQL 전용 구문 — sqlite 는 실패를 무시)
     "ALTER TABLE companies ALTER COLUMN llm_provider SET DEFAULT 'claude'",
+    # (2026-10-29) 조직 참여 코드(AS1): 회사 접두어 + 참여자 소속 단위. org_units 테이블은 create_all 이 만든다.
+    "ALTER TABLE companies ADD COLUMN org_prefix VARCHAR(10)",
+    "ALTER TABLE participants ADD COLUMN org_unit_id UUID",
 ]
 
 

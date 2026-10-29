@@ -17,6 +17,8 @@ from diag_project.database import init_db
 from diag_project.routes import diagnoses, reports, participants, coaches
 from diag_project.routes import framework
 from diag_project.routes import admin
+from diag_project.routes import org_units
+from diag_project.routes import admin_education
 from diag_project.routes import self_eval
 from diag_project.config import settings
 
@@ -131,6 +133,10 @@ app.include_router(framework.router, prefix="/api/v1/framework")
 # 어드민(RBAC): 라우터 자체가 prefix="/admin" 을 갖고 있어 최종 경로는
 # /api/v1/admin/... 이 된다. 모든 엔드포인트는 JWT 인증을 요구한다.
 app.include_router(admin.router, prefix="/api/v1")
+# 조직 참여 코드(AS1): /api/v1/admin/companies/{id}/org-units 등. 같은 /admin 권한 규칙.
+app.include_router(org_units.router, prefix="/api/v1")
+# HR 콘솔 결과 → 교육: /api/v1/admin/education/summary · /people
+app.include_router(admin_education.router, prefix="/api/v1")
 # 자가진단: 라우터가 prefix="/sessions" 를 가지므로 최종 경로는
 # /api/v1/sessions/{session_id}/self-eval 이 된다.
 app.include_router(self_eval.router, prefix="/api/v1")

@@ -83,14 +83,15 @@ async def login_for_access_token(
     #   ENFORCED=True 면 미존재/비활성/빈값을 거부(사유는 로그로 구분, 사용자
     #   문구는 통일). company_id 는 활성 회사일 때만 채운다.
     _code = _normalize_group_code(form_data.group_code)
-    company = None
-    if _code:
-        company = (await db.execute(
-            select(Company).where(Company.code == _code)
-        )).scalars().first()
+    # (2026-10-29) 회사 코드(07960) 또는 조직 참여 코드(AS1). 조직 코드면 회사와 소속 단위가 함께 정해진다.
+    from diag_project.services.org_units import resolve_login_code
+    company, org_unit = await resolve_login_code(db, _code)
     company_id = company.id if (company and company.is_active) else None
+    org_unit_id = org_unit.id if (org_unit is not None and org_unit.is_active and company_id) else None
 
     _company_active = company.is_active if company is not None else None
+    if org_unit is not None and not org_unit.is_active:
+        _company_active = False   # 사용 중지한 조직 코드는 비활성 회사와 같이 막는다
     _allowed, _reason = evaluate_group_code_gate(
         _code, _company_active, GROUP_CODE_ENFORCED)
     if not _allowed:
@@ -107,8 +108,11 @@ async def login_for_access_token(
             id=uuid.uuid4(),
             email=form_data.email,
             name=form_data.name if form_data.name else form_data.email.split("@")[0],
-            group_code=_code or None,  # 정규화된 코드로 저장(빈 값은 None)
+            # 정규화된 코드로 저장(빈 값은 None). 조직 코드로 들어와도 group_code 는 회사 코드로 둔다
+            #   (리포트의 '같은 그룹 평균' 비교가 회사 단위로 유지되도록).
+            group_code=(company.code if (org_unit is not None and company is not None) else _code) or None,
             company_id=company_id,
+            org_unit_id=org_unit_id,
             password_hash="dummy_hashed_password",
             created_at=datetime.now()
         )
@@ -123,8 +127,13 @@ async def login_for_access_token(
         if form_data.name and participant.name != form_data.name:
             participant.name = form_data.name
             is_changed = True
-        if _code and participant.group_code != _code:
-            participant.group_code = _code  # 정규화된 코드로 갱신
+        _gc = company.code if (org_unit is not None and company is not None) else _code
+        if _gc and participant.group_code != _gc:
+            participant.group_code = _gc  # 정규화된 코드로 갱신(조직 코드면 회사 코드)
+            is_changed = True
+        # 조직 코드로 들어오면 소속을 그 단위로(회사 코드로만 들어오면 기존 소속 유지)
+        if org_unit_id and participant.org_unit_id != org_unit_id:
+            participant.org_unit_id = org_unit_id
             is_changed = True
         # 소속사가 새로 등록됐거나 group_code 가 바뀐 경우 소급 반영
         if company_id and participant.company_id != company_id:

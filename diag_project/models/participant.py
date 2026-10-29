@@ -45,6 +45,12 @@ class Participant(ParticipantBase, table=True):
         sa_column=Column(GUID(), ForeignKey("companies.id"), nullable=True, index=True),
     )
     
+    # (2026-10-29) 소속 조직 단위(본부·팀). 로그인 때 조직 참여 코드(AS1 등)로 정해진다. null = 미분류.
+    org_unit_id: Optional[UUID] = Field(
+        default=None,
+        sa_column=Column(GUID(), ForeignKey("org_units.id"), nullable=True, index=True),
+    )
+
     # 생성/수정 시간 자동 기록
     created_at: Optional[datetime] = Field(
         default_factory=lambda: datetime.now(timezone.utc),

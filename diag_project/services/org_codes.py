@@ -1,0 +1,62 @@
+"""조직 참여 코드(AS1 형식) 규칙. DB·HTTP 와 무관한 순수 함수만 둔다(테스트 고정용).
+
+규칙
+  - 회사 접두어: 영문 대문자 1~3자 (예: A, ACM)
+  - 본부 코드  : 영문 대문자 1~2자 (예: S)  → 본부 참여 코드 = 접두어 + 본부 코드 (AS)
+  - 팀 번호    : 1~99                       → 팀 참여 코드   = 본부 참여 코드 + 번호 (AS1, AS10)
+  - 접두어끼리는 서로의 앞부분이 될 수 없다(A 와 AS 를 함께 쓰면 'AS1' 이 어느 회사인지 모호해진다).
+"""
+import re
+from typing import Iterable, Optional
+
+PREFIX_RE = re.compile(r"^[A-Z]{1,3}$")
+DIVISION_RE = re.compile(r"^[A-Z]{1,2}$")
+TEAM_MIN, TEAM_MAX = 1, 99
+
+
+def normalize(s: Optional[str]) -> str:
+    """로그인 게이트와 같은 정규화: 앞뒤 공백 제거 + 대문자."""
+    return (s or "").strip().upper()
+
+
+def validate_prefix(prefix: str, other_prefixes: Iterable[str] = ()) -> Optional[str]:
+    """접두어 검증. 문제가 있으면 사용자에게 보일 사유, 없으면 None."""
+    p = normalize(prefix)
+    if not PREFIX_RE.match(p):
+        return "회사 접두어는 영문 1~3자입니다."
+    for o in other_prefixes:
+        o = normalize(o)
+        if not o:
+            continue
+        if o == p:
+            return f"이미 다른 고객사가 쓰는 접두어입니다({o})."
+        if o.startswith(p) or p.startswith(o):
+            return f"다른 고객사 접두어({o})와 앞부분이 겹쳐 코드가 모호해집니다."
+    return None
+
+
+def validate_division_code(short: str) -> Optional[str]:
+    s = normalize(short)
+    if not DIVISION_RE.match(s):
+        return "본부 코드는 영문 1~2자입니다."
+    return None
+
+
+def division_code(prefix: str, short: str) -> str:
+    return normalize(prefix) + normalize(short)
+
+
+def next_team_number(existing_numbers: Iterable[str]) -> int:
+    """같은 본부의 기존 팀 번호들 다음 번호. 빈 번호를 메우지 않고 최댓값 + 1."""
+    nums = [int(n) for n in existing_numbers if str(n).isdigit()]
+    return (max(nums) + 1) if nums else TEAM_MIN
+
+
+def validate_team_number(n: int) -> Optional[str]:
+    if not (TEAM_MIN <= int(n) <= TEAM_MAX):
+        return f"팀 번호는 {TEAM_MIN}~{TEAM_MAX} 사이입니다."
+    return None
+
+
+def team_code(division_full_code: str, number: int) -> str:
+    return normalize(division_full_code) + str(int(number))
