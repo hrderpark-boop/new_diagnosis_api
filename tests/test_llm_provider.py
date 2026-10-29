@@ -427,3 +427,28 @@ def test_admin_alerts_exposes_key_flag_without_value(client, auth_headers, monke
     assert "sk-secret" not in r.text                      # 값 노출 없음
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     assert client.get("/api/v1/admin/alerts", headers=auth_headers).json()["anthropic_key_configured"] is False
+
+
+def test_build_request_prefix_blocks_and_cached_system():
+    """(2026-10-29 P2-4) prompt caching: 앞 블록·system 에 cache_control, 마지막 블록(prompt)은 캐시 표식 없음."""
+    req = P.build_request(prompt="꼬리", system_instruction="정적 지시", max_tokens=100, json_mode=False, json_schema=None,
+                          model="models/gemini-2.5-pro", thinking_budget=0, analysis_marker="models/gemini-2.5-pro",
+                          prefix_blocks=["전체 로그", "역량 블록"], cache_system=True)
+    assert req["system"] == [{"type": "text", "text": "정적 지시", "cache_control": {"type": "ephemeral"}}]
+    c = req["messages"][0]["content"]
+    assert [b["text"] for b in c] == ["전체 로그", "역량 블록", "꼬리"]
+    assert all("cache_control" in b for b in c[:2]) and "cache_control" not in c[2]
+    plain = P.build_request(prompt="p", system_instruction="s", max_tokens=10, json_mode=False, json_schema=None,
+                            model=None, thinking_budget=0, analysis_marker="models/gemini-2.5-pro")
+    assert plain["system"] == "s" and plain["messages"][0]["content"] == "p"
+    assert P.usage_cache_counts(types.SimpleNamespace(usage=types.SimpleNamespace(cache_creation_input_tokens=7, cache_read_input_tokens=9))) == (7, 9)
+
+
+def test_usage_meter_prices_cache_tokens():
+    from diag_project.llm_service import _UsageMeter
+    m = _UsageMeter()
+    m.record("deep_analysis", "claude-sonnet-5-5", 1000, 0, 0, cache_write=1000, cache_read=10000)
+    d = m.by_type[("deep_analysis", "claude-sonnet-5-5")]
+    assert d["cache_write"] == 1000 and d["cache_read"] == 10000
+    # 1000×2 + 1000×2×1.25 + 10000×2×0.1 = 2000+2500+2000 = 6500 → $0.0065
+    assert abs(d["cost"] - 0.0065) < 1e-9

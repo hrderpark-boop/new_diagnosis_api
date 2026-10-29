@@ -67,7 +67,24 @@ def level_reference(competency_key: str, sub_name: str) -> Dict[int, str]:
 
 
 def _build_gate_prompt(items: list) -> str:
-    """배치 게이트 프롬프트. items: [{sub_name, evidence, claimed_level, ref}]."""
+    """배치 게이트 프롬프트 전문(정적 지시 + 본문) — 테스트·로그용. 실제 호출은 _build_gate_body + GATE_SYSTEM(system, cache)."""
+    return GATE_SYSTEM + "\n\n" + _build_gate_body(items)
+
+
+async def _call_gate_llm(llm, prompt: str):
+    """(2026-10-29 P2-4) llm(prompt, system) 을 지원하면 정적 지시를 system 으로 넘기고, 1인자 콜러블(테스트·구형)은 전문을 넘긴다."""
+    import inspect
+    try:
+        n_params = len(inspect.signature(llm).parameters)
+    except (TypeError, ValueError):
+        n_params = 1
+    if n_params >= 2:
+        return await llm(prompt, GATE_SYSTEM)
+    return await llm(GATE_SYSTEM + "\n\n" + prompt)
+
+
+def _build_gate_body(items: list) -> str:
+    """배치 게이트 본문. items: [{sub_name, evidence, claimed_level, ref}]."""
     blocks = []
     for i, it in enumerate(items, 1):
         ref = it["ref"]
@@ -79,6 +96,15 @@ def _build_gate_prompt(items: list) -> str:
         )
     body = "\n\n".join(blocks)
     return (
+        f"{body}\n\n"
+        '출력(JSON, 마크다운 금지): {"results": [{"idx": <번호>, '
+        '"supported_level": <0~4>, "category": "구체행동|태도|일반화|부재", '
+        '"reason": "판정 근거 한 줄"}]}'
+    )
+
+
+# (2026-10-29 P2-4) 게이트 정적 지시 — system 으로 보내 42콜에 걸쳐 prompt cache 를 공유한다(본문만 호출마다 다름).
+GATE_SYSTEM = (
         "당신은 BEI(행동사건면접) 채점 감사관이다. 아래 각 하위역량에 대해, "
         "제시된 '리더 발화'가 어느 레벨의 '기준 서술'에 실제로 부합하는지 "
         "냉정하게 판정하라.\n\n"
@@ -95,12 +121,8 @@ def _build_gate_prompt(items: list) -> str:
         "사유에 결락을 적었으면 레벨은 n-1 이어야 한다.\n"
         "4. 단 n-1 이 Lv.1 이면: Lv.1 서술(역할 인식 부재·단기 수습 같은 부정형)이 발화에 실제로 맞을 때만 1, "
         "아니면 2 다.\n"
-        "5. 주장 레벨보다 높게 올리지 말 것(게이트는 강등 또는 유지만 한다). 구체 행동 사례가 아니면(태도·일반화·부재) 0.\n\n"
-        f"{body}\n\n"
-        '출력(JSON, 마크다운 금지): {"results": [{"idx": <번호>, '
-        '"supported_level": <0~4>, "category": "구체행동|태도|일반화|부재", '
-        '"reason": "판정 근거 한 줄"}]}'
-    )
+        "5. 주장 레벨보다 높게 올리지 말 것(게이트는 강등 또는 유지만 한다). 구체 행동 사례가 아니면(태도·일반화·부재) 0."
+)
 
 
 # (evidence, sub_key, claimed_level) → 게이트 판정 캐시 (중복 호출 제거).
@@ -367,7 +389,7 @@ async def _judge_batch(competency_key: str, items: list, llm,
                        out: Dict[str, Dict[str, Any]],
                        provider: str | None = None, *, cache: bool = True, release: bool = True) -> None:
     """items 를 한 번의 LLM 호출로 판정해 out 에 기록(+캐시). 실패는 pending. cache/release=False 는 투표용(병합 결과만 캐시·공유)."""
-    prompt = _build_gate_prompt(items)
+    prompt = _build_gate_body(items)
 
     async def _call_gate():
         # 동시성 상한 + 지수 백오프 재시도(빈 응답/오류에 견딤).
@@ -375,7 +397,7 @@ async def _judge_batch(competency_key: str, items: list, llm,
             last = None
             for attempt in range(GATE_MAX_RETRIES):
                 try:
-                    raw = await llm(prompt)
+                    raw = await _call_gate_llm(llm, prompt)
                     if raw and raw.strip():
                         return raw
                     last = "빈 응답"

@@ -189,8 +189,14 @@ def build_request(
     model: Optional[str],
     thinking_budget: Optional[int],
     analysis_marker: str,
+    prefix_blocks: Optional[list] = None,
+    cache_system: bool = False,
 ) -> Dict[str, Any]:
-    """messages.create 인자(dict). temperature/top_p/top_k 는 절대 넣지 않는다(5.5 세대 400)."""
+    """messages.create 인자(dict). temperature/top_p/top_k 는 절대 넣지 않는다(5.5 세대 400).
+
+    (2026-10-29 P2-4) prompt caching: cache_system=True 면 system 을 cache_control 블록으로, prefix_blocks 는 user 메시지 앞에
+    놓이는 텍스트 블록들(각각 cache_control) — 같은 접두(시스템 + 앞 블록)가 반복되는 분석 호출(심층 15콜·게이트)의 입력을 캐시한다.
+    접두 일치가 조건이므로 공유 범위가 넓은 블록(전체 대화 로그)을 앞에, 호출마다 다른 내용을 뒤(prompt)에 둔다."""
     kind = "analysis" if is_analysis_call(model, analysis_marker) else "chat"
     claude_model = resolve_model(model, analysis_marker)
     effort = effort_for(kind)
@@ -201,13 +207,20 @@ def build_request(
         # adaptive: thinking 토큰이 max_tokens 를 잠식해 JSON 이 잘릴 수 있다 → 하한(상한만 올리므로 비용 변화 없음).
         mt = max(mt, adaptive_max_tokens_floor())
 
+    _cc = {"type": "ephemeral"}
+    if prefix_blocks:
+        content = [{"type": "text", "text": b, "cache_control": _cc} for b in prefix_blocks if (b or "").strip()]
+        content.append({"type": "text", "text": prompt})
+    else:
+        content = prompt
     req: Dict[str, Any] = {
         "model": claude_model,
         "max_tokens": mt,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": content}],
     }
     if system_instruction:
-        req["system"] = system_instruction
+        req["system"] = ([{"type": "text", "text": system_instruction, "cache_control": _cc}]
+                         if cache_system else system_instruction)
     if thinking is not None:
         req["thinking"] = thinking
     output_config: Dict[str, Any] = {}
@@ -260,3 +273,12 @@ def usage_counts(response: Any) -> Tuple[int, int, int]:
     det = getattr(u, "output_tokens_details", None)
     think = int(getattr(det, "thinking_tokens", 0) or 0) if det is not None else 0
     return inp, max(0, out - think), think
+
+
+def usage_cache_counts(response: Any) -> Tuple[int, int]:
+    """(2026-10-29 P2-4) (캐시 기록 토큰, 캐시 읽기 토큰). usage.input_tokens 에는 포함되지 않는 별도 항목."""
+    u = getattr(response, "usage", None)
+    if u is None:
+        return 0, 0
+    return (int(getattr(u, "cache_creation_input_tokens", 0) or 0),
+            int(getattr(u, "cache_read_input_tokens", 0) or 0))

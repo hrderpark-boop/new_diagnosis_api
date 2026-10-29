@@ -37,6 +37,7 @@ def test_cache_keys_unchanged_bytes():
     assert ks == ["32d6ed9afbc2fc0853093deac6cda2928baf89b738b4de117f9e85b34bb81fa7"]
     kc = L._deep_cache_keys("organization_management", "리더: 테스트 발언", "코치: 안녕\n리더: 테스트 발언",
                             {"전략적 사고", "비전 제시 및 공유"}, 1, provider="claude")
-    assert kc == ["e8bdc626f4fc0d6d6c5ea40b3889dab69d132945cbd0f295b62c61fe2ad34ebc"]
+    # (2026-10-29 P2-4) claude 키는 _DEEP_PROMPT_VERSION_CLAUDE 성분이 더해져 바뀌었다(의도된 변경: 재배치된 프롬프트의 결과는 새 키). gemini 키는 그대로.
+    assert kc == ["48359f77c659708821e462d8729be3520a76024860dcbf2e81adbc8248eb4894"]
     assert _persist_key("organization_management", "전략적 사고", ["발화 A"], 3, "gemini") == \
         "2c4b011d4b87f1cbb569569f329459c2b0f3dc753a51206d0b34cbfffc5bf66c"
