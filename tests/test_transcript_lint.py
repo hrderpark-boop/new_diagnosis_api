@@ -211,3 +211,11 @@ def test_render_markdown_and_cli(tmp_path, capsys, lex):
     assert "누설 사전 크기:" in out and "상위 50개" in out
     payload = json.loads(out_json.read_text(encoding="utf-8"))
     assert payload["cross"]["pairs"] == 1 and len(payload["files"]) == 2 and payload["lexicon"]["size"] >= 100
+
+
+def test_truncation_ignores_complete_first_clause_with_connective_ending():
+    import sys; sys.path.insert(0, "tools")
+    from transcript_lint import is_truncated_question
+    assert not is_truncated_question("저라면 그 자리에서 가장 먼저 부딪혔던 반발이 무엇이었을지 궁금해지는데요, 타 부서 리더들이 보고 회의를 놓기 어려워했던 이유가 무엇이었다고 느끼셨습니까?")
+    assert is_truncated_question("있었다면 어떻게 설득하셨는지 말씀해 주시겠습니까?")
+    assert is_truncated_question("어려웠다면, 그때 누구와 먼저 상의하셨습니까?")

@@ -120,6 +120,10 @@ def is_truncated_question(sentence: str) -> bool:
     bare = first.rstrip(",，")
     if bare in _TRUNC_EXEMPT or not _HANGUL_RE.match(bare):
         return False
+    # (2026-10-29) '저라면 … 궁금해지는데요, 타 부서 리더들이 …?' — 첫 절이 연결 어미로 온전히 끝나면 앞 절이 잘린 것이 아니다
+    _first_clause = re.split(r"[,，]", s, 1)[0].strip()
+    if len(s.split(",")) > 1 and re.search(r"(는데요|은데요|ㄴ데요|지만|거든요|고요|니다만)$", _first_clause):
+        return False
     return bool(_TRUNC_FIRST_TOKEN_RE.search(first))
 
 

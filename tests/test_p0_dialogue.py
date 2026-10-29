@@ -281,3 +281,10 @@ def test_final_leak_sweep_runs_after_tail_regen_and_before_align_assembly():
     assert "되받기" in lk
     out, n = strip_leak_sentences(t, lk)
     assert n == 1 and "되받기" not in out and out.endswith("있을까요?")
+
+
+def test_state_report_catches_coach_self_reference_and_question_announcement():
+    """s30 Daniel 전환 턴: 'Daniel 코치로서 자기관리 영역의 첫 질문을 드리겠습니다.' 는 상태 보고문이다(8-y 가 지운다)."""
+    from diag_project.services.leak_lexicon import find_state_report
+    assert find_state_report("Daniel 코치로서 자기관리 영역의 첫 질문을 드리겠습니다. 이제 '자기관리'로 이어가겠습니다.")
+    assert not find_state_report("그 결정을 내리셨군요. 하나 여쭙겠습니다. 그때 팀원들 반응은 어땠습니까?")

@@ -82,7 +82,9 @@ def check(path):
         after = [r["instr"] for j, r in models if j > sp_idx][:4]
         out["sp 뒤 코치 흐름"] = after
     # 오류 턴
-    out["오류 턴(LLM_ERROR)"] = sum(1 for _, r in models if (r.get("guard") or {}).get("instr") == "LLM_ERROR" or "다시 시도" in r["content"][:40])
+    # (2026-10-29) '다시 시도' 부분 문자열은 리더 발화 되받기("다시 시도할 수 있게")에 오탐 → 고정 오류 문구 앞머리로만 센다
+    out["오류 턴(LLM_ERROR)"] = sum(1 for _, r in models if (r.get("guard") or {}).get("instr") == "LLM_ERROR"
+                                 or r["content"].strip().startswith("일시적인 문제로 답변을 준비하지 못했습니다"))
     # 자기관리 정의→ALIGN 사이 턴
     sm = [r for _, r in models if r["chapter"] == "self_management"]
     try:
