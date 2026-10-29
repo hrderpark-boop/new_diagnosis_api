@@ -1445,6 +1445,11 @@ async def list_companies(
         )
     ).all()
     p_counts = {row[0]: row[1] for row in p_rows}
+    # (2026-10-29) 준비 상태 표시용: 고객사별 사용 중인 조직 코드 수
+    from diag_project.models.org_unit import OrgUnit
+    o_counts = dict((await db.execute(
+        select(OrgUnit.company_id, func.count(OrgUnit.id)).where(OrgUnit.is_active.is_(True)).group_by(OrgUnit.company_id)
+    )).all())
 
     return [
         {
@@ -1457,6 +1462,7 @@ async def list_companies(
             "org_prefix": c.org_prefix,
             "diagnosis_start": c.diagnosis_start,
             "diagnosis_end": c.diagnosis_end,
+            "org_unit_count": int(o_counts.get(c.id, 0)),
             "participant_count": p_counts.get(c.id, 0),
             "created_at": c.created_at,
         }
