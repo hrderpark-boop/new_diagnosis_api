@@ -225,12 +225,12 @@ def test_definition_answer_mentioning_rest_is_not_pause_request():
 def test_strict_lexicon_excludes_leader_vocabulary_but_keeps_internal_words():
     from diag_project.services.leak_lexicon import guard_lexicon
     g = guard_lexicon()
-    for w in ("턴", "탐침", "되받기", "앵커", "반례", "페르소나", "라포", "재생성", "발화"):
-        assert w in g["korean"], w
-    # 운영 세션 리더 입력에 한 번이라도 나온 말 — '태그'는 Olivia 가 '분류 태그'로 써서 규칙상 빠진다(보고됨)
-    for w in ("전환", "응답", "요약", "안내", "태그", "직전", "현재", "메시지"):
-        assert w not in g["korean"], w
+    for w in ("턴", "탐침", "되받기", "앵커", "태그", "반례", "페르소나", "라포", "재생성", "발화"):
+        assert w in g["korean"], w          # '태그'는 GUARD_KEEP 수동 복원(2026-10-29 승인)
+    for w in ("전환", "응답", "요약", "안내", "직전", "현재", "메시지"):
+        assert w not in g["korean"], w      # 운영 세션 리더 입력에 한 번이라도 나온 말
         assert w in g["leader_excluded"], w
+    assert "태그" in g["kept_manually"] and "태그" not in g["leader_excluded"]
 
 
 def test_tail_guard_runs_on_align_receive_before_assembly():

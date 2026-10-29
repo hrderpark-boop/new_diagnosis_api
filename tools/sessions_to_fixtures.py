@@ -18,7 +18,8 @@ COACHES = {"jessica": "제시카", "olivia": "올리비아", "daniel": "다니�
 BUTTON_TEXTS = {"네, 다음으로 이어가 주세요.", "괜찮아요, 계속 진행할게요."}
 
 
-def extract(txt: str, marker: str) -> tuple[list[str], list[dict]]:
+def extract(txt: str, marker: str, pairs: list[dict] | None = None) -> tuple[list[str], list[dict]]:
+    """pairs 에 {"coach": 직전 코치 발화 전문, "user": 리더 입력} 을 함께 모은다(누설 사전의 '인용' 판정용, 2026-10-29)."""
     segs = re.split(rf"(?:^|\n){re.escape(marker)}\n", "\n" + txt)
     inputs: list[str] = []
     notes: list[dict] = []
@@ -48,6 +49,9 @@ def extract(txt: str, marker: str) -> tuple[list[str], list[dict]]:
             notes.append({"seg": si, "kind": "버튼 문구 제외", "leader": text})
             continue
         inputs.append(text)
+        if pairs is not None:
+            coach_text = "\n".join(l for p_ in paras for l in p_.split("\n") if l.strip() and l.strip() not in {x.strip() for x in leader_lines})
+            pairs.append({"coach": coach_text, "user": text})
     return inputs, notes
 
 
@@ -58,9 +62,11 @@ def main(folder: str) -> int:
             print(f"!! {path} 없음")
             continue
         txt = open(path, encoding="utf-8").read()
-        inputs, notes = extract(txt, marker)
+        pairs: list[dict] = []
+        inputs, notes = extract(txt, marker, pairs)
         out = os.path.join(folder, f"{key}_users.json")
         json.dump(inputs, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        json.dump(pairs, open(os.path.join(folder, f"{key}_pairs.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         n_btn = sum(1 for n in notes if n["kind"] == "버튼 문구 제외")
         n_sus = [n for n in notes if n["kind"] == "코치 줄 끝 모양 의심"]
         print(f"=== {key}: 코치 턴 {txt.count(marker + chr(10))} · 입력 {len(inputs)} · 버튼 제외 {n_btn} · 의심 {len(n_sus)} → {out}")

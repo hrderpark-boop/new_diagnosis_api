@@ -2687,7 +2687,7 @@ async def _submit_message_phase3a(
                     _tm["leak_final"] = {"words": list(_lk_y)[:6], "state": _sr_y[:3], "stripped": _n_y}
                     logger.info("🛡️ 최종 누설 소거 %d문장: 어휘=%s 상태=%s", _n_y, _lk_y, _sr_y)
         except Exception as _le_y:   # noqa: BLE001 — 소거 실패가 턴을 막지 않게
-            logger.warning("최종 누설 소거 실패(무시): %s", _le_y)
+            logger.warning("최종 누설 소거 실패 — 건너뜀: %s", _le_y)   # 로그 문구도 누설 사전 추출 대상이라 내부어가 아닌 낱말로 쓴다
 
     # 8-z. (2026-10-28 P0-1) ALIGN 최종 조립 — 모든 후처리 뒤. 되받기(가드 통과본) + 고정 정의 + 목록 + 안내 + 다리 + 앵커.
     if _align_ctx is not None and system_override_text is None and not _llm_error and chapter:

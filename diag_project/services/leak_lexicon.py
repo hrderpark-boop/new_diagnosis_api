@@ -469,6 +469,9 @@ EVERYDAY_MIN_COUNT = 3
 #   템플릿 빈도가 높아도 리더가 쓰는 말이면 누설 근거가 못 된다(전환·응답·요약·종료·안내·없음·최대·인사 류).
 _LEADER_DIR = _FIXTURE_DIR / "sessions_1028"
 LEADER_MIN_COUNT = 1
+# (2026-10-29 승인) 수동 복원 — 규칙으로는 빠지지만 진짜 내부어. '태그'는 Olivia 전문에서 리더가 코치 누설('태그 없이, …' 코치 턴)을
+#   되받아 쓴 말이라 리더 어휘가 아니다(그 코치 턴이 '직전'이 아니라 20여 턴 앞이어서 아래 인용 규칙에는 안 걸림).
+GUARD_KEEP = frozenset({"태그"})
 # 가드(문장 삭제)는 템플릿에 10회 이상 나오는 어절만 쓴다 — 5회 안팎의 어절('말하지'·'선언'·'인정'·'관찰')은 예시 문장 조각이거나
 #   일반 명사라 삭제가 오히려 대화를 깬다(10/28 재생 2라운드). 린트는 전체 사전으로 세어 보고한다.
 GUARD_MIN_COUNT = 10
@@ -510,34 +513,49 @@ def guard_lexicon() -> dict:
                     break
     everyday = {w for w, n in counts.items() if n >= EVERYDAY_MIN_COUNT}
     leader_counts: Counter = Counter()
-    for t in _leader_texts():
+    quoted: Counter = Counter()
+    for coach_prev, t in _leader_pairs():
+        # (2026-10-29) 인용 예외: 직전 코치 발화에 있던 어절을 리더가 되받아 쓴 것은 리더 어휘의 근거로 쓰지 않는다.
+        coach_hits = {w for tok in _raw_tokens(coach_prev) if _HANGUL_RE.match(tok) for w in lex["korean"] if _match_korean_word(tok, w)}
         for tok in _raw_tokens(t):
             if not _HANGUL_RE.match(tok):
                 continue
             for w in lex["korean"]:
                 if _match_korean_word(tok, w):
-                    leader_counts[w] += 1
+                    if w in coach_hits:
+                        quoted[w] += 1
+                    else:
+                        leader_counts[w] += 1
                     break
-    leader_words = {w for w, n in leader_counts.items() if n >= LEADER_MIN_COUNT}
-    excluded = everyday | leader_words
+    leader_words = {w for w, n in leader_counts.items() if n >= LEADER_MIN_COUNT} - GUARD_KEEP
+    excluded = (everyday - GUARD_KEEP) | leader_words
     return {"korean": {w: c for w, c in lex["korean"].items() if w not in excluded and c >= GUARD_MIN_COUNT},
             "english": dict(lex["english"]), "everyday_excluded": sorted(excluded),
-            "leader_excluded": sorted(w for w in leader_words if lex["korean"].get(w, 0) >= GUARD_MIN_COUNT)}
+            "leader_excluded": sorted(w for w in leader_words if lex["korean"].get(w, 0) >= GUARD_MIN_COUNT),
+            "quoted_skipped": {w: n for w, n in quoted.items() if lex["korean"].get(w, 0) >= GUARD_MIN_COUNT},
+            "kept_manually": sorted(GUARD_KEEP)}
 
 
-def _leader_texts() -> list[str]:
-    """운영 세션 5건의 리더 입력(json 리스트)."""
+def _leader_pairs() -> list[tuple[str, str]]:
+    """운영 세션 5건의 (직전 코치 발화, 리더 입력) 쌍. *_pairs.json 이 없으면 *_users.json 을 코치 발화 없이 쓴다."""
     import json
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
     if not _LEADER_DIR.exists():
         return out
     for f in sorted(_LEADER_DIR.glob("*_users.json")):
+        pf = f.with_name(f.name.replace("_users.json", "_pairs.json"))
         try:
-            data = json.loads(f.read_text(encoding="utf-8"))
+            if pf.exists():
+                out.extend((p.get("coach") or "", p.get("user") or "") for p in json.loads(pf.read_text(encoding="utf-8")) if isinstance(p, dict))
+            else:
+                out.extend(("", x) for x in json.loads(f.read_text(encoding="utf-8")) if isinstance(x, str))
         except Exception:   # noqa: BLE001
             continue
-        out.extend(x for x in data if isinstance(x, str))
     return out
+
+
+def _leader_texts() -> list[str]:
+    return [t for _, t in _leader_pairs()]
 
 
 def user_token_set(user_texts: list[str]) -> set[str]:
