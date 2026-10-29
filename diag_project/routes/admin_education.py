@@ -306,3 +306,171 @@ async def education_curriculum(
         all_reports = await _latest_reports(db, [p.id for p in all_ps])
         baseline = [((r.scores or {}).get("details")) or {} for r in all_reports.values()]
     return build_curriculum(details, baseline)
+
+
+@router.get("/curriculum/export")
+async def export_curriculum(
+    company_id: Optional[UUID] = Query(None, description="마스터 전용 고객사"),
+    org_unit_id: Optional[UUID] = Query(None),
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """맞춤 교육체계도 엑셀: 화면 포스터와 같은 구성(남색 머리 띠·회색 트랙 머리·역량 세로 병합·필수/선택/강점 색)."""
+    import io
+    from datetime import datetime
+    from urllib.parse import quote
+
+    from fastapi import HTTPException
+    from fastapi.responses import StreamingResponse
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    from diag_project.models.company import Company
+    from diag_project.services.curriculum import build_curriculum
+    from diag_project.services.org_units import unit_labels
+
+    cur = await education_curriculum(company_id=company_id, org_unit_id=org_unit_id, ctx=ctx, db=db)
+    if cur["status"] != "ok":
+        raise HTTPException(status_code=400, detail=f"진단 완료 {cur['n_reports']}명이라 맞춤 체계도를 만들 수 없습니다(최소 {cur['min_reports']}명).")
+
+    cid = ctx.company_id if not (ctx.is_super_admin and not ctx.is_acting) else company_id
+    company = await db.get(Company, cid) if cid else None
+    scope = company.name if company else "전체"
+    if org_unit_id:
+        lb = (await unit_labels(db, [org_unit_id])).get(org_unit_id) or {}
+        scope = " › ".join(x for x in (scope, lb.get("division_name"), lb.get("office_name"), lb.get("team_name")) if x)
+
+    NAVY, MID, BRIGHT, LIGHT, TINT, SOFT, LINE, GRAY = "1C2B4A", "2E4A85", "4F86F7", "8FB2FB", "EEF3FD", "F2F4F7", "D9DEE7", "64748B"
+    fill = lambda c: PatternFill("solid", fgColor=c)
+    thin = Side(style="thin", color=LINE)
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    tier_style = {
+        "required": (fill(NAVY), Font(bold=True, color="FFFFFF", size=10), "필수"),
+        "elective": (fill(TINT), Font(bold=True, color=NAVY, size=10), "선택"),
+        "strength": (fill("E5EEFE"), Font(bold=True, color=MID, size=10), "강점 확산"),
+    }
+    tier_border = {
+        "required": Border(left=Side(style="medium", color=NAVY), right=Side(style="medium", color=NAVY),
+                           top=Side(style="medium", color=NAVY), bottom=Side(style="medium", color=NAVY)),
+        "elective": Border(left=Side(style="thin", color=NAVY), right=Side(style="thin", color=NAVY),
+                           top=Side(style="thin", color=NAVY), bottom=Side(style="thin", color=NAVY)),
+        "strength": Border(left=Side(style="thin", color=BRIGHT), right=Side(style="thin", color=BRIGHT),
+                           top=Side(style="thin", color=BRIGHT), bottom=Side(style="thin", color=BRIGHT)),
+    }
+    tracks = ["A", "B", "C", "D"]
+    tmeta = {t["track"]: t for t in cur["tracks"]}
+    tname = {"A": "기본기", "B": "실습", "C": "현업 적용", "D": "전수·확산"}
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "맞춤 교육체계도"
+    ws.sheet_view.showGridLines = False
+    last_col = 2 + len(tracks)
+
+    # 제목 띠
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+    c = ws.cell(row=1, column=1, value=f"{scope} 맞춤 리더십 교육체계")
+    c.font = Font(bold=True, size=18, color="FFFFFF"); c.fill = fill(NAVY)
+    c.alignment = Alignment(vertical="center", indent=1)
+    ws.row_dimensions[1].height = 40
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=last_col)
+    c = ws.cell(row=2, column=1, value=cur["summary"])
+    c.font = Font(size=10.5, color="FFFFFF"); c.fill = fill(NAVY); c.alignment = Alignment(vertical="center", indent=1, wrap_text=True)
+    ws.row_dimensions[2].height = 30
+    # 범례
+    ws.cell(row=3, column=1, value=f"기준 {datetime.now():%Y.%m.%d} · 과정은 교육과정 Pool에서 진단 결과에 따라 자동 구성").font = Font(size=9, color=GRAY)
+    lg = last_col - 2
+    for i, t in enumerate(("required", "elective", "strength")):
+        cell = ws.cell(row=3, column=lg + i, value=tier_style[t][2])
+        cell.fill, cell.font, cell.alignment, cell.border = tier_style[t][0], tier_style[t][1], center, tier_border[t]
+    ws.row_dimensions[3].height = 22
+
+    # 머리 1단(남색 그룹 띠) + 2단(회색 트랙)
+    hr1, hr2 = 5, 6
+    # 왼쪽 두 머리 칸은 세로 병합 없이 두 줄을 같은 색으로 채운다(일부 미리보기에서 세로 병합 아래 칸이 밀리는 문제 회피)
+    for col, txt in ((1, "역량"), (2, "하위역량")):
+        top = ws.cell(row=hr1, column=col)
+        top.fill = fill(NAVY)
+        cell = ws.cell(row=hr2, column=col, value=txt)
+        cell.fill, cell.font, cell.alignment = fill(NAVY), Font(bold=True, color="FFFFFF"), center
+    ws.merge_cells(start_row=hr1, start_column=3, end_row=hr1, end_column=5)
+    cell = ws.cell(row=hr1, column=3, value="역량 향상 과정 (개선)")
+    cell.fill, cell.font, cell.alignment = fill(NAVY), Font(bold=True, color="FFFFFF", size=12), center
+    cell = ws.cell(row=hr1, column=6, value="강점 확산 과정")
+    cell.fill, cell.font, cell.alignment = fill(MID), Font(bold=True, color="FFFFFF", size=12), center
+    for i, t in enumerate(tracks):
+        m = tmeta.get(t, {})
+        lv = f"Lv.{m.get('from_level')}→{m.get('to_level')}" if m.get("from_level") else ""
+        cell = ws.cell(row=hr2, column=3 + i, value=f"{t} · {tname[t]}  {lv}\n{m.get('format') or ''}")
+        cell.fill, cell.font, cell.alignment, cell.border = fill(SOFT), Font(bold=True, color=NAVY, size=10), center, box
+    ws.row_dimensions[hr1].height = 26
+    ws.row_dimensions[hr2].height = 36
+
+    # 본문: 역량(세로 병합) × 하위역량 × 트랙
+    r = hr2 + 1
+    for ci, comp in enumerate(cur["competencies"]):
+        rows = comp["rows"]
+        if not rows:
+            continue
+        start = r
+        for row in rows:
+            dist = row["dist"]
+            sub_cell = ws.cell(row=r, column=2, value=f"{row['sub']}\n측정 {row['measured']}명 · Lv1 {dist['1']} · Lv2 {dist['2']} · Lv3 {dist['3']} · Lv4 {dist['4']}")
+            sub_cell.fill, sub_cell.font, sub_cell.border = fill("FAFBFC"), Font(bold=True, size=10, color="0F172A"), box
+            sub_cell.alignment = Alignment(vertical="center", wrap_text=True, indent=1)
+            by_track = {i["track"]: i for i in row["items"]}
+            for ti, t in enumerate(tracks):
+                cell = ws.cell(row=r, column=3 + ti)
+                it = by_track.get(t)
+                if it:
+                    f, fnt, label = tier_style[it["tier"]]
+                    cell.value = f"[{label}] {it['course']}\n{it['people']}명"
+                    cell.fill, cell.font, cell.border, cell.alignment = f, fnt, tier_border[it["tier"]], center
+                else:
+                    cell.border = box
+            ws.row_dimensions[r].height = 46
+            r += 1
+        ws.merge_cells(start_row=start, start_column=1, end_row=r - 1, end_column=1)
+        head = comp["name"] + ("\n집중 역량" if comp["priority"] == "focus" else "")
+        head += f"\n평균 {comp['avg']:.1f}" if comp["avg"] is not None else ""
+        if comp.get("baseline_avg") is not None:
+            head += f"\n회사 {comp['baseline_avg']:.1f}"
+        cell = ws.cell(row=start, column=1, value=head)
+        cell.fill = fill(NAVY if ci % 2 == 0 else MID)
+        cell.font = Font(bold=True, color="FFFFFF", size=11)
+        cell.alignment = center
+        for rr in range(start, r):
+            ws.cell(row=rr, column=1).border = box
+
+    # 근거 시트(필터·정렬용 평평한 표)
+    ws2 = wb.create_sheet("구성 근거")
+    ws2.append(["역량", "집중 역량", "하위역량", "구분", "트랙", "과정", "교육목표", "대상 인원", "근거"])
+    for cell in ws2[1]:
+        cell.fill, cell.font = fill(NAVY), Font(bold=True, color="FFFFFF")
+    for comp in cur["competencies"]:
+        for row in comp["rows"]:
+            for it in row["items"]:
+                ws2.append([comp["name"], "예" if comp["priority"] == "focus" else "", row["sub"],
+                            tier_style[it["tier"]][2], it["track"], it["course"], it["goal"], it["people"], it["reason"]])
+    for col, w in zip("ABCDEFGHI", (10, 8, 18, 9, 6, 26, 40, 9, 46)):
+        ws2.column_dimensions[col].width = w
+
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 30
+    for i in range(len(tracks)):
+        ws.column_dimensions[get_column_letter(3 + i)].width = 28
+    ws.freeze_panes = ws.cell(row=hr2 + 1, column=3)
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"{scope.replace(' › ', '_')}_맞춤교육체계도_{datetime.now():%Y%m%d}.xlsx"
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=curriculum.xlsx; filename*=UTF-8''{quote(fname)}"},
+    )

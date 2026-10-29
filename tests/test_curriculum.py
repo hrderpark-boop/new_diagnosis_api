@@ -74,3 +74,12 @@ def test_curriculum_endpoint_scoped(client, auth_headers):
     hr = _client_admin_headers(client, cid)
     r = client.get("/api/v1/admin/education/curriculum", headers=hr)
     assert r.status_code == 200 and r.json()["status"] == "insufficient" and r.json()["n_reports"] == 0
+
+
+def test_curriculum_export_insufficient_400(client, auth_headers):
+    import uuid
+    from tests.test_org_units import _client_admin_headers, _new_company
+    cid = _new_company(client, auth_headers, "CUX-" + uuid.uuid4().hex[:6])
+    hr = _client_admin_headers(client, cid)
+    r = client.get("/api/v1/admin/education/curriculum/export", headers=hr)
+    assert r.status_code == 400 and "최소" in r.json()["detail"]
