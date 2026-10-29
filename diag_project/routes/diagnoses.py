@@ -2455,7 +2455,11 @@ async def _submit_message_phase3a(
             if _dq_now and _idaq(_dq_now) and not state.get("force_ladder_probe"):
                 _dqc = ((session.self_assessment_data or {}).get("direct_q_count") or {}).get(chapter) or {}
                 _dq_used = int(_dqc.get(current_target_sub or "", 0) or 0)
-                _a_present = bool((state.get("current_event_star_coverage") or {}).get("A"))
+                # A 가 답에 있는가 — LLM 커버리지 판정 또는 결정론(과거형 행동 서술 2개 이상). p12a Jessica: '프롬프트를 직접 설계하고 검수하며
+                #   최종 확정까지' 라고 답했는데 커버리지가 A 비어 있음으로 나와 '직접 하신 부분은?' 을 또 물었다.
+                from diag_project.services.avoidance_detector import _PAST_LOOSE_RE as _plr_d
+                _a_present = (bool((state.get("current_event_star_coverage") or {}).get("A"))
+                              or len(_plr_d.findall((state.get("resume_pending") or {}).get("user_text") or request.content or "")) >= 2)
                 if _dq_used >= 1 or _a_present:
                     _lead_d = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
                     _alt_d = sum(1 for _t in _recent_coach_texts if "그 뒤에는 어떻게 됐어요" in _t)
