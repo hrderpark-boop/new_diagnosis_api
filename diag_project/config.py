@@ -33,11 +33,13 @@ class Settings(BaseSettings):
     DB_ECHO: bool = False 
 
     # 4. CORS 설정 — 화이트리스트 (여기 없는 origin 은 브라우저 접근 차단)
-    # 공식 프론트엔드 도메인 + 로컬 개발용, 딱 두 곳만 허용.
-    # 필요 시 환경변수로 덮어쓸 것:
+    # 공식 프론트엔드 도메인(참여자 fm · 고객사 HR fm-hr · 마스터 fm-ops) + 로컬 개발용만 허용.
+    # 필요 시 환경변수로 덮어쓸 것(덮어쓰면 아래 목록은 쓰이지 않으니 세 도메인을 모두 넣을 것):
     #   CORS_ALLOWED_ORIGINS="https://app.example.com,https://admin.example.com"
     CORS_ALLOWED_ORIGINS: List[str] = [
         "https://fm.connectn.co.kr",
+        "https://fm-hr.connectn.co.kr",   # (2026-10-29) 고객사 HR 관리자
+        "https://fm-ops.connectn.co.kr",  # (2026-10-29) 마스터(운영사)
         "http://localhost:3000",
     ]
     
