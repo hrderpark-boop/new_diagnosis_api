@@ -436,6 +436,15 @@ async def start_diagnosis(
     result = await db.execute(count_query)
     past_session_count = result.scalar() or 0
     visit_count = past_session_count + 1 
+    # (2026-10-29 P1-4) 1인 재사용 대비 — 앵커 문안·프레임 회전(n mod 2), 이전 세션에서 쓴 사다리 단계는 피한다(미사용 우선).
+    _anchor_variant = int(past_session_count) % 2
+    _ladder_avoid: dict = {}
+    if past_session_count:
+        _past_rows = (await db.execute(
+            select(DiagnosisSession.self_assessment_data).where(DiagnosisSession.user_id == request.participant_id))).scalars().all()
+        for _ps in _past_rows:
+            for _k, _steps in (((_ps or {}).get("ladder_used") or {}) if isinstance(_ps, dict) else {}).items():
+                _ladder_avoid[_k] = sorted(set((_ladder_avoid.get(_k) or []) + list(_steps or [])))
 
     # 코치 페르소나 조회 (알 수 없는 coach_id면 400 반환)
     persona, opening = _resolve_persona(request.coach_id, user_name, visit_count)
@@ -458,6 +467,7 @@ async def start_diagnosis(
         status="in_progress",
         current_topic="General",
         llm_provider=_session_provider,
+        self_assessment_data={"anchor_variant": _anchor_variant, "ladder_avoid": _ladder_avoid},
         created_at=datetime.now(),
         updated_at=datetime.now()
     )
@@ -1452,6 +1462,7 @@ async def _submit_message_phase3a(
             user_definition=state.get("last_user_response", "") or "",
             first_subcompetency_name=state.get("first_subcompetency_name", ""),
             bridge_context=_bridge_ctx,
+            variant=int((session.self_assessment_data or {}).get("anchor_variant") or 0),
         ))
 
     # (2026-10-28 P0-4) 입력 이상 턴은 위 어떤 분기보다 우선 — 고정 응답, LLM 미호출
@@ -1707,7 +1718,8 @@ async def _submit_message_phase3a(
         _k = _fsk_ar(chapter, sub_name) if (chapter and sub_name) else None
         _q, _mode = await render_anchor(
             llm, _k, recent_turns=[_prev_coach_text, request.content or ""],
-            role_summary=(state.get("participant_context") or {}).get("role_summary"), pos=0,
+            role_summary=(state.get("participant_context") or {}).get("role_summary"),
+            pos=int((session.self_assessment_data or {}).get("anchor_variant") or 0),   # (2026-10-29 P1-4) 재세션 회전
         )
         # (2026-10-23 P4) 사전 문장(dict/fallback)은 페르소나 어미 변환 계층을 거친다. llm 렌더링 문장은 그대로.
         if _mode in ("dict", "fallback"):
@@ -1884,6 +1896,7 @@ async def _submit_message_phase3a(
                 user_definition=request.content or "",
                 first_subcompetency_name=current_target_sub,
                 bridge_context=None,
+                variant=int((session.self_assessment_data or {}).get("anchor_variant") or 0),
             )
             # (2026-10-21) ANCHOR_RENDER=llm 이면 렌더링 질문으로(판정 불합격·실패는 사전 문장 폴백). dict 모드는 그대로(어미 변환 포함).
             _ar_q, _ar_mode = await _render_anchor_for(current_target_sub)

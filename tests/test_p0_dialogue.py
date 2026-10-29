@@ -355,5 +355,24 @@ def test_p1_anomaly_escalation_and_direct_cap_wired():
     a = src.index("anomaly_counts"); assert "_ac_n >= 3" in src[a: a + 2500] and "skip_bridge" in src[a: a + 2500]
     assert "'reask_anchor_2' if _ac_n == 2 else 'reask_anchor'" in src
     j = src.index("# 8-j."); assert 'state.get("skip_bridge")' in src[j: j + 1500]
-    c = src.index("'직접 하신' 질문 상한"); assert "direct_q_count" in src[c: c + 1500] and "a_present" in src[c: c + 1500]
+    c = src.index("'리더님이 직접 하신 일' 질문 상한"); assert "direct_q_count" in src[c: c + 1500] and "a_present" in src[c: c + 1500]
     g = src.index("generalize_pending"); assert '"generalized"' in src[g: g + 1200]
+
+
+def test_anchor_rotation_second_session_first_questions_all_differ():
+    """P1-4: 같은 참가자의 두 번째 세션(variant 1)은 26개 하위역량의 첫 질문이 전부 달라진다. 대상화 표현 0."""
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK, get_anchor_questions
+    from diag_project.services.anchor_render import dict_anchor
+    from diag_project.services.intro_messages import build_chapter_opening_with_user_def
+    keys = [k for ch, fw in COMPETENCY_FRAMEWORK.items() if ch != "supplementary" for k in fw["indicators"]]
+    assert len(keys) == 26
+    allq = [q for k in keys for q in get_anchor_questions(k)]
+    assert len(allq) == 52 and len(set(allq)) == 52
+    assert all(dict_anchor(k, 0) != dict_anchor(k, 1) for k in keys)
+    bad = ("키우신", "봐주며", "손을 놓은", "서툰 팀원", "방어적인", "반신반의", "수긍 못", "경계하는", "개성 강한", "안 도와주던", "떠날 것 같은", "끼어들어")
+    for q in allq:
+        assert not any(b in q for b in bad), q
+    for ch in ("organization_management", "people_management", "self_management"):
+        a = build_chapter_opening_with_user_def(ch, "정의", "", variant=0)
+        b = build_chapter_opening_with_user_def(ch, "정의", "", variant=1)
+        assert a != b

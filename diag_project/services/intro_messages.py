@@ -551,8 +551,10 @@ def build_chapter_opening_with_user_def(
     user_definition: str,
     first_subcompetency_name: str,
     bridge_context: str | None = None,
+    variant: int = 0,
 ) -> str:
     """CHAPTER_OPENING (Step 7) — 하위역량 타겟팅 기반 첫 BEI 질문.
+    variant(2026-10-29 P1-4): 같은 참가자의 n번째 완료 세션(n mod 2) — 앵커 문안(2개 중)과 프레임(8개)을 돌려 두 번째 세션의 첫 질문이 전부 달라진다.
 
     대주제로 뭉뚱그린 질문('이 역량 관련 경험 있으세요?')은 답하기 어렵다.
     Step 6 에서 소개한 하위 역량의 SUBCOMPETENCY_ANCHORS(현업 딜레마/갈등
@@ -584,11 +586,11 @@ def build_chapter_opening_with_user_def(
     # #2: 첫 하위역량의 대화체 앵커 질문(이름 미노출) — 결정론(챕터 순서 기반).
     questions = get_anchor_questions(first_key) if first_key else []
     if questions:
-        question = questions[_pos % len(questions)]
+        question = questions[(_pos + int(variant or 0)) % len(questions)]
     else:
         # 질문 사전에 없는 키(방어) — 이름 대신 일반 상황 질문.
         question = "최근에 리더님이 직접 나서서 풀어야 했던 일이 하나 있으셨어요?"
-    _frame = _ANCHOR_FRAMES[_pos % len(_ANCHOR_FRAMES)].format(question=question)
+    _frame = _ANCHOR_FRAMES[(_pos + int(variant or 0)) % len(_ANCHOR_FRAMES)].format(question=question)
     del first_name  # 이름은 질문에 쓰지 않는다(호환 인자만 유지)
 
     # 🌉 브릿지 모드: 직전 답변 키워드에서 파생되는 대화형 리드 + 앵커 질문.
