@@ -62,8 +62,9 @@ def test_ending_mix_and_no_three_in_a_row():
         for key in COMPETENCY_FRAMEWORK[ck]["indicators"]:
             seq += [_ending(q) for q in get_anchor_questions(key)]
         bc_total += sum(1 for e in seq if e != "A")
-        for i in range(len(seq) - 2):
-            assert not (seq[i] == seq[i + 1] == seq[i + 2]), (ck, seq)
+        # (2026-10-29 P1-4 승인 문안) '~하신 적, 최근에 있으셨어요?' 형식 통일 지시로 연속 규칙은 폐지 — 챕터 안에 두 종류 이상만 요구.
+        #   문장 어미의 실제 변주는 페르소나 어미 계층(persona_voice)이 맡는다(52×6 동일 쌍 0 테스트).
+        assert len(set(seq)) >= 2, (ck, seq)
     assert 52 * 0.25 <= bc_total <= 52 * 0.45, bc_total   # 약 1/3
 
 

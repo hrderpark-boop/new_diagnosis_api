@@ -1091,9 +1091,11 @@ async def _submit_message_phase3a(
         # (2026-10-29 P1-1) 사다리 발동 조건 확장 — S-A-R 완비 판정과 무관하게, 이 타겟에 탐침을 2턴 이상 썼고(이번이 3번째 턴)
         #   사다리를 아직 안 썼으면 이번 탐침은 사다리. s31 25세션: Michael 세션당 1.2회·Jessica 조직관리 0회 — 완비 판정이 실세션에
         #   안 맞았다. 목표 챕터당 2회 이상(린트 집계). 사다리 턴은 R·A·일반화 강제보다 우선한다(아래 force 블록).
+        _ans_l = (request.content or "").strip()
         if (chapter and current_target_sub and not state.get("force_ladder_probe") and not _adv_sar(_cur_before, current_target_sub)
                 and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE")
-                and int((_store.get("turns_on_target") or {}).get(chapter, 0) or 0) >= 3):
+                and int((_store.get("turns_on_target") or {}).get(chapter, 0) or 0) >= 3
+                and len(_ans_l.replace(" ", "")) >= 30 and not _ans_l.endswith("?")):   # (p11) '무슨 말씀이시죠?' 뒤에도 사다리가 나갔다
             from diag_project.data.competencies import find_sub_key_by_name as _fsk_l2
             from diag_project.data.ladder_questions import ladder_question as _lq2
             from diag_project.services.llm_judge import judge_rubric_level as _jrl2
@@ -2510,6 +2512,8 @@ async def _submit_message_phase3a(
             from diag_project.services.event_tracker import ATTITUDE_TRIGGER_QUESTION as _ATQ
             _lead_t = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
             clean_reply = " ".join(_lead_t + [_ATQ]).strip()
+            if _tm.get("ladder"):   # (2026-10-29 P1) 사다리 질문이 덮였다 — 원장에 사용으로 남기지 않는다(p11 샘플: 계기 질문이 사다리로 집계)
+                _tm.pop("ladder", None); _tm["ladder_dropped"] = "attitude"; state["force_ladder_probe"] = None
             logger.info("🌱 계기 질문 강제")
 
         # (2026-09-29) 결과 강제 턴에 결과 질문이 없으면 → 직전 발화 명사구로 만든 결과 질문(풀 문장 X)
@@ -2746,6 +2750,8 @@ async def _submit_message_phase3a(
         from diag_project.services.output_guard import receive_sentence as _recv_pause
         from diag_project.services.traversal import restore_ledger as _restore_ledger
         _recv_only = _recv_pause(clean_reply, fallback="")
+        if _tm.get("ladder"):   # (2026-10-29 P1) 일시정지 제안이 사다리 질문을 삼켰다 — 재개 턴에서 다시 사다리가 잡히도록 사용 표시를 지운다
+            _tm.pop("ladder", None); _tm["ladder_dropped"] = "pause"; state["force_ladder_probe"] = None
         clean_reply = f"{_recv_only}\n\n{pause_suggestion_text(_sit_elapsed, (state.get('coach_persona') or {}).get('name'))}".strip()
         _pst = dict(session.self_assessment_data or {})
         if _ledger_snapshot is not None:
