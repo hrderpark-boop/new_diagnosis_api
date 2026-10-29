@@ -12,7 +12,7 @@
 import io
 import logging
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -74,6 +74,8 @@ class AdminMeResponse(BaseModel):
     role: str
     company_id: Optional[str]
     company_name: Optional[str]
+    # (2026-10-29) 마스터가 고객사로 들어간 상태(X-Act-As-Company). company_* 는 그 고객사
+    acting: bool = False
 
 
 class PasswordChangeRequest(BaseModel):
@@ -328,6 +330,7 @@ async def admin_me(
         role=ctx.admin.role,
         company_id=str(ctx.company_id) if ctx.company_id else None,
         company_name=await _company_name(db, ctx.company_id),
+        acting=ctx.is_acting,
     )
 
 
@@ -399,6 +402,10 @@ async def list_participants(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     company_id: Optional[UUID] = Query(None, description="Super Admin 전용 고객사 필터"),
+    org_unit_id: Optional[UUID] = Query(None, description="조직 단위 필터(본부면 소속 실·팀 포함)"),
+    status_filter: Optional[str] = Query(None, alias="status",
+                                         description="completed | in_progress | abandoned | not_started | incomplete(완료 외 전부)"),
+    sort: str = Query("recent", description="recent(가입 최신순) | org(조직 코드순) | name(이름순)"),
     ctx: AdminContext = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -409,6 +416,10 @@ async def list_participants(
     base = ctx.scope_query(base, Participant.company_id)
     if company_id and ctx.is_super_admin:
         base = base.where(Participant.company_id == company_id)
+    if org_unit_id:
+        # 회사 격리는 위 scope_query 가 이미 강제한다(다른 회사 단위 id 를 넣어도 결과 0건).
+        from diag_project.services.org_units import descendant_ids
+        base = base.where(Participant.org_unit_id.in_(await descendant_ids(db, org_unit_id)))
 
     if search:
         kw = f"%{search.strip()}%"
@@ -420,16 +431,33 @@ async def list_participants(
             )
         )
 
+    # (2026-10-29) 진행 상태 필터: 상태는 세션·리포트로 정해지므로 후보 id 를 먼저 분류해 거른다
+    if status_filter:
+        from diag_project.services.org_units import participant_statuses
+        cand = (await db.execute(base.with_only_columns(Participant.id))).scalars().all()
+        st = await participant_statuses(db, list(cand))
+        if status_filter == "incomplete":
+            keep = [pid for pid, v in st.items() if v != "completed"]
+        else:
+            keep = [pid for pid, v in st.items() if v == status_filter]
+        base = base.where(Participant.id.in_(keep or [None]))
+
     # 전체 건수 (페이지네이션 메타)
     count_result = await db.execute(
         select(func.count()).select_from(base.subquery())
     )
     total = count_result.scalar() or 0
 
+    if sort == "org":
+        from diag_project.models.org_unit import OrgUnit
+        ordered = (base.outerjoin(OrgUnit, OrgUnit.id == Participant.org_unit_id)
+                   .order_by(OrgUnit.code.is_(None), OrgUnit.code, Participant.name))
+    elif sort == "name":
+        ordered = base.order_by(Participant.name)
+    else:
+        ordered = base.order_by(Participant.created_at.desc())
     result = await db.execute(
-        base.order_by(Participant.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
+        ordered.offset((page - 1) * page_size).limit(page_size)
     )
     participants = result.scalars().all()
 
@@ -518,9 +546,14 @@ async def list_participants(
         return out
 
     cmap = await _company_map(db)
+    from diag_project.services.org_units import unit_labels
+    org_by_id = await unit_labels(db, [p.org_unit_id for p in participants])
+    from diag_project.services.org_units import participant_statuses
+    pstatus = await participant_statuses(db, [p.id for p in participants])
     items = []
     for p in participants:
         stat = session_stats[p.id]
+        _org = org_by_id.get(p.org_unit_id) if p.org_unit_id else None
         last_status = stat["last_status"]
         items.append(
             {
@@ -530,6 +563,17 @@ async def list_participants(
                 "group_code": p.group_code or "-",
                 "company_id": str(p.company_id) if p.company_id else None,
                 "company_name": cmap.get(p.company_id, "미지정") if p.company_id else "미지정",
+                # (2026-10-29) 소속 조직(참여 코드 AS1 등). 미분류면 None
+                "org_unit_id": str(p.org_unit_id) if p.org_unit_id else None,
+                "org_code": _org["code"] if _org else None,
+                "org_name": _org["name"] if _org else None,
+                "division_name": _org["division_name"] if _org else None,
+                "office_name": _org["office_name"] if _org else None,
+                "team_name": _org["team_name"] if _org else None,
+                # (2026-10-29) 진행 상태 4가지: completed · in_progress · abandoned · not_started
+                "progress_status": pstatus.get(p.id, "not_started"),
+                # 개인 참여 코드(명단 업로드로 발급). 명단 밖에서 들어온 사람은 None
+                "access_code": p.access_code,
                 "gender": p.gender or "-",
                 "age_group": p.age_group or "-",
                 "total_sessions": stat["total"],
@@ -831,7 +875,7 @@ async def completed_sessions_without_report(db: AsyncSession, ctx: AdminContext,
         p = by_id.get(s.user_id)
         if not p:
             continue
-        if not ctx.is_super_admin and p.company_id != ctx.company_id:          # 회사 격리(scope_query 와 같은 규칙)
+        if (not ctx.is_super_admin or ctx.is_acting) and p.company_id != ctx.company_id:   # 회사 격리(scope_query 와 같은 규칙, 마스터 대리 포함)
             continue
         if company_id and ctx.is_super_admin and p.company_id != company_id:
             continue
@@ -971,6 +1015,9 @@ async def get_report_detail(
         "top_keywords": saved.get("top_keywords", []),
         "blind_spot": saved.get("blind_spot"),
         "idp": saved.get("idp", []),
+        # (2026-10-29) HR 개인별 추천 과정 화면용(저장돼 있던 값을 그대로)
+        "archetype": saved.get("archetype"),
+        "course_recommendation": saved.get("course_recommendation"),
         "created_at": report.created_at,
         # Human-in-the-Loop 상태
         "is_human_edited": report.is_human_edited,
@@ -1072,7 +1119,7 @@ async def stats_overview(
 
     if not p_ids:
         return {
-            "scope": "all" if ctx.is_super_admin else "company",
+            "scope": "all" if (ctx.is_super_admin and not ctx.is_acting) else "company",
             "total_participants": 0,
             "total_sessions": 0,
             "completed_sessions": 0,
@@ -1099,12 +1146,12 @@ async def stats_overview(
     total_reports, avg_score = r_result.one()
 
     total_companies = 0
-    if ctx.is_super_admin:
+    if ctx.is_super_admin and not ctx.is_acting:
         c_result = await db.execute(select(func.count(Company.id)))
         total_companies = c_result.scalar() or 0
 
     return {
-        "scope": "all" if ctx.is_super_admin else "company",
+        "scope": "all" if (ctx.is_super_admin and not ctx.is_acting) else "company",
         "total_participants": len(p_ids),
         "total_sessions": total_sessions,
         "completed_sessions": completed,
@@ -1118,8 +1165,10 @@ async def stats_overview(
 
 @router.get("/stats/daily")
 async def stats_daily(
-    days: int = Query(7, ge=1, le=90, description="조회할 최근 일수"),
+    days: int = Query(7, ge=1, le=90, description="조회할 최근 일수(start·end 가 없을 때)"),
     company_id: Optional[UUID] = Query(None),
+    start: Optional[date] = Query(None, description="(2026-10-29) 진단 기간 시작일. end 와 함께 주면 기간 내 추이"),
+    end: Optional[date] = Query(None, description="진단 기간 종료일(포함). 최대 366일"),
     ctx: AdminContext = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1134,8 +1183,13 @@ async def stats_daily(
         p_query = p_query.where(Participant.company_id == company_id)
     p_ids = [row[0] for row in (await db.execute(p_query)).all()]
 
-    today = datetime.now(timezone.utc).date()
-    start = today - timedelta(days=days - 1)
+    if start and end:
+        if start > end:
+            raise HTTPException(status_code=400, detail="종료일이 시작일보다 빠릅니다.")
+        days = min((end - start).days + 1, 367)
+    else:
+        today = datetime.now(timezone.utc).date()
+        start = today - timedelta(days=days - 1)
     buckets = {
         (start + timedelta(days=i)): {"sessions": 0, "completed": 0}
         for i in range(days)
@@ -1154,15 +1208,18 @@ async def stats_daily(
                 if s.status == "completed":
                     buckets[d]["completed"] += 1
 
-    return [
-        {
+    out, cum = [], 0
+    for d, v in sorted(buckets.items()):
+        cum += v["completed"]
+        out.append({
             "date": d.isoformat(),
             "name": d.strftime("%m/%d"),
             "진단참여": v["sessions"],
             "진단완료": v["completed"],
-        }
-        for d, v in sorted(buckets.items())
-    ]
+            # (2026-10-29) 기간 내 누적 완료(진단 기간 추이 차트용)
+            "누적완료": cum,
+        })
+    return out
 
 
 @router.get("/stats/competencies")
@@ -1393,6 +1450,11 @@ async def list_companies(
         )
     ).all()
     p_counts = {row[0]: row[1] for row in p_rows}
+    # (2026-10-29) 준비 상태 표시용: 고객사별 사용 중인 조직 코드 수
+    from diag_project.models.org_unit import OrgUnit
+    o_counts = dict((await db.execute(
+        select(OrgUnit.company_id, func.count(OrgUnit.id)).where(OrgUnit.is_active.is_(True)).group_by(OrgUnit.company_id)
+    )).all())
 
     return [
         {
@@ -1402,6 +1464,10 @@ async def list_companies(
             "contact_email": c.contact_email,
             "is_active": c.is_active,
             "llm_provider": c.llm_provider,
+            "org_prefix": c.org_prefix,
+            "diagnosis_start": c.diagnosis_start,
+            "diagnosis_end": c.diagnosis_end,
+            "org_unit_count": int(o_counts.get(c.id, 0)),
             "participant_count": p_counts.get(c.id, 0),
             "created_at": c.created_at,
         }

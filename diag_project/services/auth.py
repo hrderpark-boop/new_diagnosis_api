@@ -22,7 +22,7 @@ from typing import Optional
 from uuid import UUID
 
 import bcrypt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -140,6 +140,9 @@ def decode_token(token: str) -> dict:
 @dataclass
 class AdminContext:
     admin: AdminUser
+    # (2026-10-29) 마스터 '고객사로 들어가기': super_admin 이 X-Act-As-Company 헤더로 한 고객사를 고르면
+    #   그 고객사 HR 과 같은 범위로 조회·수정한다(권한은 super_admin 그대로 → 재분석 등 유지보수 기능 유지).
+    acting_company_id: Optional[UUID] = None
 
     @property
     def role(self) -> str:
@@ -150,17 +153,21 @@ class AdminContext:
         return self.admin.role == UserRole.SUPER_ADMIN.value
 
     @property
+    def is_acting(self) -> bool:
+        return self.is_super_admin and self.acting_company_id is not None
+
+    @property
     def company_id(self) -> Optional[UUID]:
-        return self.admin.company_id
+        return self.acting_company_id if self.is_acting else self.admin.company_id
 
     def scope_query(self, query, company_column):
         """질의에 회사 격리 조건을 강제 적용한다.
 
-        Super Admin  : 필터 없음 (전 고객사 조회)
+        Super Admin  : 필터 없음 (전 고객사 조회). 고객사로 들어간 상태면 그 고객사로 고정
         Client Admin : 자신의 company_id 로 고정 (요청 파라미터로 우회 불가)
         """
         if self.is_super_admin:
-            return query
+            return query.where(company_column == self.acting_company_id) if self.is_acting else query
         return query.where(company_column == self.admin.company_id)
 
     def assert_can_access_company(self, company_id: Optional[UUID]) -> None:
@@ -180,6 +187,7 @@ class AdminContext:
 async def get_current_admin(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
     db: AsyncSession = Depends(get_db),
+    x_act_as_company: Optional[str] = Header(None, alias="X-Act-As-Company"),
 ) -> AdminContext:
     """유효한 어드민 토큰을 요구한다. 모든 /admin 엔드포인트의 기본 관문."""
     if credentials is None or not credentials.credentials:
@@ -214,7 +222,18 @@ async def get_current_admin(
             detail="비활성화되었거나 존재하지 않는 계정입니다.",
         )
 
-    return AdminContext(admin=admin)
+    acting = None
+    # 마스터 대리 범위: super_admin 만, 실제 있는 고객사일 때만. HR 이 보내면 무시한다(권한 상승 불가).
+    if x_act_as_company and admin.role == UserRole.SUPER_ADMIN.value:
+        try:
+            acting = UUID(x_act_as_company.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="X-Act-As-Company 값이 올바르지 않습니다.")
+        from diag_project.models.company import Company
+        if await db.get(Company, acting) is None:
+            raise HTTPException(status_code=404, detail="대리할 고객사를 찾을 수 없습니다.")
+
+    return AdminContext(admin=admin, acting_company_id=acting)
 
 
 async def require_super_admin(

@@ -45,6 +45,16 @@ class Participant(ParticipantBase, table=True):
         sa_column=Column(GUID(), ForeignKey("companies.id"), nullable=True, index=True),
     )
     
+    # (2026-10-29) 소속 조직 단위(본부·팀). 로그인 때 조직 참여 코드(AS1 등)로 정해진다. null = 미분류.
+    org_unit_id: Optional[UUID] = Field(
+        default=None,
+        sa_column=Column(GUID(), ForeignKey("org_units.id"), nullable=True, index=True),
+    )
+
+    # (2026-10-29) 개인 참여 코드(명단 업로드로 발급, 예: AS1-K7Q2). 로그인 그룹 코드 칸에 넣으면 이 사람으로 들어온다.
+    #   이메일이 명단과 다르면 거부한다(코드만 알아서는 남의 진단에 못 들어감).
+    access_code: Optional[str] = Field(default=None, max_length=30, unique=True, index=True)
+
     # 생성/수정 시간 자동 기록
     created_at: Optional[datetime] = Field(
         default_factory=lambda: datetime.now(timezone.utc),
