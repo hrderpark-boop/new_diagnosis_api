@@ -1970,6 +1970,8 @@ async def _submit_message_phase3a(
     #   코치가 주도권을 쥐고 즉시 다음 챕터로 전환한다.
     #   → CHAPTER_CONTINUE_CONFIRMED 와 동일하게 완료·시작 마커를 세운다.
     if instruction_used == "CHAPTER_READY_TO_END":
+        if _tm.get("ladder"):   # (2026-10-29 P1 p13) 사다리 질문이 종료 턴에 삼켜졌다 — 사용 표시를 지운다(p131_4: 전환 문장이 사다리로 집계)
+            _tm.pop("ladder", None); _tm["ladder_dropped"] = "chapter_end"; state["force_ladder_probe"] = None
         # 1-b: 내부 종료 사유는 로그에만 남긴다(리더에게 나가는 문구는 중립).
         logger.info(
             "🏁 챕터 종료 [%s] no_yield_forced=%s star70=%s avoid=%s asked=%s "

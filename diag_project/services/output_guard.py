@@ -172,9 +172,11 @@ def strip_praise(text: str) -> tuple[str, int]:
     sents = split_sentences(text)
     if not sents:
         return text, 0
-    kept = [s for s in sents if not _PRAISE_RE.search(s)]
+    # (2026-10-29 P1 p13) 질문 문장은 지우지 않고 칭찬 구절만 걷어낸다 — Michael '…인상적이네요, 반발은 없었나요? 있었다면 …?' 에서 앞 질문이
+    #   통째로 지워져 '있었다면 …' 이 홀로 남았다(잘림 1건).
+    kept = [s for s in sents if not _PRAISE_RE.search(s) or is_question(s)]
     removed = len(sents) - len(kept)
-    if removed == 0:
+    if removed == 0 and not any(_PRAISE_RE.search(s) for s in sents):
         return text, 0
     if not kept:
         # 전부 칭찬이면 질문 문장만이라도 칭찬 구절을 걷어내 남긴다
@@ -187,7 +189,11 @@ def strip_praise(text: str) -> tuple[str, int]:
     out = text
     for x in sents:
         if _PRAISE_RE.search(x):
-            out = out.replace(x, "", 1)
+            if is_question(x):
+                _cx = re.sub(r"[ \t]{2,}", " ", _PRAISE_RE.sub("", x)).strip(" ,")
+                out = out.replace(x, _cx, 1)
+            else:
+                out = out.replace(x, "", 1)
     out = re.sub(r"[ \t]{2,}", " ", out)
     out = re.sub(r"[ \t]+\n", "\n", out)
     out = re.sub(r"\n{3,}", "\n\n", out).strip()

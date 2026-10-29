@@ -266,7 +266,7 @@ def test_definition_answer_with_rest_word_is_not_pause_at_h4():
     from diag_project.services import instruction_decider as d
     src = inspect.getsource(d.decide_instruction) if hasattr(d, "decide_instruction") else inspect.getsource(d)
     h4 = src.index("H4: 휴식·미루기 요청")
-    assert "_is_substantive_definition_answer(state)" in src[h4: h4 + 900]
+    assert "_pause_req(state)" in src[h4: h4 + 900]   # (p13) 단일 입구 _pause_req 가 실질 답변 예외를 품는다
 
 
 def test_final_leak_sweep_runs_after_tail_regen_and_before_align_assembly():
@@ -406,3 +406,16 @@ def test_indirect_question_with_yeojjwo_bolgeyo_pairs_conditional_followup():
     from diag_project.services.output_guard import is_question
     assert is_question("그 기준으로 최근에 본인 방식이 팀에서 예상과 다르게 받아들여졌던 일이 있었는지 여쭤볼게요.")
     assert not is_question("하나 여쭤볼게요.")
+
+
+def test_strip_praise_keeps_question_sentence_and_pause_single_entry():
+    from diag_project.services.output_guard import strip_praise
+    out, n = strip_praise("역할을 정리하셔서 조정까지 이어졌네요. 정말 인상적이네요, 혹시 반발은 없었나요? 있었다면 어떻게 뚫고 나가셨는지 궁금합니다.")
+    assert "반발은 없었나요?" in out and "인상적" not in out and out.endswith("궁금합니다.")
+    import inspect
+    from diag_project.services import instruction_decider as d
+    src = inspect.getsource(d.decide_instruction)
+    assert "detect_pause_request(" not in src and src.count("_pause_req(") >= 6
+    st = {"last_user_response": "저는 자기관리라고 하면 일이 몰리거나 예상치 못한 문제가 생겨도 감정적으로 흔들리지 않고 우선순위를 정해 차분하게 처리하는 모습이 먼저 떠올라요. 필요할 때는 잠깐 쉬면서 다시 집중하는 것도 중요하게 보고 있어요.",
+          "last_instruction": "COMPETENCY_ALIGN"}
+    assert not d._pause_req(st) and d._pause_req({"last_user_response": "잠깐 쉬었다 할게요", "last_instruction": "STAR_INCOMPLETE"})

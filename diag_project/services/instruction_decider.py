@@ -422,6 +422,15 @@ def detect_duplicate_claim(user_response: str | None) -> bool:
     return any(kw in t for kw in DUPLICATE_CLAIM_KEYWORDS)
 
 
+def _pause_req(state: dict, text: str | None = None) -> bool:
+    """(2026-10-29 P1 p13) 일시정지 요청 판정의 단일 입구 — 낱말 감지 + 실질 답변 예외(정의 답 30자·일반 60자 이상은 요청이 아님).
+    p13: Lucas 자기관리 정의 답('…잠깐 쉬면서…')이 5/5 세션에서 여전히 paused — 예외가 없는 호출 지점이 남아 있었다."""
+    t = state.get("last_user_response") if text is None else text
+    if not detect_pause_request(t):
+        return False
+    return not _is_substantive_definition_answer({**state, "last_user_response": t or ""})
+
+
 def _is_substantive_definition_answer(state: dict) -> bool:
     """직전 코치 턴이 정의 질문(COMPETENCY_ASK·DIAGNOSIS_CONFIRM)이고 리더 답이 30자 이상이면 '정의 답변'이다.
     일시정지·항의·메타 감지의 예외(정의 답 속 '쉬어'·'왜' 같은 낱말이 의도로 오인되는 것을 막는다)."""
@@ -468,7 +477,7 @@ def decide_instruction(state: dict) -> InstructionType:
     #   '다음에/잠시 쉬' 면 일시중지. 원장은 제안 턴에서 되돌려 두었으므로 같은 타겟이 다시 잡힌다.
     _pend = state.get("resume_pending")
     if _pend:
-        if detect_pause_request(state.get("last_user_response")):
+        if _pause_req(state):
             return "USER_REQUESTS_PAUSE"
         state["route_reason"] = "resume_pending"
         return _pend["instruction"]
@@ -486,7 +495,7 @@ def decide_instruction(state: dict) -> InstructionType:
         #   먼저 평가돼 pause 문구가 ABORT_CONFIRM → aborted_disengaged 로 갔다.)
         #   (2026-10-29) 정의 질문에 대한 실질 답변(30자 이상)은 예외 — s291 Lucas 자기관리 정의 답 '…잠깐 쉬면서 다시 집중하는 것도'
         #   의 '쉬면서'가 여기(H4)서 일시정지로 읽혀 Stage 4 의 예외에 닿기 전에 USER_REQUESTS_PAUSE 가 나갔다.
-        if detect_pause_request(state.get("last_user_response")) and not _is_substantive_definition_answer(state):
+        if _pause_req(state):
             return "USER_REQUESTS_PAUSE"
         # A-2: 중단 확인 진입 — 명시적 거부(즉시) OR 연속 3회 이탈 & 최소 5사이클.
         #   (계속 선택 시 diagnoses.py 가 streak 리셋 → 여기 재진입 안 함)
@@ -516,7 +525,7 @@ def decide_instruction(state: dict) -> InstructionType:
     #   않는다(이전 챕터 탐침 재개·정의 답변 오인 방지 — 프론트 입력 잠금과 이중 방어).
     if state.get("awaiting_next_chapter_choice"):
         _txt = state.get("last_user_response") or ""
-        if detect_pause_request(_txt):
+        if _pause_req(state, _txt):
             return "USER_REQUESTS_PAUSE"
         if detect_user_objection(_txt) or detect_meta_question(_txt):
             return "META_QUESTION_FROM_USER"
@@ -611,7 +620,7 @@ def decide_instruction(state: dict) -> InstructionType:
         _last0 = state.get("last_user_response") or ""
         if detect_user_objection(_last0):
             return "META_QUESTION_FROM_USER"
-        if detect_pause_request(_last0):
+        if _pause_req(state, _last0):
             return "USER_REQUESTS_PAUSE"
         if detect_meta_question(_last0):
             return "META_QUESTION_FROM_USER"
@@ -628,7 +637,7 @@ def decide_instruction(state: dict) -> InstructionType:
         if detect_user_objection(_last) and not _is_definition_answer:
             state["route_reason"] = "objection"
             return "META_QUESTION_FROM_USER"
-        if detect_pause_request(_last) and not _is_definition_answer:
+        if _pause_req(state, _last):
             return "USER_REQUESTS_PAUSE"
         if detect_meta_question(_last) and not _is_definition_answer:
             state["route_reason"] = "meta"
@@ -663,8 +672,8 @@ def decide_instruction(state: dict) -> InstructionType:
     if is_invalid_input(last_response):
         return "INVALID_INPUT"
 
-    # 3. 사용자 종료 요청 (회피보다 우선)
-    if detect_pause_request(last_response):
+    # 3. 사용자 종료 요청 (회피보다 우선) — (2026-10-29 P1 p13) 실질 답변 예외 포함 단일 입구
+    if _pause_req(state, last_response):
         return "USER_REQUESTS_PAUSE"
 
     # 4. 메타 질문
