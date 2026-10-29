@@ -104,7 +104,9 @@ def is_unmeasured(comp: Dict[str, Any]) -> bool:
         # 게이트 검증 미완료(pending)는 근거가 있는 '도구 상태' — 미측정 아님.
         if any(r.get("gate_status") == "pending" for r in ledger.values()):
             return False
-        return not any(r.get("measured") for r in ledger.values())
+        return not any((r.get("evidence_measured") if "evidence_measured" in r else r.get("measured")) for r in ledger.values())
+    if "evidence_measured_count" in comp:
+        return int(comp.get("evidence_measured_count") or 0) == 0
     return int(comp.get("measured_count") or 0) == 0
 
 
@@ -126,3 +128,88 @@ def neutralize_unmeasured(competency_results: Dict[str, Dict[str, Any]]) -> List
         comp["unmeasured"] = True
         keys.append(ck)
     return keys
+
+
+# ── (2026-10-29 P2-3) 근거 미확보 → 1.0 정책 ─────────────────────────────────────────────────
+UNCONFIRMED_TEXT_GENERALIZED = "평소 방식은 말씀하셨으나 특정 장면이 확인되지 않아 최저 수준으로 기록했습니다"
+UNCONFIRMED_TEXT_NO_ANSWER = "이 항목은 대화에서 사례가 확인되지 않아 최저 수준으로 기록했습니다"
+UNCONFIRMED_BANNER_MIN = 6
+
+
+def apply_unconfirmed_policy(competency_results: Dict[str, Dict[str, Any]],
+                             store_meta: Dict[str, Any] | None) -> Dict[str, Any]:
+    """측정되지 않은 하위역량 칸을 1.0('사례 미확인')으로 채운다 — 빈칸 없음. 게이트 검증 미완료(pending)는 도구 상태라 건드리지 않는다.
+
+    행에 남기는 것: score 1.0 · measured True(정책상 측정에 포함) · evidence_measured False · unconfirmed True ·
+    unconfirmed_kind generalized|no_answer · unconfirmed_text(라벨 뒤 서술, generalized 면 그 답변 한 줄 인용) ·
+    probe_count(이 하위역량에 나간 코치 턴 수, 앵커 포함) · generalize_probed · probe_deficit(일반화 탐침 1회 + 구체화 요청 1회가
+    모두 나가지 않았는데 미확인이 된 칸 — 린트 '탐침 2회 미만 미확인'). 측정된 행에는 level_label 만 붙인다.
+    대역량: sub_scores·behavior_score·score 재계산(1.0 포함), measured_count(미확인 포함)·evidence_measured_count·
+    unconfirmed_count·level_label. 반환: 합계.
+    """
+    from diag_project.services.scoring import (
+        UNCONFIRMED_LABEL, UNCONFIRMED_SCORE, competency_behavior_score, competency_final_score,
+        competency_is_reference, competency_level_label, level_label,
+    )
+    meta = store_meta or {}
+    gen_map = meta.get("generalized") or {}
+    gen_text = meta.get("generalized_text") or {}
+    gen_probed = meta.get("generalize_probed") or {}
+    probes = meta.get("probes_on_sub") or {}
+    totals = {"unconfirmed_total": 0, "probe_deficit_unconfirmed": 0, "evidence_measured_total": 0, "pending_total": 0}
+    for ck, comp in (competency_results or {}).items():
+        if not isinstance(comp, dict) or comp.get("_error_fallback"):
+            continue
+        ledger = comp.get("sub_ledger") or {}
+        n_unc = n_ev = n_def = 0
+        for sub, row in ledger.items():
+            if not isinstance(row, dict):
+                continue
+            p_cnt = int(((probes.get(ck) or {}).get(sub)) or 0)
+            g_probed = sub in (gen_probed.get(ck) or [])
+            row["probe_count"] = p_cnt
+            row["generalize_probed"] = g_probed
+            if row.get("measured"):
+                row["evidence_measured"] = True
+                row["unconfirmed"] = False
+                row["level_label"] = level_label(row.get("level"))
+                n_ev += 1
+                continue
+            if row.get("gate_status") == "pending":
+                totals["pending_total"] += 1      # 검증 미완료 — 점수 보류 유지(도구 상태)
+                row["evidence_measured"] = False
+                row["unconfirmed"] = False
+                continue
+            kind = "generalized" if sub in (gen_map.get(ck) or []) else "no_answer"
+            quote = ((gen_text.get(ck) or {}).get(sub) or "").strip()
+            text = UNCONFIRMED_TEXT_GENERALIZED if kind == "generalized" else UNCONFIRMED_TEXT_NO_ANSWER
+            if kind == "generalized" and quote:
+                text = f"{text} — \"{quote[:120]}\""
+            row.update({
+                "score": UNCONFIRMED_SCORE, "measured": True, "evidence_measured": False, "level": None,
+                "level_label": UNCONFIRMED_LABEL, "unconfirmed": True, "unconfirmed_kind": kind,
+                "unconfirmed_text": text,
+                # 미확인 자격: 일반화 탐침 1회 + 구체화 요청(그 외 탐침) 1회가 모두 나갔을 때만. 아니면 탐침 부족(린트 0 목표)
+                "probe_deficit": not (g_probed and p_cnt >= 3),
+            })
+            n_unc += 1
+            n_def += int(row["probe_deficit"])
+        comp["sub_scores"] = {s: (r.get("score") if isinstance(r, dict) else None) for s, r in ledger.items()}
+        comp["measured_count"] = sum(1 for r in ledger.values() if isinstance(r, dict) and r.get("measured"))
+        comp["evidence_measured_count"] = n_ev
+        comp["unconfirmed_count"] = n_unc
+        comp["probe_deficit_count"] = n_def
+        comp["is_reference"] = competency_is_reference(n_ev, len(ledger))
+        _behavior = competency_behavior_score(list(comp["sub_scores"].values()))
+        _sb = comp.get("score_breakdown") or {}
+        _final = competency_final_score(_behavior, star_bonus=_sb.get("star_depth_bonus", 0.0),
+                                        confidence_adj=_sb.get("confidence_adj", 0.0))
+        comp["behavior_score"] = _behavior
+        comp["score"] = _final
+        comp["score_breakdown"] = {**_sb, "rubric_base": _behavior, "final": _final}
+        comp["level_label"] = competency_level_label(_behavior)
+        totals["unconfirmed_total"] += n_unc
+        totals["probe_deficit_unconfirmed"] += n_def
+        totals["evidence_measured_total"] += n_ev
+    totals["unconfirmed_banner"] = totals["unconfirmed_total"] >= UNCONFIRMED_BANNER_MIN
+    return totals

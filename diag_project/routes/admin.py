@@ -603,6 +603,9 @@ async def list_participants(
                 # (2026-10-23 파일럿 전 2) 최근 세션의 리포트 분석 마커 — [재분석] 버튼·'리포트 미생성' 표시용
                 "last_analysis_status": stat["last_analysis"].get("status"),
                 "last_analysis_fail_count": stat["last_analysis"].get("fail_count"),
+                # (2026-10-29 P2-3) 사례 미확인 칸 수·배너(≥6) — 참가자 목록 표시용
+                "unconfirmed_total": stat["last_analysis"].get("unconfirmed_total"),
+                "unconfirmed_banner": bool(stat["last_analysis"].get("unconfirmed_banner")),
                 "report_missing": last_status == "completed" and report_by_pid.get(p.id) is None,
                 # 4(b): 보관(abandoned) 세션 — 관리자가 [복원] 으로 되살릴 수 있다
                 "abandoned_sessions": _abandoned_rows(p.id),

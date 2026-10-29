@@ -182,3 +182,23 @@ def composite_mode(measured_total: int,
                    threshold: int = COMPOSITE_MIN_MEASURED) -> str:
     """종합 점수 표기 모드: 'official'(정식) | 'reference'(참고치)."""
     return "official" if composite_shown(measured_total, threshold) else "reference"
+
+
+# ── (2026-10-29 P2-2) 레벨 라벨 · (P2-3) 근거 미확보 = 1.0 정책 ───────────────────────────────
+LEVEL_LABELS = {1: "Lv.1 인식", 2: "Lv.2 수행", 3: "Lv.3 관리·설계", 4: "Lv.4 조직 확산"}
+UNCONFIRMED_LABEL = "사례 미확인"
+UNCONFIRMED_SCORE = 1.0   # 측정 불가 칸은 척도 바닥(빈칸 없음, 재응시 없음)
+
+
+def level_label(level) -> str | None:
+    """하위역량 레벨(1~4) → 표시 라벨. None 이면 None."""
+    if level is None:
+        return None
+    return LEVEL_LABELS.get(int(max(1, min(4, round(float(level))))))
+
+
+def competency_level_label(behavior_score) -> str | None:
+    """대역량 행동지표 점수(1.0~4.0, 하위역량 평균) → 가장 가까운 레벨의 라벨."""
+    if behavior_score is None:
+        return None
+    return level_label(round(float(behavior_score)))

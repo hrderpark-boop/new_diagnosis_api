@@ -215,6 +215,9 @@ def apply_probe_turn(
             #   → 넓이 우선: 깊이(STAR)가 연속 실패해도 3턴이면 다음 하위역량으로
             #     전진해 커버리지를 확보한다(커버리지 > 깊이).
             store.setdefault("turns_on_target", {})[chapter] = 1
+            # (2026-10-29 P2-3) 하위역량별 코치 턴 수(앵커 포함) — '사례 미확인' 자격(일반화 1 + 구체화 1) 판정용
+            _ps = dict(store.get("probes_on_sub") or {}); _psc = dict(_ps.get(chapter) or {})
+            _psc[target] = int(_psc.get(target, 0) or 0) + 1; _ps[chapter] = _psc; store["probes_on_sub"] = _ps
             # 🎯 새 타겟에서는 아직 결과(R)를 묻지 않았다 — R 탐침 강제 판정용 리셋.
             store.setdefault("result_probed", {})[chapter] = False
             store.setdefault("action_probed", {})[chapter] = False   # (2026-10-22 P2-2) A 탐침 원장도 리셋
@@ -222,6 +225,9 @@ def apply_probe_turn(
         # target 이 None(전량 탐색)이면 현재 타겟 유지
     else:
         store.setdefault("turns_on_target", {})[chapter] = turns + 1
+        if cur:
+            _ps = dict(store.get("probes_on_sub") or {}); _psc = dict(_ps.get(chapter) or {})
+            _psc[cur] = int(_psc.get(cur, 0) or 0) + 1; _ps[chapter] = _psc; store["probes_on_sub"] = _ps
     return store, cur
 
 

@@ -1685,6 +1685,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 - evidence(발화 인용)는 반드시 '전체 대화 로그'에 실제로 존재하는 원문만
   쓰세요. 없는 발화를 지어내면 응답 전체가 폐기됩니다.
 
+근거가 없어 measured=false 로 두는 하위역량은 Lv.1 루브릭 문장으로 서술하지 마세요(시스템이 '사례 미확인'으로 표기합니다).
 위 [평가 대상 역량] 블록의 역량에 대해 [출력 형식]의 JSON 만 출력하세요.
 """
         _deep_prefix = [_comp_block, _transcript_block]
@@ -2131,10 +2132,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 # F: 측정 0 대역량 — 평가 재료를 주지 않는다(칭찬·단정 방지).
                 return (f"- {name}: 미측정(이번 세션에서 확인되지 않음) — 이 역량에 "
                         "대한 강점·평가·단정 서술 금지")
+            _unc_n = int(v.get("unconfirmed_count") or 0)
+            _unc_note = (f" | 사례 미확인 {_unc_n}건(1.0 으로 기록 — 약점·결핍으로 단정 금지, '확인되지 않음'으로만 언급)"
+                         if _unc_n else "")
             return (f"- {name}: {v.get('score', 0)}점 | 강점: "
                     f"{v.get('strength_point', '-')} | 개선: "
                     f"{v.get('growth_point', '-')} | Gap: "
-                    f"{v.get('gap_analysis', '-')}")
+                    f"{v.get('gap_analysis', '-')}{_unc_note}")
         scores_summary = "\n".join(
             _summary_line(k, v) for k, v in competency_results.items())
 
@@ -2489,9 +2493,11 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         asked_subcompetencies: Dict[str, set] | None = None,
         role_summary: str | None = None,
         progress=None,
+        store_meta: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """
         progress: analysis_progress.AnalysisProgress | None — 단계별 진행 기록.
+        store_meta(2026-10-29 P2-3): 대화 원장 메타(generalized·generalized_text·generalize_probed·probes_on_sub) — 근거 미확보 1.0 정책의 서술·탐침 자격.
 
         Map-Reduce 채점:
         - Map: 역량(챕터)별로 분리된 대화·사건만 각각 gemini-2.5-pro 에 주입해
@@ -2573,6 +2579,11 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         _um = neutralize_unmeasured(competency_results)
         if _um:
             logger.info("🧭 측정 0 대역량 서술 중립화: %s", _um)
+        # (2026-10-29 P2-3) 근거 미확보 → 1.0('사례 미확인'), 빈칸 없음. (P2-2) 레벨 라벨.
+        from diag_project.services.report_ledger import apply_unconfirmed_policy
+        _unc = apply_unconfirmed_policy(competency_results, store_meta)
+        logger.info("🧭 사례 미확인 %d칸(탐침 부족 %d) · 근거 측정 %d · 검증 미완료 %d",
+                    _unc["unconfirmed_total"], _unc["probe_deficit_unconfirmed"], _unc["evidence_measured_total"], _unc["pending_total"])
 
         # 🎯 Level-Up 교육 추천(D게이트 포함)은 종합 요약과 서로 독립(둘 다
         #   competency_results 를 읽기만 한다) → item6: 요약과 동시에 돌린다.
@@ -2613,6 +2624,12 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         #   피드백·GAP)에는 '질문했으나 사례 미확인' 관찰로 활용 가능하다.
         #   여기서는 카운트만 노출하고, 점수 경로는 위 순수 함수가 봉인한다.
         _cov["evidence_missing"] = max(0, _asked_total - _measured_total)
+        # (2026-10-29 P2-3) 미확인 집계 — measured_total 에는 미확인(1.0)이 포함된다. 근거 측정 수는 evidence_measured_total.
+        _cov["unconfirmed_total"] = _unc["unconfirmed_total"]
+        _cov["unconfirmed_banner"] = _unc["unconfirmed_banner"]
+        _cov["probe_deficit_unconfirmed"] = _unc["probe_deficit_unconfirmed"]
+        _cov["evidence_measured_total"] = _unc["evidence_measured_total"]
+        _cov["pending_total"] = _unc["pending_total"]
         # 🔒 V-6(1) 확정(2026-09-02): 종합 섹션 게이트 = measured_total ≥
         #   COMPOSITE_MIN_MEASURED(18). 구조 기준(대역량 3개+ 각 2건+)은 V-6
         #   중간 단계였고 대체됨 — qualifying 은 정보용으로만 남긴다.

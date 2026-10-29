@@ -125,6 +125,9 @@ async def load_analysis_inputs(db: AsyncSession, session) -> Dict[str, Any]:
         # 2026-09-17: 온보딩 담당 업무 맥락(참고 플래그용, 점수 무관)
         "role_summary": (store.get("participant_context") or {}).get(
             "role_summary"),
+        # (2026-10-29 P2-3) 대화 원장 메타 — 근거 미확보 1.0 정책의 서술(일반화 인용)·탐침 자격(일반화 1 + 구체화 1)
+        "store_meta": {k: store.get(k) for k in ("generalized", "generalized_text", "generalize_probed", "probes_on_sub",
+                                                 "unconfirmed", "ladder_skipped", "anchored_subs") if store.get(k)},
     }
 
 
@@ -710,6 +713,7 @@ async def _analyze_session(session_id, session_uuid, db, llm, progress,
         asked_subcompetencies=_inp["asked_subs"],
         role_summary=_inp["role_summary"],
         progress=progress,
+        store_meta=_inp.get("store_meta"),
     )
     progress.stage("saving")
     if not analysis_result:
@@ -787,9 +791,15 @@ async def _analyze_session(session_id, session_uuid, db, llm, progress,
         clear_report_failure(session_id)
         _sd_ok["last_analysis"] = {"status": "ok",
                                    "at": datetime.now().isoformat()}
-        session.self_assessment_data = _sd_ok
-        from sqlalchemy.orm.attributes import flag_modified as _fm_ok
-        _fm_ok(session, "self_assessment_data")
+    # (2026-10-29 P2-3) 관리자 참가자 목록 표시 플래그 — 사례 미확인 칸 수·배너(≥6)
+    _cov_m = (analysis_result or {}).get("coverage") or {}
+    _la_m = dict(_sd_ok.get("last_analysis") or {"status": "ok", "at": datetime.now().isoformat()})
+    _la_m["unconfirmed_total"] = _cov_m.get("unconfirmed_total")
+    _la_m["unconfirmed_banner"] = bool(_cov_m.get("unconfirmed_banner"))
+    _sd_ok["last_analysis"] = _la_m
+    session.self_assessment_data = _sd_ok
+    from sqlalchemy.orm.attributes import flag_modified as _fm_ok
+    _fm_ok(session, "self_assessment_data")
 
     # 🚨 [버그 수정] 미완료 세션을 'completed' 로 덮어쓰는 데이터 오염 방지.
     #   기존엔 analyze 만 호출하면 5역량 미완주라도 무조건 completed 가 되어

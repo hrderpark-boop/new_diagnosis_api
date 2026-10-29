@@ -1237,6 +1237,9 @@ async def _submit_message_phase3a(
             if _iga((state.get("resume_pending") or {}).get("user_text") or request.content):
                 _gz = dict(_gp_store.get("generalized") or {}); _gz[chapter] = sorted(set((_gz.get(chapter) or []) + [_gp_pending]))
                 _gp_store["generalized"] = _gz
+                _gt = dict(_gp_store.get("generalized_text") or {}); _gtc = dict(_gt.get(chapter) or {})
+                _gtc[_gp_pending] = ((state.get("resume_pending") or {}).get("user_text") or request.content or "").strip()[:160]
+                _gt[chapter] = _gtc; _gp_store["generalized_text"] = _gt   # (P2-3) 리포트 '사례 미확인' 서술에 한 줄 인용
                 _tm["generalized"] = _gp_pending
                 logger.info("🧭 일반화 탐침 뒤에도 시점 없음 → generalized 기록: [%s] %s", chapter, _gp_pending)
             session.self_assessment_data = _gp_store
