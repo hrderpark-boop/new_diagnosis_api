@@ -54,7 +54,7 @@ class OrgUnitUpdateRequest(BaseModel):
 
 class OrgBulkRow(BaseModel):
     division: str
-    division_code: str
+    division_code: Optional[str] = None   # 비우면 자동
     office: Optional[str] = None
     office_code: Optional[str] = None
     team: Optional[str] = None
@@ -79,17 +79,39 @@ async def _get_company(db: AsyncSession, company_id: UUID) -> Company:
     return company
 
 
-def _require_prefix(company: Company) -> str:
-    if not company.org_prefix:
-        raise HTTPException(status_code=400, detail="먼저 고객사 접두어를 정해 주세요.")
+async def _ensure_prefix(db: AsyncSession, company: Company) -> str:
+    """접두어가 없으면 다른 고객사와 겹치지 않는 가장 짧은 접두어를 자동으로 정한다(같은 트랜잭션)."""
+    if company.org_prefix:
+        return company.org_prefix
+    others = (await db.execute(
+        select(Company.org_prefix).where(Company.id != company.id, Company.org_prefix.is_not(None))
+    )).scalars().all()
+    company.org_prefix = org_codes.auto_prefix(others)
+    db.add(company)
+    await db.flush()
     return company.org_prefix
 
 
+async def _auto_letter(db: AsyncSession, company_id: UUID, parent_id: Optional[UUID], level: str, base_code: str) -> str:
+    """같은 상위 안에서 아직 안 쓴 다음 영문 코드. 완성 코드가 다른 곳과 겹치면 다음 글자로."""
+    q = select(OrgUnit.short_code).where(OrgUnit.company_id == company_id, OrgUnit.level == level)
+    q = q.where(OrgUnit.parent_id == parent_id) if parent_id else q.where(OrgUnit.parent_id.is_(None))
+    used = set((await db.execute(q)).scalars().all())
+    while True:
+        short = org_codes.next_letter_code(used)
+        if not await code_in_use(db, base_code + short):
+            return short
+        used.add(short)
+
+
 async def _create_division(db: AsyncSession, company: Company, name: str, short: str) -> OrgUnit:
+    prefix = await _ensure_prefix(db, company)
+    if not (short or "").strip():   # 비우면 자동(A, B, C …)
+        short = await _auto_letter(db, company.id, None, "division", prefix)
     err = org_codes.validate_division_code(short)
     if err:
         raise HTTPException(status_code=400, detail=err)
-    code = org_codes.division_code(_require_prefix(company), short)
+    code = org_codes.division_code(prefix, short)
     if await code_in_use(db, code):
         raise HTTPException(status_code=409, detail=f"이미 쓰는 코드입니다({code}).")
     unit = OrgUnit(company_id=company.id, level="division", name=name.strip(),
@@ -102,6 +124,8 @@ async def _create_division(db: AsyncSession, company: Company, name: str, short:
 async def _create_office(db: AsyncSession, company: Company, parent: OrgUnit, name: str, short: str) -> OrgUnit:
     if parent.company_id != company.id or parent.level != "division":
         raise HTTPException(status_code=400, detail="실은 같은 고객사의 본부 아래에만 만들 수 있습니다.")
+    if not (short or "").strip():   # 비우면 자동
+        short = await _auto_letter(db, company.id, parent.id, "office", parent.code)
     err = org_codes.validate_office_code(short)
     if err:
         raise HTTPException(status_code=400, detail=err)
@@ -243,22 +267,26 @@ async def bulk_create_org_units(
     한 행이라도 규칙 위반이면 전부 되돌린다(부분 등록 방지).
     """
     company = await _get_company(db, company_id)
-    prefix = _require_prefix(company)
+    prefix = await _ensure_prefix(db, company)
     created: List[dict] = []
     skipped = 0
-    divisions = {u.short_code: u for u in (await db.execute(
+    existing_divs = (await db.execute(
         select(OrgUnit).where(OrgUnit.company_id == company.id, OrgUnit.level == "division")
-    )).scalars().all()}
+    )).scalars().all()
+    divisions = {u.short_code: u for u in existing_divs}
+    divisions_by_name = {u.name: u for u in existing_divs}
     try:
         for i, row in enumerate(body.rows, start=1):
             short = org_codes.normalize(row.division_code)
-            div = divisions.get(short)
+            # 코드를 비우면 같은 이름의 본부를 쓰고, 없으면 자동 코드로 새로 만든다
+            div = divisions.get(short) if short else divisions_by_name.get(row.division.strip())
             if div is None:
                 try:
                     div = await _create_division(db, company, row.division, short)
                 except HTTPException as e:
                     raise HTTPException(status_code=e.status_code, detail=f"{i}행: {e.detail}")
-                divisions[short] = div
+                divisions[div.short_code] = div
+                divisions_by_name[div.name] = div
                 created.append({"code": div.code, "name": div.name, "level": "division"})
             elif div.name != row.division.strip():
                 raise HTTPException(status_code=400,
@@ -267,10 +295,9 @@ async def bulk_create_org_units(
             office_name = (row.office or "").strip()
             if office_name:
                 oshort = org_codes.normalize(row.office_code)
-                off = (await db.execute(
-                    select(OrgUnit).where(OrgUnit.parent_id == div.id, OrgUnit.level == "office",
-                                          OrgUnit.short_code == oshort)
-                )).scalars().first()
+                oq = select(OrgUnit).where(OrgUnit.parent_id == div.id, OrgUnit.level == "office")
+                oq = oq.where(OrgUnit.short_code == oshort) if oshort else oq.where(OrgUnit.name == office_name)
+                off = (await db.execute(oq)).scalars().first()
                 if off is None:
                     try:
                         off = await _create_office(db, company, div, office_name, oshort)
@@ -411,3 +438,115 @@ async def get_org_stats(
     out = await org_stats(db, company_id, level, order)
     out["competencies"] = [{"key": k, "name": COMPETENCY_FRAMEWORK[k].get("name", k)} for k in order]
     return out
+
+
+
+# ---------------------------------------------------------------------------
+# 참여 코드 엑셀 — 고객사 전달용(마스터는 모든 고객사, HR 은 자사만)
+# ---------------------------------------------------------------------------
+@router.get("/companies/{company_id}/org-codes/export")
+async def export_org_codes(
+    company_id: UUID,
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """조직별 참여 코드 엑셀. 1시트 = 배포용(팀 단위, 팀이 없는 실·본부는 그 단위), 2시트 = 전체 코드 목록.
+
+    사용 중지한 코드는 배포용 시트에서 뺀다(전체 목록에는 '사용 중지'로 남김).
+    """
+    import io
+    import os
+    from datetime import datetime
+    from urllib.parse import quote
+
+    from fastapi.responses import StreamingResponse
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    ctx.assert_can_access_company(company_id)
+    company = await _get_company(db, company_id)
+    units = (await db.execute(
+        select(OrgUnit).where(OrgUnit.company_id == company.id).order_by(OrgUnit.code)
+    )).scalars().all()
+    if not units:
+        raise HTTPException(status_code=400, detail="등록된 조직 코드가 없습니다. 먼저 본부·실·팀을 등록해 주세요.")
+    by_id = {u.id: u for u in units}
+    children = {}
+    for u in units:
+        if u.parent_id:
+            children.setdefault(u.parent_id, []).append(u)
+
+    def chain(u: OrgUnit):
+        out, cur = {}, u
+        while cur is not None:
+            out[cur.level] = cur
+            cur = by_id.get(cur.parent_id) if cur.parent_id else None
+        return out
+
+    login_url = os.getenv("FM_PARTICIPANT_URL", "https://fm.connectn.co.kr")
+    navy = PatternFill("solid", fgColor="1C2B4A")
+    tint = PatternFill("solid", fgColor="EEF3FD")
+    thin = Side(style="thin", color="D9DEE7")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "참여 코드(배포용)"
+    ws["A1"] = f"{company.name} 리더십 진단 참여 코드"
+    ws["A1"].font = Font(size=15, bold=True, color="1C2B4A")
+    ws["A2"] = f"접속 주소: {login_url}"
+    ws["A3"] = "로그인 화면의 '그룹 코드' 칸에 본인 소속의 참여 코드를 입력하세요. 코드로 회사와 소속이 자동으로 정해집니다."
+    if company.diagnosis_start and company.diagnosis_end:
+        ws["A4"] = f"진단 기간: {company.diagnosis_start:%Y.%m.%d} ~ {company.diagnosis_end:%Y.%m.%d}"
+    headers = ["본부", "실", "팀", "참여 코드"]
+    hr = 6
+    for col, h in enumerate(headers, start=1):
+        c = ws.cell(row=hr, column=col, value=h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = navy
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = border
+    r = hr + 1
+    for u in units:
+        if not u.is_active or any(ch.is_active for ch in children.get(u.id, [])):
+            continue   # 배포는 가장 아래 단위(사용 중) 코드만
+        ch = chain(u)
+        vals = [ch.get("division").name if ch.get("division") else "",
+                ch.get("office").name if ch.get("office") else "",
+                ch.get("team").name if ch.get("team") else "", u.code]
+        for col, v in enumerate(vals, start=1):
+            c = ws.cell(row=r, column=col, value=v)
+            c.border = border
+            if col == 4:
+                c.font = Font(bold=True, color="1C2B4A", size=12)
+                c.fill = tint
+                c.alignment = Alignment(horizontal="center")
+        r += 1
+    for col, w in zip("ABCD", (22, 22, 22, 16)):
+        ws.column_dimensions[col].width = w
+
+    ws2 = wb.create_sheet("전체 코드")
+    lv = {"division": "본부", "office": "실", "team": "팀"}
+    ws2.append(["구분", "본부", "실", "팀", "참여 코드", "상태"])
+    for c in ws2[1]:
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = navy
+    for u in units:
+        ch = chain(u)
+        ws2.append([lv.get(u.level, u.level),
+                    ch.get("division").name if ch.get("division") else "",
+                    ch.get("office").name if ch.get("office") else "",
+                    ch.get("team").name if ch.get("team") else "",
+                    u.code, "사용" if u.is_active else "사용 중지"])
+    for col, w in zip("ABCDEF", (8, 22, 22, 22, 14, 10)):
+        ws2.column_dimensions[col].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"{company.name}_참여코드_{datetime.now():%Y%m%d}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=org_codes.xlsx; filename*=UTF-8''{quote(fname)}"},
+    )

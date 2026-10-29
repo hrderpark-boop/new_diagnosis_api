@@ -73,3 +73,40 @@ def validate_team_number(n: int) -> Optional[str]:
 
 def team_code(division_full_code: str, number: int) -> str:
     return normalize(division_full_code) + str(int(number))
+
+
+# ── 자동 발급(2026-10-29): 사람이 코드를 고르지 않아도 되도록 비어 있는 다음 코드를 고른다 ──
+_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _letter_seq(max_len: int):
+    """A..Z, AA..ZZ (, AAA..ZZZ) 순서."""
+    for ch in _LETTERS:
+        yield ch
+    if max_len >= 2:
+        for a in _LETTERS:
+            for b in _LETTERS:
+                yield a + b
+    if max_len >= 3:
+        for a in _LETTERS:
+            for b in _LETTERS:
+                for c in _LETTERS:
+                    yield a + b + c
+
+
+def next_letter_code(used: Iterable[str], max_len: int = 2) -> str:
+    """같은 상위 안에서 아직 안 쓴 다음 영문 코드(본부·실용). A, B, … Z, AA, AB …"""
+    taken = {normalize(u) for u in used if u}
+    for code in _letter_seq(max_len):
+        if code not in taken:
+            return code
+    raise ValueError("더 이상 쓸 수 있는 코드가 없습니다.")
+
+
+def auto_prefix(other_prefixes: Iterable[str]) -> str:
+    """다른 고객사 접두어와 겹치지 않는(앞부분 포함) 가장 짧은 접두어."""
+    others = [normalize(o) for o in other_prefixes if o]
+    for code in _letter_seq(3):
+        if validate_prefix(code, others) is None:
+            return code
+    raise ValueError("쓸 수 있는 접두어가 없습니다.")

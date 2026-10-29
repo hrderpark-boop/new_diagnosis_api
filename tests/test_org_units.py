@@ -95,10 +95,6 @@ def test_org_code_flow(client, auth_headers):
     other = _new_company(client, auth_headers, "ORGT-" + uuid.uuid4().hex[:6])
     base = "/api/v1/admin"
 
-    # 접두어 없이 본부 등록 → 400
-    r = client.post(f"{base}/companies/{cid}/org-units", json={"level": "division", "name": "영업본부", "short_code": "S"}, headers=auth_headers)
-    assert r.status_code == 400
-
     # 접두어 지정 + 다른 회사와 앞부분 겹침 거부
     assert client.patch(f"{base}/companies/{cid}", json={"org_prefix": "qz"}, headers=auth_headers).json()["org_prefix"] == "QZ"
     assert client.patch(f"{base}/companies/{other}", json={"org_prefix": "Q"}, headers=auth_headers).status_code == 400
@@ -241,3 +237,47 @@ def test_office_period_stats_status_and_catalog(client, auth_headers):
     sub = cat["competencies"][0]["subs"][0]
     assert set(sub["courses"]) == {"A", "B", "C", "D"} and sub["courses"]["A"]["goal"]
     assert sum(len(c["subs"]) for c in cat["competencies"]) == 26
+
+
+def test_auto_codes_and_excel_export(client, auth_headers):
+    """접두어·본부·실 코드를 비우면 자동으로 정해지고, 참여 코드를 엑셀로 내려받는다."""
+    import io
+    from openpyxl import load_workbook
+
+    cid = _new_company(client, auth_headers, "ORGA-" + uuid.uuid4().hex[:6])
+    other = _new_company(client, auth_headers, "ORGA-" + uuid.uuid4().hex[:6])
+    base = "/api/v1/admin"
+
+    # 엑셀: 조직이 없으면 400
+    assert client.get(f"{base}/companies/{cid}/org-codes/export", headers=auth_headers).status_code == 400
+
+    # 접두어 없이 이름만으로 일괄 등록 → 접두어·본부·실 코드 자동
+    rows = [
+        {"division": "영업본부", "team": "영업1팀"},
+        {"division": "영업본부", "office": "기획실", "team": "기획1팀"},
+        {"division": "생산본부", "team": "생산1팀"},
+        {"division": "영업본부", "team": "영업2팀"},
+    ]
+    r = client.post(f"{base}/companies/{cid}/org-units/bulk", json={"rows": rows}, headers=auth_headers)
+    assert r.status_code == 201, r.text
+    prefix = r.json()["prefix"]
+    codes = [c["code"] for c in r.json()["created"]]
+    assert codes == [f"{prefix}A", f"{prefix}A1", f"{prefix}AA", f"{prefix}AA1", f"{prefix}B", f"{prefix}B1", f"{prefix}A2"]
+
+    # 다른 회사 접두어도 자동 → 서로 앞부분이 겹치지 않음
+    r2 = client.post(f"{base}/companies/{other}/org-units", json={"level": "division", "name": "본부"}, headers=auth_headers)
+    assert r2.status_code == 201
+    p2 = client.get(f"{base}/companies/{other}/org-units", headers=auth_headers).json()["company"]["org_prefix"]
+    assert p2 and not p2.startswith(prefix) and not prefix.startswith(p2)
+
+    # 엑셀: 배포용 시트에는 가장 아래 단위(팀) 코드만, 전체 시트에는 모든 단위
+    hr = _client_admin_headers(client, cid)
+    x = client.get(f"{base}/companies/{cid}/org-codes/export", headers=hr)
+    assert x.status_code == 200 and "spreadsheetml" in x.headers["content-type"]
+    wb = load_workbook(io.BytesIO(x.content))
+    ws = wb["참여 코드(배포용)"]
+    dist = [row[3] for row in ws.iter_rows(min_row=7, values_only=True) if row[3]]
+    assert sorted(dist) == sorted([f"{prefix}A1", f"{prefix}AA1", f"{prefix}B1", f"{prefix}A2"])
+    assert len(list(wb["전체 코드"].iter_rows(min_row=2))) == 7
+    # 다른 회사 엑셀은 HR 이 못 받음
+    assert client.get(f"{base}/companies/{other}/org-codes/export", headers=hr).status_code == 403
