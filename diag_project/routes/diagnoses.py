@@ -2115,6 +2115,16 @@ async def _submit_message_phase3a(
     #   마커를 프론트 전달 직전에 한 번 더 완벽 제거.
     clean_reply = _MARKER_RE.sub("", clean_reply).strip()
 
+    # 8-i0. (2026-11-02 p2f) '사건' 치환 — LLM 되받기가 BEI 용어 '사건'을 리더에게 쓴다(p2c 25세션 중 12턴: '이번 사건의 중심으로',
+    #   '앞서 말씀하신 세 사건에서는'). 엄격 사전에 '사건'을 수동 복원(GUARD_KEEP)했으므로 가드가 문장을 지우기 전에 리더 말로 바꾼다
+    #   ('이번 사건'→'그 일', '세 사건'→'세 가지', 그 외 '사건'→'일'). 재생성 출력은 8-y 에서 같은 치환을 한 번 더 한다.
+    if system_override_text is None and not _llm_error and clean_reply and "사건" in clean_reply:
+        from diag_project.services.output_guard import rewrite_incident_word as _riw
+        clean_reply, _n_riw = _riw(clean_reply)
+        if _n_riw:
+            _tm["incident_word"] = _n_riw
+            logger.info("✏️ 낱말 바꿈 %d곳", _n_riw)
+
     # 8-i. 통합 출력 가드(2026-09-16 도입, 09-18 C 모드, 09-21 질문·연결 절 보존 보강) — LLM 턴만.
     #   위반 감지 → [names·off_target·no_question] 만 재생성 1회 → 남은 위반은 하드 교정(문장 단위).
     #   하드 교정의 두 가지 보장(사람관리 09-21 사고 — 교정이 연결 절·질문을 잘라 턴이 깨졌다):
@@ -2909,7 +2919,11 @@ async def _submit_message_phase3a(
     if system_override_text is None and not _llm_error and (clean_reply or "").strip():
         try:
             from diag_project.services.leak_lexicon import find_leaks as _fl_y, find_state_report as _fsr_y, strip_leak_sentences as _sls_y
-            from diag_project.services.output_guard import strip_state_leak as _ssl_y
+            from diag_project.services.output_guard import strip_state_leak as _ssl_y, rewrite_incident_word as _riw_y
+            if "사건" in clean_reply:   # (p2f) 8-i 뒤 재생성 출력(8-j·8-n·8-h)에도 '사건' 치환
+                clean_reply, _n_riw_y = _riw_y(clean_reply)
+                if _n_riw_y:
+                    _tm["incident_word"] = int(_tm.get("incident_word") or 0) + _n_riw_y
             _lk_y = _fl_y(clean_reply, _prev_user_texts + [request.content or ""])
             _sr_y = _fsr_y(clean_reply)
             if _lk_y or _sr_y:

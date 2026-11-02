@@ -225,8 +225,9 @@ def test_definition_answer_mentioning_rest_is_not_pause_request():
 def test_strict_lexicon_excludes_leader_vocabulary_but_keeps_internal_words():
     from diag_project.services.leak_lexicon import guard_lexicon
     g = guard_lexicon()
-    for w in ("턴", "탐침", "되받기", "앵커", "태그", "페르소나", "라포", "재생성"):   # (2026-10-29 P1) 반례·발화는 템플릿에서 사라져 자동 사전에서도 빠짐
-        assert w in g["korean"], w          # '태그'는 GUARD_KEEP 수동 복원(2026-10-29 승인)
+    for w in ("턴", "탐침", "되받기", "앵커", "태그", "페르소나", "라포", "재생성", "사건"):   # (2026-10-29 P1) 반례·발화는 템플릿에서 사라져 자동 사전에서도 빠짐
+        assert w in g["korean"], w          # '태그'·'사건'은 GUARD_KEEP 수동 복원(2026-10-29·2026-11-02 승인)
+    assert "사건" in g["kept_manually"]
     for w in ("전환", "응답", "요약", "안내", "직전", "현재", "메시지"):
         assert w not in g["korean"], w      # 운영 세션 리더 입력에 한 번이라도 나온 말
         assert w in g["leader_excluded"], w
