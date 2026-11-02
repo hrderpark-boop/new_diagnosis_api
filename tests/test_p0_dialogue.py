@@ -459,3 +459,18 @@ def test_quote_josa_for_numbers_and_slot_wording():
     assert quote_josa("8%") == "라고" and quote_josa("3명") == "이라고" and quote_josa("48시간") == "이라고"
     assert quote_josa("2배") == "라고" and quote_josa("10건") == "이라고" and quote_josa("5회") == "라고" and quote_josa("13") == "이라고" and quote_josa("12") == "라고"
     assert PERSONA_LINES["Michael"]["slot_q"] == "다음에 비슷한 상황이 오면 어떻게 하실 생각이세요?"
+
+
+def test_indirect_question_with_want_to_confirm_is_question():
+    from diag_project.services.output_guard import is_question
+    assert is_question("지금은 '새로운 방향에 확신이 서지 않던 팀원들과 뜻을 맞추신 일'이 최근에 있었는지만 확인하고 싶습니다.")
+    assert is_question("리더님께서 직접 팀원과 이런 과정을 밟아보신 장면이 있었는지 여쭙고 싶습니다.")
+
+
+
+def test_ladder_restore_step_precedes_final_sweep():
+    import inspect
+    from diag_project.routes import diagnoses as d
+    src = inspect.getsource(d._submit_message_phase3a)
+    assert src.index("# 8-n.") < src.index("# 8-h.") < src.index("# 8-x.") < src.index("# 8-y.") < src.index("# 8-z.")
+    i = src.index("# 8-x."); assert "ladder_restored" in src[i: i + 2000] and "voice_question as _vq_x" in src[i: i + 2000]

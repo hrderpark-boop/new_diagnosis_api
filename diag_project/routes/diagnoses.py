@@ -2506,11 +2506,12 @@ async def _submit_message_phase3a(
             _slot_used = ((_sd_s.get("persona_slot_used") or {}).get(chapter)) if chapter else "x"
             _tot_s = int((_sd_s.get("turns_on_target") or {}).get(chapter, 0) or 0)
             if (_pn_s in ("Jessica", "Olivia", "Daniel", "Michael", "Lucas") and chapter and current_target_sub and not _slot_used
-                    and _tot_s == 2 and not state.get("force_ladder_probe") and not state.get("force_generalize_probe")
-                    and not _tm.get("quantify")):   # (p2a) 3번째 턴은 사다리 몫 — 슬롯이 가져가면 일관리 등에서 사다리 2회 미달
+                    and _tot_s in (2, 3) and not state.get("force_ladder_probe") and not state.get("force_generalize_probe")
+                    and not _tm.get("quantify")):   # (p2b) turns==2 한정은 Jessica 일관리·Daniel 성과관리에서 슬롯 0 — 사다리 미달과 무관했다(되돌림)
                 from diag_project.data.competencies import COMPETENCY_FRAMEWORK as _CF_s
                 _ch_i = [k for k in _CF_s if k != "supplementary"].index(chapter) if chapter in _CF_s else 0
-                _lead_s = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
+                from diag_project.services.output_guard import starts_without_main_clause as _swmc_s
+                _lead_s = [x for x in split_sentences(clean_reply) if not is_question_sentence(x) and not _swmc_s(x)][:1]
                 _sents_s = [x for x in split_sentences(clean_reply) if x.strip()]
                 _qi_s = next((i for i, x in enumerate(_sents_s) if is_question_sentence(x)), None)
                 # 질문부: 첫 질문부터 끝까지(조건절 쌍 '…있으셨습니까? 있었다면 …' 보존 — p2a Daniel 잘림 3건은 마지막 질문만 남겨서였다)
@@ -2865,6 +2866,25 @@ async def _submit_message_phase3a(
         logger.info("⏸️ 일시정지 제안: 질문 보류 → pending=%s target=%s (원장 되돌림=%s)",
                     instruction_used, current_target_sub, _ledger_snapshot is not None)
 
+    # 8-x. (2026-11-02 P2) 사다리 질문 복원 — 8-h 느낌표·8-n 입버릇 재생성이 본문을 통째로 바꾸면 사다리 질문이 사라진다
+    #   (p2b Michael 일관리: ladder_dropped=overridden 2턴 → 챕터 사다리 1회). 강제 사다리 턴이면 마지막 질문을 사다리 질문으로 되돌린다.
+    if (state.get("force_ladder_probe") and _tm.get("ladder") and system_override_text is None and not _llm_error
+            and _align_ctx is None and (clean_reply or "").strip()):
+        try:
+            from diag_project.services.output_guard import _content_chunks as _cc_x
+            from diag_project.services.persona_voice import voice_question as _vq_x
+            _lq_raw_x = (state.get("force_ladder_probe") or {}).get("q") or ""
+            _ov_x = len({c for c in _cc_x(_lq_raw_x) if len(c) >= 2} & set(_cc_x(clean_reply)))
+            if _lq_raw_x and _ov_x < 3:
+                _lead_x = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
+                _lq_v = _vq_x((state.get("coach_persona") or {}).get("name"), _lq_raw_x,
+                              variant=int(((session.self_assessment_data or {}).get("voice_variant_count") or {}).get(chapter, 0) or 0))
+                clean_reply = " ".join(_lead_x + [_lq_v]).strip()
+                _tm["ladder_restored"] = 1
+                logger.info("🪜 사다리 질문 복원(재생성이 덮음): [%s] %s", chapter, (state.get("force_ladder_probe") or {}).get("sub"))
+        except Exception as _le_x:   # noqa: BLE001
+            logger.warning("사다리 복원 실패 — 건너뜀: %s", _le_x)
+
     # 8-y. (2026-10-29) 최종 누설 소거 — 8-i 뒤의 재생성(8-j 전환·8-n 입버릇·8-h 느낌표)이 만든 새 LLM 출력은 8-i 의 누설 검사를
     #   거치지 않았다(s291 Jessica t10: 8-n 재생성 출력이 '되받기 한 문장 + 다리 한 문장으로 답하겠습니다.'로 시작). 엄격 사전 어휘·
     #   상태 보고문이 든 평서문만 지운다(질문 보존). ALIGN 은 조립(8-z) 전의 되받기에 걸리므로 고정 문장은 건드리지 않는다.
@@ -3196,6 +3216,7 @@ async def _submit_message_phase3a(
             "anomaly": _tm.get("anomaly"),
             # (2026-10-29 P2-1) slot: 페르소나 고정 슬롯 발동(챕터당 1) · Jessica 수치 우선/숫자 재진술
             "slot": _tm.get("slot"), "j_quantify_first": int(_tm.get("j_quantify_first") or 0), "j_number_restated": _tm.get("j_number_restated"),
+            "ladder_restored": int(_tm.get("ladder_restored") or 0),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):
