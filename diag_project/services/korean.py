@@ -50,3 +50,24 @@ def with_josa(word: str, josa: str, quote: bool = False) -> str:
     """
     core = f"'{word}'" if quote else word
     return f"{core}{get_josa(word, josa)}"
+
+
+# (2026-11-02 P2-1 Jessica) 수치 표현 뒤 인용 조사 — 끝 글자 받침으로 '(이)라고' 분기. 숫자로 끝나면 한자어 읽기(0 영·1 일·3 삼·6 육·7 칠·8 팔 = 받침),
+#   기호(%·$ 등)는 외래어 읽기 기준(퍼센트·달러 → 받침 없음).
+_DIGIT_BATCHIM = {"0": True, "1": True, "2": False, "3": True, "4": False, "5": False, "6": True, "7": True, "8": True, "9": False}
+_SYMBOL_BATCHIM = {"%": False, "$": False, "₩": True, "원": True}
+
+
+def quote_josa(token: str) -> str:
+    """'8%' → '라고', '3명' → '이라고', '48시간' → '이라고', '2배' → '라고'."""
+    t = (token or "").strip()
+    if not t:
+        return "라고"
+    ch = t[-1]
+    if "가" <= ch <= "힣":
+        batchim = (ord(ch) - 0xAC00) % 28 != 0
+    elif ch.isdigit():
+        batchim = _DIGIT_BATCHIM.get(ch, False)
+    else:
+        batchim = _SYMBOL_BATCHIM.get(ch, False)
+    return "이라고" if batchim else "라고"

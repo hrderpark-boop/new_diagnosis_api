@@ -447,6 +447,15 @@ def test_persona_slot_lines_and_wiring():
     assert number_token("재구매율이 8% 올랐습니다") == "8%" and number_token("두 달 걸렸어요") is None and number_token("3명을 새로 뽑았어요") == "3명"
     src = inspect.getsource(d._submit_message_phase3a)
     i = src.index("페르소나 고정 슬롯")
-    blk = src[i: i + 4000]
+    blk = src[i: i + 6000]
     assert all(k in blk for k in ('_pn_s == "Jessica"', '_pn_s == "Olivia"', '_pn_s == "Daniel"', '_pn_s == "Michael"', "Lucas", '_tm["slot"] = _pn_s'))
     assert "persona_slot_used" in src and "j_number_restated" in src
+
+
+
+def test_quote_josa_for_numbers_and_slot_wording():
+    from diag_project.services.korean import quote_josa
+    from diag_project.services.intro_messages import PERSONA_LINES
+    assert quote_josa("8%") == "라고" and quote_josa("3명") == "이라고" and quote_josa("48시간") == "이라고"
+    assert quote_josa("2배") == "라고" and quote_josa("10건") == "이라고" and quote_josa("5회") == "라고" and quote_josa("13") == "이라고" and quote_josa("12") == "라고"
+    assert PERSONA_LINES["Michael"]["slot_q"] == "다음에 비슷한 상황이 오면 어떻게 하실 생각이세요?"

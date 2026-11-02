@@ -2500,7 +2500,8 @@ async def _submit_message_phase3a(
                     logger.info("🔢 Jessica 수치 탐침 최우선: [%s] %s", chapter, current_target_sub)
                 _num = _ntk(_ans_s)
                 if _num and _num.replace(" ", "") not in clean_reply.replace(" ", ""):
-                    clean_reply = f"{_num}이라고 하셨죠. {clean_reply}".strip()
+                    from diag_project.services.korean import quote_josa as _qj
+                    clean_reply = f"{_num}{_qj(_num)} 하셨죠. {clean_reply}".strip()
                     _tm["j_number_restated"] = _num
             _slot_used = ((_sd_s.get("persona_slot_used") or {}).get(chapter)) if chapter else "x"
             _tot_s = int((_sd_s.get("turns_on_target") or {}).get(chapter, 0) or 0)
