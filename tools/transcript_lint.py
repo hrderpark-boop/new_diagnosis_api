@@ -228,6 +228,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         "repeat_a_cases": 0, "repeat_a_missed": 0, "repeat_b_cases": 0, "repeat_b_missed": 0, "repeat_missed": [],
         "ladder_turns": 0, "ladder_by_chapter": {}, "ladder_short_chapters": [], "ladder_skipped": 0, "ladder_swapped": 0, "leak_final_turns": 0,
         "slot_by_chapter": {}, "slot_chapters": 0, "slot_turns": 0, "slot_kept": 0, "slot_restored": 0,
+        "good_lead_by_chapter": {}, "good_lead_max": 0, "incident_word_turns": 0,
         "generalize_turns": 0, "generalize_by_chapter": {}, "direct_q_by_target": {}, "direct_excess": 0,
         "endings": {}, "anchors": [],
     }
@@ -313,6 +314,10 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
                 res["slot_kept"] += 1
         if g.get("leak_final"):
             res["leak_final_turns"] += 1          # (2026-10-29 P1) 8-y 최종 누설 소거 발동 턴 — 목표 0(상류 프롬프트에서 원인 제거)
+        if (content or "").lstrip().startswith("좋습니다"):   # (2026-11-02 p2f) Michael '좋습니다' 첫마디 — 챕터당 상한 3
+            res["good_lead_by_chapter"][chapter or "-"] = res["good_lead_by_chapter"].get(chapter or "-", 0) + 1
+        if g.get("incident_word"):
+            res["incident_word_turns"] += 1       # (2026-11-02 p2f) '사건' 치환이 일어난 턴
         if g.get("generalize_probe") or g.get("generalize"):
             res["generalize_turns"] += 1
             gen_by_ch[chapter or "-"] += 1

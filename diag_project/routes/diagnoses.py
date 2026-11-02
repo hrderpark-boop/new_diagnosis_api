@@ -2509,7 +2509,9 @@ async def _submit_message_phase3a(
                     _tm["quantify"] = 1; _tm["j_quantify_first"] = 1
                     logger.info("🔢 Jessica 수치 탐침 최우선: [%s] %s", chapter, current_target_sub)
                 _num = _ntk(_ans_s)
-                if _num and _num.replace(" ", "") not in clean_reply.replace(" ", ""):
+                # (2026-11-02 p2f) 재진술은 뒤에 질문이 붙을 때만 — 단독 턴('40%라고 하셨죠.' 만 남는 턴) 금지. 서수·'N회'는 number_token 이 제외.
+                if (_num and _num.replace(" ", "") not in clean_reply.replace(" ", "")
+                        and any(is_question_sentence(x) for x in split_sentences(clean_reply))):
                     from diag_project.services.korean import quote_josa as _qj
                     clean_reply = f"{_num}{_qj(_num)} 하셨죠. {clean_reply}".strip()
                     _tm["j_number_restated"] = _num
@@ -3242,6 +3244,8 @@ async def _submit_message_phase3a(
             # (2026-10-29 P1) leak_final: 8-y 최종 누설 소거(어휘·상태) · ladder_trigger: 'turns'=턴 조건 사다리 · direct_q/direct_q_fix: '직접 하신' 상한 ·
             #   generalized: 일반화 탐침 뒤에도 시점 없음(원장 기록) · skip_bridge/unconfirmed: 입력 이상 3회째 전진 · anomaly: 종류(#n 회차)
             "leak_final": _tm.get("leak_final"), "ladder_trigger": _tm.get("ladder_trigger"),
+            # (2026-11-02 p2f) incident_word: '사건' 치환 수 · good_lead_cap: Michael '좋습니다' 챕터 상한 도달
+            "incident_word": _tm.get("incident_word"), "good_lead_cap": int(_tm.get("good_lead_cap") or 0),
             "ladder_skip": _tm.get("ladder_skip"), "ladder_swap": int(_tm.get("ladder_swap") or 0), "ladder_dropped": _tm.get("ladder_dropped"),
             "direct_q": int(_tm.get("direct_q") or 0), "direct_q_fix": _tm.get("direct_q_fix"),
             "generalized": _tm.get("generalized"), "skip_bridge": int(_tm.get("skip_bridge") or 0), "unconfirmed": _tm.get("unconfirmed"),

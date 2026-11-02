@@ -788,13 +788,32 @@ def needs_quantify_probe(user_text: str | None) -> bool:
 _DIRECT_ACTION_Q_RE = re.compile(r"직접\s*(하신|어떻게|뭘|무엇을|무엇이|움직이신|하셨|한\s*일|하는|해\s*보신|해보신|한\s*행동)")
 
 
-_NUMBER_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?\s*(?:%|퍼센트|명|건|주|일|개월|년|배|시간|분|회|차|억|만원|천만|백만|점|개)")
+# (2026-11-02 p2f) 양(量)만 — 서수(1차·2차·N회차·N번째)와 단독 'N회'는 제외. 단위 뒤에 '차/째'가 붙으면('3일차'·'2주차') 서수라 제외.
+_NUMBER_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?\s*(?:%|퍼센트|명|건|개월|주|일|년|배|시간|분|억|만원|천만|백만|원|점|개)(?!\s*(?:차|째|번째))")
 
 
 def number_token(text: str | None) -> str | None:
-    """(2026-10-29 P2-1 Jessica) 리더 답에 든 첫 수치 표현('8%', '두 달'은 제외 — 아라비아 숫자+단위만)."""
+    """(2026-10-29 P2-1 Jessica) 리더 답에 든 첫 수치 표현('8%', '두 달'은 제외 — 아라비아 숫자+단위만). 서수·횟수('1차'·'3회')는 제외."""
     m = _NUMBER_TOKEN_RE.search(text or "")
     return re.sub(r"\s+", "", m.group(0)) if m else None
+
+
+_INCIDENT_DEMO_RE = re.compile(r"(?:이번|이|해당|그)\s*사건")
+_INCIDENT_COUNT_RE = re.compile(r"((?:한|두|세|네|다섯|\d+)\s*)(?:개의\s*)?사건")
+_INCIDENT_RE = re.compile(r"사건")
+
+
+def rewrite_incident_word(text: str | None) -> tuple[str, int]:
+    """(2026-11-02 p2f) 코치 발화의 '사건'(BEI 내부어)을 리더 말로 — '이번 사건'→'그 일', '세 사건'→'세 가지', 그 외 '사건'→'일'. (본문, 바꾼 수)
+    p2c 25세션 중 12턴이 되받기에 '사건'을 썼다('이번 사건의 중심으로 보입니다', '앞서 말씀하신 세 사건에서는')."""
+    t = text or ""
+    if "사건" not in t:
+        return text or "", 0
+    n = len(_INCIDENT_RE.findall(t))
+    t = _INCIDENT_DEMO_RE.sub("그 일", t)
+    t = _INCIDENT_COUNT_RE.sub(lambda m: f"{m.group(1).strip()} 가지", t)
+    t = _INCIDENT_RE.sub("일", t)
+    return t, n
 
 
 def is_direct_action_question(q: str | None) -> bool:

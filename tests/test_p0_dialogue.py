@@ -511,3 +511,60 @@ def test_ladder_restore_step_precedes_final_sweep():
     src = inspect.getsource(d._submit_message_phase3a)
     assert src.index("# 8-n.") < src.index("# 8-h.") < src.index("# 8-x.") < src.index("# 8-y.") < src.index("# 8-z.")
     i = src.index("# 8-x."); assert "ladder_restored" in src[i: i + 2000] and "voice_question as _vq_x" in src[i: i + 2000]
+
+
+# ── p2f (2026-11-02) push 전 3건: Michael '좋습니다' 챕터 상한 · '사건'/역량 분류 누설 · Jessica 숫자 재진술 범위 ─────────────
+def test_p2f_michael_good_lead_chapter_cap_and_cheer_slot():
+    import inspect
+    from diag_project.routes import diagnoses as d
+    from diag_project.services.persona_voice import restore_slot_sentence
+    from diag_project.services.intro_messages import PERSONA_LINES
+    src = inspect.getsource(d._submit_message_phase3a)
+    i = src.index("# 8-p.")
+    blk = src[i: i + 1800]
+    assert "len(_good_prev) < _mcap" in blk and '_tm.get("slot") != "Michael"' in blk and '_tm["good_lead_cap"] = 1' in blk
+    assert '"good_lead_cap"' in src and '"incident_word"' in src
+    # 8-x2 리드 복원이 '응원합니다. 좋습니다, 다음에…' 를 만들지 않는다
+    q = PERSONA_LINES["Michael"]["slot_q"]
+    out, r = restore_slot_sentence(f"좋습니다, {q}", "Michael", q)
+    assert r and out == f"{PERSONA_LINES['Michael']['slot_lead']} {q}" and "좋습니다" not in out
+
+
+def test_p2f_incident_word_rewrite_and_classification_leak():
+    import pathlib
+    from diag_project.services.output_guard import rewrite_incident_word
+    from diag_project.services.leak_lexicon import find_state_report, find_leaks
+    assert rewrite_incident_word("리더님이 말씀하신 결정이 이번 사건의 중심으로 보입니다. 그래서 그 뒤에는 어떻게 됐습니까?") == \
+        ("리더님이 말씀하신 결정이 그 일의 중심으로 보입니다. 그래서 그 뒤에는 어떻게 됐습니까?", 1)
+    assert rewrite_incident_word("앞서 말씀하신 세 사건에서는 기준이 일관돼 보였습니다.")[0] == "앞서 말씀하신 세 가지에서는 기준이 일관돼 보였습니다."
+    assert rewrite_incident_word("이 사건에서 신경 쓰신 부분이 있었나요? 사건 하나가 설문으로 이어졌네요.") == \
+        ("그 일에서 신경 쓰신 부분이 있었나요? 일 하나가 설문으로 이어졌네요.", 2)
+    assert rewrite_incident_word("그때 어떻게 하셨어요?") == ("그때 어떻게 하셨어요?", 0)
+    # 치환 뒤에는 엄격 사전('사건' 수동 복원)에 걸리지 않는다
+    assert "사건" in find_leaks("이번 사건의 중심으로 보입니다.", []) and not find_leaks(rewrite_incident_word("이번 사건의 중심으로 보입니다.")[0], [])
+    # 역량 분류 설명은 상태 보고문
+    s = "주 과제는 \"이 일 관리\" 역량인데, 방금 말씀하신 실패 복기 방식은 \"시도와 실행\" 쪽 이야기에 가깝네요."
+    assert find_state_report(s) and find_state_report("그 얘기는 조직 쪽 이야기에 가깝습니다.")
+    assert not find_state_report("그 결정을 내리셨군요. 그때 팀원들 반응은 어땠습니까?")
+    # 배선: 8-i 앞 치환 + 8-y 안 치환
+    import inspect
+    from diag_project.routes import diagnoses as d
+    src = inspect.getsource(d._submit_message_phase3a)
+    assert src.index("rewrite_incident_word as _riw") < src.index("# 8-i.") and "rewrite_incident_word as _riw_y" in src[src.index("# 8-y."):]
+    # 프롬프트: 전환 턴에 탐색/미탐색 이름 목록이 없고 분류 설명 금지가 있다
+    txt = pathlib.Path(d.__file__).resolve().parents[1].joinpath("prompts/phase3a/layer3_state.py").read_text()
+    blk = txt[txt.index('"STAR_COMPLETE_NEW_EVENT": ('): txt.index('"ABSENCE_PROBE": (')]
+    assert "이미 탐색:" not in blk and "{_unexplored_str}" not in blk and "역량인데" in blk
+
+
+def test_p2f_number_token_quantities_only_and_restate_needs_question():
+    from diag_project.services.output_guard import number_token
+    assert number_token("40% 줄었어요") == "40%" and number_token("2주 걸렸어요") == "2주" and number_token("3명 뽑았어요") == "3명"
+    assert number_token("10건이었어요") == "10건" and number_token("6개월 걸렸습니다") == "6개월" and number_token("300만원 들었어요") == "300만원"
+    for t in ("1차 면접에서", "2차로 넘어가", "3회 진행했어요", "5회차에", "2번째 시도", "3일차에 결정", "2주차부터", "10번째"):
+        assert number_token(t) is None, t
+    import inspect
+    from diag_project.routes import diagnoses as d
+    src = inspect.getsource(d._submit_message_phase3a)
+    i = src.index("_num = _ntk(_ans_s)")
+    assert "any(is_question_sentence(x) for x in split_sentences(clean_reply))" in src[i: i + 400]
