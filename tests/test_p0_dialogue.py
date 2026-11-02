@@ -523,6 +523,7 @@ def test_p2f_michael_good_lead_chapter_cap_and_cheer_slot():
     i = src.index("# 8-p.")
     blk = src[i: i + 1800]
     assert "len(_good_prev) < _mcap" in blk and '_tm.get("slot") != "Michael"' in blk and '_tm["good_lead_cap"] = 1' in blk
+    assert "add=bool(chapter) and not needs_user_decision" in blk and "not needs_user_decision\n" not in blk[: blk.index("_mlg(")]   # 일시정지 제안 턴도 가드 대상
     assert '"good_lead_cap"' in src and '"incident_word"' in src
     # 8-x2 리드 복원이 '응원합니다. 좋습니다, 다음에…' 를 만들지 않는다
     q = PERSONA_LINES["Michael"]["slot_q"]
