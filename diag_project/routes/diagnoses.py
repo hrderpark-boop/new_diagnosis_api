@@ -2755,11 +2755,15 @@ async def _submit_message_phase3a(
 
     # 8-p. (2026-10-23 6번 보정) Michael "좋습니다" 도입: 턴당 최대 1회, 챕터에서 2턴에 1회 이하(직전 턴에 썼으면 이번 턴은 뗀다).
     #   고정 문장 턴(안내·확인 템플릿)도 센다 — 재생에서 4·5·6턴 연속 '좋습니다' 가 템플릿 턴에서 났다.
+    #   (2026-11-02 p2f) 챕터 누적 상한 3회(MICHAEL_GOOD_LEAD_CAP) — p2c D 세션 83턴 중 39턴이 '좋습니다'(챕터당 6~12). 초과분은 리드 없이
+    #   본문부터. 응원 슬롯 턴(그 선택, 응원합니다.)에는 붙이지 않는다.
     if (not _llm_error and clean_reply and not needs_user_decision
             and (state.get("coach_persona") or {}).get("name", "").startswith("Michael")):
-        from diag_project.services.persona_voice import michael_lead_guard as _mlg
+        from diag_project.services.persona_voice import michael_lead_guard as _mlg, MICHAEL_GOOD_LEAD_CAP as _mcap
         _good_prev = list(((session.self_assessment_data or {}).get("good_turns") or {}).get(chapter or "_", []))
-        _allow_good = (_turn_index - 1) not in _good_prev
+        _allow_good = ((_turn_index - 1) not in _good_prev and len(_good_prev) < _mcap and _tm.get("slot") != "Michael")
+        if len(_good_prev) >= _mcap:
+            _tm["good_lead_cap"] = 1
         clean_reply, _used_good = _mlg(clean_reply, _allow_good, add=bool(chapter))   # 챕터 밖(라포·인사)에는 붙이지 않는다
         _tm["good_lead"] = 1 if _used_good else 0
         if not _allow_good:

@@ -61,6 +61,10 @@ def test_michael_lead_guard():
     t4 = "좋습니다, 기초를 다지신 결정이네요. 좋습니다, 그 아이디어를 작게 시험해 보셨어요?"
     out4, _ = V.michael_lead_guard(t4, allow=True)
     assert out4.count("좋습니다") == 1 and out4.endswith("시험해 보셨어요?")
+    # (2026-11-02 p2f) 응원 슬롯 턴에는 붙이지 않고 전부 뗀다 — '그 선택, 응원합니다. 좋습니다, 다음에…' 금지
+    t5 = "좋습니다, 그 선택, 응원합니다. 다음에 비슷한 상황이 오면 어떻게 하실 생각이세요?"
+    assert V.michael_lead_guard(t5, allow=True) == ("그 선택, 응원합니다. 다음에 비슷한 상황이 오면 어떻게 하실 생각이세요?", False)
+    assert V.MICHAEL_GOOD_LEAD_CAP == 3
 
 
 def test_contrast_lead_and_detection():
@@ -101,7 +105,7 @@ def test_wiring():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
     assert 'if _mode in ("dict", "fallback"):' in src and "voice_question as _vq" in src and "voice_question as _vq_l" in src
     assert '"contrast_q": int(_tm.get("contrast_q") or 0)' in src and 'state["contrast_used"]' in src
-    assert "michael_lead_guard as _mlg" in src and "_allow_good = (_turn_index - 1) not in _good_prev" in src
+    assert "michael_lead_guard as _mlg" in src and "_allow_good = ((_turn_index - 1) not in _good_prev and len(_good_prev) < _mcap" in src   # (p2f) 챕터 누적 상한
     assert "strip_contrast_lead as _scl" in src and '_tm["contrast_fix"] = 2' in src and 'voice_variant_count' in src
     l3 = open(os.path.join(ROOT, "diag_project", "prompts", "phase3a", "layer3_state.py"), encoding="utf-8").read()
     assert "persona_guide_block(_persona[\"name\"]" in l3

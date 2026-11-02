@@ -229,14 +229,19 @@ def voice_question(persona_name: str | None, text: str, *, variant: int = 0) -> 
 
 
 _GOOD_RE = re.compile(r"좋습니다[!,.]?\s*")
+_CHEER_RE = re.compile(r"응원합니다")
+# (2026-11-02 p2f) 챕터 누적 상한 — p2c Michael 83턴 중 39턴이 '좋습니다'로 시작(2턴에 1회 규칙만으로는 빈도를 못 줄였다).
+MICHAEL_GOOD_LEAD_CAP = 3
 
 
 def michael_lead_guard(text: str, allow: bool, *, add: bool = True) -> tuple[str, bool]:
     """Michael '좋습니다' 도입: 턴당 최대 1회, 허용 턴이면 정확히 1회(없고 add=True 면 붙인다), 비허용 턴이면 전부 뗀다. (텍스트, 사용 여부)
-    add=False(라포·인사 등 챕터 밖 턴)에서는 붙이지 않고 중복만 정리한다."""
+    add=False(라포·인사 등 챕터 밖 턴)에서는 붙이지 않고 중복만 정리한다. 응원 문장이 있는 턴에는 붙이지 않고 전부 뗀다."""
     t = (text or "").strip()
     if not t:
         return text, False
+    if _CHEER_RE.search(t):   # (2026-11-02 p2f) '그 선택, 응원합니다. 좋습니다, 다음에…' 금지
+        return _GOOD_RE.sub("", t).strip(), False
     n = len(_GOOD_RE.findall(t))
     if not allow:
         return _GOOD_RE.sub("", t).strip(), False
@@ -264,7 +269,7 @@ def restore_slot_sentence(reply: str, persona: str | None, slot_text: str | None
             from diag_project.services.intro_messages import PERSONA_LINES
             _ld = PERSONA_LINES["Michael"]["slot_lead"]
             if _ld and _n(_ld) not in _n(reply):
-                return f"{_ld} {reply}".strip(), True
+                return f"{_ld} {_GOOD_RE.sub('', reply).strip()}".strip(), True   # (p2f) 응원 뒤 '좋습니다' 금지
         return reply, False
     if persona == "Olivia" and _CONTRAST_RE.search(reply):
         return reply, False
