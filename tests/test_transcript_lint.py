@@ -219,3 +219,10 @@ def test_truncation_ignores_complete_first_clause_with_connective_ending():
     assert not is_truncated_question("저라면 그 자리에서 가장 먼저 부딪혔던 반발이 무엇이었을지 궁금해지는데요, 타 부서 리더들이 보고 회의를 놓기 어려워했던 이유가 무엇이었다고 느끼셨습니까?")
     assert is_truncated_question("있었다면 어떻게 설득하셨는지 말씀해 주시겠습니까?")
     assert is_truncated_question("어려웠다면, 그때 누구와 먼저 상의하셨습니까?")
+
+
+def test_truncation_first_token_noun_ending_in_myeon_is_not_truncated():
+    import sys; sys.path.insert(0, "tools")
+    from transcript_lint import is_truncated_question
+    assert not is_truncated_question("전면 도입이 아니라 일부에서 시작하기로 하셨을 때, 팀원들에게는 무엇을 먼저 설명하셨는지 궁금합니다.")
+    assert is_truncated_question("있었다면 그때 어떤 상황이었는지 편하게 들려주시면 됩니다.")

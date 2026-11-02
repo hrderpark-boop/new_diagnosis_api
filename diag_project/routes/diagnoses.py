@@ -2506,12 +2506,15 @@ async def _submit_message_phase3a(
             _slot_used = ((_sd_s.get("persona_slot_used") or {}).get(chapter)) if chapter else "x"
             _tot_s = int((_sd_s.get("turns_on_target") or {}).get(chapter, 0) or 0)
             if (_pn_s in ("Jessica", "Olivia", "Daniel", "Michael", "Lucas") and chapter and current_target_sub and not _slot_used
-                    and _tot_s in (2, 3) and not state.get("force_ladder_probe") and not state.get("force_generalize_probe")
-                    and not _tm.get("quantify")):
+                    and _tot_s == 2 and not state.get("force_ladder_probe") and not state.get("force_generalize_probe")
+                    and not _tm.get("quantify")):   # (p2a) 3번째 턴은 사다리 몫 — 슬롯이 가져가면 일관리 등에서 사다리 2회 미달
                 from diag_project.data.competencies import COMPETENCY_FRAMEWORK as _CF_s
                 _ch_i = [k for k in _CF_s if k != "supplementary"].index(chapter) if chapter in _CF_s else 0
                 _lead_s = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                _q_now_s = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
+                _sents_s = [x for x in split_sentences(clean_reply) if x.strip()]
+                _qi_s = next((i for i, x in enumerate(_sents_s) if is_question_sentence(x)), None)
+                # 질문부: 첫 질문부터 끝까지(조건절 쌍 '…있으셨습니까? 있었다면 …' 보존 — p2a Daniel 잘림 3건은 마지막 질문만 남겨서였다)
+                _q_now_s = " ".join(_sents_s[_qi_s:]) if _qi_s is not None else ""
                 if _pn_s == "Jessica":
                     clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip()
                 elif _pn_s == "Olivia":
