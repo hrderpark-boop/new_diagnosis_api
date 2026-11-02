@@ -41,3 +41,12 @@ def test_cache_keys_unchanged_bytes():
     assert kc == ["48359f77c659708821e462d8729be3520a76024860dcbf2e81adbc8248eb4894"]
     assert _persist_key("organization_management", "전략적 사고", ["발화 A"], 3, "gemini") == \
         "2c4b011d4b87f1cbb569569f329459c2b0f3dc753a51206d0b34cbfffc5bf66c"
+
+
+def test_split_deep_prompt_is_text_preserving():
+    """(2026-11-02 P2-4) 캐시 경계 분할은 프롬프트 텍스트를 바꾸지 않는다."""
+    from diag_project.llm_service import _split_deep_prompt, _DEEP_SPLIT_LOG, _DEEP_SPLIT_ACC
+    p = "머리\n역량 블록\n" + _DEEP_SPLIT_LOG + " (맥락)]\n로그 본문\n\n" + _DEEP_SPLIT_ACC + "\n꼬리"
+    blocks, tail = _split_deep_prompt(p)
+    assert len(blocks) == 2 and "".join(blocks) + tail == p and blocks[1].startswith(_DEEP_SPLIT_LOG) and tail.startswith(_DEEP_SPLIT_ACC)
+    assert _split_deep_prompt("표식 없음") == (None, "표식 없음")
