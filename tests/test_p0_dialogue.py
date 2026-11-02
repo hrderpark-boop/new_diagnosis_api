@@ -465,6 +465,11 @@ def test_restore_slot_sentence_rebuilds_lost_fixed_line():
     # 남아 있으면 손대지 않는다(띄어쓰기 차이 무시)
     out, r = restore_slot_sentence(f"그 선택, 응원합니다. {mq.replace(' ', '  ')}", "Michael", mq)
     assert not r
+    # 질문은 남았는데 응원 리드만 잘렸으면 리드를 되돌린다
+    out, r = restore_slot_sentence(mq, "Michael", mq)
+    assert r and out == f"{PERSONA_LINES['Michael']['slot_lead']} {mq}"
+    out, r = restore_slot_sentence(f"좋습니다, 그 선택, 응원합니다. {mq}", "Michael", mq)
+    assert not r
     # Jessica: 첫 되받기 1문장 + 기준 질문
     jq = PERSONA_LINES["Jessica"]["slot_q"]
     out, r = restore_slot_sentence("2주라고 하셨죠. 그렇게 생각하시게 된 계기가 된 일이 하나 있으셨을까요?", "Jessica", jq)

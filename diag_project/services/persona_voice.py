@@ -260,6 +260,11 @@ def restore_slot_sentence(reply: str, persona: str | None, slot_text: str | None
     # 비교 단위는 슬롯 문장의 첫 문장 — Daniel 관찰은 2문장('… 되지요. 저도 그랬습니다.')이라 리드 1문장 상한이 뒷문장을 자른다(p2c 25턴 중 14).
     _key = (split_sentences(slot_text) or [slot_text])[0]
     if _n(_key) in _n(reply):
+        if persona == "Michael":   # 응원 리드가 8-n 입버릇 가드(매 챕터 같은 문장 → 반복 삭제)에 잘렸으면 리드만 되돌린다(p2d 2/5)
+            from diag_project.services.intro_messages import PERSONA_LINES
+            _ld = PERSONA_LINES["Michael"]["slot_lead"]
+            if _ld and _n(_ld) not in _n(reply):
+                return f"{_ld} {reply}".strip(), True
         return reply, False
     if persona == "Olivia" and _CONTRAST_RE.search(reply):
         return reply, False
