@@ -450,6 +450,37 @@ def test_persona_slot_lines_and_wiring():
     blk = src[i: i + 6000]
     assert all(k in blk for k in ('_pn_s == "Jessica"', '_pn_s == "Olivia"', '_pn_s == "Daniel"', '_pn_s == "Michael"', "Lucas", '_tm["slot"] = _pn_s'))
     assert "persona_slot_used" in src and "j_number_restated" in src
+    # (2026-11-02 p2c) 슬롯 문장 복원(8-x2): 슬롯 조립 시 slot_text 기록 → 8-y 앞에서 복원 → 원장 slot_restored
+    assert blk.count('_tm["slot_text"]') >= 5 and "슬롯 문장 복원" in src and "restore_slot_sentence" in src and '"slot_restored"' in src
+    assert src.index("슬롯 문장 복원") < src.index("8-y. (2026-10-29) 최종 누설 소거")
+
+
+def test_restore_slot_sentence_rebuilds_lost_fixed_line():
+    from diag_project.services.persona_voice import restore_slot_sentence
+    from diag_project.services.intro_messages import PERSONA_LINES, DANIEL_OBSERVATIONS
+    mq = PERSONA_LINES["Michael"]["slot_q"]
+    # Michael: 8-n 재생성이 덮어 실행 의지 질문이 사라진 본문 → 응원 리드 + 고정 질문
+    out, r = restore_slot_sentence("좋습니다, 참여율을 핵심으로 정하셨군요. 그 조율 자리는 언제쯤이었을까요?", "Michael", mq)
+    assert r and out == f"{PERSONA_LINES['Michael']['slot_lead']} {mq}"
+    # 남아 있으면 손대지 않는다(띄어쓰기 차이 무시)
+    out, r = restore_slot_sentence(f"그 선택, 응원합니다. {mq.replace(' ', '  ')}", "Michael", mq)
+    assert not r
+    # Jessica: 첫 되받기 1문장 + 기준 질문
+    jq = PERSONA_LINES["Jessica"]["slot_q"]
+    out, r = restore_slot_sentence("2주라고 하셨죠. 그렇게 생각하시게 된 계기가 된 일이 하나 있으셨을까요?", "Jessica", jq)
+    assert r and out == f"2주라고 하셨죠. {jq}"
+    # Daniel: 관찰 문장을 앞에 되돌리고 나머지는 보존
+    ob = DANIEL_OBSERVATIONS[1]
+    out, r = restore_slot_sentence("알겠습니다. 그때 어떤 과제였는지 말씀해 주시겠습니까?", "Daniel", ob)
+    assert r and out.startswith(ob) and out.endswith("말씀해 주시겠습니까?")
+    # 리드 1문장 상한이 관찰의 뒷문장('저도 그랬습니다.')을 잘라도 첫 문장이 남았으면 복원하지 않는다(중복 방지)
+    out, r = restore_slot_sentence(f"{ob.split('. ')[0]}. 그 뒤에는 어떻게 되었습니까?", "Daniel", ob)
+    assert not r
+    # Olivia: LLM 이 다른 대조 질문을 남겼으면 그대로
+    out, r = restore_slot_sentence("그 팀원 입장에서는 어떤 장면이었을까요?", "Olivia", PERSONA_LINES["Olivia"]["slot_q"])
+    assert not r
+    out, r = restore_slot_sentence("네, 그러셨군요. 그 다음은 어떻게 되었나요?", "Olivia", PERSONA_LINES["Olivia"]["slot_q"])
+    assert r and out.endswith(PERSONA_LINES["Olivia"]["slot_q"])
 
 
 

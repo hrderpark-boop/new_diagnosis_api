@@ -245,3 +245,30 @@ def michael_lead_guard(text: str, allow: bool, *, add: bool = True) -> tuple[str
     first = _GOOD_RE.search(t)
     rest = _GOOD_RE.sub("", t[first.end():])
     return (t[:first.start()] + "좋습니다, " + rest).strip(), True
+
+
+def restore_slot_sentence(reply: str, persona: str | None, slot_text: str | None) -> tuple[str, bool]:
+    """(2026-11-02 p2c) 페르소나 슬롯 고정 문장 복원. 반환 (본문, 복원 여부).
+
+    8-n·8-o·8-p 가 본문을 바꾸면 슬롯 문장이 빠진다(p2c 24세션: Michael 16/25·Jessica 5/25·Daniel 4/25).
+    Olivia 는 최종 본문에 대조 질문이 남아 있으면 그대로, Daniel 은 관찰 1문장을 맨 앞에, Michael 은 응원 리드 + 실행 의지 질문,
+    나머지는 첫 되받기 1문장 + 슬롯 질문. (이 docstring 은 누설 사전 소스에 포함되므로 코치 발화 어휘를 넣지 않는다.)"""
+    from diag_project.services.output_guard import split_sentences, is_question as is_question_sentence
+    if not reply or not slot_text or not persona:
+        return reply, False
+    _n = lambda t: re.sub(r"\s+", "", t)
+    # 비교 단위는 슬롯 문장의 첫 문장 — Daniel 관찰은 2문장('… 되지요. 저도 그랬습니다.')이라 리드 1문장 상한이 뒷문장을 자른다(p2c 25턴 중 14).
+    _key = (split_sentences(slot_text) or [slot_text])[0]
+    if _n(_key) in _n(reply):
+        return reply, False
+    if persona == "Olivia" and _CONTRAST_RE.search(reply):
+        return reply, False
+    if persona == "Daniel":
+        return f"{slot_text} {reply}".strip(), True
+    sents = split_sentences(reply)
+    if persona == "Michael":
+        from diag_project.services.intro_messages import PERSONA_LINES
+        lead = [PERSONA_LINES["Michael"]["slot_lead"]]
+    else:
+        lead = [x for x in sents if not is_question_sentence(x)][:1]
+    return " ".join(lead + [slot_text]).strip(), True

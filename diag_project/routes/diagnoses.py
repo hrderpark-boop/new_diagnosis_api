@@ -2517,21 +2517,21 @@ async def _submit_message_phase3a(
                 # 질문부: 첫 질문부터 끝까지(조건절 쌍 '…있으셨습니까? 있었다면 …' 보존 — p2a Daniel 잘림 3건은 마지막 질문만 남겨서였다)
                 _q_now_s = " ".join(_sents_s[_qi_s:]) if _qi_s is not None else ""
                 if _pn_s == "Jessica":
-                    clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip()
+                    clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip(); _tm["slot_text"] = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")
                 elif _pn_s == "Olivia":
                     _cq_used = int(((_sd_s.get("contrast_q_count") or {}).get(chapter, 0)) or 0)
                     if _cq_used:
                         _slot_used = "contrast_already"   # LLM 이 이미 대조 질문을 했으면 그것이 슬롯
                     else:
-                        clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q2" if _ch_i % 2 else "slot_q")]).strip()
+                        clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q2" if _ch_i % 2 else "slot_q")]).strip(); _tm["slot_text"] = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q2" if _ch_i % 2 else "slot_q")
                         _tm["contrast_q"] = 1
                 elif _pn_s == "Daniel":
                     from diag_project.services.intro_messages import DANIEL_OBSERVATIONS as _DOBS
-                    clean_reply = " ".join([_DOBS[_ch_i % len(_DOBS)]] + _lead_s + ([_q_now_s] if _q_now_s else [])).strip()
+                    clean_reply = " ".join([_DOBS[_ch_i % len(_DOBS)]] + _lead_s + ([_q_now_s] if _q_now_s else [])).strip(); _tm["slot_text"] = _DOBS[_ch_i % len(_DOBS)]
                 elif _pn_s == "Michael":
-                    clean_reply = " ".join([_pl_a((state.get("coach_persona") or {}).get("name"), "slot_lead")] + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip()
+                    clean_reply = " ".join([_pl_a((state.get("coach_persona") or {}).get("name"), "slot_lead")] + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip(); _tm["slot_text"] = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")
                 else:   # Lucas
-                    clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip()
+                    clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip(); _tm["slot_text"] = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")
                 if _slot_used != "contrast_already":
                     _tm["slot"] = _pn_s
                     logger.info("🎭 페르소나 슬롯(%s): [%s] %s", _pn_s, chapter, current_target_sub)
@@ -2885,6 +2885,20 @@ async def _submit_message_phase3a(
         except Exception as _le_x:   # noqa: BLE001
             logger.warning("사다리 복원 실패 — 건너뜀: %s", _le_x)
 
+    # 8-x2. (2026-11-02 p2c) 페르소나 슬롯 문장 복원 — 슬롯은 프로브 스텝에서 본문을 조립하지만 8-n 입버릇 재생성·8-o 한 질문·
+    #   8-p Michael 리드 보정이 뒤에서 본문을 바꾸면 고정 문장이 사라진다(p2c 24세션: Michael 16/25·Jessica 5/25 유실 — 린트 슬롯 열은
+    #   삽입 플래그만 세어 25/25 로 보였다). 사다리 복원(8-x)과 같은 자리에서 되돌린다.
+    if (_tm.get("slot") and _tm.get("slot_text") and system_override_text is None and not _llm_error
+            and _align_ctx is None and (clean_reply or "").strip()):
+        try:
+            from diag_project.services.persona_voice import restore_slot_sentence as _rss
+            clean_reply, _sr = _rss(clean_reply, _tm["slot"], _tm["slot_text"])
+            if _sr:
+                _tm["slot_restored"] = 1
+                logger.info("🎭 슬롯 문장 복원(뒤 단계가 덮음): [%s] %s", chapter, _tm["slot"])
+        except Exception as _se_x:   # noqa: BLE001
+            logger.warning("슬롯 복원 실패 — 건너뜀: %s", _se_x)
+
     # 8-y. (2026-10-29) 최종 누설 소거 — 8-i 뒤의 재생성(8-j 전환·8-n 입버릇·8-h 느낌표)이 만든 새 LLM 출력은 8-i 의 누설 검사를
     #   거치지 않았다(s291 Jessica t10: 8-n 재생성 출력이 '되받기 한 문장 + 다리 한 문장으로 답하겠습니다.'로 시작). 엄격 사전 어휘·
     #   상태 보고문이 든 평서문만 지운다(질문 보존). ALIGN 은 조립(8-z) 전의 되받기에 걸리므로 고정 문장은 건드리지 않는다.
@@ -3217,6 +3231,7 @@ async def _submit_message_phase3a(
             # (2026-10-29 P2-1) slot: 페르소나 고정 슬롯 발동(챕터당 1) · Jessica 수치 우선/숫자 재진술
             "slot": _tm.get("slot"), "j_quantify_first": int(_tm.get("j_quantify_first") or 0), "j_number_restated": _tm.get("j_number_restated"),
             "ladder_restored": int(_tm.get("ladder_restored") or 0),
+            "slot_restored": int(_tm.get("slot_restored") or 0),   # (2026-11-02 p2c) 슬롯 문장 복원(8-x2)
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):
