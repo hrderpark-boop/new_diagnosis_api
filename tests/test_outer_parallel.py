@@ -76,6 +76,7 @@ def _patch(monkeypatch, parallel: bool, probe: _Probe):
     monkeypatch.setattr(LS, "_OUTER_PARALLEL", parallel)
     monkeypatch.setattr(LS, "_ANALYSIS_OUTER_RUNS", 3)
     monkeypatch.setattr(LS, "_ANALYSIS_SAMPLES", 1)
+    monkeypatch.setattr(LS, "_ADAPTIVE_OUTER", False)   # (2026-11-02 P3) 순차=병렬 동치는 전부 3회 경로에서 본다(적응형은 별도 테스트)
     monkeypatch.setattr(LS.GeminiService, "_analyze_single_competency",
                         lambda self, **kw: probe.fake(self, **kw))
 
@@ -221,3 +222,34 @@ def test_gate_shared_failure_is_rejudged(monkeypatch):
     assert len(calls) == 2
     assert not LG._INFLIGHT
     LG._GATE_CACHE.clear()
+
+
+def test_adaptive_third_run_only_for_disagreeing_competencies(monkeypatch):
+    """(2026-11-02 P3 비용) 앞 두 run 이 일치한 대역량은 3회째 생략, 갈린 대역량만 갈린 칸 한정으로 3회째."""
+    probe = _Probe()
+    _patch(monkeypatch, True, probe)
+    monkeypatch.setattr(LS, "_ADAPTIVE_OUTER", True)
+    keys = LS._get_competency_keys()
+    calls = []
+
+    async def fake(self, competency_key, relevant_utterances, full_transcript,
+                   asked_subs=None, outer_idx=0, role_summary=None, focus_subs=None):
+        calls.append((competency_key, outer_idx, frozenset(focus_subs) if focus_subs else None))
+        await _real_sleep(0.01)
+        r = _fake_result(competency_key, outer_idx if competency_key == keys[1] else 0)   # keys[1] 만 run 마다 갈린다
+        r["comment"] = f"{competency_key}-o{outer_idx}"
+        if focus_subs:
+            r["_eval_subs"] = sorted(focus_subs)
+        return r
+    monkeypatch.setattr(LS.GeminiService, "_analyze_single_competency", fake)
+    prog = AP.start("t-adapt", keys, 3)
+    res, _ = _run(prog)
+    third = [c for c in calls if c[1] == 2]
+    assert len(calls) == 11 and len(third) == 1 and third[0][0] == keys[1] and third[0][2]
+    assert all(len(v) == 3 for v in prog._units.values()) and AP.get("t-adapt")["outer_done"] == 3
+    d0 = res["details"][keys[0]]
+    assert all(v["stability"] in ("stable", "none") for v in d0["sub_ledger"].values())
+    assert [g["evaluated"] for g in next(iter(d0["sub_ledger"].values()))["gate_runs"]] == [True, True, False]
+    d1 = res["details"][keys[1]]
+    assert any(all(g["evaluated"] for g in v["gate_runs"]) for v in d1["sub_ledger"].values())   # 갈린 칸은 3표
+    assert all(v["comment"].endswith("-o0") for v in res["details"].values())

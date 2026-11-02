@@ -137,6 +137,16 @@ _GATE_CACHE: Dict[tuple, Dict[str, Any]] = {}
 _INFLIGHT: Dict[tuple, "asyncio.Future"] = {}
 GATE_MAX_RETRIES = 3  # 지수 백오프 재시도 횟수
 GATE_VOTES_DEFAULT = 3  # (2026-10-23 D) 같은 근거 5회 측정: 업무계획 [2,3,X,X,2] 처럼 2개 레벨에 걸쳐 3표 중앙값으로 고정
+# (2026-11-02 P3 비용) 적응 투표 — 먼저 2표를 받고, 두 표가 일치한 칸은 그대로, 갈린 칸만 남은 표를 그 칸에 한정해 받는다.
+#   an_cache5 실측: 54칸 중 53칸이 1·2표 일치 → 게이트 콜 ~1/3 절감. GATE_VOTES_ADAPTIVE=0 이면 전부 n표.
+GATE_VOTES_ADAPTIVE = os.getenv("GATE_VOTES_ADAPTIVE", "1") != "0"
+
+
+def vote_agrees(a: Dict[str, Any] | None, b: Dict[str, Any] | None) -> bool:
+    """두 표가 같은 판정인가(탈락 여부·검증 레벨). pending 이 있으면 불일치로 본다."""
+    if not a or not b or a.get("pending") or b.get("pending"):
+        return False
+    return bool(a.get("dropped")) == bool(b.get("dropped")) and a.get("verified_level") == b.get("verified_level")
 GATE_PROMPT_VERSION = "2026-08-17.v1"
 # (2026-10-23 E) claude 경로의 게이트 캐시만 새 판정 규칙 버전으로 가른다 — gemini 키(420f1341 캐시)는 그대로 둔다(사용자 결정).
 GATE_PROMPT_VERSION_CLAUDE = "2026-10-23.v3"   # E-2: 결락 → n-1, Lv.1 은 부정형 서술이 맞을 때만
@@ -367,8 +377,17 @@ async def _judge_batch_voted(competency_key: str, items: list, llm,
         return await _judge_batch(competency_key, items, llm, out, provider)
     temps: list = [dict() for _ in range(n)]
     try:
-        await asyncio.gather(*[_judge_batch(competency_key, items, llm, temps[i], provider, cache=False, release=False)
-                               for i in range(n)])
+        if GATE_VOTES_ADAPTIVE and n >= 3:
+            await asyncio.gather(*[_judge_batch(competency_key, items, llm, temps[i], provider, cache=False, release=False)
+                                   for i in range(2)])
+            undecided = [it for it in items if not vote_agrees(temps[0].get(it["sub_name"]), temps[1].get(it["sub_name"]))]
+            if undecided:
+                await asyncio.gather(*[_judge_batch(competency_key, undecided, llm, temps[i], provider, cache=False, release=False)
+                                       for i in range(2, n)])
+            logger.info("🗳️ 게이트 적응 투표 [%s] %d칸 중 %d칸 %d표째", competency_key, len(items), len(undecided), n)
+        else:
+            await asyncio.gather(*[_judge_batch(competency_key, items, llm, temps[i], provider, cache=False, release=False)
+                                   for i in range(n)])
         from diag_project.services import analysis_cache as _ac
         for it in items:
             merged = merge_votes([t.get(it["sub_name"]) for t in temps], it["claimed_level"])

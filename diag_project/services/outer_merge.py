@@ -87,6 +87,39 @@ def classify_sub(run_rows: List[Dict[str, Any]], n_runs: int) -> Dict[str, Any]:
             "detection_count": detect, "dropped_count": dropped_n, "of": n_runs}
 
 
+def run_evaluated(run_result: Dict[str, Any] | None, sub: str) -> bool:
+    """(2026-11-02 P3) 이 run 이 그 하위역량을 판정했는가 — 생략된 run(None)은 아니오, 한정 판정(_eval_subs)이면 그 칸만."""
+    if not run_result:
+        return False
+    ev = run_result.get("_eval_subs")
+    return ev is None or sub in ev
+
+
+def _sub_state(row: Dict[str, Any]) -> tuple:
+    return (bool(row.get("measured")), row.get("level"), row.get("gate_status"))
+
+
+def disagreeing_subs(run_results: List[Dict[str, Any] | None]) -> List[str]:
+    """(2026-11-02 P3) 앞 run 들의 원장이 갈린 하위역량(측정 여부·레벨·게이트 상태 중 하나라도). 비면 전부 일치 → 마지막 run 생략.
+    오류 폴백 run 이 있으면 전부 갈린 것으로 본다(마지막 run 을 전체 판정으로)."""
+    runs = [r for r in run_results if r]
+    if not runs:
+        return []
+    subs: List[str] = []
+    for r in runs:
+        for s in (r.get("sub_ledger") or {}):
+            if s not in subs:
+                subs.append(s)
+    if any(r.get("_error_fallback") for r in runs):
+        return subs
+    out = []
+    for s in subs:
+        states = {_sub_state((r.get("sub_ledger") or {}).get(s) or {}) for r in runs}
+        if len(states) > 1:
+            out.append(s)
+    return out
+
+
 def gate_run_summary(run_result: Dict[str, Any], sub: str) -> Dict[str, Any]:
     """한 outer run 의 (게이트 판정, 원장) 을 한 줄로. 게이트가 안 돌았으면(근거 후보 없음) verdict=None."""
     g = ((run_result or {}).get("level_gate") or {}).get(sub) or None
@@ -102,6 +135,7 @@ def gate_run_summary(run_result: Dict[str, Any], sub: str) -> Dict[str, Any]:
         "reselected": bool(g.get("reselected")) if g else False,     # (2026-10-23 A) 근거 재선택을 거친 판정
         "measured": bool(row.get("measured")),
         "gate_status": row.get("gate_status"),
+        "evaluated": run_evaluated(run_result, sub),   # (P3) 생략·한정 판정 run 은 False
     }
 
 
@@ -112,19 +146,22 @@ def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
     서술(S/A/R·comment·score_breakdown)은 run0(기준 표본)에서 가져오고,
     sub_ledger·점수는 교차 분류로 결정론적으로 재계산한다.
     """
-    base = dict(run_results[0]) if run_results else {}
+    base = dict(run_results[0] or {}) if run_results else {}
     # 하위역량 목록은 run0 의 sub_ledger 순서 유지
-    subs = list((run_results[0].get("sub_ledger") or {}).keys())
+    subs = list(((run_results[0] or {}).get("sub_ledger") or {}).keys())
 
     sub_ledger: Dict[str, Any] = {}
     gate_counts = {"passed": 0, "failed": 0, "pending": 0, "n_a": 0}
     measured_count = 0
     class_counts = {"stable": 0, "semi": 0, "weak": 0, "dropped": 0}
     for sub in subs:
-        rows = [(r.get("sub_ledger") or {}).get(sub) or {} for r in run_results]
+        # (2026-11-02 P3) 이 칸을 실제로 판정한 run 만 센다 — 생략된 마지막 run(None)·한정 판정에서 빠진 칸은 표가 아니다.
+        #   앞 두 run 이 일치해 생략됐으면 2/2 일치 → stable. 갈려서 3회째를 돌렸으면 그 칸은 3표.
+        _eval_runs = [r for r in run_results if run_evaluated(r, sub)]
+        rows = [(r.get("sub_ledger") or {}).get(sub) or {} for r in _eval_runs]
         asked = any((r.get("sub_ledger") or {}).get(sub, {}).get("asked")
-                    for r in run_results)
-        m = classify_sub(rows, n_runs)
+                    for r in _eval_runs)
+        m = classify_sub(rows, len(rows) or n_runs)
         cls = m["class"]
         # G: 근거 후보가 나온 run 수(게이트 탈락 포함) — '미탐색' 판정용.
         cand_runs = sum(1 for r in rows
@@ -179,12 +216,13 @@ def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
         "confidence_adj": _sb.get("confidence_adj", 0.0),
         "final": _final,
     }
+    base.pop("_eval_subs", None)
     # I-4: 3회 중 1회라도 error-fallback 이면 이 대역량은 오염 → 표기 전파.
-    if any(r.get("_error_fallback") for r in run_results):
+    if any((r or {}).get("_error_fallback") for r in run_results):
         base["_error_fallback"] = True
         base["_error_reason"] = next(
-            (r.get("_error_reason") for r in run_results
-             if r.get("_error_fallback")), "불명")
+            ((r or {}).get("_error_reason") for r in run_results
+             if (r or {}).get("_error_fallback")), "불명")
     return base
 
 
@@ -194,6 +232,6 @@ def merge_outer_runs(run_results_list: List[Dict[str, Dict]],
     merged: Dict[str, Dict] = {}
     keys = list(run_results_list[0].keys())
     for ck in keys:
-        per_run = [rr.get(ck) or {} for rr in run_results_list]
+        per_run = [(rr or {}).get(ck) or None for rr in run_results_list]   # (P3) 생략된 run 은 None
         merged[ck] = merge_competency(per_run, ck, n_runs)
     return merged

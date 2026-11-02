@@ -88,6 +88,35 @@ def _concurrency_env() -> int:
 
 _ANALYSIS_CONCURRENCY = _concurrency_env()
 _OUTER_PARALLEL = os.getenv("ANALYSIS_OUTER_PARALLEL", "1") != "0"
+# (2026-11-02 P3 비용) 적응형 교차검증 — 앞 run 들(outer 0·1)의 원장이 대역량 안에서 전부 일치하면 마지막 run(3회째)을 생략하고,
+#   갈린 하위역량만 3회째를 그 칸에 한정해 돌린다(an_cache5 실측: 5대역량 중 4 일치). ANALYSIS_ADAPTIVE_OUTER=0 이면 기존(전부 N회).
+_ADAPTIVE_OUTER = os.getenv("ANALYSIS_ADAPTIVE_OUTER", "1") != "0"
+# (2026-11-02 P3 비용) 교차검증 run(outer≥1)은 판정 전용 출력 — S/A/R description·comment·gap 등 서술은 run0 만 리포트에 쓰이는데
+#   15콜 전부가 썼다(출력의 ~60%). outer≥1 은 서술 필드를 빈 문자열로 받는다. DEEP_JUDGE_ONLY=0 이면 끔.
+_DEEP_JUDGE_ONLY = os.getenv("DEEP_JUDGE_ONLY", "1") != "0"
+
+
+def judge_only_tail(outer_idx: int, focus_subs=None) -> str:
+    """outer≥1 심층 호출에 덧붙이는 꼬리(전체 로그 뒤 — 캐시 접두 블록은 그대로). 판정 전용 출력 + (3회째) 판정 대상 한정."""
+    parts = []
+    if outer_idx > 0 and _DEEP_JUDGE_ONLY:
+        parts.append(
+            "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "[이번 실행의 출력 범위 — 교차검증 run]\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "이 실행의 결과는 sub_assessments(하위역량별 measured·level·evidence·consistency_flag)만 쓰인다. 리포트 서술은 다른 실행이 담당한다.\n"
+            "- reasoning_process 의 1_situation·2_action·3_result: description 은 빈 문자열 \"\" 로 두고, evidence 는 평소대로 원문 인용을 넣는다.\n"
+            "- strength_point·growth_point·gap_analysis·situational_pattern·comment 는 빈 문자열 \"\" 로 둔다.\n"
+            "- score_breakdown·score·behavior_frequency 는 평소대로 산출한다.\n"
+            "- sub_assessments 는 위 규칙 1~5 대로 평소와 똑같이 꼼꼼히 판정한다 — 출력 범위를 줄인다고 탐색·판정을 느슨히 하지 말 것.\n")
+    if focus_subs:
+        parts.append(
+            "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "[이번 실행의 판정 대상 — 교차검증 3회째(앞 두 실행의 판정이 갈린 하위역량)]\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"다음 하위역량만 판정한다: {', '.join(sorted(focus_subs))}\n"
+            "그 외 하위역량은 판정을 생략하고 measured=false, level=null, evidence=[] 로 둔다.\n")
+    return "".join(parts)
 _SEM_STATE: dict = {"loop": None, "sem": None}
 
 
@@ -123,7 +152,7 @@ def _build_rubric_block(competency_key: str, sub_indicators: list) -> str:
 
 def _deep_cache_keys(competency_key: str, relevant_utterances: str,
                      full_transcript: str, asked_subs, outer_idx: int,
-                     provider: str | None = None) -> list:
+                     provider: str | None = None, focus_subs=None) -> list:
     """심층분석 결과 캐시 키(표본별). 입력이 같으면 같은 키 → 재분석 0콜.
 
     §3/E-2b/S-1: 프롬프트 버전·대역량·챕터 발언·전체 로그(앞 16000자)·온도·
@@ -139,7 +168,9 @@ def _deep_cache_keys(competency_key: str, relevant_utterances: str,
         # (2026-10-15) provider 성분: gemini 는 빈 튜플(기존 캐시 보존), claude 는 별도 캐시.
         *_provider.cache_key_parts(provider),
         # (2026-10-29 P2-4) claude 심층 프롬프트 버전 — 재배치된 프롬프트의 결과는 새 키에 쌓인다(gemini 키 불변).
-        *((f"deep:{_DEEP_PROMPT_VERSION_CLAUDE}",) if _provider.cache_key_parts(provider) else ()))
+        *((f"deep:{_DEEP_PROMPT_VERSION_CLAUDE}",) if _provider.cache_key_parts(provider) else ()),
+        # (2026-11-02 P3) 3회째 한정 판정은 별도 키 — 전체 판정 결과와 섞이지 않게. 판정 전용(outer≥1) 출력은 기존 키 유지(결과 호환).
+        *((f"focus:{'|'.join(sorted(focus_subs))}",) if focus_subs else ()))
     return [_ac.make_key(*base, f"s{i}") for i in range(_ANALYSIS_SAMPLES)]
 
 
@@ -1480,9 +1511,11 @@ class GeminiService:
         asked_subs: set | None = None,
         outer_idx: int = 0,
         role_summary: str | None = None,
+        focus_subs: set | None = None,
     ) -> Dict[str, Any]:
         """
         STEP 2: 단일 역량에 대한 심층 분석
+        focus_subs(2026-11-02 P3): 교차검증 3회째 — 이 하위역량만 판정(나머지는 미판정). 결과 _eval_subs 에 기록.
         - STAR + Result 구조 완성
         - 하위 지표 개별 차등 채점
         - Gap Analysis 포함
@@ -1694,6 +1727,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         #   문장을 보태면 같은 세션에서 근거 측정 25 → 7~10 으로 무너졌다). 렌더링된 원문을 표식 위치에서 셋으로 자르고 캐시 경계만 둔다:
         #   [머리 + 역량 블록(outer 3회 공유)] [전체 대화 로그(outer 3회 공유)] + [채점 정확도 꼬리]. 이어 붙이면 원문과 같다(테스트).
         _deep_prefix, prompt = _split_deep_prompt(prompt)
+        prompt = prompt + judge_only_tail(outer_idx, focus_subs)   # (P3 비용) 꼬리에만 덧붙여 캐시 접두(머리·역량 블록·전체 로그)는 불변
         try:
             from diag_project.services import analysis_cache as _ac
             #  🔒 T1: asked 는 '실제 앵커 발화'(코드가 준 asked_subs)로만 결정.
@@ -1710,7 +1744,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             _last_err = None
             for _i, _ck in enumerate(_deep_cache_keys(
                     competency_key, relevant_utterances, full_transcript,
-                    _asked_set, outer_idx, provider=self.provider())):
+                    _asked_set, outer_idx, provider=self.provider(), focus_subs=focus_subs)):
                 raw = _ac.get("deep_analysis", _ck)
                 if raw is None:
                     # A-2: 챕터 종료 사전분석(prewarm)이 같은 키를 계산 중이면
@@ -1753,6 +1787,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
 
             # 기준 표본(표본0)의 서술(S/A/R·comment·score_breakdown)을 리포트 본문에 사용.
             result = _samples[0]
+            result["_eval_subs"] = sorted(focus_subs) if focus_subs else None   # (P3) 한정 판정이면 병합이 그 칸만 이 run 의 표로 센다
 
             # 🛡️ Gap Analysis 강제 정제 — '5.0 만점' 류 표현을 결정론적으로 덮어쓴다.
             if result.get("gap_analysis"):
@@ -2292,7 +2327,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
     async def _analyze_unit(
         self, key: str, relevant_utterances: str, full_transcript: str,
         asked_subs: set, outer_idx: int, role_summary: str | None,
-        progress=None,
+        progress=None, focus_subs: set | None = None,
     ) -> Dict:
         """(대역량, outer run) 1 단위 = 심층분석 → 그 대역량의 레벨 게이트.
 
@@ -2304,7 +2339,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             result = await self._analyze_single_competency(
                 competency_key=key, relevant_utterances=relevant_utterances,
                 full_transcript=full_transcript, asked_subs=asked_subs,
-                outer_idx=outer_idx, role_summary=role_summary)
+                outer_idx=outer_idx, role_summary=role_summary,
+                **({"focus_subs": focus_subs} if focus_subs else {}))
         except Exception as e:  # noqa: BLE001 — 한 단위 실패가 전체를 막지 않게
             result = self._fallback_for_exception(key, e)
         if progress is not None:
@@ -2414,12 +2450,36 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 for k, o in batch])
             by_unit.update(dict(zip(batch, res)))
 
+        # (2026-11-02 P3 비용) 적응형: 마지막 run 은 ③ 에서 빼고, 앞 run 들의 원장이 갈린 대역량·하위역량만 ④ 에서 한정 판정.
+        _adaptive = _ADAPTIVE_OUTER and n_outer >= 3
+        _last = n_outer - 1
         _stage1 = [u for u in units if u == (competency_keys[0], 0)]
         _stage2 = [u for u in units if u[1] == 0 and u not in _stage1]
-        _stage3 = [u for u in units if u[1] != 0]
+        _stage3 = [u for u in units if u[1] != 0 and not (_adaptive and u[1] == _last)]
         for _batch in (_stage1, _stage2, _stage3):
             if _batch:
                 await _run(_batch)
+        if _adaptive:
+            from diag_project.services.outer_merge import disagreeing_subs
+            _fourth = []
+            for k in competency_keys:
+                _diff = disagreeing_subs([by_unit[(k, o)] for o in range(_last)])
+                if _diff:
+                    _fourth.append((k, frozenset(_diff)))
+                else:
+                    by_unit[(k, _last)] = None            # 생략 — 병합은 앞 run 들만으로 그 대역량을 확정한다
+                    if progress is not None:
+                        progress.deep_done(k, _last)
+                        progress.unit_done(k, _last)
+            logger.info("🔁 적응형 교차검증 3회째: %d/%d 대역량 %s", len(_fourth), len(competency_keys),
+                        ", ".join(f"{k}({len(f)}칸)" for k, f in _fourth) or "전부 생략")
+            if _fourth:
+                _res4 = await asyncio.gather(*[
+                    self._analyze_unit(k, _chapter_data(k), _full_for(k),
+                                       _asked.get(k) or set(), _last, role_summary,
+                                       progress, focus_subs=set(f))
+                    for k, f in _fourth])
+                by_unit.update({(k, _last): r for (k, _f), r in zip(_fourth, _res4)})
         return [{k: by_unit[(k, o)] for k in competency_keys}
                 for o in range(n_outer)]
 
@@ -2434,14 +2494,24 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             history, chapter_transcripts)
         _asked = asked_subcompetencies or {}
         # (2026-10-29 P2-4) outer0 를 먼저 끝내 접두(시스템+로그+역량 블록)를 캐시에 올린 뒤 나머지 outer 를 병렬로.
-        await self._analyze_unit(chapter, _chapter_data(chapter), _full_for(chapter),
-                                 _asked.get(chapter) or set(), 0, role_summary)
+        # (2026-11-02 P3) 적응형: 마지막 run 은 앞 run 들이 갈렸을 때만, 갈린 칸 한정 — analyze 가 같은 판단을 해 같은 키로 적중한다.
+        _r0 = await self._analyze_unit(chapter, _chapter_data(chapter), _full_for(chapter),
+                                       _asked.get(chapter) or set(), 0, role_summary)
         if _ANALYSIS_OUTER_RUNS > 1:
-            await asyncio.gather(*[
+            _adaptive = _ADAPTIVE_OUTER and _ANALYSIS_OUTER_RUNS >= 3
+            _last = _ANALYSIS_OUTER_RUNS - 1
+            _prev = [_r0] + list(await asyncio.gather(*[
                 self._analyze_unit(chapter, _chapter_data(chapter),
                                    _full_for(chapter),
                                    _asked.get(chapter) or set(), o, role_summary)
-                for o in range(1, _ANALYSIS_OUTER_RUNS)])
+                for o in range(1, _last if _adaptive else _ANALYSIS_OUTER_RUNS)]))
+            if _adaptive:
+                from diag_project.services.outer_merge import disagreeing_subs
+                _diff = disagreeing_subs(_prev)
+                if _diff:
+                    await self._analyze_unit(chapter, _chapter_data(chapter), _full_for(chapter),
+                                             _asked.get(chapter) or set(), _last, role_summary,
+                                             focus_subs=set(_diff))
 
     @classmethod
     def chapter_deep_cached(cls, history, chapter_transcripts,
@@ -2452,7 +2522,9 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         _chapter_data, _full_for = cls._chapter_inputs(
             history, chapter_transcripts)
         asked = (asked_subcompetencies or {}).get(chapter) or set()
-        for o in range(_ANALYSIS_OUTER_RUNS):
+        # (P3) 적응형이면 마지막 run 은 조건부 — 앞 run 들만 본다.
+        _n_chk = _ANALYSIS_OUTER_RUNS - 1 if (_ADAPTIVE_OUTER and _ANALYSIS_OUTER_RUNS >= 3) else _ANALYSIS_OUTER_RUNS
+        for o in range(_n_chk):
             for ck in _deep_cache_keys(chapter, _chapter_data(chapter),
                                        _full_for(chapter), asked, o,
                                        provider=provider):
