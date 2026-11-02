@@ -180,6 +180,16 @@ def is_generalized_answer(text: str | None) -> bool:
 _PAST_LOOSE_RE = re.compile(r"(았|었|했|됐|였|갔|왔|냈|봤|줬|렸|졌)(어요|습니다|죠|고|는데|고요|어|지요|습니까|다|던|을|네요|거든요|잖아요)")
 
 
+def is_generalized_evidence(text: str | None) -> bool:
+    """(2026-11-02 핫픽스) 분석 게이트용 일반화 판정 — 원래 규칙(습관 표지 있음 AND 시점 표지 없음)만.
+    is_generalized_answer 는 P1-3(2026-10-29)에서 대화 탐침용으로 넓혔는데(시점 없음 단독) 게이트 split_generalized 가 그것을 그대로 써서
+    근거 '문장'(대부분 시점 표지가 없는 한 문장)이 일반화로 탈락했다 — 같은 세션의 근거 측정이 25 → 7~10 으로 무너졌다(10/29 15:30 배포 이후 운영 영향)."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_HABIT_MARK_RE.search(t)) and not _TIME_MARK_RE.search(t)
+
+
 # 부재 진술(absence statement) 표지 — "그런 경험은 없다 / 만들어두지 못했다 /
 # (위임 등을) 하지 않고 직접 챙긴다". 회피 키워드('모르겠')는 없지만
 # 채점 가능한 '구체 행동 사건'이 아니다. 곧바로 measured 로 통과시키면 안 되고,

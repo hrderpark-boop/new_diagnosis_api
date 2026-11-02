@@ -187,10 +187,10 @@ def concession_fix(verified: int | None, reason: str) -> tuple:
 # (2026-10-23 E-3) 일반화 결정론 전처리 — 시점 표지 없음 + 습관 표지 있는 근거 문장은 게이트 전에 '일반화'로 고정(4번 탐침과 같은 사전).
 def split_generalized(evidence: list) -> tuple:
     """(남는 근거, 일반화로 걸러진 근거)."""
-    from diag_project.services.avoidance_detector import is_generalized_answer
+    from diag_project.services.avoidance_detector import is_generalized_evidence   # (2026-11-02 핫픽스) 대화용 넓은 규칙 금지
     keep, gen = [], []
     for e in evidence or []:
-        (gen if is_generalized_answer(e) else keep).append(e)
+        (gen if is_generalized_evidence(e) else keep).append(e)
     return keep, gen
 
 
