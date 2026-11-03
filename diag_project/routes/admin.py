@@ -9,6 +9,7 @@
 # 모든 엔드포인트는 get_current_admin 을 통과해야 하며, 회사 격리는
 # AdminContext.scope_query() 로 질의 단계에서 강제된다.
 
+import asyncio
 import io
 import logging
 from collections import defaultdict
@@ -649,6 +650,25 @@ async def admin_restore_session(
 #   ① last_analysis 마커 초기화(fail_count 0) + 알림 목록 정리 → ② 참가자 경로와 같은 analyze 를 동기 실행.
 #   완주(completed) 세션만 대상. analyze 의 409(진행 중)·503(또 실패)은 그대로 전달한다.
 # ===========================================================================
+_REANALYZE_TASKS: set = set()   # (2026-11-03) 백그라운드 재분석 태스크 참조(GC 방지)
+
+
+async def _run_admin_reanalyze(session_id: str, caller) -> None:
+    """관리자 재분석 본체 — 자체 DB 세션으로 analyze_session 을 1회 실행한다(재시도 없음).
+    실패는 analyze_session 이 마커(fail_count)·진행 상태(failed)·운영 알림에 남기고, 관리자 화면은 진행 상태를 폴링한다."""
+    from diag_project.database import async_session
+    from diag_project.llm_service import GeminiService
+    from diag_project.routes.reports import analyze_session
+    try:
+        async with async_session() as db:
+            await analyze_session(session_id, db, GeminiService(), caller)
+        logger.info("🔁 관리자 재분석 끝: session=%s", session_id)
+    except HTTPException as e:
+        logger.warning("🔁 관리자 재분석 실패(session=%s): %s %s", session_id, e.status_code, str(e.detail)[:200])
+    except Exception as e:  # noqa: BLE001 — 백그라운드 태스크가 조용히 죽지 않게 로그
+        logger.exception("🔁 관리자 재분석 예외(session=%s): %s", session_id, e)
+
+
 @router.post("/sessions/{session_id}/reanalyze")
 async def admin_reanalyze_session(
     session_id: UUID,
@@ -666,6 +686,24 @@ async def admin_reanalyze_session(
     if s.status != "completed":
         raise HTTPException(status_code=409, detail=f"완주(completed) 세션만 재분석할 수 있습니다. 현재 상태: {s.status}")
 
+    # (2026-11-03 파일럿 준비) 백그라운드 실행 + 진행 상태 폴링 — 관리자 화면이 수 분짜리 응답을 기다리지 않는다.
+    #   순서: 진행 중이면 409 → 교정본이면 시작하지 않고 skipped → 마커 초기화·알림 제거 → 태스크 시작 → 202.
+    #   (2026-10-29 보안 P0 뒤 analyze_session 은 caller 가 필수인데 여기서 넘기지 않아 운영에서 500 이 났다 — 관리자 호출자를 넘긴다.)
+    from fastapi.responses import JSONResponse
+    from diag_project.models.diagnosis_report import DiagnosisReport
+    from diag_project.routes.reports import protected_human_edited
+    from diag_project.services import analysis_progress
+    from diag_project.services.participant_auth import Caller
+    if analysis_progress.is_running(str(session_id)):
+        raise HTTPException(status_code=409, detail={"message": "Analysis already in progress",
+                                                     "progress": analysis_progress.get(str(session_id))})
+    _existing = list((await db.execute(
+        select(DiagnosisReport).where(DiagnosisReport.session_id == session_id))).scalars().all())
+    _prot = protected_human_edited(_existing)
+    if _prot is not None:
+        return {"reset": None, "started": False, "session_id": str(session_id),
+                "analysis": {"skipped": "human_edited", "report_id": str(_prot.id),
+                             "message": "관리자 교정본이 있어 재분석하지 않았습니다. 기존 리포트를 유지합니다."}}
     sd = dict(s.self_assessment_data or {})
     prev = sd.get("last_analysis") or {}
     marker = reset_analysis_marker(prev, getattr(ctx.admin, "email", "?"))
@@ -675,14 +713,14 @@ async def admin_reanalyze_session(
     db.add(s)
     await db.commit()
     clear_report_failure(str(session_id))
-    logger.info("🔁 관리자 재분석: admin=%s session=%s prev=%s/%d",
+    logger.info("🔁 관리자 재분석(백그라운드): admin=%s session=%s prev=%s/%d",
                 marker["by"], session_id, marker["prev_status"], marker["prev_fail_count"])
-
-    out = await analyze_session(str(session_id), db, GeminiService())
-    if hasattr(out, "body"):            # 관리자 교정본 보호 → JSONResponse(200, skipped=human_edited)
-        import json as _json
-        out = _json.loads(out.body)
-    return {"reset": marker, "analysis": out}
+    _task = asyncio.get_running_loop().create_task(_run_admin_reanalyze(str(session_id), Caller(admin=ctx)))
+    _REANALYZE_TASKS.add(_task)
+    _task.add_done_callback(_REANALYZE_TASKS.discard)
+    return JSONResponse(status_code=202, content={
+        "reset": marker, "started": True, "session_id": str(session_id),
+        "progress_path": f"/reports/{session_id}/progress"})
 
 
 # ===========================================================================

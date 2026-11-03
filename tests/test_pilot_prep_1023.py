@@ -122,19 +122,27 @@ def test_admin_reanalyze_resets_marker_then_calls_analyze(client, auth_headers, 
     M.record_report_failure(sid, "people_management", "e9", 3)
     seen = {}
 
-    async def _fake_analyze(session_id, db, llm):
+    async def _fake_analyze(session_id, db, llm, caller=None):
         seen["sid"] = session_id
+        seen["caller_admin"] = getattr(caller, "is_admin", None)
         s = await db.get(D.DiagnosisSession, uuid.UUID(session_id))
         seen["marker_at_call"] = dict(s.self_assessment_data["last_analysis"])
         return {"status": "success", "report_id": "fake"}
     monkeypatch.setattr(R, "analyze_session", _fake_analyze)
 
+    # (2026-11-03) 백그라운드 실행 — 202 로 바로 돌아오고 분석은 태스크로 돈다(관리자 호출자 전달)
     r = client.post(f"/api/v1/admin/sessions/{sid}/reanalyze", headers=auth_headers)
-    assert r.status_code == 200, r.text
+    assert r.status_code == 202, r.text
     body = r.json()
+    assert body["started"] is True and body["progress_path"].endswith(f"/reports/{sid}/progress")
+    import asyncio as _aio
+    for _ in range(40):                      # 가짜 analyze 가 끝날 때까지(sid 는 await 전에 찍히므로 marker 를 기다린다)
+        if "marker_at_call" in seen:
+            break
+        client.portal.call(_aio.sleep, 0.05)
     assert seen["sid"] == sid and seen["marker_at_call"]["status"] == "reset" and seen["marker_at_call"]["fail_count"] == 0
+    assert seen["caller_admin"] is True
     assert body["reset"]["prev_fail_count"] == 3 and body["reset"]["prev_error_id"] == "e9"
-    assert body["analysis"]["status"] == "success"
     assert all(x["session_id"] != sid for x in M.REPORT_FAILURES)          # 알림 목록에서도 제거
     # 완주가 아닌 세션은 409, 없는 세션은 404, 인증 없음은 401
     _, sid_ip = _make_rows(client, status="in_progress")
