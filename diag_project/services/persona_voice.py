@@ -169,9 +169,16 @@ _MQ_HOW_RE = re.compile(r"어떻게 (?P<v>\S*셨)(?:어요|나요|습니까|을�
 _MQ_RESULT_RE = re.compile(r"어떻게 됐(?:어요|나요|습니까|을까요)\?$")
 
 
-def _michael_request(body: str) -> str:
-    """Michael 요청형 변환. 구조 규칙 → 어미표 → 변환 불가면 원문."""
+# (2026-11-04 P3 3차) 앵커 꼬리 3종 순환 — Michael: '하나만 들려주세요.' / '떠오르는 게 있으세요?' / '기억나는 일 있으면 얘기해 주세요.'
+#   '…는지 들려주세요.' 꼴은 '…는지 떠오르는 대로 말씀해 주세요.' / '…는지 기억나는 대로 얘기해 주세요.' 로.
+_MQ_EXIST_TAILS = ("하나만 들려주세요.", "떠오르는 게 있으세요?", "기억나는 일 있으면 얘기해 주세요.")
+_MQ_NUNJI_TAILS = ("들려주세요.", "떠오르는 대로 말씀해 주세요.", "기억나는 대로 얘기해 주세요.")
+
+
+def _michael_request(body: str, variant: int = 0) -> str:
+    """Michael 요청형 변환. 구조 규칙 → 어미표 → 변환 불가면 원문. variant 로 꼬리 3종 순환."""
     b = body.strip()
+    v = int(variant or 0) % 3
     m = _MQ_RESULT_RE.search(b)
     if m:
         out = b[:m.start()] + "어떻게 됐는지도요."
@@ -179,27 +186,51 @@ def _michael_request(body: str) -> str:
         return out if not out.startswith("어떻게") else "그 뒤 " + out
     m = _MQ_WHAT_RE.search(b)
     if m:
-        return b[:m.start()] + f"어떤 {m.group('n')}이었는지 들려주세요."
+        return b[:m.start()] + f"어떤 {m.group('n')}이었는지 {_MQ_NUNJI_TAILS[v]}"
     m = _MQ_HOW_RE.search(b)
     if m:
-        out = b[:m.start()] + f"어떻게 {m.group('v')}는지 들려주세요."
+        out = b[:m.start()] + f"어떻게 {m.group('v')}는지 {_MQ_NUNJI_TAILS[v]}"
         return "그때 " + out if out.startswith("어떻게") and "때" not in b else out
     m = _MQ_EXIST_RE.match(b)
     if m:
         pre, verb, nm, head, time = m.group("pre"), m.group("verb"), m.group("nm"), m.group("head"), m.group("time")
         nm2 = "셨던" if nm == "신" else nm
         head2 = {"적": "일", "게": "것"}.get(head, head)
+        if v == 2 and head in ("일", "적") and nm in ("신", "셨던"):
+            nm2, head2 = nm, "적"          # '…맞추신 적, 기억나는 일 있으면 얘기해 주세요.' ('일 … 일' 중복 회피)
         if nm in ("싶은", "던") and not verb:
             core = f"{pre}{nm2} {head2}"
         else:
             core = f"{pre}{verb}{nm2} {head2}"
         core = re.sub(r"\s{2,}", " ", core).strip()
         lead = f"{time} " if time and not re.match(r"^" + _MQ_TIME, core) else ""
-        return f"{lead}{core}, 하나만 들려주세요."
+        return f"{lead}{core}, {_MQ_EXIST_TAILS[v]}"
     for pat, rep in _MICHAEL_ENDINGS:
         if re.search(pat, b):
-            return re.sub(pat, rep, b)
+            out = re.sub(pat, rep, b)
+            return out[:-len("들려주세요.")] + _MQ_NUNJI_TAILS[v] if v and out.endswith("들려주세요.") else out
     return body
+
+
+# (2026-11-04 P3 3차) Ella·Jessica·Olivia·Lucas 의 존재 질문 앵커 꼬리 3종(variant 0 은 기본 어미 그대로).
+_EXIST_TAIL_RE = re.compile(r"^(?P<core>.*?(?:일|적|경험|결정|행동|순간|게|것))(?:이|을|,)?\s*(?P<time>최근에|근래에|요즘|올해 들어|지난 몇 달 사이에|최근)?\s*(?P<ex>있[가-힣]*\?)$")
+_EXIST_TAILS = {
+    "Ella": ("떠오르는 게 있어요?", "기억나는 게 있으면 들려주세요."),
+    "Jessica": ("떠오르는 것이 있습니까?", "기억나는 일이 있으면 말씀해 주십시오."),
+    "Olivia": ("떠오르는 게 있을까요?", "기억나는 게 있다면 들려주실래요?"),
+    "Lucas": ("떠오르는 게 있나요?", "기억나는 일 있으면요?"),
+}
+
+
+def _vary_exist_tail(text: str, key: str, variant: int) -> str:
+    v = int(variant or 0) % 3
+    if v == 0 or key not in _EXIST_TAILS:
+        return text
+    m = _EXIST_TAIL_RE.match((text or "").strip())
+    if not m:
+        return text
+    core, time = m.group("core"), m.group("time")
+    return f"{core}, {time + ' ' if time else ''}{_EXIST_TAILS[key][v - 1]}"
 
 
 def _apply_endings(text: str, col: int) -> str:
@@ -237,18 +268,18 @@ def voice_question(persona_name: str | None, text: str, *, variant: int = 0) -> 
         return text
     k = persona_key(persona_name)
     if k == "Ella":
-        return t
+        return _vary_exist_tail(t, k, variant)
     if k == "Olivia":
         # (2026-10-28 P0-3) Olivia 는 '~었을까요?/~을까요?' 의 열린 어미 — Ella(기본 사전 문장)와 같은 문장이 나가지 않게.
         t = re.sub(r"^(혹시|한번|한 번)\s+", "", t)
         for pat, rep in _OLIVIA_ENDINGS:
             if re.search(pat, t):
-                return re.sub(pat, rep, t)
-        return t
+                return _vary_exist_tail(re.sub(pat, rep, t), k, variant)
+        return _vary_exist_tail(t, k, variant)
     if k == "Jessica":
         t = re.sub(r"^(혹시|조금|한번|한 번)\s+", "", t)
         t = t.replace("뭘 ", "무엇을 ").replace("걸 ", "것을 ")
-        return _apply_endings(t, 1)
+        return _vary_exist_tail(_apply_endings(t, 1), k, variant)
     if k == "Daniel":
         t = t.replace("뭘 ", "무엇을 ").replace("걸 ", "것을 ")
         return _daniel(t, variant)
@@ -257,13 +288,13 @@ def voice_question(persona_name: str | None, text: str, *, variant: int = 0) -> 
         body = re.sub(r"^(좋습니다[,!.]?\s*)", "", t)
         # (2026-10-29 P1-2) 어절 첫머리의 '하신 적'에만 — '전하신 적·조정하신 적·배려하신 적'이 '전직접 하신 적'으로 깨지던 것(p11 Michael 앵커 4종)
         body = re.sub(r"(?<![가-힣])하신 적", "직접 하신 적", body, count=1) if "직접" not in body else body
-        return _michael_request(body)
+        return _michael_request(body, variant)
     if k == "Lucas":
         s = t
         for pat, rep in _LUCAS_CUTS:
             s = re.sub(pat, rep, s)
         s = re.sub(r"\s{2,}", " ", s).strip()
-        return s if s.count("?") == 1 else t
+        return _vary_exist_tail(s, k, variant) if s.count("?") == 1 else t
     return t
 
 

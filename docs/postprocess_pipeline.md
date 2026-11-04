@@ -40,6 +40,9 @@
 | 20 | 문법 치환 | "있으시겠습니까"→"있으셨습니까" 문자열 치환 | 09-21 | 안 자름 | 보장 |
 | 21 | 8-h 느낌표 상한 ★ | 페르소나 상한(Michael 1·안내턴 0, 나머지 0) 초과 → LLM 턴은 재생성 1회 → 그래도 초과면 '!'→'.' 치환. 템플릿 턴은 치환만 | 09-15 | 안 자름(부호 치환·재생성) | 보장(재생성 결과는 8-i 를 다시 안 지남 — 주의) |
 | 22 | 9 사건 생명주기·저장 ★ | **09-22: probe_type_used = `event_tracker.probe_type_for`(instruction·문장 표지), 사건 생성·STAR 슬롯·완결 = `event_tracker.plan_event_update`(직전 코치 질문·사용자 발화; LLM 자기보고 JSON 폐기)**, 원장 전진(`apply_probe_turn`/`bump_turns_only`), ChatMessage 저장, guard_log 기록. **09-22: 턴 끝 1회 커밋 — 사용자 메시지·코치 메시지·원장·사건·guard_log 가 한 트랜잭션, 실패 시 롤백+503(부분 저장 없음)** | 04-28 · guard_log 09-18 · route 09-21 · 09-22 결정론·1회 커밋 | 안 자름 | 무관 |
+| 8-i(칭찬) | 깨진 문장 복구 (`# 8-i` praise 분기, output_guard.is_broken_sentence) | 칭찬 구절 제거 뒤 서술어 없이 끝난 평서문('…점이 이에요.')이 있으면 되받기 재생성 1회(replace_broken_statements), 실패 시 그 문장 삭제. guard_log broken_fix 1/2 | 2026-11-04 P3 3차 | 깨진 문장만 교체 | 보장 |
+| 리드 상한 | 권유문 제거 (`strip_suggestion_statements`) | 프로브 턴에서 되받기 뒤 LLM 권유 평서문('…떠올려 주셔도 좋아요.')을 지운다(질문 보존). splice_receive 도 권유문을 되받기로 세지 않는다. guard_log suggestion_cut | 2026-11-04 P3 3차 | 평서문 삭제 | 보장 |
+| 8-j·어미 | 반복 분산 | 전환 다리 3종(intro_messages.target_bridges, 원장 bridge_idx 순환) · 앵커 꼬리 3종(persona_voice variant = voice_variant_count 세션 누적). 린트 '연속반복 다리/꼬리' 0 기준 | 2026-11-04 P3 3차 | — | — |
 | 8-w | 되받기 필수 (`# 8-w.`, services/receive_check) | 대화 턴(STAR_INCOMPLETE·CONTINUE_NORMAL·CONTRARY_NEEDED·STAR_COMPLETE_NEW_EVENT·ABSENCE_PROBE·NO_YIELD)은 [되받기 1~2문장(리더 직전 답 명사구 인용)] + [질문]. 되받기가 없거나 명사구를 인용하지 않으면 되받기만 재생성 1회(질문부·슬롯·다리 고정 문장은 splice 로 보존), 그래도면 폴백 `'[명사구]'까지 말씀해 주셨네요.` 되받기 상한은 리더 답 150자 미만 1문장 / 이상 2문장. guard_log receive_fix 1 재생성/2 폴백 · receive_src 되받기가 깨진 단계(llm/probe/8-n/8-o, 단계별 스냅숏 비교; 8-w 는 8-o 직후·8-p 앞에서 돈다) · receive_phrase 인용 명사구 | 2026-11-04 P3-1(2차: 소실 단계 기록) | 되받기 평서문만 교체 | 보장(질문부 불변) |
 
 주의 두 가지

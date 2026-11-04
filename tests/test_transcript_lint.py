@@ -251,3 +251,17 @@ def test_receive_metrics_and_michael_slot_kinds(lex):
     assert tl._slot_sentence_kept("Michael", f"정하셨군요. {PERSONA_LINES['Michael']['slot_lead']} 그 뒤에는요?", "Michael")
     assert not tl._slot_sentence_kept("Michael", "정하셨군요. 그 뒤에는요?", "Michael")
     assert tl._slot_sentence_kept("Michael", f"정하셨군요. {PERSONA_LINES['Michael']['slot_q']}", "Michael_q")
+
+
+def test_repeat_metrics_bridge_and_tail(lex):
+    """(2026-11-04 P3 3차) 같은 전환 다리 연속 2회 · 시스템 질문 꼬리 연속 2회를 센다."""
+    u = "신입 교육을 온라인 사전학습으로 바꾸고 현업 활용 설문으로 효과를 확인했습니다."
+    g = lambda t, **k: {"t": t, "ch": "organization_management", "instr": "STAR_COMPLETE_NEW_EVENT", "target_bridge": 1, "voiced": 1, **k}  # noqa: E731
+    rows = [_row(1, "user", u), _row(1, "model", "현업 활용까지 보셨군요. 자, 다음은 다른 쪽이에요. 최근에 뜻을 맞추셨던 일, 하나만 들려주세요.", instr="STAR_COMPLETE_NEW_EVENT", guard=g(1)),
+            _row(2, "user", u), _row(2, "model", "설문까지 하셨군요. 자, 다음은 다른 쪽이에요. 최근에 기준을 정하셨던 일, 하나만 들려주세요.", instr="STAR_COMPLETE_NEW_EVENT", guard=g(2)),
+            _row(3, "user", u), _row(3, "model", "효과를 확인하셨군요. 이번엔 방향을 바꿔볼게요. 최근에 배려하셨던 일, 떠오르는 게 있으세요?", instr="STAR_COMPLETE_NEW_EVENT", guard=g(3))]
+    r = tl.analyze(_data(rows, coach="5"), lex)
+    assert r["bridge_repeat"] == 1 and r["tail_repeat"] == 1
+    assert [x["kind"] for x in r["repeat_issues"]] == ["bridge", "tail"]
+    md = tl.render_markdown([r], {"per_coach": {}, "pairs": 0, "duplicates": []}, lex)
+    assert "연속반복 다리/꼬리" in md and "| 1/1 |" in md

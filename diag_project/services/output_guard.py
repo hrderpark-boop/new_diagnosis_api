@@ -40,10 +40,10 @@ def is_question(sentence: str) -> bool:
 
 # (2026-10-28 P0-4) '떠올려 주시면 좋겠습니다'·'들려주시지요' 류 청유도 간접 질문 — 정의 턴에서 LLM 질문으로 남아 고정 정의 질문과 겹쳤다.
 # (2026-11-04 P3-4 2차) Michael 요청형 '…됐는지도요.'(생략형 청유)도 질문.
-_INDIRECT_Q_RE = re.compile(r"((는지|은지|인지)도요|궁금(해요|합니다|하네요|한데요|해지네요)|들려주(세요|시죠|시지요|실래요)|떠올려\s*주세요|말씀해\s*주세요|"
+_INDIRECT_Q_RE = re.compile(r"((는지|은지|인지)도요|궁금(해요|합니다|하네요|한데요|해지네요)|들려주(세요|시죠|시지요|실래요)|떠올려\s*주세요|말씀해\s*주세요|얘기해\s*주세요|있으면요|"
                             r"말씀해\s*주시(면|겠)|들려주시(면|겠)|이야기해\s*주세요|알려주세요|"
-                            r"(떠올려|들려|말씀해|이야기해|알려|보여|설명해)\s*주시면\s*(좋겠|감사|됩니다|돼요)[가-힣]*|"
-                            r"(떠올려|들려|말씀해|이야기해|알려|보여|설명해)\s*주(시겠|십시오|실까요|시지요|시죠)[가-힣]*|"
+                            r"(떠올려|들려|말씀해|이야기해|얘기해|알려|보여|설명해)\s*주시면\s*(좋겠|감사|됩니다|돼요)[가-힣]*|"
+                            r"(떠올려|들려|말씀해|이야기해|얘기해|알려|보여|설명해)\s*주(시겠|십시오|실까요|시지요|시죠)[가-힣]*|"
                             r"(는지|은지|인지)(만|를|도)?\s*(구체적으로\s*|먼저\s*)?(여쭙니다|여쭙겠습니다|여쭤보겠습니다|여쭤봅니다|여쭤볼게요|여쭤볼게|물어볼게요|묻겠습니다|여쭙겠어요|확인하고\s*싶습니다|여쭙고\s*싶습니다|알고\s*싶습니다|듣고\s*싶습니다))[.!…]?$")
 
 
@@ -314,7 +314,7 @@ def receive_sentences(text: str, max_statements: int = 2, allow_question: bool =
     return " ".join(out)
 
 
-_REQUEST_Q_RE = re.compile(r"(들려주세요|는지도요)[.!…]?$")
+_REQUEST_Q_RE = re.compile(r"(들려주세요|는지도요|얘기해\s*주세요|말씀해\s*주세요|말씀해\s*주십시오)[.!…]?$")
 
 
 def count_questions(text: str) -> int:
@@ -322,6 +322,53 @@ def count_questions(text: str) -> int:
     ALIGN 안내문('떠올려 주시면 됩니다')처럼 is_question 이 간접 질문으로 보는 고정 문장은 세지 않는다 — 앵커·ALIGN '질문 1개' 판정용."""
     t = text or ""
     return t.count("?") + t.count("？") + sum(1 for s in split_sentences(t) if "?" not in s and _REQUEST_Q_RE.search(s.strip()))
+
+
+# (2026-11-04 P3 3차) 서술어 없이 끝난 문장 — 칭찬 구절 제거가 서술어를 지운 흔적('…보셨다는 점이 이에요.'). 조사로 끝나거나 계사 어절만 남은 문장.
+_COPULA_ALONE = {"이에요", "예요", "이네요", "입니다", "이죠", "이군요", "이시네요", "이었어요", "이었습니다", "이고요", "이라서요", "인데요", "이에요.", "입니다."}
+_PARTICLE_END_RE = re.compile(r"[가-힣]+(이|가|은|는|을|를|의|에|에서|에게|으로|로|과|와|도|까지|부터)$")
+_SUGGESTION_RE = re.compile(r"((주|보|하|해\s*보|떠올려\s*보|생각해\s*보)셔도\s*(좋아요|좋습니다|괜찮아요|괜찮습니다|돼요|됩니다|좋겠어요|좋겠습니다)|"
+                            r"(떠올려|생각해|돌아봐|짚어)\s*보(세요|셔요|시죠|시지요)|주셔도\s*(좋|괜찮)[가-힣]*)[.!…]?$")
+
+
+def is_broken_sentence(sentence: str) -> bool:
+    s = (sentence or "").strip()
+    if not s or is_question(s):
+        return False
+    toks = s.rstrip(".!…").split()
+    if not toks:
+        return False
+    last = toks[-1]
+    if last in _COPULA_ALONE:
+        return True
+    return bool(_PARTICLE_END_RE.fullmatch(last)) and not re.search(r"(다|요|죠|네|까|오|게|지|며|고)$", last)
+
+
+def broken_statements(text: str) -> list[str]:
+    return [s for s in split_sentences(text or "") if is_broken_sentence(s)]
+
+
+def replace_broken_statements(text: str, new_text: str | None) -> str:
+    """깨진 평서문을 new_text 의 멀쩡한 평서문으로 하나씩 바꾼다(없으면 삭제). 질문·고정 문장은 그대로."""
+    pool = [s.strip() for s in split_sentences(new_text or "") if s.strip() and not is_question(s) and not is_broken_sentence(s)]
+    out = text or ""
+    for b in broken_statements(out):
+        out = out.replace(b, pool.pop(0) if pool else "", 1)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
+def strip_suggestion_statements(text: str) -> tuple[str, int]:
+    """(2026-11-04 P3 3차) 되받기 뒤에 붙는 LLM 권유 평서문('…장면을 떠올려 주셔도 좋아요.')을 지운다. 질문은 그대로. (결과, 지운 수)"""
+    sents = split_sentences(text or "")
+    bad = [s for s in sents if not is_question(s) and _SUGGESTION_RE.search(s.strip())]
+    if not bad:
+        return text, 0
+    out = text
+    for b in bad:
+        out = out.replace(b, "", 1)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return re.sub(r"\n{3,}", "\n\n", out).strip(), len(bad)
 
 
 def keep_last_question(text: str) -> tuple[str, int]:

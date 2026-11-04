@@ -239,6 +239,8 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         "receive_turns": 0, "no_receive_turns": 0, "receive_no_quote_turns": 0, "receive_issues": [],
         # (2026-11-04 P3-1 2차) 폴백 발동 수(receive_fix=2)·재생성 수(=1)·폴백 명사구 표본·되받기 소실 단계 분포
         "receive_fallback_turns": 0, "receive_regen_turns": 0, "receive_fallback_phrases": [], "receive_src": {},
+        # (2026-11-04 P3 3차) 같은 전환 다리가 연속 2회 · 시스템 질문(앵커·사다리) 꼬리(마지막 2어절)가 연속 2회 — 목표 0
+        "bridge_repeat": 0, "tail_repeat": 0, "repeat_issues": [],
         "generalize_turns": 0, "generalize_by_chapter": {}, "direct_q_by_target": {}, "direct_excess": 0,
         "endings": {}, "anchors": [],
     }
@@ -247,6 +249,10 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
     direct_by_target: Counter = Counter()
     prev_user: str | None = None
     prev_coach: str | None = None
+    prev_bridge: str | None = None
+    prev_tail: str | None = None
+    from diag_project.services.intro_messages import target_bridge_lines as _tbl_lint
+    _bridge_lines = _tbl_lint(coach_name)
     user_tokens: set[str] = set()
 
     for i, row in enumerate(rows):
@@ -356,6 +362,19 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         lq = last_question(content)
         if lq:
             endings[ending_of(lq)] += 1
+        # 6-b. (2026-11-04 P3 3차) 연속 반복: 전환 다리 문장 / 시스템 질문 꼬리(마지막 2어절)
+        _br_now = next((b for b in _bridge_lines if re.sub(r"\s+", "", b) in re.sub(r"\s+", "", content or "")), None)
+        if _br_now:
+            if _br_now == prev_bridge:
+                res["bridge_repeat"] += 1
+                res["repeat_issues"].append({"t": t, "kind": "bridge", "text": _br_now})
+            prev_bridge = _br_now
+        if lq and (g.get("voiced") or g.get("target_bridge") or g.get("ladder") or g.get("anchor")):
+            _tail_now = " ".join(lq.rstrip("?.!…").split()[-2:])
+            if _tail_now and _tail_now == prev_tail:
+                res["tail_repeat"] += 1
+                res["repeat_issues"].append({"t": t, "kind": "tail", "text": _tail_now})
+            prev_tail = _tail_now
         # 7. 앵커
         kind = _is_anchor_turn(row)
         if kind and lq:
@@ -402,17 +421,18 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
     L: list[str] = []
     L.append("## 코치 재생 전문 린트 요약")
     L.append("")
-    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total | 잘림 | 미감지 a/b | 사다리(<2 챕터) | 사다리 건너뜀/교체 | 슬롯 챕터(문장 보존/복원) | 좋습니다 챕터최대 | 되받기 없음/미인용(대상) | 폴백/재생성 | 일반화 | 직접하신 초과 | 동일앵커 |")
-    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total | 잘림 | 미감지 a/b | 사다리(<2 챕터) | 사다리 건너뜀/교체 | 슬롯 챕터(문장 보존/복원) | 좋습니다 챕터최대 | 되받기 없음/미인용(대상) | 폴백/재생성 | 연속반복 다리/꼬리 | 일반화 | 직접하신 초과 | 동일앵커 |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for r in results:
         same = cross["per_coach"].get(r["coach"], 0)
         L.append(f"| {r['coach_name']}({r['coach']}) | {os.path.basename(r['file'])} | {r['leak_total']}/{r['leak_strict_total']} | {r['leak_final_turns']} | "
                  f"{r['align_pass']}/{r['align_total']} | {r['truncated_total']} | "
                  f"{r['repeat_a_missed']}/{r['repeat_a_cases']} · {r['repeat_b_missed']}/{r['repeat_b_cases']} | "
-                 f"{r['ladder_turns']}({len(r['ladder_short_chapters'])}) | {r['ladder_skipped']}/{r['ladder_swapped']} | {r['slot_chapters']}/5({r['slot_kept']}/{r['slot_turns']}, 복원 {r['slot_restored']}) | {r['good_lead_max']} | {r['no_receive_turns']}/{r['receive_no_quote_turns']}({r['receive_turns']}) | {r['receive_fallback_turns']}/{r['receive_regen_turns']} | {r['generalize_turns']} | {r['direct_excess']} | {same} |")
+                 f"{r['ladder_turns']}({len(r['ladder_short_chapters'])}) | {r['ladder_skipped']}/{r['ladder_swapped']} | {r['slot_chapters']}/5({r['slot_kept']}/{r['slot_turns']}, 복원 {r['slot_restored']}) | {r['good_lead_max']} | {r['no_receive_turns']}/{r['receive_no_quote_turns']}({r['receive_turns']}) | {r['receive_fallback_turns']}/{r['receive_regen_turns']} | {r['bridge_repeat']}/{r['tail_repeat']} | {r['generalize_turns']} | {r['direct_excess']} | {same} |")
     L.append("")
     L.append("- 미감지 a/b: (직전 사용자 턴 반복 미감지/발생) · (코치 질문 붙여넣기 미감지/발생)")
     L.append("- 폴백/재생성: 8-w 되받기 폴백 삽입 턴 수 / 되받기 재생성 턴 수. 폴백이 세션당 3회를 넘으면 아래 '되받기 소실 단계'를 본다.")
+    L.append("- 연속반복 다리/꼬리: 같은 전환 다리 문장이 연속 2회 / 시스템 질문(앵커·사다리) 꼬리(마지막 2어절)가 연속 2회 — 0 이어야 함.")
     for r in results:
         if not r["receive_fallback_phrases"]:
             continue

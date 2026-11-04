@@ -72,7 +72,7 @@ def test_route_wiring():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
     assert "render_align as _ra" in src and "align_shape_ok as _aso" in src      # (2026-10-28 P0-1) ALIGN 결정론 조립
     assert "align_topic_bridge" in open(os.path.join(ROOT, "diag_project", "services", "align_render.py"), encoding="utf-8").read()
-    assert "cap_leads_persona as _clp" in src and "'target_bridge')" in src   # (2026-11-04 P3-3) 전환 다리는 고정 문장(transition_bridge 배선 제거)
+    assert "cap_leads_persona as _clp" in src and "target_bridge_line as _tbl_j" in src   # (2026-11-04 P3-3) 전환 다리는 고정 문장 3종 순환(transition_bridge 배선 제거)
     assert "max_statements=_cap_p" in src
 
 
@@ -86,7 +86,8 @@ def test_persona_lines_complete_and_structural():
         for k in ("role_q", "expect_q", "smalltalk_q", "result_a", "result_b", "quantify", "action", "one_more", "generalize"):
             assert G.has_question(d[k]), (p, k)
         for v in d.values():
-            assert not G.find_banned_tail(v)
+            for x in (v if isinstance(v, list) else [v]):   # (2026-11-04 P3 3차) target_bridges 는 3종 목록
+                assert not G.find_banned_tail(x)
     assert persona_line("Michael (마이클)", "action") == "좋습니다, 그때 리더님 몫은 어디까지였어요?"   # (2026-10-29 P1-2) 문안 완화
     assert persona_line("Jessica", "action") == "리더님 손으로 직접 하신 부분은 어디까지였습니까?"
     assert persona_line("Ella", "action") == "그 자리에서 리더님 몫은 어디까지였어요?"

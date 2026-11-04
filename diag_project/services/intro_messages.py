@@ -132,6 +132,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "slot_q2": "",
         "slot_lead": "",
         "target_bridge": "이번엔 조금 다른 장면을 여쭤볼게요.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
+        "target_bridges": ['이번엔 조금 다른 장면을 여쭤볼게요.', '여기서 방향을 살짝 틀어 볼게요.', '다른 장면 하나로 넘어가 볼게요.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 것이 있으세요?",
         "smalltalk_q": "오늘 하루는 바쁜 쪽이었어요, 여유 있는 쪽이었어요?",
@@ -168,6 +169,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "slot_q2": "",
         "slot_lead": "",
         "target_bridge": "이번에는 조금 다른 장면을 여쭙겠습니다.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
+        "target_bridges": ['이번에는 조금 다른 장면을 여쭙겠습니다.', '각도를 바꿔 한 가지 더 여쭙겠습니다.', '다른 장면으로 넘어가겠습니다.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "평소 어떤 일을 맡고 계신지 간단히 말씀해 주시겠습니까? 팀 규모와 주요 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 것이 있습니까?",
         "smalltalk_q": "오늘은 바쁜 쪽이었습니까, 여유 있는 쪽이었습니까?",
@@ -204,6 +206,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "slot_q2": "그 팀원 입장에서는 어떤 장면이었을까요?",
         "slot_lead": "",
         "target_bridge": "이번엔 조금 다른 장면으로 가 볼게요.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
+        "target_bridges": ['이번엔 조금 다른 장면으로 가 볼게요.', '여기서 결을 바꿔 볼게요.', '다른 쪽 이야기로 넘어가 볼게요.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "평소 어떤 일을 맡고 계세요? 팀 규모나 주로 하시는 업무 정도면 충분해요.",
         "expect_q": "이번 진단에서 기대하는 게 있다면 뭐예요?",
         "smalltalk_q": "오늘은 바쁜 쪽이었어요, 아니면 여유 있는 쪽이었어요?",
@@ -240,6 +243,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "slot_q2": "",
         "slot_lead": "그 자리, 저도 압니다. 쉽지 않지요.",
         "target_bridge": "이번에는 조금 다른 장면을 여쭤보겠습니다.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
+        "target_bridges": ['이번에는 조금 다른 장면을 여쭤보겠습니다.', '방향을 바꿔 한 가지 더 여쭤보겠습니다.', '다른 장면으로 옮겨 가겠습니다.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "평소 어떤 일을 맡고 계신지 간단히 들려주시겠습니까? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 바가 있으십니까?",
         "smalltalk_q": "오늘 하루는 바쁜 쪽이셨습니까, 여유 있는 쪽이셨습니까?",
@@ -276,6 +280,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "slot_q2": "",
         "slot_lead": "그 선택, 응원합니다.",
         "target_bridge": "자, 다음은 다른 쪽이에요.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
+        "target_bridges": ['자, 다음은 다른 쪽이에요.', '이번엔 방향을 바꿔볼게요.', '다른 장면으로 넘어가요.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "좋습니다, 평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 게 있으세요?",
         "smalltalk_q": "오늘은 바쁜 쪽이었어요, 여유 있는 쪽이었어요?",
@@ -312,6 +317,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "slot_q2": "",
         "slot_lead": "",
         "target_bridge": "다음은 다른 장면입니다.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
+        "target_bridges": ['다음은 다른 장면입니다.', '각도를 바꾸겠습니다.', '다른 쪽으로 가겠습니다.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "평소 맡고 계신 일은요? 팀 규모와 주요 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 건요?",
         "smalltalk_q": "오늘은 바쁜 쪽이었습니까, 여유 있는 쪽이었습니까?",
@@ -359,6 +365,16 @@ def persona_line(persona_name: str | None, key: str, **fmt) -> str:
     """페르소나별 고정 문장. fmt 는 {cn_eul}·{next}·{phrase}·{min} 자리."""
     line = PERSONA_LINES[persona_key(persona_name)].get(key) or PERSONA_LINES["Ella"][key]
     return line.format(**fmt) if fmt else line
+
+
+def target_bridge_lines(persona_name: str | None) -> list[str]:
+    """(2026-11-04 P3 3차) 하위역량 전환 다리 3종(페르소나별)."""
+    return list(PERSONA_LINES[persona_key(persona_name)].get("target_bridges") or [persona_line(persona_name, "target_bridge")])
+
+
+def target_bridge_line(persona_name: str | None, idx: int = 0) -> str:
+    lines = target_bridge_lines(persona_name)
+    return lines[int(idx or 0) % len(lines)]
 
 
 def chapter_end_bridge(next_topic: str, persona_name: str | None = None) -> str:

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from diag_project.services.output_guard import is_question, split_sentences
+from diag_project.services.output_guard import _SUGGESTION_RE, is_question, split_sentences
 
 LONG_ANSWER_CHARS = 150
 RECEIVE_REQUIRED_INSTRUCTIONS = frozenset({
@@ -165,5 +165,6 @@ def splice_receive(reply: str, new_receive: str, cap: int = 1, keep_fixed: list[
     old_stmts, rest = sents[:qi], sents[qi:]
     fixed_norm = {_compact(f) for f in (keep_fixed or []) if f}
     kept = [s for s in old_stmts if _compact(s) in fixed_norm or any(f and _compact(f) in _compact(s) for f in (keep_fixed or []))]
-    new_stmts = [s.strip() for s in split_sentences(new_receive or "") if s.strip() and not is_question(s)][:cap]
+    # (3차) LLM 권유 평서문('…떠올려 주셔도 좋아요.')은 되받기가 아니다 — 상한 밖
+    new_stmts = [s.strip() for s in split_sentences(new_receive or "") if s.strip() and not is_question(s) and not _SUGGESTION_RE.search(s.strip())][:cap]
     return " ".join(new_stmts + kept + rest).strip()

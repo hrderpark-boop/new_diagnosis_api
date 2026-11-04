@@ -58,13 +58,13 @@ def test_pipeline_wiring_receive_required_slot_bridge_exclamation():
     assert "_clp(clean_reply, _lcf(_llm_user_text), _llm_user_text)" in src
     # 전환 턴: 되받기 1문장 + 페르소나 고정 다리 + 앵커
     j = src[src.index("# 8-j."): src.index("# 8-j.") + 6000]
-    assert '"target_bridge")' in j and '_tm["target_bridge"] = 1' in j and "transition_bridge as _tbr)" not in j
+    assert "target_bridge_line as _tbl_j" in j and '_tm["target_bridge"] = 1' in j and "transition_bridge as _tbr)" not in j
     # 느낌표 챕터 상한
     h = src[src.index("# 8-h."): src.index("# 8-x.")]
     assert "EXCLAMATION_PER_CHAPTER as _epc" in h and '_tm["excl_chapter_cap"] = 1' in h
     # (2차) 옛 리드 1문장 상한은 P3-1 상한으로, 전환 다리·슬롯 턴 제외; 8-n 재삽입은 고정 다리
     assert 'if _is_probe and not _tm.get("target_bridge") and not _tm.get("slot"):' in src and "cap_lead_sentences(clean_reply)" not in src
-    assert "transition_bridge as _tbr_n" not in src and "_pl_n((state.get('coach_persona') or {}).get('name'), 'target_bridge')" in src
+    assert "transition_bridge as _tbr_n" not in src and "_tbl_n((state.get('coach_persona') or {}).get('name'), _bridge_idx())" in src
     # (2차) 8-n 입버릇: 고정 문장은 집계에서 빼고, 앵커·사다리·슬롯 턴의 재생성은 되받기만 교체
     assert "_sans_fixed(txt)" in src and "_spl_n(clean_reply, _t_txt, _lcf_n(_llm_user_text), keep_fixed=_fixed_n) if _keep_q_n else _t_txt" in src
     assert src.index("_sans_fixed(txt)") < src.index("# 8-w.")
@@ -116,3 +116,67 @@ def test_greeting_question_by_daypart():
     assert build_rapport_first_turn_response("박기진", "오후").endswith("오늘 오후 시간은 어떻게 보내고 계세요?")
     from diag_project.services import instruction_decider as ID
     assert 'state["current_greeting_question"]' in inspect.getsource(ID)
+
+
+# ── (2026-11-04 P3 3차) 반복 분산 · 깨진 문장 · 권유문 ─────────────────────────────────
+
+def test_anchor_tail_three_variants_per_persona():
+    from diag_project.services import persona_voice as V
+    from diag_project.services.output_guard import count_questions, is_question
+    anchors = ["새로운 방향에 확신이 서지 않던 팀원들과 뜻을 맞추신 일, 최근에 있으셨어요?",
+               "그 방향을 팀과 같이 앉아 구체적인 계획으로 만든 적이 있었어요?",
+               "팀원 둘 사이 갈등을 중재하신 경험이 최근에 있으실까요?"]
+    for p in ["Ella", "Jessica", "Olivia", "Daniel", "Michael", "Lucas"]:
+        for q in anchors:
+            outs = [V.voice_question(p, q, variant=v) for v in (0, 1, 2)]
+            assert len(set(outs)) == 3, (p, outs)
+            assert all(is_question(o) and count_questions(o) == 1 for o in outs), (p, outs)
+            assert V.voice_question(p, q, variant=3) == outs[0]
+    m = [V.voice_question("Michael", anchors[0], variant=v) for v in (0, 1, 2)]
+    assert m[0].endswith("맞추셨던 일, 하나만 들려주세요.") and m[1].endswith("맞추셨던 일, 떠오르는 게 있으세요?")
+    assert m[2].endswith("맞추신 적, 기억나는 일 있으면 얘기해 주세요.")
+    b = [V.voice_question("Michael", "최근에 정보가 부족한데도 중요한 결정을 내려야 했을 때, 어떻게 하셨어요?", variant=v) for v in (0, 1, 2)]
+    assert b[0].endswith("하셨는지 들려주세요.") and b[1].endswith("하셨는지 떠오르는 대로 말씀해 주세요.") and b[2].endswith("하셨는지 기억나는 대로 얘기해 주세요.")
+    assert V.voice_question("Lucas", anchors[0], variant=1).endswith("맞추신 일, 최근 떠오르는 게 있나요?")
+
+
+def test_target_bridges_three_per_persona_and_rotation():
+    from diag_project.services.intro_messages import PERSONA_LINES, target_bridge_line, target_bridge_lines
+    allb = []
+    for p, v in PERSONA_LINES.items():
+        tb = target_bridge_lines(p)
+        assert len(tb) == 3 and tb[0] == v["target_bridge"], p
+        allb += tb
+    assert len(set(allb)) == 18
+    assert target_bridge_lines("Michael (마이클)") == ["자, 다음은 다른 쪽이에요.", "이번엔 방향을 바꿔볼게요.", "다른 장면으로 넘어가요."]
+    assert [target_bridge_line("Michael", i) for i in (0, 1, 2, 3)] == target_bridge_lines("Michael") + ["자, 다음은 다른 쪽이에요."]
+
+
+def test_broken_sentence_and_suggestion_strip():
+    from diag_project.services.output_guard import (broken_statements, count_questions, is_broken_sentence, is_question,
+                                                    replace_broken_statements, strip_suggestion_statements)
+    assert is_broken_sentence("네, 교육생 참여 변화와 운영 부담을 함께 보셨다는 점이 이에요.")
+    assert is_broken_sentence("그 방향을 팀에.") and is_broken_sentence("결국 팀원들이 입니다.")
+    assert not is_broken_sentence("그 선택, 응원합니다.") and not is_broken_sentence("팀원들과 계획을 세우셨군요.")
+    assert not is_broken_sentence("그 뒤에는 어떻게 됐어요?") and not is_broken_sentence("이제 '성과관리'로 바로 가 보겠습니다.")
+    txt = "네, 함께 보셨다는 점이 이에요. 이제 '성과관리'로 바로 가 보겠습니다."
+    assert broken_statements(txt) == ["네, 함께 보셨다는 점이 이에요."]
+    assert replace_broken_statements(txt, "교육 효과와 운영 부담을 함께 보셨군요. 질문인가요?") == "교육 효과와 운영 부담을 함께 보셨군요. 이제 '성과관리'로 바로 가 보겠습니다."
+    assert replace_broken_statements(txt, "") == "이제 '성과관리'로 바로 가 보겠습니다."
+    out, n = strip_suggestion_statements("그 판단 기준이 흥미롭네요. 현업 활용이 기대만큼 안 나오는 장면을 떠올려 주셔도 좋아요. 그 방향을 계획으로 만든 적이 있었는지 들려주세요.")
+    assert n == 1 and out == "그 판단 기준이 흥미롭네요. 그 방향을 계획으로 만든 적이 있었는지 들려주세요."
+    assert strip_suggestion_statements("편하게 떠올려 보셔도 돼요?")[1] == 0   # 질문은 보존
+    assert is_question("기억나는 일 있으면 얘기해 주세요.") and count_questions("기억나는 일 있으면 얘기해 주세요.") == 1
+    assert is_question("기억나는 일이 있으면 말씀해 주십시오.") and is_question("기억나는 일 있으면요?")
+    # splice 도 권유문을 되받기로 세지 않는다
+    assert RC.splice_receive("그 뒤에는요?", "온라인으로 바꾸셨군요. 장면을 떠올려 주셔도 좋아요. 설문도 하셨고요.", 2) == "온라인으로 바꾸셨군요. 설문도 하셨고요. 그 뒤에는요?"
+
+
+def test_pipeline_wiring_rotation_broken_suggestion():
+    from diag_project.routes import diagnoses as d
+    src = inspect.getsource(d._submit_message_phase3a)
+    assert src.count("variant=_vv_total()") == 4 and "def _vv_total()" in src
+    assert "_tbl_j((state.get(\"coach_persona\") or {}).get(\"name\"), _bridge_idx())" in src and '_gl_store["bridge_idx"] = (int(_gl_store.get("bridge_idx") or 0) + 1) % 3' in src
+    assert "*_tbls_w(_pn_w)" in src and "*_tbls_n(_pn_n)" in src
+    assert "if _bks(clean_reply):" in src and '_tm["broken_fix"] = 1 if _bk_new else 2' in src and '"broken_fix": _tm.get("broken_fix")' in src
+    assert "clean_reply, _n_sug = _sss_c(clean_reply)" in src and src.index("# 8-j.") < src.index("_sss_c(clean_reply)") < src.index("# 8-n.")

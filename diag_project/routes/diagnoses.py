@@ -699,6 +699,12 @@ async def _submit_message_phase3a(
     # ⏱ (2026-09-18) 턴 계측: decider / LLM 1차 / 재생성 횟수·시간 / 후처리+DB. 로그 한 줄로 남긴다.
     _tm = {"t0": _time.perf_counter(), "decider": 0.0, "llm": 0.0, "regen_n": 0, "regen_s": 0.0}
     _rcv_snap: dict = {}   # (2026-11-04 P3-1 2차) 단계별 본문 스냅숏 — 8-w 폴백 시 되받기를 지운 단계를 원장에 남긴다
+
+    def _vv_total() -> int:   # (2026-11-04 P3 3차) 어미 변주 인덱스는 세션 누적 — 챕터 경계에서 같은 꼬리가 이어지지 않게
+        return sum(int(v or 0) for v in ((session.self_assessment_data or {}).get("voice_variant_count") or {}).values())
+
+    def _bridge_idx() -> int:   # (2026-11-04 P3 3차) 전환 다리 3종 순환 인덱스(원장 bridge_idx)
+        return int((session.self_assessment_data or {}).get("bridge_idx") or 0)
     from diag_project.database import sql_count as _sqlc
     _sqlc.set(0)   # 이 턴의 SQL 문 수(FM_SQL_COUNT=1 일 때만 집계)
     _style_tail = ""
@@ -910,7 +916,7 @@ async def _submit_message_phase3a(
         from diag_project.services.persona_voice import voice_question as _vq0
         _tm["voiced"] = 1
         return _vq0((state.get("coach_persona") or {}).get("name"), q,
-                    variant=int(((session.self_assessment_data or {}).get("voice_variant_count") or {}).get(chapter, 0) or 0))
+                    variant=_vv_total())
 
     # (2026-10-28 P0-4·P0-7) 사용자 입력 이상 — LLM 호출·원장 전진 없이 시스템 고정 응답으로 직전 질문을 다시 낸다.
     #   종류: 직전 입력 반복 / 세션 앞 답변·기존 사건과 중복 / 코치 질문 되돌아옴 / 일시정지 문구 오입력 /
@@ -1772,7 +1778,7 @@ async def _submit_message_phase3a(
         if _mode in ("dict", "fallback"):
             from diag_project.services.persona_voice import voice_question as _vq
             _q = _vq((state.get("coach_persona") or {}).get("name"), _q,
-                     variant=int(((session.self_assessment_data or {}).get("voice_variant_count") or {}).get(chapter, 0) or 0))
+                     variant=_vv_total())
             _tm["voiced"] = 1
         return _q, _mode
 
@@ -2328,6 +2334,23 @@ async def _submit_message_phase3a(
                 _c2, _n = strip_praise(clean_reply)   # 마지막 질문 문장은 보존하는 함수
                 if has_question(_c2) or not has_question(clean_reply):
                     clean_reply = _c2
+                # (2026-11-04 P3 3차) 칭찬 구절만 걷어낸 문장이 서술어 없이 끝나면('…보셨다는 점이 이에요.') 되받기 재생성 1회, 실패 시 그 문장 삭제.
+                from diag_project.services.output_guard import broken_statements as _bks, replace_broken_statements as _rbs
+                if _bks(clean_reply):
+                    _bk_new = ""
+                    try:
+                        _bk_out = await _timed_regen(
+                            system_prompt=system_prompt, chapter_context=chapter_context,
+                            turn_state_text=turn_state_text + (
+                                "\n\n🚨 [시스템 — 재생성 지시] 평가·칭찬 표현 없이, 리더님이 방금 한 말의 사실만 받는 평서문 1문장을 먼저 쓰세요. "
+                                "질문이 있었다면 그대로 두세요. 이 지시문의 단어를 답에 옮기지 마세요."),
+                            compressed_history=compressed_history, user_message=request.content, light_mode=True)
+                        _bk_new = strip_praise(_MARKER_RE.sub("", _bk_out.get("reply") or "").strip())[0]
+                    except Exception as _e_bk:
+                        logger.error("깨진 문장 재생성 실패: %s", _e_bk)
+                    clean_reply = _rbs(clean_reply, _bk_new)
+                    _tm["broken_fix"] = 1 if _bk_new else 2
+                    logger.info("🩹 서술어 없는 문장 → %s", "되받기 재생성" if _bk_new else "삭제")
             if "revisit" in _v:
                 _c2, _n = strip_revisit_greeting(clean_reply)   # 재방문 인사 문장 제거(질문 보존)
                 if _c2.strip() and (has_question(_c2) or not has_question(clean_reply)):
@@ -2472,7 +2495,7 @@ async def _submit_message_phase3a(
                 _lead_l = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
                 from diag_project.services.persona_voice import voice_question as _vq_l
                 clean_reply = " ".join(_lead_l + [_vq_l((state.get("coach_persona") or {}).get("name"), _lp["q"],
-                                                        variant=int(((session.self_assessment_data or {}).get("voice_variant_count") or {}).get(chapter, 0) or 0))]).strip()
+                                                        variant=_vv_total())]).strip()
                 _tm["voiced"] = 1
                 _tm["ladder"] = _lp["step"]
                 logger.info("🪜 사다리 질문 삽입 [%s] %s", _lp.get("sub"), _lp["step"])
@@ -2635,9 +2658,9 @@ async def _submit_message_phase3a(
             # (2026-11-04 P3-3) 하위역량 전환 다리 — [되받기 1문장(리더 답 인용)] + 페르소나 고정 다리 + 앵커. LLM 의 다리·전환 문장은 쓰지 않는다
             #   (P2-3 의 '되받기만 있으면 다리 추가'를 대체. 운영 11/4: 앵커로 건너뛰는 턴이 기계적으로 읽혔다).
             if not state.get("skip_bridge"):
-                from diag_project.services.intro_messages import persona_line as _pl_tb
+                from diag_project.services.intro_messages import target_bridge_line as _tbl_j
                 _recv_j = [x.strip() for x in split_sentences(_body) if x.strip() and not _ito(x)][:1]
-                _body = " ".join(_recv_j + [_pl_tb((state.get("coach_persona") or {}).get("name"), "target_bridge")]).strip()
+                _body = " ".join(_recv_j + [_tbl_j((state.get("coach_persona") or {}).get("name"), _bridge_idx())]).strip()
                 _tm["bridge_added"] = 1
                 _tm["target_bridge"] = 1
             _ar_q, _ar_mode = await _render_anchor_for(current_target_sub)
@@ -2684,6 +2707,12 @@ async def _submit_message_phase3a(
         #   3턴 1회 제한은 없다. 질문부터는 불변. 프로브 턴만(ALIGN·OPENING 은 정의·목록이 리드).
         #   (2026-11-04 P3 2차) 상한은 리더 답 길이(150자 미만 1·이상 2, P3-1)로 — p3q 1차에서 이 1문장 상한이 8-j·슬롯 조립 뒤에 돌아 고정 다리·응원
         #   문장을 잘라냈고 2문장 되받기가 한 번도 살아남지 못했다. 전환 다리·슬롯 턴은 조립 단계에서 이미 [되받기 1 + 고정 문장]이라 건드리지 않는다.
+        if _is_probe:
+            # (2026-11-04 P3 3차) 되받기 뒤 LLM 권유문('…떠올려 주셔도 좋아요.')은 상한 밖 — 먼저 지운다(질문 보존)
+            from diag_project.services.output_guard import strip_suggestion_statements as _sss_c
+            clean_reply, _n_sug = _sss_c(clean_reply)
+            if _n_sug:
+                _tm["suggestion_cut"] = int(_tm.get("suggestion_cut") or 0) + _n_sug
         if _is_probe and not _tm.get("target_bridge") and not _tm.get("slot"):
             from diag_project.services.output_guard import cap_leads_persona as _clp_c
             from diag_project.services.receive_check import lead_cap_for as _lcf_c
@@ -2745,10 +2774,10 @@ async def _submit_message_phase3a(
         _tc = dict((session.self_assessment_data or {}).get("tail_counts") or {})
         # (2026-11-04 P3 2차) 고정 문장(전환 다리·응원·관찰)은 입버릇 집계·삭제·재생성 대상이 아니다 — p3r 에서 다리 '다른 쪽이에요'가
         #   2회째부터 입버릇으로 잡혀 전환 턴 전체가 재생성되며 다리·앵커가 사라졋다(Michael 2/3턴, Jessica 1/3턴).
-        from diag_project.services.intro_messages import persona_line as _pl_tn
+        from diag_project.services.intro_messages import persona_line as _pl_tn, target_bridge_lines as _tbls_n
         from diag_project.services.receive_check import lead_cap_for as _lcf_n, splice_receive as _spl_n, _compact as _cpt_n
         _pn_n = (state.get("coach_persona") or {}).get("name")
-        _fixed_n = [x for x in (_tm.get("slot_text"), _pl_tn(_pn_n, "slot_lead"), _pl_tn(_pn_n, "target_bridge")) if x]
+        _fixed_n = [x for x in (_tm.get("slot_text"), _pl_tn(_pn_n, "slot_lead"), *_tbls_n(_pn_n)) if x]
         _fixed_n_c = {_cpt_n(x) for x in _fixed_n}
 
         def _sans_fixed(txt: str) -> str:
@@ -2791,8 +2820,8 @@ async def _submit_message_phase3a(
                         not is_question_sentence(x) for x in split_sentences(clean_reply)):
                     # 전환 턴은 되받기·다리 없이 앵커만 남으면 안 된다 → 페르소나 다리 한 문장을 앞에
                     # (2026-11-04 P3 2차) 옛 전환 문구(transition_bridge) 대신 P3-3 고정 다리 — 되받기는 뒤의 8-w 가 앞에 보강한다
-                    from diag_project.services.intro_messages import persona_line as _pl_n
-                    clean_reply = f"{_pl_n((state.get('coach_persona') or {}).get('name'), 'target_bridge')} {clean_reply}".strip()
+                    from diag_project.services.intro_messages import target_bridge_line as _tbl_n
+                    clean_reply = f"{_tbl_n((state.get('coach_persona') or {}).get('name'), _bridge_idx())} {clean_reply}".strip()
                     _tm["bridge_added"] = 1
                     _tm["target_bridge"] = 1
         if _swh(clean_reply) and any(_swh(_t) for _t in _recent_coach_texts):
@@ -2831,8 +2860,8 @@ async def _submit_message_phase3a(
             _tm["receive_src"] = next((k for k, v in _rcv_snap.items() if not all(_chk_r(v, _llm_user_text))), "8-o")
             _tm["receive_phrase"] = _ph
             _pn_w = (state.get("coach_persona") or {}).get("name")
-            from diag_project.services.intro_messages import persona_line as _pl_w
-            _fixed_w = [x for x in (_tm.get("slot_text"), _pl_w(_pn_w, "slot_lead"), _pl_w(_pn_w, "target_bridge")) if x]
+            from diag_project.services.intro_messages import persona_line as _pl_w, target_bridge_lines as _tbls_w
+            _fixed_w = [x for x in (_tm.get("slot_text"), _pl_w(_pn_w, "slot_lead"), *_tbls_w(_pn_w)) if x]
             _new_r = ""
             try:
                 _r_out = await _timed_regen(
@@ -2993,7 +3022,7 @@ async def _submit_message_phase3a(
             if _lq_raw_x and _ov_x < 3:
                 _lead_x = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
                 _lq_v = _vq_x((state.get("coach_persona") or {}).get("name"), _lq_raw_x,
-                              variant=int(((session.self_assessment_data or {}).get("voice_variant_count") or {}).get(chapter, 0) or 0))
+                              variant=_vv_total())
                 clean_reply = " ".join(_lead_x + [_lq_v]).strip()
                 _tm["ladder_restored"] = 1
                 logger.info("🪜 사다리 질문 복원(재생성이 덮음): [%s] %s", chapter, (state.get("force_ladder_probe") or {}).get("sub"))
@@ -3274,6 +3303,8 @@ async def _submit_message_phase3a(
                 else:
                     _mqp[chapter] = 1
                 _gl_store["michael_q_pending"] = _mqp
+            if _tm.get("target_bridge"):   # (2026-11-04 P3 3차) 전환 다리 3종 순환
+                _gl_store["bridge_idx"] = (int(_gl_store.get("bridge_idx") or 0) + 1) % 3
             if chapter and "!" in (clean_reply or ""):
                 # (2026-11-04 P3-4) 느낌표 챕터 누적(Michael 챕터당 2개 상한)
                 _exc = dict(_gl_store.get("excl_by_chapter") or {}); _exc[chapter] = int(_exc.get(chapter, 0) or 0) + (clean_reply or "").count("!")
@@ -3369,6 +3400,8 @@ async def _submit_message_phase3a(
             "receive_fix": _tm.get("receive_fix"), "target_bridge": int(_tm.get("target_bridge") or 0),
             # (2026-11-04 P3-1 2차) receive_src: 되받기가 깨진 단계(llm/probe/8-n/8-o/8-p/8-k/8-h) · receive_phrase: 폴백·재생성에 쓴 명사구
             "receive_src": _tm.get("receive_src"), "receive_phrase": _tm.get("receive_phrase"),
+            # (2026-11-04 P3 3차) broken_fix 1 재생성/2 삭제 · suggestion_cut 권유문 제거 수
+            "broken_fix": _tm.get("broken_fix"), "suggestion_cut": int(_tm.get("suggestion_cut") or 0),
             "excl_chapter_cap": int(_tm.get("excl_chapter_cap") or 0),
         })
         _gl_store["guard_log"] = _gl
