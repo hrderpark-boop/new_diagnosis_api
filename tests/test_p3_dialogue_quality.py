@@ -21,6 +21,14 @@ def test_receive_check_statements_and_quotes():
     assert RC.check_receive("온라인 사전학습으로 먼저 바꾸셨군요. 그 뒤에는 어떻게 됐어요?", LEADER) == (True, True)
     assert RC.check_receive("그러셨군요. 그 뒤에는요?", "네") == (True, True)            # 리더 답에 명사가 없으면 인용 요건 면제
     assert RC.quote_phrase(LEADER) == "현업 활용"                                          # 마지막 2어절 명사구 우선
+    # (2차) 부사·접속사·활용형은 명사가 아니다 — p3q 1차 인용구 '아니라 교육'·'특히 교육'·'구성해야 하니'
+    u8 = "만족도뿐 아니라 교육 후 현업에서 얼마나 활용하는지도 목표에 포함하도록 바꿨습니다. 단순히 교육을 잘 마치는 것보다 실제 업무에 도움이 되는 교육을 만드는 쪽으로 방향을 다시 잡았어요."
+    ns = RC.leader_nouns(u8)
+    assert not ({"아니라", "특히", "다른", "구성해야", "하니", "얼마나", "단순히", "실제", "예전에", "처음에", "되는", "점이", "중에", "질문하", "마치", "만드"} & set(ns)), ns
+    assert not ({"더해져", "느낀", "줄일", "나눠"} & set(RC.leader_nouns("기존 교육 준비에 새로운 업무까지 더해져 팀원들이 부담을 느낀 적이 있어요. 줄일 수 있는 부분은 줄이고 업무를 나눠 맡았어요.")))
+    assert "현업" in ns and "목표" in ns and RC.quote_phrase(u8) not in (None, "아니라 교육")
+    assert "다른" not in RC.leader_nouns("다른 교육에도 적용할 수 있는지 검토해 보자고 제안했어요.")
+    assert RC.leader_nouns("기존 교육 자료를 온라인 사전학습용 자료까지 별도로 구성해야 하니 업무가 늘어난다는 점이었어요.")[:3] == ["기존", "교육", "자료"]
     assert RC.quote_phrase("설문을 돌렸습니다") == "설문" and RC.quote_phrase("네") is None
     assert RC.receive_fallback("Michael", "현업 활용") == "'현업 활용'까지 말씀해 주셨네요."
     assert RC.receive_fallback("Jessica", "현업 활용") == "'현업 활용'까지 말씀해 주셨습니다."
@@ -41,8 +49,9 @@ def test_splice_receive_keeps_question_part_and_fixed_lines():
 def test_pipeline_wiring_receive_required_slot_bridge_exclamation():
     from diag_project.routes import diagnoses as d
     src = inspect.getsource(d._submit_message_phase3a)
-    assert src.index("# 8-h.") < src.index("# 8-w.") < src.index("# 8-x.") < src.index("# 8-x2.") < src.index("# 8-y.")
-    w = src[src.index("# 8-w."): src.index("# 8-x.")]
+    # (2차) 8-w 는 8-o 한 질문 뒤·8-p 좋습니다 가드 앞 — 재생성 되받기도 좋습니다·느낌표 가드를 거친다
+    assert src.index("# 8-o.") < src.index("# 8-w.") < src.index("# 8-p.") < src.index("# 8-h.") < src.index("# 8-x.") < src.index("# 8-x2.") < src.index("# 8-y.")
+    w = src[src.index("# 8-w."): src.index("# 8-p.")]
     assert "RECEIVE_REQUIRED_INSTRUCTIONS" in src and "check_receive as _chk_r" in w and "receive_fallback as _rfb" in w and "splice_receive as _spl_r" in w
     assert '_tm["receive_fix"] = 1' in w and '_tm["receive_fix"] = 2' in w and "keep_fixed=_fixed_w" in w
     # 되받기 상한은 리더 답 길이(150자)로
@@ -51,8 +60,14 @@ def test_pipeline_wiring_receive_required_slot_bridge_exclamation():
     j = src[src.index("# 8-j."): src.index("# 8-j.") + 6000]
     assert '"target_bridge")' in j and '_tm["target_bridge"] = 1' in j and "transition_bridge as _tbr)" not in j
     # 느낌표 챕터 상한
-    h = src[src.index("# 8-h."): src.index("# 8-w.")]
+    h = src[src.index("# 8-h."): src.index("# 8-x.")]
     assert "EXCLAMATION_PER_CHAPTER as _epc" in h and '_tm["excl_chapter_cap"] = 1' in h
+    # (2차) 옛 리드 1문장 상한은 P3-1 상한으로, 전환 다리·슬롯 턴 제외; 8-n 재삽입은 고정 다리
+    assert 'if _is_probe and not _tm.get("target_bridge") and not _tm.get("slot"):' in src and "cap_lead_sentences(clean_reply)" not in src
+    assert "transition_bridge as _tbr_n" not in src and "_pl_n((state.get('coach_persona') or {}).get('name'), 'target_bridge')" in src
+    # (2차) 8-n 입버릇: 고정 문장은 집계에서 빼고, 앵커·사다리·슬롯 턴의 재생성은 되받기만 교체
+    assert "_sans_fixed(txt)" in src and "_spl_n(clean_reply, _t_txt, _lcf_n(_llm_user_text), keep_fixed=_fixed_n) if _keep_q_n else _t_txt" in src
+    assert src.index("_sans_fixed(txt)") < src.index("# 8-w.")
     # 원장: Michael 실행 의지 질문 대기·해제, 느낌표 챕터 누적, guard_log 키
     assert '_gl_store["michael_q_pending"] = _mqp' in src and '_gl_store["excl_by_chapter"] = _exc' in src
     assert '"receive_fix": _tm.get("receive_fix")' in src and '"excl_chapter_cap"' in src
@@ -81,6 +96,12 @@ def test_michael_endings_colloquial_no_recall_form_and_bridges():
     bridges = {k: v["target_bridge"] for k, v in PERSONA_LINES.items()}
     assert len(bridges) == 6 and all(bridges.values()) and len(set(bridges.values())) == 6
     assert bridges["Michael"] == "자, 다음은 다른 쪽이에요." and bridges["Ella"].startswith("이번엔")
+
+
+def test_name_extraction_allows_space_before_ending():
+    from diag_project.services.instruction_decider import _extract_user_name as X
+    assert X("안녕하세요 박기진 입니다.") == "박기진" and X("안녕하세요 박기진입니다") == "박기진" and X("박기진이라고 합니다") == "박기진"
+    assert X("안녕하세요") is None and X("안녕하세요 입니다") is None
 
 
 def test_greeting_question_by_daypart():

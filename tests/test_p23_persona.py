@@ -72,7 +72,7 @@ def test_route_wiring():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
     assert "render_align as _ra" in src and "align_shape_ok as _aso" in src      # (2026-10-28 P0-1) ALIGN 결정론 조립
     assert "align_topic_bridge" in open(os.path.join(ROOT, "diag_project", "services", "align_render.py"), encoding="utf-8").read()
-    assert "transition_bridge as _tbr" in src and "cap_leads_persona as _clp" in src
+    assert "cap_leads_persona as _clp" in src and "'target_bridge')" in src   # (2026-11-04 P3-3) 전환 다리는 고정 문장(transition_bridge 배선 제거)
     assert "max_statements=_cap_p" in src
 
 

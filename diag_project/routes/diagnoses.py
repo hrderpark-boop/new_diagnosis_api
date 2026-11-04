@@ -2682,12 +2682,17 @@ async def _submit_message_phase3a(
 
         # (2026-09-22 결정) 리드 한 문장 상한: 질문 앞 리드가 2문장 이상이면 첫 문장만. 매 턴 한 문장 되받기는 허용,
         #   3턴 1회 제한은 없다. 질문부터는 불변. 프로브 턴만(ALIGN·OPENING 은 정의·목록이 리드).
-        if _is_probe:
-            clean_reply, _lc = cap_lead_sentences(clean_reply)
+        #   (2026-11-04 P3 2차) 상한은 리더 답 길이(150자 미만 1·이상 2, P3-1)로 — p3q 1차에서 이 1문장 상한이 8-j·슬롯 조립 뒤에 돌아 고정 다리·응원
+        #   문장을 잘라냈고 2문장 되받기가 한 번도 살아남지 못했다. 전환 다리·슬롯 턴은 조립 단계에서 이미 [되받기 1 + 고정 문장]이라 건드리지 않는다.
+        if _is_probe and not _tm.get("target_bridge") and not _tm.get("slot"):
+            from diag_project.services.output_guard import cap_leads_persona as _clp_c
+            from diag_project.services.receive_check import lead_cap_for as _lcf_c
+            _cap_c = _lcf_c(_llm_user_text)
+            clean_reply, _lc = _clp_c(clean_reply, _cap_c, _llm_user_text)
             if _lc:
                 _v["lead_cap"] = _lc
                 _tm["hard"] = True
-                logger.info("✂️ 리드 %d문장 → 1문장", _lc + 1)
+                logger.info("✂️ 리드 %d문장 → %d문장", _lc + _cap_c, _cap_c)
 
         # 3(2026-09-17) Result 탐침 문장 변주: 상투형('그렇게 하니 어떻게 됐습니까') 또는 이 챕터에서 이미 쓴
         #   결과 질문과 같은 문장이면 풀에서 안 쓴 문장으로 교체(직전 2턴 제외).
@@ -2738,11 +2743,24 @@ async def _submit_message_phase3a(
             strip_lead_sentences as _sls, strip_leading_honorific as _slh,
         )
         _tc = dict((session.self_assessment_data or {}).get("tail_counts") or {})
+        # (2026-11-04 P3 2차) 고정 문장(전환 다리·응원·관찰)은 입버릇 집계·삭제·재생성 대상이 아니다 — p3r 에서 다리 '다른 쪽이에요'가
+        #   2회째부터 입버릇으로 잡혀 전환 턴 전체가 재생성되며 다리·앵커가 사라졋다(Michael 2/3턴, Jessica 1/3턴).
+        from diag_project.services.intro_messages import persona_line as _pl_tn
+        from diag_project.services.receive_check import lead_cap_for as _lcf_n, splice_receive as _spl_n, _compact as _cpt_n
+        _pn_n = (state.get("coach_persona") or {}).get("name")
+        _fixed_n = [x for x in (_tm.get("slot_text"), _pl_tn(_pn_n, "slot_lead"), _pl_tn(_pn_n, "target_bridge")) if x]
+        _fixed_n_c = {_cpt_n(x) for x in _fixed_n}
+
+        def _sans_fixed(txt: str) -> str:
+            return " ".join(x for x in split_sentences(txt or "") if x.strip() and _cpt_n(x) not in _fixed_n_c)
 
         def _tail_hits(txt: str) -> tuple[list, list]:
-            _b = _fbt(txt)
-            _r = [t for t in _lts(txt) if int(_tc.get(t, 0) or 0) >= 1]
+            _t = _sans_fixed(txt)
+            _b = _fbt(_t)
+            _r = [t for t in _lts(_t) if int(_tc.get(t, 0) or 0) >= 1]
             return _b, _r
+        # 앵커·사다리·슬롯 턴은 질문부가 시스템 문장 — 재생성 본문으로 통째로 바꾸지 않고 되받기만 교체한다.
+        _keep_q_n = bool(_is_anchor or _tm.get("target_bridge") or _tm.get("slot") or _tm.get("ladder") or state.get("force_ladder_probe"))
 
         _b0, _r0 = _tail_hits(clean_reply)
         if _b0 or _r0:
@@ -2760,7 +2778,7 @@ async def _submit_message_phase3a(
                     _t_txt = _MARKER_RE.sub("", _t_out.get("reply") or "").strip()
                     _b1, _r1 = _tail_hits(_t_txt) if _t_txt else (["(빈 응답)"], [])
                     if _t_txt and not _b1 and not _r1:
-                        clean_reply = _t_txt
+                        clean_reply = _spl_n(clean_reply, _t_txt, _lcf_n(_llm_user_text), keep_fixed=_fixed_n) if _keep_q_n else _t_txt
                         _fixed = True
                         logger.info("🗣️ 입버릇 반복 → 재생성으로 해결: %s", _tm["tail"])
                 except Exception as _e:
@@ -2772,9 +2790,11 @@ async def _submit_message_phase3a(
                 if instruction_used == "STAR_COMPLETE_NEW_EVENT" and not any(
                         not is_question_sentence(x) for x in split_sentences(clean_reply)):
                     # 전환 턴은 되받기·다리 없이 앵커만 남으면 안 된다 → 페르소나 다리 한 문장을 앞에
-                    from diag_project.services.intro_messages import transition_bridge as _tbr_n
-                    clean_reply = f"{_tbr_n((state.get('coach_persona') or {}).get('name'), len(asked_for_chapter(session.self_assessment_data, chapter) or []))} {clean_reply}".strip()
+                    # (2026-11-04 P3 2차) 옛 전환 문구(transition_bridge) 대신 P3-3 고정 다리 — 되받기는 뒤의 8-w 가 앞에 보강한다
+                    from diag_project.services.intro_messages import persona_line as _pl_n
+                    clean_reply = f"{_pl_n((state.get('coach_persona') or {}).get('name'), 'target_bridge')} {clean_reply}".strip()
                     _tm["bridge_added"] = 1
+                    _tm["target_bridge"] = 1
         if _swh(clean_reply) and any(_swh(_t) for _t in _recent_coach_texts):
             clean_reply, _hon = _slh(clean_reply)
             if _hon:
@@ -2793,6 +2813,49 @@ async def _submit_message_phase3a(
             logger.info("✂️ 최종 한 턴 한 질문: %d문장 제거", _n_qo)
 
     _rcv_snap["8-o"] = clean_reply
+    # 8-w. (2026-11-04 P3-1) 되받기 필수 — 모든 대화 턴은 [되받기 1~2문장(리더 직전 답의 명사구 인용)] + [질문]. 8-n 입버릇·8-o 한 질문·8-i 가드가
+    #   되받기를 지웠거나 LLM 이 질문만 냈으면 되받기만 재생성 1회(질문부는 그대로 둔다), 그래도 없으면 백엔드 폴백
+    #   "'[명사구]'까지 말씀해 주셨네요." 질문만 나가는 턴 금지. (운영 Michael 11/4 세션: 질문만 이어지는 턴이 기계적으로 읽혔다.)
+    #   (2차) 8-p 좋습니다 가드·8-h 느낌표 상한보다 앞에 둔다 — p3q 1차에서 재생성 되받기가 '좋습니다!'로 시작해 두 가드를 우회했다(챕터 5회).
+    from diag_project.services.receive_check import RECEIVE_REQUIRED_INSTRUCTIONS as _RECV_INSTR
+    if (system_override_text is None and not _llm_error and (clean_reply or "").strip() and not needs_user_decision
+            and chapter and instruction_used in _RECV_INSTR and _align_ctx is None and not state.get("skip_bridge")):
+        from diag_project.services.receive_check import (
+            check_receive as _chk_r, lead_cap_for as _lcf_w, quote_phrase as _qp_r,
+            receive_fallback as _rfb, splice_receive as _spl_r,
+        )
+        _has_r, _quoted_r = _chk_r(clean_reply, _llm_user_text)
+        if not (_has_r and _quoted_r):
+            _ph = _qp_r(_llm_user_text)
+            # 되받기를 잃은 단계(원장용): LLM 원문부터 순서대로 처음 판정이 깨진 지점. 'llm' 이면 LLM 이 질문만 냈다.
+            _tm["receive_src"] = next((k for k, v in _rcv_snap.items() if not all(_chk_r(v, _llm_user_text))), "8-o")
+            _tm["receive_phrase"] = _ph
+            _pn_w = (state.get("coach_persona") or {}).get("name")
+            from diag_project.services.intro_messages import persona_line as _pl_w
+            _fixed_w = [x for x in (_tm.get("slot_text"), _pl_w(_pn_w, "slot_lead"), _pl_w(_pn_w, "target_bridge")) if x]
+            _new_r = ""
+            try:
+                _r_out = await _timed_regen(
+                    system_prompt=system_prompt, chapter_context=chapter_context,
+                    turn_state_text=turn_state_text + (
+                        "\n\n🚨 [시스템 — 재생성 지시] 첫 문장이 리더님 답을 받지 못했습니다. 첫 문장은 리더님이 방금 쓴 표현"
+                        + (f"('{_ph}' 같은 말)" if _ph else "") + "을 그대로 하나 넣어 들은 사실을 받는 평서문 1문장으로 쓰고, "
+                        "그 뒤에 질문 하나를 이어 쓰세요. 이 지시문의 단어를 답에 옮기지 마세요."),
+                    compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
+                _r_txt = _MARKER_RE.sub("", _r_out.get("reply") or "").strip()
+                if _r_txt and all(_chk_r(_r_txt, _llm_user_text)):
+                    _new_r = _r_txt
+            except Exception as _e_r:
+                logger.error("되받기 재생성 실패: %s", _e_r)
+            if _new_r:
+                clean_reply = _spl_r(clean_reply, _new_r, _lcf_w(_llm_user_text), keep_fixed=_fixed_w)
+                _tm["receive_fix"] = 1
+                logger.info("🗣️ 되받기 재생성으로 보강(인용=%s)", _ph)
+            elif _ph or not _has_r:
+                clean_reply = _spl_r(clean_reply, _rfb(_pn_w, _ph), 1, keep_fixed=_fixed_w)
+                _tm["receive_fix"] = 2
+                logger.info("🗣️ 되받기 폴백 삽입(인용=%s)", _ph)
+
     # 8-p. (2026-10-23 6번 보정) Michael "좋습니다" 도입: 턴당 최대 1회, 챕터에서 2턴에 1회 이하(직전 턴에 썼으면 이번 턴은 뗀다).
     #   고정 문장 턴(안내·확인 템플릿)도 센다 — 재생에서 4·5·6턴 연속 '좋습니다' 가 템플릿 턴에서 났다.
     #   (2026-11-02 p2f) 챕터 누적 상한 3회(MICHAEL_GOOD_LEAD_CAP) — p2c D 세션 83턴 중 39턴이 '좋습니다'(챕터당 6~12). 초과분은 리드 없이
@@ -2844,7 +2907,6 @@ async def _submit_message_phase3a(
             _tm["no_q_fix"] = "definition" if _nq_k == 0 else f"definition(replaced {_nq_k})"
             logger.info("❓ 정의 턴 질문 고정: LLM 질문 %d문장 제거 후 고정 정의 질문 결합", _nq_k)
 
-    _rcv_snap["8-p/8-k"] = clean_reply
     # 8-h. 느낌표 상한(2026-09-15): 페르소나별 상한(Michael 1·안내턴 0, 나머지 0)을 백엔드가 센다.
     #   초과 → 재생성 1회(같은 프롬프트 + 상한 지시) → 그래도 초과면 초과분을 마침표로 치환.
     #   시스템 템플릿 턴(system_override_text)은 재생성 없이 치환만(공용 템플릿의 '!' 가
@@ -2918,49 +2980,6 @@ async def _submit_message_phase3a(
         _fm_pst(session, "self_assessment_data")
         logger.info("⏸️ 일시정지 제안: 질문 보류 → pending=%s target=%s (원장 되돌림=%s)",
                     instruction_used, current_target_sub, _ledger_snapshot is not None)
-
-    # 8-w. (2026-11-04 P3-1) 되받기 필수 — 모든 대화 턴은 [되받기 1~2문장(리더 직전 답의 명사구 인용)] + [질문]. 8-n 입버릇·8-h 느낌표·8-i 가드가
-    #   되받기를 지웠거나 LLM 이 질문만 냈으면 되받기만 재생성 1회(질문부는 그대로 둔다), 그래도 없으면 백엔드 폴백
-    #   "'[명사구]'까지 말씀해 주셨네요." 질문만 나가는 턴 금지. (운영 Michael 11/4 세션: 질문만 이어지는 턴이 기계적으로 읽혔다.)
-    from diag_project.services.receive_check import RECEIVE_REQUIRED_INSTRUCTIONS as _RECV_INSTR
-    if (system_override_text is None and not _llm_error and (clean_reply or "").strip() and not needs_user_decision
-            and chapter and instruction_used in _RECV_INSTR and _align_ctx is None and not state.get("skip_bridge")):
-        from diag_project.services.receive_check import (
-            check_receive as _chk_r, lead_cap_for as _lcf_w, quote_phrase as _qp_r,
-            receive_fallback as _rfb, splice_receive as _spl_r,
-        )
-        _has_r, _quoted_r = _chk_r(clean_reply, _llm_user_text)
-        if not (_has_r and _quoted_r):
-            _ph = _qp_r(_llm_user_text)
-            # 되받기를 잃은 단계(원장용): LLM 원문부터 순서대로 처음 판정이 깨진 지점. 'llm' 이면 LLM 이 질문만 냈다.
-            _rcv_snap["8-h"] = clean_reply
-            _tm["receive_src"] = next((k for k, v in _rcv_snap.items() if not all(_chk_r(v, _llm_user_text))), "8-h")
-            _tm["receive_phrase"] = _ph
-            _pn_w = (state.get("coach_persona") or {}).get("name")
-            from diag_project.services.intro_messages import persona_line as _pl_w
-            _fixed_w = [x for x in (_tm.get("slot_text"), _pl_w(_pn_w, "slot_lead"), _pl_w(_pn_w, "target_bridge")) if x]
-            _new_r = ""
-            try:
-                _r_out = await _timed_regen(
-                    system_prompt=system_prompt, chapter_context=chapter_context,
-                    turn_state_text=turn_state_text + (
-                        "\n\n🚨 [시스템 — 재생성 지시] 첫 문장이 리더님 답을 받지 못했습니다. 첫 문장은 리더님이 방금 쓴 표현"
-                        + (f"('{_ph}' 같은 말)" if _ph else "") + "을 그대로 하나 넣어 들은 사실을 받는 평서문 1문장으로 쓰고, "
-                        "그 뒤에 질문 하나를 이어 쓰세요. 이 지시문의 단어를 답에 옮기지 마세요."),
-                    compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
-                _r_txt = _MARKER_RE.sub("", _r_out.get("reply") or "").strip()
-                if _r_txt and all(_chk_r(_r_txt, _llm_user_text)):
-                    _new_r = _r_txt
-            except Exception as _e_r:
-                logger.error("되받기 재생성 실패: %s", _e_r)
-            if _new_r:
-                clean_reply = _spl_r(clean_reply, _new_r, _lcf_w(_llm_user_text), keep_fixed=_fixed_w)
-                _tm["receive_fix"] = 1
-                logger.info("🗣️ 되받기 재생성으로 보강(인용=%s)", _ph)
-            elif _ph or not _has_r:
-                clean_reply = _spl_r(clean_reply, _rfb(_pn_w, _ph), 1, keep_fixed=_fixed_w)
-                _tm["receive_fix"] = 2
-                logger.info("🗣️ 되받기 폴백 삽입(인용=%s)", _ph)
 
     # 8-x. (2026-11-02 P2) 사다리 질문 복원 — 8-h 느낌표·8-n 입버릇 재생성이 본문을 통째로 바꾸면 사다리 질문이 사라진다
     #   (p2b Michael 일관리: ladder_dropped=overridden 2턴 → 챕터 사다리 1회). 강제 사다리 턴이면 마지막 질문을 사다리 질문으로 되돌린다.

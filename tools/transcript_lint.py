@@ -426,7 +426,7 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
         if r["receive_fallback_turns"] > 3:
             L.append("")
             L.append("- 되받기 소실 단계 분포(3회 초과 → 원인): " + ", ".join(f"{k} {v}" for k, v in sorted(r["receive_src"].items(), key=lambda kv: -kv[1]))
-                     + " — llm=LLM 이 질문만 냄 · probe=8-i 가드/프로브 조립/8-j · 8-n 입버릇 재생성 · 8-o 한 질문 · 8-p/8-k 좋습니다/정의 질문 · 8-h 느낌표")
+                     + " — llm=LLM 이 질문만 냄 · probe=8-i 가드/프로브 조립/8-j · 8-n 입버릇 재생성 · 8-o 한 질문(8-w 는 8-o 직후)")
     L.append(f"- 코치 간 동일 앵커 문장 쌍 합계: **{cross['pairs']}** (0 이어야 함)")
     if cross["duplicates"]:
         for d in cross["duplicates"]:
