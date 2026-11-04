@@ -226,3 +226,19 @@ def test_truncation_first_token_noun_ending_in_myeon_is_not_truncated():
     from transcript_lint import is_truncated_question
     assert not is_truncated_question("전면 도입이 아니라 일부에서 시작하기로 하셨을 때, 팀원들에게는 무엇을 먼저 설명하셨는지 궁금합니다.")
     assert is_truncated_question("있었다면 그때 어떤 상황이었는지 편하게 들려주시면 됩니다.")
+
+
+def test_receive_metrics_and_michael_slot_kinds(lex):
+    """(2026-11-04 P3-1) 되받기 없는 턴·리더 명사구 미인용 턴을 센다(파이프라인 8-w 와 같은 판정)."""
+    u = "신입 교육을 온라인 사전학습으로 바꾸고 현업 활용 설문으로 효과를 확인했습니다."
+    rows = [_row(1, "user", u), _row(1, "model", "그 뒤에는 어떻게 됐어요?"),
+            _row(2, "user", u), _row(2, "model", "그러셨군요. 그 뒤에는요?"),
+            _row(3, "user", u), _row(3, "model", "온라인 사전학습으로 바꾸셨군요. 그 뒤에는요?"),
+            _row(4, "user", "네"), _row(4, "model", "그럼 여쭤볼게요. 최근 일은요?", instr="ANCHOR_REASK")]   # 대상 아님
+    r = tl.analyze(_data(rows, coach="5"), lex)
+    assert r["receive_turns"] == 3 and r["no_receive_turns"] == 1 and r["receive_no_quote_turns"] == 1
+    assert [x["kind"] for x in r["receive_issues"]] == ["none", "no_quote"]
+    from diag_project.services.intro_messages import PERSONA_LINES
+    assert tl._slot_sentence_kept("Michael", f"정하셨군요. {PERSONA_LINES['Michael']['slot_lead']} 그 뒤에는요?", "Michael")
+    assert not tl._slot_sentence_kept("Michael", "정하셨군요. 그 뒤에는요?", "Michael")
+    assert tl._slot_sentence_kept("Michael", f"정하셨군요. {PERSONA_LINES['Michael']['slot_q']}", "Michael_q")

@@ -11,12 +11,16 @@ from zoneinfo import ZoneInfo
 # (2026-10-28 P0-6) 시간대 경계 — KST 기준. 05~11 오전 / 11~14 점심 / 14~18 오후 / 18~ 저녁(23시 이후는 '늦은 시간').
 #   10/28 Lucas 세션: 13:49 에 "점심 시간" 이 나갔다(구 경계 12~14). 경계를 한 곳(이 표)에서만 정한다.
 # (2026-10-29 P1, P0-6 경계 수정) 점심 11~13, 오후 13~18 — 13:49 는 오후.
-DAYPART_BOUNDS = ((5, 11, "오전"), (11, 13, "점심"), (13, 18, "오후"), (18, 23, "저녁"))
+# (2026-11-04 P3-5) 운영 Michael 11/4: 11:30 에 "점심 시간은 어떻게 보내고 계세요"가 나갔다 → 11~12 는 '오전 마무리', 점심은 12:00~13:30.
+#   경계가 분 단위라 (시작 분, 끝 분, 이름). daypart(hour, minute) 로 판정.
+DAYPART_BOUNDS = ((5 * 60, 11 * 60, "오전"), (11 * 60, 12 * 60, "오전 마무리"), (12 * 60, 13 * 60 + 30, "점심"),
+                  (13 * 60 + 30, 18 * 60, "오후"), (18 * 60, 23 * 60, "저녁"))
 
 
-def daypart(hour: int) -> str:
+def daypart(hour: int, minute: int = 0) -> str:
+    m = int(hour) * 60 + int(minute)
     for lo, hi, name in DAYPART_BOUNDS:
-        if lo <= hour < hi:
+        if lo <= m < hi:
             return name
     return "늦은 시간"
 
@@ -56,13 +60,20 @@ def get_time_greeting(now: datetime | None = None) -> dict[str, str]:
         hour_text = f"오후 {rounded_hour - 12}시"
 
     # 시간대 톤 분류는 원래 hour 사용 (사용자 활동 시간대 기준) — 경계는 DAYPART_BOUNDS 하나로.
-    part = daypart(hour)
+    part = daypart(hour, minute)
     if part == "오전":
         tone = "상쾌한 오전"
         ampm_phrase = "오전"
         reflective_phrase = (
             "하루를 새롭게 열어가는 시간이네요. "
             "잠시 마음을 정돈하며 시작해볼까요?"
+        )
+    elif part == "오전 마무리":
+        tone = "오전 마무리"
+        ampm_phrase = "오전 마무리"
+        reflective_phrase = (
+            "오전을 마무리하는 시간에 함께해주셔서 고맙습니다. "
+            "잠깐 호흡 가다듬는 시간이 됐으면 좋겠어요."
         )
     elif part == "점심":
         tone = "분주한 점심"
@@ -93,11 +104,15 @@ def get_time_greeting(now: datetime | None = None) -> dict[str, str]:
             "무리 없이 진행할게요."
         )
 
+    # (2026-11-04 P3-5) 라포 첫 턴 안부 질문 — '오전 마무리'는 "오전 마무리는 어떠세요?", 그 밖은 "[시간대] 시간은 어떻게 보내고 계세요?"
+    greeting_question = ("오전 마무리는 어떠세요?" if part == "오전 마무리"
+                         else f"오늘 {ampm_phrase} 시간은 어떻게 보내고 계세요?")
     return {
         "hour_text": hour_text,
         "tone": tone,
         "ampm_phrase": ampm_phrase,
         "reflective_phrase": reflective_phrase,
+        "greeting_question": greeting_question,
     }
 
 
@@ -108,8 +123,8 @@ def get_time_phrase(now: datetime | None = None) -> str:
     """
     now = _now_seoul(now)
     hour = now.hour
-    part = daypart(hour)
-    if part == "오전":
+    part = daypart(hour, now.minute)
+    if part in ("오전", "오전 마무리"):
         return "오전"
     if part == "점심":
         return "점심 무렵"
@@ -124,6 +139,7 @@ def build_rapport_first_turn_response(
     user_name: str | None,
     current_ampm_phrase: str,
     is_hostile: bool = False,
+    greeting_question: str | None = None,
 ) -> str:
     """라포 1턴 (이름 받은 직후) — Step 1 이름 수용 + Step 2 아이스브레이킹.
 
@@ -138,13 +154,15 @@ def build_rapport_first_turn_response(
     """
     # user_name 이 실명인지 판정 (None/'리더'/'리더님' 은 이름 없음으로 취급)
     has_name = bool(user_name) and user_name not in ("리더", "리더님")
+    # (2026-11-04 P3-5) 시간대별 안부 질문은 get_time_greeting()["greeting_question"] 하나로 — 11~12시는 '오전 마무리는 어떠세요?'
+    _q = greeting_question or f"오늘 {current_ampm_phrase} 시간은 어떻게 보내고 계세요?"
 
     if is_hostile:
         # 공격성/불만 인식 — 반갑다며 해맑게 넘기지 않고 차분히 받아준다.
         return (
             "네, 리더님. 마음이 편치 않으실 수 있는데, 부담 갖지 않으셔도 "
             "됩니다. 이 자리는 평가가 아니라 편하게 이야기 나누는 시간이에요. "
-            f"오늘 {current_ampm_phrase} 시간은 어떻게 보내고 계세요?"
+            f"{_q}"
         )
 
     greeting = (
@@ -154,7 +172,7 @@ def build_rapport_first_turn_response(
     return (
         f"{greeting}"
         "본격적으로 시작하기 전에 잠깐 편하게 이야기 나눠볼게요. "
-        f"오늘 {current_ampm_phrase} 시간은 어떻게 보내고 계세요?"
+        f"{_q}"
     )
 
 

@@ -1477,6 +1477,7 @@ async def _submit_message_phase3a(
         system_override_text = build_rapport_first_turn_response(
             user_name=user_name,
             current_ampm_phrase=state.get("current_ampm_phrase", "오늘"),
+            greeting_question=state.get("current_greeting_question"),   # (2026-11-04 P3-5)
             is_hostile=_hostile,
         )
     # (2026-10-16) 라포 2턴(담당 업무 질문)은 더 이상 템플릿이 아니다 — light LLM 호출(카테고리 '담당업무' 가이드).
@@ -2388,7 +2389,8 @@ async def _submit_message_phase3a(
                 _tm["moment"] = _n_m
             # (2026-10-22 P2-3) 되받기 상한을 페르소나별로(Ella·Daniel 2, Jessica·Lucas 1, Olivia·Michael 2) — 관찰 문장 우선 보존
             from diag_project.services.output_guard import cap_leads_persona as _clp, persona_lead_cap as _plc2
-            clean_reply, _n_cap = _clp(clean_reply, _plc2((state.get("coach_persona") or {}).get("name")), _llm_user_text)
+            from diag_project.services.receive_check import lead_cap_for as _lcf
+            clean_reply, _n_cap = _clp(clean_reply, _lcf(_llm_user_text), _llm_user_text)   # (2026-11-04 P3-1) 리더 답 150자 이상 2문장, 미만 1문장
             if _n_cap:
                 _tm["lead_cap"] = _n_cap
             # (2026-10-22 P2-2) 감정·표정·마음속 질문은 챕터당 1회 — 초과면 재생성 1회, 그래도면 행동 질문으로 교체
@@ -2515,6 +2517,17 @@ async def _submit_message_phase3a(
                     from diag_project.services.korean import quote_josa as _qj
                     clean_reply = f"{_num}{_qj(_num)} 하셨죠. {clean_reply}".strip()
                     _tm["j_number_restated"] = _num
+            # (2026-11-04 P3-2) Michael 실행 의지 질문은 응원 턴의 다음 턴에(한 턴 한 질문). 되받기 1문장 + 고정 질문.
+            _mq_pending = bool(((_sd_s.get("michael_q_pending") or {}).get(chapter))) if chapter else False
+            if (_pn_s == "Michael" and _mq_pending and current_target_sub and not state.get("force_ladder_probe")
+                    and not state.get("force_generalize_probe") and not _tm.get("quantify")):
+                from diag_project.services.output_guard import starts_without_main_clause as _swmc_m
+                _lead_m = [x for x in split_sentences(clean_reply) if not is_question_sentence(x) and not _swmc_m(x)][:1]
+                if _lead_m:
+                    _mq = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")
+                    clean_reply = " ".join(_lead_m + [_mq]).strip()
+                    _tm["slot"] = "Michael_q"; _tm["slot_text"] = _mq; _tm["michael_q_done"] = 1
+                    logger.info("🎭 Michael 실행 의지 질문(응원 다음 턴): [%s] %s", chapter, current_target_sub)
             _slot_used = ((_sd_s.get("persona_slot_used") or {}).get(chapter)) if chapter else "x"
             _tot_s = int((_sd_s.get("turns_on_target") or {}).get(chapter, 0) or 0)
             if (_pn_s in ("Jessica", "Olivia", "Daniel", "Michael", "Lucas") and chapter and current_target_sub and not _slot_used
@@ -2528,23 +2541,31 @@ async def _submit_message_phase3a(
                 _qi_s = next((i for i, x in enumerate(_sents_s) if is_question_sentence(x)), None)
                 # 질문부: 첫 질문부터 끝까지(조건절 쌍 '…있으셨습니까? 있었다면 …' 보존 — p2a Daniel 잘림 3건은 마지막 질문만 남겨서였다)
                 _q_now_s = " ".join(_sents_s[_qi_s:]) if _qi_s is not None else ""
-                if _pn_s == "Jessica":
+                if not _lead_s:
+                    # (2026-11-04 P3-2) 되받기가 없는 턴에는 슬롯을 넣지 않는다(단독 슬롯 금지) — 사용 표시를 남기지 않아 다음 턴에 다시 시도
+                    _slot_used = "no_receive"
+                elif _pn_s == "Jessica":
                     clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip(); _tm["slot_text"] = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")
                 elif _pn_s == "Olivia":
                     _cq_used = int(((_sd_s.get("contrast_q_count") or {}).get(chapter, 0)) or 0)
                     if _cq_used:
                         _slot_used = "contrast_already"   # LLM 이 이미 대조 질문을 했으면 그것이 슬롯
                     else:
-                        clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q2" if _ch_i % 2 else "slot_q")]).strip(); _tm["slot_text"] = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q2" if _ch_i % 2 else "slot_q")
+                        _oq = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q2" if _ch_i % 2 else "slot_q")
+                        clean_reply = " ".join(_lead_s + [_oq]).strip(); _tm["slot_text"] = _oq
                         _tm["contrast_q"] = 1
                 elif _pn_s == "Daniel":
+                    # (P3-2) 관찰은 되받기 뒤에: [되받기] + 관찰 + 질문부
                     from diag_project.services.intro_messages import DANIEL_OBSERVATIONS as _DOBS
-                    clean_reply = " ".join([_DOBS[_ch_i % len(_DOBS)]] + _lead_s + ([_q_now_s] if _q_now_s else [])).strip(); _tm["slot_text"] = _DOBS[_ch_i % len(_DOBS)]
+                    clean_reply = " ".join(_lead_s + [_DOBS[_ch_i % len(_DOBS)]] + ([_q_now_s] if _q_now_s else [])).strip(); _tm["slot_text"] = _DOBS[_ch_i % len(_DOBS)]
                 elif _pn_s == "Michael":
-                    clean_reply = " ".join([_pl_a((state.get("coach_persona") or {}).get("name"), "slot_lead")] + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip(); _tm["slot_text"] = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")
+                    # (P3-2) 응원 = [리더 결정 요약(LLM 되받기)] + "그 선택, 응원합니다." + LLM 질문 그대로. 실행 의지 질문은 다음 턴(michael_q_pending).
+                    _sl = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_lead")
+                    clean_reply = " ".join(_lead_s + [_sl] + ([_q_now_s] if _q_now_s else [])).strip(); _tm["slot_text"] = _sl
+                    _tm["michael_q_pending"] = 1
                 else:   # Lucas
                     clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip(); _tm["slot_text"] = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")
-                if _slot_used != "contrast_already":
+                if _slot_used not in ("contrast_already", "no_receive"):
                     _tm["slot"] = _pn_s
                     logger.info("🎭 페르소나 슬롯(%s): [%s] %s", _pn_s, chapter, current_target_sub)
             _new_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
@@ -2609,12 +2630,14 @@ async def _submit_message_phase3a(
                 else:
                     _tm["bridge"] = 2
                     _body = _ATR_j[0]
-            # (2026-10-22 P2-3) 다리 문장 필수 — 되받기만 있으면 페르소나별 다리 한 문장을 붙인다(단독 전환 문장 금지).
-            _stm_n = len([x for x in split_sentences(_body) if x.strip()])
-            if _stm_n < 2:
-                from diag_project.services.intro_messages import transition_bridge as _tbr
-                _body = f"{_body} {_tbr((state.get('coach_persona') or {}).get('name'), len(asked_for_chapter(session.self_assessment_data, chapter) or []))}".strip()
+            # (2026-11-04 P3-3) 하위역량 전환 다리 — [되받기 1문장(리더 답 인용)] + 페르소나 고정 다리 + 앵커. LLM 의 다리·전환 문장은 쓰지 않는다
+            #   (P2-3 의 '되받기만 있으면 다리 추가'를 대체. 운영 11/4: 앵커로 건너뛰는 턴이 기계적으로 읽혔다).
+            if not state.get("skip_bridge"):
+                from diag_project.services.intro_messages import persona_line as _pl_tb
+                _recv_j = [x.strip() for x in split_sentences(_body) if x.strip() and not _ito(x)][:1]
+                _body = " ".join(_recv_j + [_pl_tb((state.get("coach_persona") or {}).get("name"), "target_bridge")]).strip()
                 _tm["bridge_added"] = 1
+                _tm["target_bridge"] = 1
             _ar_q, _ar_mode = await _render_anchor_for(current_target_sub)
             _tm["anchor_render"] = _ar_mode
             clean_reply = f"{_body} {_ar_q}".strip()
@@ -2827,6 +2850,12 @@ async def _submit_message_phase3a(
         _ex_cap = exclamation_cap(
             (state.get("coach_persona") or {}).get("name"), instruction_used
         )
+        if _ex_cap and chapter:
+            # (2026-11-04 P3-4) Michael 느낌표는 챕터당 EXCLAMATION_PER_CHAPTER(2)개까지 — 챕터 누적(excl_by_chapter)이 차면 이번 턴 상한 0
+            from diag_project.services.style_tracker import EXCLAMATION_PER_CHAPTER as _epc
+            if int(((session.self_assessment_data or {}).get("excl_by_chapter") or {}).get(chapter, 0) or 0) >= _epc:
+                _ex_cap = 0
+                _tm["excl_chapter_cap"] = 1
         _ex_n = count_exclamations(clean_reply)
         if _ex_n > _ex_cap and system_override_text is not None:
             clean_reply, _ = enforce_exclamation_cap(clean_reply, _ex_cap)
@@ -2883,6 +2912,45 @@ async def _submit_message_phase3a(
         _fm_pst(session, "self_assessment_data")
         logger.info("⏸️ 일시정지 제안: 질문 보류 → pending=%s target=%s (원장 되돌림=%s)",
                     instruction_used, current_target_sub, _ledger_snapshot is not None)
+
+    # 8-w. (2026-11-04 P3-1) 되받기 필수 — 모든 대화 턴은 [되받기 1~2문장(리더 직전 답의 명사구 인용)] + [질문]. 8-n 입버릇·8-h 느낌표·8-i 가드가
+    #   되받기를 지웠거나 LLM 이 질문만 냈으면 되받기만 재생성 1회(질문부는 그대로 둔다), 그래도 없으면 백엔드 폴백
+    #   "'[명사구]'까지 말씀해 주셨네요." 질문만 나가는 턴 금지. (운영 Michael 11/4 세션: 질문만 이어지는 턴이 기계적으로 읽혔다.)
+    from diag_project.services.receive_check import RECEIVE_REQUIRED_INSTRUCTIONS as _RECV_INSTR
+    if (system_override_text is None and not _llm_error and (clean_reply or "").strip() and not needs_user_decision
+            and chapter and instruction_used in _RECV_INSTR and _align_ctx is None and not state.get("skip_bridge")):
+        from diag_project.services.receive_check import (
+            check_receive as _chk_r, lead_cap_for as _lcf_w, quote_phrase as _qp_r,
+            receive_fallback as _rfb, splice_receive as _spl_r,
+        )
+        _has_r, _quoted_r = _chk_r(clean_reply, _llm_user_text)
+        if not (_has_r and _quoted_r):
+            _ph = _qp_r(_llm_user_text)
+            _pn_w = (state.get("coach_persona") or {}).get("name")
+            from diag_project.services.intro_messages import persona_line as _pl_w
+            _fixed_w = [x for x in (_tm.get("slot_text"), _pl_w(_pn_w, "slot_lead"), _pl_w(_pn_w, "target_bridge")) if x]
+            _new_r = ""
+            try:
+                _r_out = await _timed_regen(
+                    system_prompt=system_prompt, chapter_context=chapter_context,
+                    turn_state_text=turn_state_text + (
+                        "\n\n🚨 [시스템 — 재생성 지시] 첫 문장이 리더님 답을 받지 못했습니다. 첫 문장은 리더님이 방금 쓴 표현"
+                        + (f"('{_ph}' 같은 말)" if _ph else "") + "을 그대로 하나 넣어 들은 사실을 받는 평서문 1문장으로 쓰고, "
+                        "그 뒤에 질문 하나를 이어 쓰세요. 이 지시문의 단어를 답에 옮기지 마세요."),
+                    compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
+                _r_txt = _MARKER_RE.sub("", _r_out.get("reply") or "").strip()
+                if _r_txt and all(_chk_r(_r_txt, _llm_user_text)):
+                    _new_r = _r_txt
+            except Exception as _e_r:
+                logger.error("되받기 재생성 실패: %s", _e_r)
+            if _new_r:
+                clean_reply = _spl_r(clean_reply, _new_r, _lcf_w(_llm_user_text), keep_fixed=_fixed_w)
+                _tm["receive_fix"] = 1
+                logger.info("🗣️ 되받기 재생성으로 보강(인용=%s)", _ph)
+            elif _ph or not _has_r:
+                clean_reply = _spl_r(clean_reply, _rfb(_pn_w, _ph), 1, keep_fixed=_fixed_w)
+                _tm["receive_fix"] = 2
+                logger.info("🗣️ 되받기 폴백 삽입(인용=%s)", _ph)
 
     # 8-x. (2026-11-02 P2) 사다리 질문 복원 — 8-h 느낌표·8-n 입버릇 재생성이 본문을 통째로 바꾸면 사다리 질문이 사라진다
     #   (p2b Michael 일관리: ladder_dropped=overridden 2턴 → 챕터 사다리 1회). 강제 사다리 턴이면 마지막 질문을 사다리 질문으로 되돌린다.
@@ -3169,6 +3237,18 @@ async def _submit_message_phase3a(
                 _gl_store["generalize_pending"] = _gp
             if _tm.get("slot") and chapter:
                 _psu = dict(_gl_store.get("persona_slot_used") or {}); _psu[chapter] = _tm["slot"]; _gl_store["persona_slot_used"] = _psu
+            if chapter and (_tm.get("michael_q_pending") or _tm.get("michael_q_done")):
+                # (2026-11-04 P3-2) 응원 턴 → 다음 턴에 실행 의지 질문. 질문을 낸 턴에서 대기 해제.
+                _mqp = dict(_gl_store.get("michael_q_pending") or {})
+                if _tm.get("michael_q_done"):
+                    _mqp.pop(chapter, None)
+                else:
+                    _mqp[chapter] = 1
+                _gl_store["michael_q_pending"] = _mqp
+            if chapter and "!" in (clean_reply or ""):
+                # (2026-11-04 P3-4) 느낌표 챕터 누적(Michael 챕터당 2개 상한)
+                _exc = dict(_gl_store.get("excl_by_chapter") or {}); _exc[chapter] = int(_exc.get(chapter, 0) or 0) + (clean_reply or "").count("!")
+                _gl_store["excl_by_chapter"] = _exc
             if _tm.get("quantify") and chapter:
                 _qu = dict(_gl_store.get("quantify_used") or {}); _qu[chapter] = int(_qu.get(chapter, 0) or 0) + 1; _gl_store["quantify_used"] = _qu
             if _tm.get("direct_q") and current_target_sub:
@@ -3256,6 +3336,9 @@ async def _submit_message_phase3a(
             "slot": _tm.get("slot"), "j_quantify_first": int(_tm.get("j_quantify_first") or 0), "j_number_restated": _tm.get("j_number_restated"),
             "ladder_restored": int(_tm.get("ladder_restored") or 0),
             "slot_restored": int(_tm.get("slot_restored") or 0),   # (2026-11-02 p2c) 슬롯 문장 복원(8-x2)
+            # (2026-11-04 P3) receive_fix 1 재생성/2 폴백 · target_bridge 전환 다리 삽입 · excl_chapter_cap 느낌표 챕터 상한 적용
+            "receive_fix": _tm.get("receive_fix"), "target_bridge": int(_tm.get("target_bridge") or 0),
+            "excl_chapter_cap": int(_tm.get("excl_chapter_cap") or 0),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

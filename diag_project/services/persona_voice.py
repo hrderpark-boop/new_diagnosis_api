@@ -149,14 +149,14 @@ _OLIVIA_ENDINGS = [
     (r"있으실까요\?$", "있으실지요?"), (r"었을까요\?$", "었을지요?"), (r"을까요\?$", "을지요?"),
 ]
 _MICHAEL_ENDINGS = [
-    # (2026-10-28 P0-3) Michael 은 '~던가요?' 회상형 — Lucas('~나요?')·Ella('~어요?')와 같은 문장이 나가지 않게
-    (r"있으셨어요\?$", "있으셨던가요?"), (r"있었어요\?$", "있었던가요?"), (r"있으세요\?$", "있으신가요?"),
-    (r"주시겠어요\?$", "주시겠나요?"), (r"하셨어요\?$", "하셨던가요?"), (r"셨어요\?$", "셨던가요?"),
-    (r"이었어요\?$", "이었던가요?"), (r"였어요\?$", "였던가요?"), (r"어땠어요\?$", "어땠던가요?"), (r"했어요\?$", "했던가요?"),
-    (r"됐어요\?$", "됐던가요?"), (r"에요\?$", "인가요?"), (r"예요\?$", "인가요?"), (r"어요\?$", "던가요?"),
-    (r"습니까\?$", "던가요?"), (r"있으셨나요\?$", "있으셨던가요?"), (r"셨나요\?$", "셨던가요?"),
-    (r"있으실까요\?$", "있으실 것 같나요?"), (r"있으신가요\?$", "있으셨던가요?"), (r"신가요\?$", "셨던가요?"),
-    (r"었을까요\?$", "었던가요?"), (r"을까요\?$", "을 것 같나요?"), (r"나요\?$", "던가요?"),
+    # (2026-11-04 P3-4) 전면 교체 — '~던가요?' 회상형 폐지. 구어체 '있으셨어요? / 어떤 일이었어요? / 어떻게 하셨어요?'.
+    #   사전 문장(Ella 기본형 '~어요?')은 그대로 두고, 격식형·'~나요?'·'~을까요?' 류만 구어체로 당긴다. 에너지는 '직접'·느낌표(챕터 2개)로.
+    (r"있으셨나요\?$", "있으셨어요?"), (r"있었나요\?$", "있었어요?"), (r"있으신가요\?$", "있으세요?"), (r"있으실까요\?$", "있으세요?"),
+    (r"있으셨습니까\?$", "있으셨어요?"), (r"있었습니까\?$", "있었어요?"), (r"있습니까\?$", "있어요?"),
+    (r"하셨나요\?$", "하셨어요?"), (r"하셨습니까\?$", "하셨어요?"), (r"셨나요\?$", "셨어요?"), (r"셨습니까\?$", "셨어요?"),
+    (r"였나요\?$", "였어요?"), (r"였습니까\?$", "였어요?"), (r"이었습니까\?$", "이었어요?"), (r"어땠나요\?$", "어땠어요?"), (r"어땠습니까\?$", "어땠어요?"),
+    (r"했습니까\?$", "했어요?"), (r"됐습니까\?$", "됐어요?"), (r"입니까\?$", "예요?"), (r"십니까\?$", "세요?"), (r"습니까\?$", "어요?"),
+    (r"신가요\?$", "세요?"), (r"었을까요\?$", "었어요?"), (r"였을까요\?$", "였어요?"), (r"나요\?$", "어요?"),
 ]
 
 
@@ -211,7 +211,7 @@ def voice_question(persona_name: str | None, text: str, *, variant: int = 0) -> 
         t = t.replace("뭘 ", "무엇을 ").replace("걸 ", "것을 ")
         return _daniel(t, variant)
     if k == "Michael":
-        # (2026-10-28 P0-3) Michael 은 '~었나요?/~나요?' 의 밝고 빠른 어미 + '직접'. 어미 변환이 없으면 Ella 와 같은 문장이 나갔다.
+        # (2026-11-04 P3-4) Michael 은 구어체 '~어요?' + '직접'. (P0-3 의 '~던가요' 회상형은 운영 11/4 세션에서 기계적으로 읽혀 폐지.)
         body = re.sub(r"^(좋습니다[,!.]?\s*)", "", t)
         # (2026-10-29 P1-2) 어절 첫머리의 '하신 적'에만 — '전하신 적·조정하신 적·배려하신 적'이 '전직접 하신 적'으로 깨지던 것(p11 Michael 앵커 4종)
         body = re.sub(r"(?<![가-힣])하신 적", "직접 하신 적", body, count=1) if "직접" not in body else body
@@ -256,29 +256,38 @@ def restore_slot_sentence(reply: str, persona: str | None, slot_text: str | None
     """(2026-11-02 p2c) 페르소나 슬롯 고정 문장 복원. 반환 (본문, 복원 여부).
 
     8-n·8-o·8-p 가 본문을 바꾸면 슬롯 문장이 빠진다(p2c 24세션: Michael 16/25·Jessica 5/25·Daniel 4/25).
-    Olivia 는 최종 본문에 대조 질문이 남아 있으면 그대로, Daniel 은 관찰 1문장을 맨 앞에, Michael 은 응원 리드 + 실행 의지 질문,
-    나머지는 첫 되받기 1문장 + 슬롯 질문. (이 docstring 은 누설 사전 소스에 포함되므로 코치 발화 어휘를 넣지 않는다.)"""
+    Olivia 는 최종 본문에 대조 질문이 남아 있으면 그대로, Daniel 은 관찰 1문장을 되받기 뒤에, Michael 응원 턴은 되받기 뒤에 응원 문장
+    (되받기가 없으면 넣지 않음), 그 밖(실행 의지 질문 턴 포함)은 첫 되받기 1문장 + 슬롯 질문. (이 docstring 은 누설 사전 소스에 포함되므로 코치 발화 어휘를 넣지 않는다.)"""
     from diag_project.services.output_guard import split_sentences, is_question as is_question_sentence
     if not reply or not slot_text or not persona:
         return reply, False
     _n = lambda t: re.sub(r"\s+", "", t)
     # 비교 단위는 슬롯 문장의 첫 문장 — Daniel 관찰은 2문장('… 되지요. 저도 그랬습니다.')이라 리드 1문장 상한이 뒷문장을 자른다(p2c 25턴 중 14).
     _key = (split_sentences(slot_text) or [slot_text])[0]
+    if persona == "Michael":
+        from diag_project.services.intro_messages import PERSONA_LINES
+        _ld = PERSONA_LINES["Michael"]["slot_lead"]
+        if _n(slot_text) == _n(_ld):
+            # (2026-11-04 P3-2) 응원 턴: [리더 결정 요약(LLM 되받기)] + 응원 문장 + 질문. 되받기가 없으면 빈 응원은 넣지 않는다.
+            if _n(_ld) in _n(reply):
+                return reply, False
+            sents = [x for x in split_sentences(reply) if x.strip()]
+            stmts = [x for x in sents if not is_question_sentence(x)]
+            if not stmts:
+                return reply, False
+            i = sents.index(stmts[0])
+            return " ".join(sents[: i + 1] + [_ld] + sents[i + 1:]).strip(), True
+        # 실행 의지 질문 턴(Michael_q)은 아래 일반 경로(되받기 1문장 + 질문)
     if _n(_key) in _n(reply):
-        if persona == "Michael":   # 응원 리드가 8-n 입버릇 가드(매 챕터 같은 문장 → 반복 삭제)에 잘렸으면 리드만 되돌린다(p2d 2/5)
-            from diag_project.services.intro_messages import PERSONA_LINES
-            _ld = PERSONA_LINES["Michael"]["slot_lead"]
-            if _ld and _n(_ld) not in _n(reply):
-                return f"{_ld} {_GOOD_RE.sub('', reply).strip()}".strip(), True   # (p2f) 응원 뒤 '좋습니다' 금지
         return reply, False
     if persona == "Olivia" and _CONTRAST_RE.search(reply):
         return reply, False
-    if persona == "Daniel":
-        return f"{slot_text} {reply}".strip(), True
     sents = split_sentences(reply)
-    if persona == "Michael":
-        from diag_project.services.intro_messages import PERSONA_LINES
-        lead = [PERSONA_LINES["Michael"]["slot_lead"]]
-    else:
-        lead = [x for x in sents if not is_question_sentence(x)][:1]
+    lead = [x for x in sents if not is_question_sentence(x)][:1]
+    if persona == "Daniel":
+        # (P3-2) 관찰은 되받기 뒤에: 되받기가 있으면 [되받기] + 관찰 + 나머지, 없으면 관찰 + 본문
+        if lead:
+            i = sents.index(lead[0])
+            return " ".join(sents[: i + 1] + [slot_text] + sents[i + 1:]).strip(), True
+        return f"{slot_text} {reply}".strip(), True
     return " ".join(lead + [slot_text]).strip(), True

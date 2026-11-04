@@ -185,6 +185,7 @@ _PERSONA_REACTION = {
 #   안내·설명 턴(진행 안내, 정의 제시 등)은 Michael 도 0. 초과 시 재생성 1회 → 그래도 초과면
 #   초과분을 마침표로 치환(enforce_exclamation_cap).
 _EXCLAMATION_CAP = {"Michael": 1}
+EXCLAMATION_PER_CHAPTER = 2   # (2026-11-04 P3-4) Michael 느낌표는 챕터당 1~2개 — 턴 상한 1 에 더해 챕터 누적 상한
 _EXPLAIN_INSTRUCTIONS = {
     "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "COMPETENCY_ALIGN", "META_QUESTION_FROM_USER",
     "CHAPTER_READY_TO_END", "CHAPTER_CONTINUE_CONFIRMED", "USER_REQUESTS_PAUSE",

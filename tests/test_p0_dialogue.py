@@ -71,7 +71,11 @@ def test_all_dictionary_anchors_differ_across_six_personas():
     qs = [q for lst in SUBCOMPETENCY_ANCHOR_QUESTIONS.values() for q in (lst if isinstance(lst, list) else [lst])]
     norm = lambda s: re.sub(r"[\s.,!?…'\"()]", "", s)  # noqa: E731
     same = [(a, b, q) for q in qs for a, b in itertools.combinations(NAMES, 2) if norm(voice_question(a, q)) == norm(voice_question(b, q))]
+    # (2026-11-04 P3-4) Michael 은 구어체 '~어요?'(Ella 기본형)로 되돌렸다 — '~던가요' 회상형이 운영에서 기계적으로 읽혀 폐지.
+    #   Ella·Michael 쌍만 같은 문장을 허용하고, 나머지 쌍은 여전히 전부 달라야 한다.
+    same = [x for x in same if {x[0], x[1]} != {"Ella", "Michael"}]
     assert same == [], same[:5]
+    assert not any("던가요" in voice_question("Michael", q) for q in qs)
     for q in qs:
         for n in NAMES:
             assert voice_question(n, q).count("?") == 1
@@ -147,18 +151,21 @@ def test_lead_cap_keeps_dependent_clause_of_compound_question():
 
 # ── P0-6 시간 인사 ─────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("hour,part", [(4, "늦은 시간"), (5, "오전"), (10, "오전"), (11, "점심"), (12, "점심"),
+@pytest.mark.parametrize("hour,part", [(4, "늦은 시간"), (5, "오전"), (10, "오전"), (11, "오전 마무리"), (12, "점심"),
                                        (13, "오후"), (14, "오후"), (17, "오후"), (18, "저녁"), (22, "저녁"), (23, "늦은 시간")])
 def test_daypart_boundaries_kst(hour, part):
+    # (2026-11-04 P3-5) 11~12 '오전 마무리', 점심 12:00~13:30 — 분 49 기준이라 13:49 는 오후
     now = datetime(2026, 10, 28, hour, 49, tzinfo=KST)
-    assert daypart(hour) == part
+    assert daypart(hour, 49) == part
     assert get_time_greeting(now)["ampm_phrase"] == part
     assert ("점심" in get_time_phrase(now)) == (part == "점심")
 
 
 def test_lucas_1349_is_afternoon_not_lunch():
     now = datetime(2026, 10, 28, 13, 49, tzinfo=KST)
-    assert daypart(now.hour) == "오후"   # (2026-10-29 P1) 13:49 는 13~18 오후 구간
+    assert daypart(now.hour, now.minute) == "오후"   # (2026-11-04 P3-5) 13:49 는 13:30~18 오후, 13:29 는 점심
+    assert daypart(13, 29) == "점심" and daypart(11, 30) == "오전 마무리"
+    assert get_time_greeting(datetime(2026, 11, 4, 11, 30, tzinfo=KST))["greeting_question"] == "오전 마무리는 어떠세요?"
     now2 = datetime(2026, 10, 28, 14, 5, tzinfo=KST)
     assert get_time_phrase(now2).startswith("오후") and "점심" not in get_time_greeting(now2)["ampm_phrase"]
 
@@ -448,8 +455,11 @@ def test_persona_slot_lines_and_wiring():
     assert number_token("재구매율이 8% 올랐습니다") == "8%" and number_token("두 달 걸렸어요") is None and number_token("3명을 새로 뽑았어요") == "3명"
     src = inspect.getsource(d._submit_message_phase3a)
     i = src.index("페르소나 고정 슬롯")
-    blk = src[i: i + 6000]
+    blk = src[i: i + 9000]
     assert all(k in blk for k in ('_pn_s == "Jessica"', '_pn_s == "Olivia"', '_pn_s == "Daniel"', '_pn_s == "Michael"', "Lucas", '_tm["slot"] = _pn_s'))
+    # (2026-11-04 P3-2) 되받기 없으면 슬롯 건너뜀 · Michael 응원은 되받기 뒤 + LLM 질문, 실행 의지 질문은 다음 턴 · Daniel 관찰은 되받기 뒤
+    assert '_slot_used = "no_receive"' in blk and '_tm["michael_q_pending"] = 1' in blk and '_tm["slot"] = "Michael_q"' in blk
+    assert '" ".join(_lead_s + [_DOBS[_ch_i % len(_DOBS)]]' in blk and '" ".join(_lead_s + [_sl] + ([_q_now_s] if _q_now_s else []))' in blk
     assert "persona_slot_used" in src and "j_number_restated" in src
     # (2026-11-02 p2c) 슬롯 문장 복원(8-x2): 슬롯 조립 시 slot_text 기록 → 8-y 앞에서 복원 → 원장 slot_restored
     assert blk.count('_tm["slot_text"]') >= 5 and "슬롯 문장 복원" in src and "restore_slot_sentence" in src and '"slot_restored"' in src
@@ -460,16 +470,20 @@ def test_restore_slot_sentence_rebuilds_lost_fixed_line():
     from diag_project.services.persona_voice import restore_slot_sentence
     from diag_project.services.intro_messages import PERSONA_LINES, DANIEL_OBSERVATIONS
     mq = PERSONA_LINES["Michael"]["slot_q"]
-    # Michael: 8-n 재생성이 덮어 실행 의지 질문이 사라진 본문 → 응원 리드 + 고정 질문
-    out, r = restore_slot_sentence("좋습니다, 참여율을 핵심으로 정하셨군요. 그 조율 자리는 언제쯤이었을까요?", "Michael", mq)
-    assert r and out == f"{PERSONA_LINES['Michael']['slot_lead']} {mq}"
+    ml = PERSONA_LINES["Michael"]["slot_lead"]
+    # (2026-11-04 P3-2) Michael 응원 턴(slot_text=응원 문장): 8-n 재생성이 응원을 지웠으면 되받기 뒤에 되돌린다
+    out, r = restore_slot_sentence("좋습니다, 참여율을 핵심으로 정하셨군요. 그 조율 자리는 언제쯤이었을까요?", "Michael", ml)
+    assert r and out == f"좋습니다, 참여율을 핵심으로 정하셨군요. {ml} 그 조율 자리는 언제쯤이었을까요?"
     # 남아 있으면 손대지 않는다(띄어쓰기 차이 무시)
-    out, r = restore_slot_sentence(f"그 선택, 응원합니다. {mq.replace(' ', '  ')}", "Michael", mq)
+    out, r = restore_slot_sentence(f"참여율을 핵심으로 정하셨군요. {ml.replace(' ', '  ')} 그 뒤에는요?", "Michael", ml)
     assert not r
-    # 질문은 남았는데 응원 리드만 잘렸으면 리드를 되돌린다
-    out, r = restore_slot_sentence(mq, "Michael", mq)
-    assert r and out == f"{PERSONA_LINES['Michael']['slot_lead']} {mq}"
-    out, r = restore_slot_sentence(f"좋습니다, 그 선택, 응원합니다. {mq}", "Michael", mq)
+    # 되받기가 없으면 빈 응원은 넣지 않는다
+    out, r = restore_slot_sentence("그 조율 자리는 언제쯤이었을까요?", "Michael", ml)
+    assert not r
+    # 실행 의지 질문 턴(slot_text=고정 질문): 되받기 1문장 + 고정 질문
+    out, r = restore_slot_sentence("좋습니다, 참여율을 핵심으로 정하셨군요. 그 조율 자리는 언제쯤이었을까요?", "Michael", mq)
+    assert r and out == f"좋습니다, 참여율을 핵심으로 정하셨군요. {mq}"
+    out, r = restore_slot_sentence(f"그러셨군요. {mq}", "Michael", mq)
     assert not r
     # Jessica: 첫 되받기 1문장 + 기준 질문
     jq = PERSONA_LINES["Jessica"]["slot_q"]
@@ -478,7 +492,8 @@ def test_restore_slot_sentence_rebuilds_lost_fixed_line():
     # Daniel: 관찰 문장을 앞에 되돌리고 나머지는 보존
     ob = DANIEL_OBSERVATIONS[1]
     out, r = restore_slot_sentence("알겠습니다. 그때 어떤 과제였는지 말씀해 주시겠습니까?", "Daniel", ob)
-    assert r and out.startswith(ob) and out.endswith("말씀해 주시겠습니까?")
+    assert r and out == f"알겠습니다. {ob} 그때 어떤 과제였는지 말씀해 주시겠습니까?"   # (P3-2) 관찰은 되받기 뒤
+    assert restore_slot_sentence("그때 어떤 과제였는지 말씀해 주시겠습니까?", "Daniel", ob)[0].startswith(ob)
     # 리드 1문장 상한이 관찰의 뒷문장('저도 그랬습니다.')을 잘라도 첫 문장이 남았으면 복원하지 않는다(중복 방지)
     out, r = restore_slot_sentence(f"{ob.split('. ')[0]}. 그 뒤에는 어떻게 되었습니까?", "Daniel", ob)
     assert not r
@@ -525,10 +540,10 @@ def test_p2f_michael_good_lead_chapter_cap_and_cheer_slot():
     assert "len(_good_prev) < _mcap" in blk and '_tm.get("slot") != "Michael"' in blk and '_tm["good_lead_cap"] = 1' in blk
     assert "add=bool(chapter) and not needs_user_decision" in blk and "not needs_user_decision\n" not in blk[: blk.index("_mlg(")]   # 일시정지 제안 턴도 가드 대상
     assert '"good_lead_cap"' in src and '"incident_word"' in src
-    # 8-x2 리드 복원이 '응원합니다. 좋습니다, 다음에…' 를 만들지 않는다
+    # (2026-11-04 P3-2) 실행 의지 질문 턴: 질문이 남아 있으면 손대지 않는다(응원 문장은 이 턴의 슬롯이 아니다)
     q = PERSONA_LINES["Michael"]["slot_q"]
     out, r = restore_slot_sentence(f"좋습니다, {q}", "Michael", q)
-    assert r and out == f"{PERSONA_LINES['Michael']['slot_lead']} {q}" and "좋습니다" not in out
+    assert not r and out == f"좋습니다, {q}"
 
 
 def test_p2f_incident_word_rewrite_and_classification_leak():

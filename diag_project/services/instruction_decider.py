@@ -1217,6 +1217,7 @@ async def build_turn_state(
     state["current_hour_text"] = time_info["hour_text"]
     state["current_time_tone"] = time_info["tone"]
     state["current_ampm_phrase"] = time_info["ampm_phrase"]
+    state["current_greeting_question"] = time_info.get("greeting_question")   # (2026-11-04 P3-5) 11~12시 '오전 마무리는 어떠세요?'
 
     # 9-e. 라포 카테고리 강제 결정 (가이드 약속이 아닌 시스템 명령)
     state["forced_rapport_category"] = _force_rapport_category(rapport_turn_count)

@@ -60,6 +60,7 @@ COACH_NAMES: dict[str, str] = {k: v["name"].split(" ")[0] for k, v in COACHES_PE
 
 # ── 사전 추출 소스 ─────────────────────────────────────────────────────────────
 # (2026-10-28) 누설 사전 추출·탐지는 앱 패키지(diag_project/services/leak_lexicon.py)로 옮겼다 — 출력 가드와 같은 사전.
+from diag_project.services.receive_check import RECEIVE_REQUIRED_INSTRUCTIONS as _RECV_INSTR, check_receive
 from diag_project.services.leak_lexicon import (  # noqa: E402
     _HANGUL_RE, _raw_tokens, build_lexicon, find_lexicon_leaks, find_state_report, guard_lexicon, lexicon_size,
 )
@@ -90,12 +91,16 @@ _ALIGN_LINE_RE = re.compile(r"^\s*[·•\-]\s*(.+?)\s*$")
 # 4. 보조 함수
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _slot_sentence_kept(coach_name: str, text: str) -> bool:
-    """(2026-11-02 p2c) 슬롯 고정 문장(Jessica/Lucas/Michael slot_q, Olivia slot_q/q2 또는 대조 질문, Daniel 관찰 1문장)이 본문에 남아 있는가."""
+def _slot_sentence_kept(coach_name: str, text: str, slot_kind: str | None = None) -> bool:
+    """(2026-11-02 p2c) 슬롯 고정 문장(Jessica/Lucas slot_q, Olivia slot_q/q2 또는 대조 질문, Daniel 관찰 1문장)이 본문에 남아 있는가.
+    (2026-11-04 P3-2) Michael 은 응원 턴(slot='Michael') 이면 응원 문장, 실행 의지 질문 턴(slot='Michael_q') 이면 고정 질문."""
     from diag_project.services.intro_messages import PERSONA_LINES, DANIEL_OBSERVATIONS
     from diag_project.services.persona_voice import _CONTRAST_RE
     _n = lambda t: re.sub(r"\s+", "", t or "")
     body = _n(text)
+    if coach_name == "Michael":
+        pl = PERSONA_LINES["Michael"]
+        return _n(pl["slot_q"]) in body if slot_kind == "Michael_q" else _n(pl["slot_lead"]) in body
     if coach_name == "Daniel":   # 관찰은 2문장짜리도 있어 리드 1문장 상한이 뒷문장을 자른다 → 첫 문장으로 판정
         return any(_n(split_sentences(o)[0]) in body for o in DANIEL_OBSERVATIONS)
     pl = PERSONA_LINES.get(coach_name) or {}
@@ -229,6 +234,8 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         "ladder_turns": 0, "ladder_by_chapter": {}, "ladder_short_chapters": [], "ladder_skipped": 0, "ladder_swapped": 0, "leak_final_turns": 0,
         "slot_by_chapter": {}, "slot_chapters": 0, "slot_turns": 0, "slot_kept": 0, "slot_restored": 0,
         "good_lead_by_chapter": {}, "good_lead_max": 0, "incident_word_turns": 0,
+        # (2026-11-04 P3-1) 되받기: 대상 턴 수 · 되받기 없는 턴 · 되받기에 리더 명사구 미포함 턴 (+사례)
+        "receive_turns": 0, "no_receive_turns": 0, "receive_no_quote_turns": 0, "receive_issues": [],
         "generalize_turns": 0, "generalize_by_chapter": {}, "direct_q_by_target": {}, "direct_excess": 0,
         "endings": {}, "anchors": [],
     }
@@ -310,7 +317,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
             res["slot_by_chapter"][chapter or "-"] = res["slot_by_chapter"].get(chapter or "-", 0) + 1   # (2026-10-29 P2-1) 페르소나 슬롯
             res["slot_turns"] += 1
             res["slot_restored"] += int(g.get("slot_restored") or 0)
-            if _slot_sentence_kept(coach_name, content):   # (2026-11-02 p2c) 고정 문장이 최종 발화에 남았는지 — 플래그와 별도로 본문 검사
+            if _slot_sentence_kept(coach_name, content, g.get("slot")):   # (2026-11-02 p2c) 고정 문장이 최종 발화에 남았는지 — 플래그와 별도로 본문 검사
                 res["slot_kept"] += 1
         if g.get("leak_final"):
             res["leak_final_turns"] += 1          # (2026-10-29 P1) 8-y 최종 누설 소거 발동 턴 — 목표 0(상류 프롬프트에서 원인 제거)
@@ -318,6 +325,16 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
             res["good_lead_by_chapter"][chapter or "-"] = res["good_lead_by_chapter"].get(chapter or "-", 0) + 1
         if g.get("incident_word"):
             res["incident_word_turns"] += 1       # (2026-11-02 p2f) '사건' 치환이 일어난 턴
+        if chapter and row.get("instr") in _RECV_INSTR:
+            # (2026-11-04 P3-1) 되받기 필수: 질문 앞 평서문이 있는가, 그 안에 리더 직전 답의 명사구가 있는가(파이프라인 8-w 와 같은 판정)
+            res["receive_turns"] += 1
+            _has_r, _quoted_r = check_receive(content, prev_user)
+            if not _has_r:
+                res["no_receive_turns"] += 1
+                res["receive_issues"].append({"t": t, "kind": "none", "instr": row.get("instr"), "coach": content[:90], "user": (prev_user or "")[:60]})
+            elif not _quoted_r:
+                res["receive_no_quote_turns"] += 1
+                res["receive_issues"].append({"t": t, "kind": "no_quote", "instr": row.get("instr"), "coach": content[:90], "user": (prev_user or "")[:60]})
         if g.get("generalize_probe") or g.get("generalize"):
             res["generalize_turns"] += 1
             gen_by_ch[chapter or "-"] += 1
@@ -374,14 +391,14 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
     L: list[str] = []
     L.append("## 코치 재생 전문 린트 요약")
     L.append("")
-    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total | 잘림 | 미감지 a/b | 사다리(<2 챕터) | 사다리 건너뜀/교체 | 슬롯 챕터(문장 보존/복원) | 좋습니다 챕터최대 | 일반화 | 직접하신 초과 | 동일앵커 |")
-    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total | 잘림 | 미감지 a/b | 사다리(<2 챕터) | 사다리 건너뜀/교체 | 슬롯 챕터(문장 보존/복원) | 좋습니다 챕터최대 | 되받기 없음/미인용(대상) | 일반화 | 직접하신 초과 | 동일앵커 |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for r in results:
         same = cross["per_coach"].get(r["coach"], 0)
         L.append(f"| {r['coach_name']}({r['coach']}) | {os.path.basename(r['file'])} | {r['leak_total']}/{r['leak_strict_total']} | {r['leak_final_turns']} | "
                  f"{r['align_pass']}/{r['align_total']} | {r['truncated_total']} | "
                  f"{r['repeat_a_missed']}/{r['repeat_a_cases']} · {r['repeat_b_missed']}/{r['repeat_b_cases']} | "
-                 f"{r['ladder_turns']}({len(r['ladder_short_chapters'])}) | {r['ladder_skipped']}/{r['ladder_swapped']} | {r['slot_chapters']}/5({r['slot_kept']}/{r['slot_turns']}, 복원 {r['slot_restored']}) | {r['good_lead_max']} | {r['generalize_turns']} | {r['direct_excess']} | {same} |")
+                 f"{r['ladder_turns']}({len(r['ladder_short_chapters'])}) | {r['ladder_skipped']}/{r['ladder_swapped']} | {r['slot_chapters']}/5({r['slot_kept']}/{r['slot_turns']}, 복원 {r['slot_restored']}) | {r['good_lead_max']} | {r['no_receive_turns']}/{r['receive_no_quote_turns']}({r['receive_turns']}) | {r['generalize_turns']} | {r['direct_excess']} | {same} |")
     L.append("")
     L.append("- 미감지 a/b: (직전 사용자 턴 반복 미감지/발생) · (코치 질문 붙여넣기 미감지/발생)")
     L.append(f"- 코치 간 동일 앵커 문장 쌍 합계: **{cross['pairs']}** (0 이어야 함)")
