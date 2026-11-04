@@ -234,10 +234,19 @@ def test_receive_metrics_and_michael_slot_kinds(lex):
     rows = [_row(1, "user", u), _row(1, "model", "그 뒤에는 어떻게 됐어요?"),
             _row(2, "user", u), _row(2, "model", "그러셨군요. 그 뒤에는요?"),
             _row(3, "user", u), _row(3, "model", "온라인 사전학습으로 바꾸셨군요. 그 뒤에는요?"),
-            _row(4, "user", "네"), _row(4, "model", "그럼 여쭤볼게요. 최근 일은요?", instr="ANCHOR_REASK")]   # 대상 아님
+            _row(4, "user", "네"), _row(4, "model", "그럼 여쭤볼게요. 최근 일은요?", instr="ANCHOR_REASK"),   # 대상 아님
+            _row(5, "user", u), _row(5, "model", "'현업 활용'까지 말씀해 주셨네요. 그 뒤에는요?",
+                                     guard={"t": 5, "ch": "organization_management", "instr": "CONTINUE_NORMAL", "receive_fix": 2, "receive_phrase": "현업 활용", "receive_src": "8-n"}),
+            _row(6, "user", u), _row(6, "model", "온라인 사전학습으로 바꾸셨군요. 그 뒤에는요?",
+                                     guard={"t": 6, "ch": "organization_management", "instr": "CONTINUE_NORMAL", "receive_fix": 1})]
     r = tl.analyze(_data(rows, coach="5"), lex)
-    assert r["receive_turns"] == 3 and r["no_receive_turns"] == 1 and r["receive_no_quote_turns"] == 1
+    assert r["receive_turns"] == 5 and r["no_receive_turns"] == 1 and r["receive_no_quote_turns"] == 1
     assert [x["kind"] for x in r["receive_issues"]] == ["none", "no_quote"]
+    # (2026-11-04 P3-1 2차) 폴백 발동 수·재생성 수·명사구 표본·소실 단계
+    assert r["receive_fallback_turns"] == 1 and r["receive_regen_turns"] == 1 and r["receive_src"] == {"8-n": 1}
+    assert r["receive_fallback_phrases"] == [{"t": 5, "phrase": "현업 활용", "user": u[:80], "src": "8-n"}]
+    md = tl.render_markdown([r], {"per_coach": {}, "pairs": 0, "duplicates": []}, lex)
+    assert "되받기 폴백 명사구 표본" in md and "| 5 | 현업 활용 |" in md
     from diag_project.services.intro_messages import PERSONA_LINES
     assert tl._slot_sentence_kept("Michael", f"정하셨군요. {PERSONA_LINES['Michael']['slot_lead']} 그 뒤에는요?", "Michael")
     assert not tl._slot_sentence_kept("Michael", "정하셨군요. 그 뒤에는요?", "Michael")

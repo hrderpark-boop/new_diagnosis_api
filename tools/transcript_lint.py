@@ -53,7 +53,7 @@ from diag_project.data.competencies import (  # noqa: E402
     SUBCOMPETENCY_ANCHOR_QUESTIONS,
     SUBCOMPETENCY_TOPIC_PHRASE,
 )
-from diag_project.services.output_guard import find_state_leak, is_question, split_sentences  # noqa: E402
+from diag_project.services.output_guard import count_questions, find_state_leak, is_question, split_sentences  # noqa: E402
 
 # ── 코치 키 → 이름 ────────────────────────────────────────────────────────────
 COACH_NAMES: dict[str, str] = {k: v["name"].split(" ")[0] for k, v in COACHES_PERSONA.items()}
@@ -178,9 +178,10 @@ def check_align_turn(text: str, chapter: str | None) -> tuple[bool, list[str]]:
             reasons.append("하위역량 누락: " + ", ".join(missing))
     sents = split_sentences(text)
     last = sents[-1].strip() if sents else ""
-    q_marks = (text or "").count("?") + (text or "").count("？")
-    if q_marks != 1 or not is_question(last):
-        reasons.append(f"앵커 질문 1개 아님(물음표 {q_marks}개, 마지막 문장 질문={is_question(last)})")
+    # (2026-11-04 P3-4 2차) Michael 요청형('…하나만 들려주세요.')은 물음표가 없다 — 질문 문장 수(is_question)로 센다.
+    n_q = count_questions(text)
+    if n_q != 1 or not is_question(last):
+        reasons.append(f"앵커 질문 1개 아님(질문 문장 {n_q}개, 마지막 문장 질문={is_question(last)})")
     if _CONFIRM_TAIL_RE.search(last):
         reasons.append("확인 질문으로 끝남: " + last[-20:])
     return (not reasons), reasons
@@ -236,6 +237,8 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         "good_lead_by_chapter": {}, "good_lead_max": 0, "incident_word_turns": 0,
         # (2026-11-04 P3-1) 되받기: 대상 턴 수 · 되받기 없는 턴 · 되받기에 리더 명사구 미포함 턴 (+사례)
         "receive_turns": 0, "no_receive_turns": 0, "receive_no_quote_turns": 0, "receive_issues": [],
+        # (2026-11-04 P3-1 2차) 폴백 발동 수(receive_fix=2)·재생성 수(=1)·폴백 명사구 표본·되받기 소실 단계 분포
+        "receive_fallback_turns": 0, "receive_regen_turns": 0, "receive_fallback_phrases": [], "receive_src": {},
         "generalize_turns": 0, "generalize_by_chapter": {}, "direct_q_by_target": {}, "direct_excess": 0,
         "endings": {}, "anchors": [],
     }
@@ -335,6 +338,14 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
             elif not _quoted_r:
                 res["receive_no_quote_turns"] += 1
                 res["receive_issues"].append({"t": t, "kind": "no_quote", "instr": row.get("instr"), "coach": content[:90], "user": (prev_user or "")[:60]})
+        if g.get("receive_fix") == 2:
+            res["receive_fallback_turns"] += 1
+            _m_ph = re.search(r"'([^']{1,40})'까지 말씀해 주셨", content or "")
+            res["receive_fallback_phrases"].append({"t": t, "phrase": g.get("receive_phrase") or (_m_ph.group(1) if _m_ph else None),
+                                                    "user": (prev_user or "")[:80], "src": g.get("receive_src")})
+            res["receive_src"][g.get("receive_src") or "?"] = res["receive_src"].get(g.get("receive_src") or "?", 0) + 1
+        elif g.get("receive_fix") == 1:
+            res["receive_regen_turns"] += 1
         if g.get("generalize_probe") or g.get("generalize"):
             res["generalize_turns"] += 1
             gen_by_ch[chapter or "-"] += 1
@@ -391,16 +402,31 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
     L: list[str] = []
     L.append("## 코치 재생 전문 린트 요약")
     L.append("")
-    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total | 잘림 | 미감지 a/b | 사다리(<2 챕터) | 사다리 건너뜀/교체 | 슬롯 챕터(문장 보존/복원) | 좋습니다 챕터최대 | 되받기 없음/미인용(대상) | 일반화 | 직접하신 초과 | 동일앵커 |")
-    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total | 잘림 | 미감지 a/b | 사다리(<2 챕터) | 사다리 건너뜀/교체 | 슬롯 챕터(문장 보존/복원) | 좋습니다 챕터최대 | 되받기 없음/미인용(대상) | 폴백/재생성 | 일반화 | 직접하신 초과 | 동일앵커 |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for r in results:
         same = cross["per_coach"].get(r["coach"], 0)
         L.append(f"| {r['coach_name']}({r['coach']}) | {os.path.basename(r['file'])} | {r['leak_total']}/{r['leak_strict_total']} | {r['leak_final_turns']} | "
                  f"{r['align_pass']}/{r['align_total']} | {r['truncated_total']} | "
                  f"{r['repeat_a_missed']}/{r['repeat_a_cases']} · {r['repeat_b_missed']}/{r['repeat_b_cases']} | "
-                 f"{r['ladder_turns']}({len(r['ladder_short_chapters'])}) | {r['ladder_skipped']}/{r['ladder_swapped']} | {r['slot_chapters']}/5({r['slot_kept']}/{r['slot_turns']}, 복원 {r['slot_restored']}) | {r['good_lead_max']} | {r['no_receive_turns']}/{r['receive_no_quote_turns']}({r['receive_turns']}) | {r['generalize_turns']} | {r['direct_excess']} | {same} |")
+                 f"{r['ladder_turns']}({len(r['ladder_short_chapters'])}) | {r['ladder_skipped']}/{r['ladder_swapped']} | {r['slot_chapters']}/5({r['slot_kept']}/{r['slot_turns']}, 복원 {r['slot_restored']}) | {r['good_lead_max']} | {r['no_receive_turns']}/{r['receive_no_quote_turns']}({r['receive_turns']}) | {r['receive_fallback_turns']}/{r['receive_regen_turns']} | {r['generalize_turns']} | {r['direct_excess']} | {same} |")
     L.append("")
     L.append("- 미감지 a/b: (직전 사용자 턴 반복 미감지/발생) · (코치 질문 붙여넣기 미감지/발생)")
+    L.append("- 폴백/재생성: 8-w 되받기 폴백 삽입 턴 수 / 되받기 재생성 턴 수. 폴백이 세션당 3회를 넘으면 아래 '되받기 소실 단계'를 본다.")
+    for r in results:
+        if not r["receive_fallback_phrases"]:
+            continue
+        L.append("")
+        L.append(f"### 되받기 폴백 명사구 표본 — {r['coach_name']} ({r['receive_fallback_turns']}회)")
+        L.append("")
+        L.append("| 턴 | 인용 명사구 | 리더 답(앞 80자) | 소실 단계 |")
+        L.append("|---:|---|---|---|")
+        for x in r["receive_fallback_phrases"][:10]:
+            L.append(f"| {x['t']} | {x['phrase'] or '(없음→일반 되받기)'} | {(x['user'] or '').replace('|', '/').replace(chr(10), ' ')} | {x['src'] or '-'} |")
+        if r["receive_fallback_turns"] > 3:
+            L.append("")
+            L.append("- 되받기 소실 단계 분포(3회 초과 → 원인): " + ", ".join(f"{k} {v}" for k, v in sorted(r["receive_src"].items(), key=lambda kv: -kv[1]))
+                     + " — llm=LLM 이 질문만 냄 · probe=8-i 가드/프로브 조립/8-j · 8-n 입버릇 재생성 · 8-o 한 질문 · 8-p/8-k 좋습니다/정의 질문 · 8-h 느낌표")
     L.append(f"- 코치 간 동일 앵커 문장 쌍 합계: **{cross['pairs']}** (0 이어야 함)")
     if cross["duplicates"]:
         for d in cross["duplicates"]:

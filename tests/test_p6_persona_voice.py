@@ -30,7 +30,8 @@ def test_voice_keeps_one_question_and_content():
         for p in PERSONAS:
             for v in (0, 1, 2):
                 out = V.voice_question(p, q, variant=v)
-                assert out.count("?") == 1 and is_question(out), (p, q, out)
+                # (2026-11-04 P3-4 2차) Michael 요청형은 물음표 없이 '들려주세요.' 로 끝나는 간접 질문
+                assert out.count("?") == (0 if p == "Michael" else 1) and is_question(out), (p, q, out)
     q = "그때 리더님은 직접 어떻게 하셨어요?"
     assert V.voice_question("Ella", q) == q
     o = V.voice_question("Olivia", q)

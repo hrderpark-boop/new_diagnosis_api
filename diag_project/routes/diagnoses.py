@@ -698,6 +698,7 @@ async def _submit_message_phase3a(
     import time as _time
     # ⏱ (2026-09-18) 턴 계측: decider / LLM 1차 / 재생성 횟수·시간 / 후처리+DB. 로그 한 줄로 남긴다.
     _tm = {"t0": _time.perf_counter(), "decider": 0.0, "llm": 0.0, "regen_n": 0, "regen_s": 0.0}
+    _rcv_snap: dict = {}   # (2026-11-04 P3-1 2차) 단계별 본문 스냅숏 — 8-w 폴백 시 되받기를 지운 단계를 원장에 남긴다
     from diag_project.database import sql_count as _sqlc
     _sqlc.set(0)   # 이 턴의 SQL 문 수(FM_SQL_COUNT=1 일 때만 집계)
     _style_tail = ""
@@ -1731,6 +1732,7 @@ async def _submit_message_phase3a(
     clean_reply = (
         clean_reply.replace("\\n", "\n").replace('\\"', '"').replace("\\t", "\t")
     )
+    _rcv_snap["llm"] = clean_reply
 
     # 2-Strike 승격 턴: LLM 이 '제안'형 문장을 썼지만 시스템이 강제 종료로
     # 승격했으므로, 어색하지 않게 단호한 마무리 선언을 시스템이 덧붙인다.
@@ -2722,6 +2724,7 @@ async def _submit_message_phase3a(
     if clean_reply:
         clean_reply = clean_reply.replace("있으시겠습니까", "있으셨습니까").replace("있으시겠어요", "있으셨어요")
 
+    _rcv_snap["probe"] = clean_reply   # 8-i 가드·프로브 조립·8-j 전환 다리까지 끝난 본문
     # 8-n. (2026-10-22 P2-1) 입버릇 반복 가드 — 되받기 마무리 어구(마지막 어절 2개)를 세션 단위로 센다.
     #   같은 어구 2회째 → 재생성 1회, 3회째(또는 재생성 후에도) → 그 문장 삭제. 금지 어구(마음에 남아요·짐작이 되네요·
     #   인상에 남네요·그려지네요·분명하게 들어왔어요)는 1회째부터 재생성. '리더님,' 문두 호칭은 3턴에 1회(직전 2턴에 있으면 뗀다).
@@ -2778,6 +2781,7 @@ async def _submit_message_phase3a(
                 _tm["honorific"] = 1
                 logger.info("🗣️ '리더님,' 문두 호칭 반복 → 제거")
 
+    _rcv_snap["8-n"] = clean_reply
     # 8-o. (2026-10-22) 최종 '한 턴 한 질문' — 8-n 입버릇 재생성·감정 재생성이 바꾼 본문에도 질문이 2개 이상이면 마지막만 남긴다.
     if (system_override_text is None and not _llm_error and clean_reply and not needs_user_decision
             and instruction_used not in ("DIAGNOSIS_INTRO", "CHAPTER_READY_TO_END", "USER_REQUESTS_PAUSE", "AWAIT_NEXT_CHAPTER_CHOICE",
@@ -2788,6 +2792,7 @@ async def _submit_message_phase3a(
             _tm["one_q"] = int(_tm.get("one_q") or 0) + _n_qo
             logger.info("✂️ 최종 한 턴 한 질문: %d문장 제거", _n_qo)
 
+    _rcv_snap["8-o"] = clean_reply
     # 8-p. (2026-10-23 6번 보정) Michael "좋습니다" 도입: 턴당 최대 1회, 챕터에서 2턴에 1회 이하(직전 턴에 썼으면 이번 턴은 뗀다).
     #   고정 문장 턴(안내·확인 템플릿)도 센다 — 재생에서 4·5·6턴 연속 '좋습니다' 가 템플릿 턴에서 났다.
     #   (2026-11-02 p2f) 챕터 누적 상한 3회(MICHAEL_GOOD_LEAD_CAP) — p2c D 세션 83턴 중 39턴이 '좋습니다'(챕터당 6~12). 초과분은 리드 없이
@@ -2839,6 +2844,7 @@ async def _submit_message_phase3a(
             _tm["no_q_fix"] = "definition" if _nq_k == 0 else f"definition(replaced {_nq_k})"
             logger.info("❓ 정의 턴 질문 고정: LLM 질문 %d문장 제거 후 고정 정의 질문 결합", _nq_k)
 
+    _rcv_snap["8-p/8-k"] = clean_reply
     # 8-h. 느낌표 상한(2026-09-15): 페르소나별 상한(Michael 1·안내턴 0, 나머지 0)을 백엔드가 센다.
     #   초과 → 재생성 1회(같은 프롬프트 + 상한 지시) → 그래도 초과면 초과분을 마침표로 치환.
     #   시스템 템플릿 턴(system_override_text)은 재생성 없이 치환만(공용 템플릿의 '!' 가
@@ -2926,6 +2932,10 @@ async def _submit_message_phase3a(
         _has_r, _quoted_r = _chk_r(clean_reply, _llm_user_text)
         if not (_has_r and _quoted_r):
             _ph = _qp_r(_llm_user_text)
+            # 되받기를 잃은 단계(원장용): LLM 원문부터 순서대로 처음 판정이 깨진 지점. 'llm' 이면 LLM 이 질문만 냈다.
+            _rcv_snap["8-h"] = clean_reply
+            _tm["receive_src"] = next((k for k, v in _rcv_snap.items() if not all(_chk_r(v, _llm_user_text))), "8-h")
+            _tm["receive_phrase"] = _ph
             _pn_w = (state.get("coach_persona") or {}).get("name")
             from diag_project.services.intro_messages import persona_line as _pl_w
             _fixed_w = [x for x in (_tm.get("slot_text"), _pl_w(_pn_w, "slot_lead"), _pl_w(_pn_w, "target_bridge")) if x]
@@ -3338,6 +3348,8 @@ async def _submit_message_phase3a(
             "slot_restored": int(_tm.get("slot_restored") or 0),   # (2026-11-02 p2c) 슬롯 문장 복원(8-x2)
             # (2026-11-04 P3) receive_fix 1 재생성/2 폴백 · target_bridge 전환 다리 삽입 · excl_chapter_cap 느낌표 챕터 상한 적용
             "receive_fix": _tm.get("receive_fix"), "target_bridge": int(_tm.get("target_bridge") or 0),
+            # (2026-11-04 P3-1 2차) receive_src: 되받기가 깨진 단계(llm/probe/8-n/8-o/8-p/8-k/8-h) · receive_phrase: 폴백·재생성에 쓴 명사구
+            "receive_src": _tm.get("receive_src"), "receive_phrase": _tm.get("receive_phrase"),
             "excl_chapter_cap": int(_tm.get("excl_chapter_cap") or 0),
         })
         _gl_store["guard_log"] = _gl

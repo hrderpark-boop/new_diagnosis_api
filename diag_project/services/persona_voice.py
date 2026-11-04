@@ -148,16 +148,58 @@ _OLIVIA_ENDINGS = [
     # 사전 문장이 이미 '~을까요?' 면 '~을지요?' 로(Ella 기본형과 같은 문장이 나가지 않게)
     (r"있으실까요\?$", "있으실지요?"), (r"었을까요\?$", "었을지요?"), (r"을까요\?$", "을지요?"),
 ]
+# (2026-11-04 P3-4 2차) Michael 은 요청형 — 질문을 '들려주세요' 청유로 바꾼다. 사용자 결정: 구어체 '~어요?'는 Ella 와 겹쳐 폐기.
+#   구조 규칙(_michael_request): 존재 질문 '…하신 적/일, 최근에 있으셨어요?' → '최근에 …하셨던 일, 하나만 들려주세요.'
+#   '어떤 일이었어요?' → '어떤 일이었는지 들려주세요.' · '어떻게 하셨어요?' → '그때 어떻게 하셨는지 들려주세요.' · '어떻게 됐어요?' → '그 뒤 어떻게 됐는지도요.'
+#   구조에 안 맞는 나머지는 아래 어미표로 '…는지 들려주세요.' 일반 변환. 물음표가 없어도 output_guard.is_question 이 간접 질문으로 인식한다.
 _MICHAEL_ENDINGS = [
-    # (2026-11-04 P3-4) 전면 교체 — '~던가요?' 회상형 폐지. 구어체 '있으셨어요? / 어떤 일이었어요? / 어떻게 하셨어요?'.
-    #   사전 문장(Ella 기본형 '~어요?')은 그대로 두고, 격식형·'~나요?'·'~을까요?' 류만 구어체로 당긴다. 에너지는 '직접'·느낌표(챕터 2개)로.
-    (r"있으셨나요\?$", "있으셨어요?"), (r"있었나요\?$", "있었어요?"), (r"있으신가요\?$", "있으세요?"), (r"있으실까요\?$", "있으세요?"),
-    (r"있으셨습니까\?$", "있으셨어요?"), (r"있었습니까\?$", "있었어요?"), (r"있습니까\?$", "있어요?"),
-    (r"하셨나요\?$", "하셨어요?"), (r"하셨습니까\?$", "하셨어요?"), (r"셨나요\?$", "셨어요?"), (r"셨습니까\?$", "셨어요?"),
-    (r"였나요\?$", "였어요?"), (r"였습니까\?$", "였어요?"), (r"이었습니까\?$", "이었어요?"), (r"어땠나요\?$", "어땠어요?"), (r"어땠습니까\?$", "어땠어요?"),
-    (r"했습니까\?$", "했어요?"), (r"됐습니까\?$", "됐어요?"), (r"입니까\?$", "예요?"), (r"십니까\?$", "세요?"), (r"습니까\?$", "어요?"),
-    (r"신가요\?$", "세요?"), (r"었을까요\?$", "었어요?"), (r"였을까요\?$", "였어요?"), (r"나요\?$", "어요?"),
+    (r"어땠(어요|나요|습니까|을까요)\?$", "어땠는지 들려주세요."),
+    (r"(있으셨|있었|없었|없으셨)(어요|나요|습니까|을까요)\?$", "\\1는지 들려주세요."),
+    (r"(있으세요|있으신가요|있으실까요|있을까요|있나요|있어요|있습니까)\?$", "있었는지 들려주세요."),
+    (r"(셨|했|됐|였)(어요|나요|습니까|을까요)\?$", "\\1는지 들려주세요."),
+    (r"(입니까|예요|에요|인가요|일까요)\?$", "인지 들려주세요."),
+    (r"(세요|십니까|신가요|실까요)\?$", "신지 들려주세요."),
 ]
+_MQ_TIME = r"(?:최근에|근래에|요즘|올해 들어|지난 몇 달 사이에|최근|작년에|이번 달에)"
+_MQ_EXIST = r"(?:있으셨어요|있으세요|있으셨나요|있으신가요|있으실까요|있었어요|있었나요|있었을까요|있으셨습니까|있었습니까|있습니까|있으셨을까요)"
+_MQ_HEAD = r"(?P<head>일|적|경험|결정|행동|순간|장면|시도|게|것)"
+_MQ_EXIST_RE = re.compile(r"^(?P<pre>.*?)(?P<verb>\S*?)(?P<nm>셨던|신|싶은|던)\s+" + _MQ_HEAD + r"(?:이|을|,)?\s*(?P<time>" + _MQ_TIME + r")?\s*" + _MQ_EXIST + r"\?$")
+_MQ_WHAT_RE = re.compile(r"어떤 (?P<n>일|상황|장면)이었(?:을까요|나요|어요|습니까)\?$")
+_MQ_HOW_RE = re.compile(r"어떻게 (?P<v>\S*셨)(?:어요|나요|습니까|을까요)\?$")
+_MQ_RESULT_RE = re.compile(r"어떻게 됐(?:어요|나요|습니까|을까요)\?$")
+
+
+def _michael_request(body: str) -> str:
+    """Michael 요청형 변환. 구조 규칙 → 어미표 → 변환 불가면 원문."""
+    b = body.strip()
+    m = _MQ_RESULT_RE.search(b)
+    if m:
+        out = b[:m.start()] + "어떻게 됐는지도요."
+        out = re.sub(r"^그 뒤에는\s+", "그 뒤 ", out)
+        return out if not out.startswith("어떻게") else "그 뒤 " + out
+    m = _MQ_WHAT_RE.search(b)
+    if m:
+        return b[:m.start()] + f"어떤 {m.group('n')}이었는지 들려주세요."
+    m = _MQ_HOW_RE.search(b)
+    if m:
+        out = b[:m.start()] + f"어떻게 {m.group('v')}는지 들려주세요."
+        return "그때 " + out if out.startswith("어떻게") and "때" not in b else out
+    m = _MQ_EXIST_RE.match(b)
+    if m:
+        pre, verb, nm, head, time = m.group("pre"), m.group("verb"), m.group("nm"), m.group("head"), m.group("time")
+        nm2 = "셨던" if nm == "신" else nm
+        head2 = {"적": "일", "게": "것"}.get(head, head)
+        if nm in ("싶은", "던") and not verb:
+            core = f"{pre}{nm2} {head2}"
+        else:
+            core = f"{pre}{verb}{nm2} {head2}"
+        core = re.sub(r"\s{2,}", " ", core).strip()
+        lead = f"{time} " if time and not re.match(r"^" + _MQ_TIME, core) else ""
+        return f"{lead}{core}, 하나만 들려주세요."
+    for pat, rep in _MICHAEL_ENDINGS:
+        if re.search(pat, b):
+            return re.sub(pat, rep, b)
+    return body
 
 
 def _apply_endings(text: str, col: int) -> str:
@@ -211,14 +253,11 @@ def voice_question(persona_name: str | None, text: str, *, variant: int = 0) -> 
         t = t.replace("뭘 ", "무엇을 ").replace("걸 ", "것을 ")
         return _daniel(t, variant)
     if k == "Michael":
-        # (2026-11-04 P3-4) Michael 은 구어체 '~어요?' + '직접'. (P0-3 의 '~던가요' 회상형은 운영 11/4 세션에서 기계적으로 읽혀 폐지.)
+        # (2026-11-04 P3-4 2차) Michael 은 요청형 '…하셨던 일, 하나만 들려주세요.' + '직접'. ('~던가요' 회상형·'~어요?' 구어체 모두 폐지.)
         body = re.sub(r"^(좋습니다[,!.]?\s*)", "", t)
         # (2026-10-29 P1-2) 어절 첫머리의 '하신 적'에만 — '전하신 적·조정하신 적·배려하신 적'이 '전직접 하신 적'으로 깨지던 것(p11 Michael 앵커 4종)
         body = re.sub(r"(?<![가-힣])하신 적", "직접 하신 적", body, count=1) if "직접" not in body else body
-        for pat, rep in _MICHAEL_ENDINGS:
-            if re.search(pat, body):
-                return re.sub(pat, rep, body)
-        return body
+        return _michael_request(body)
     if k == "Lucas":
         s = t
         for pat, rep in _LUCAS_CUTS:

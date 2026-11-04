@@ -67,10 +67,17 @@ def test_michael_endings_colloquial_no_recall_form_and_bridges():
     for tbl in (V._MICHAEL_ENDINGS, V._OLIVIA_ENDINGS, V._LUCAS_CUTS):
         assert not any("던가요" in r for _, r in tbl)
     assert not any("던가요" in j or "던가요" in dn for _, j, dn in V._ENDINGS)
-    assert V.voice_question("Michael", "그때 어떤 일이었나요?") == "그때 어떤 일이었어요?"
-    assert V.voice_question("Michael", "그 일은 어떻게 하셨습니까?") == "그 일은 어떻게 하셨어요?"
-    assert V.voice_question("Michael", "비슷한 장면이 최근에 있으셨나요?") == "비슷한 장면이 최근에 있으셨어요?"
-    assert V.voice_question("Michael", "팀 목표를 다시 세우신 뒤 팀원들과 같이 하신 적이 있었어요?") == "팀 목표를 다시 세우신 뒤 팀원들과 같이 직접 하신 적이 있었어요?"
+    # (2026-11-04 P3-4 2차) 요청형 — 사용자 지정 4형
+    assert V.voice_question("Michael", "그때 어떤 일이었나요?") == "그때 어떤 일이었는지 들려주세요."
+    assert V.voice_question("Michael", "어떻게 하셨어요?") == "그때 어떻게 하셨는지 들려주세요."
+    assert V.voice_question("Michael", "그 일은 어떻게 하셨습니까?") == "그 일은 어떻게 하셨는지 들려주세요."
+    assert V.voice_question("Michael", "그 뒤에는 어떻게 됐어요?") == "그 뒤 어떻게 됐는지도요."
+    assert V.voice_question("Michael", "비슷한 장면이 최근에 있으셨나요?") == "비슷한 장면이 최근에 있으셨는지 들려주세요."
+    assert V.voice_question("Michael", "팀 목표를 다시 세우신 뒤 팀원들과 같이 하신 적이 있었어요?") == "팀 목표를 다시 세우신 뒤 팀원들과 같이 직접 하셨던 일, 하나만 들려주세요."
+    assert V.voice_question("Michael", "팀원 둘 사이 갈등을 중재하신 경험이 최근에 있으실까요?") == "최근에 팀원 둘 사이 갈등을 중재하셨던 경험, 하나만 들려주세요."
+    from diag_project.services.output_guard import is_question, keep_last_question
+    assert is_question("그 뒤 어떻게 됐는지도요.") and is_question("맞추셨던 일, 하나만 들려주세요.")
+    assert keep_last_question("A 하셨군요. 어떤 일이었는지 들려주세요. 그 뒤 어떻게 됐는지도요.")[1] == 1
     bridges = {k: v["target_bridge"] for k, v in PERSONA_LINES.items()}
     assert len(bridges) == 6 and all(bridges.values()) and len(set(bridges.values())) == 6
     assert bridges["Michael"] == "자, 다음은 다른 쪽이에요." and bridges["Ella"].startswith("이번엔")

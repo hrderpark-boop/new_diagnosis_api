@@ -10,7 +10,7 @@ from diag_project.data.competencies import COMPETENCY_FRAMEWORK, SUBCOMPETENCY_A
 from diag_project.services import input_anomaly as IA
 from diag_project.services.align_render import align_shape_ok, receive_sentences, render_align
 from diag_project.services.intro_messages import PERSONA_LINES
-from diag_project.services.output_guard import cap_lead_sentences, is_question, starts_without_main_clause
+from diag_project.services.output_guard import cap_lead_sentences, count_questions, is_question, starts_without_main_clause
 from diag_project.services.persona_voice import voice_question
 from diag_project.services.time_greeting import daypart, get_time_greeting, get_time_phrase
 
@@ -36,7 +36,7 @@ def test_render_align_shape_every_chapter_every_persona(chapter, persona):
     ok, why = align_shape_ok(out, _subs(chapter))
     assert ok, (out, why)
     assert "크게 다르지 않" not in out and "엉뚱한 목록" not in out and "어느 쪽" not in out
-    assert out.count("?") == 1
+    assert count_questions(out) == 1   # (2026-11-04 P3-4 2차) Michael 요청형 앵커는 물음표 없음
     assert COMPETENCY_FRAMEWORK[chapter]["description"].rstrip(".")[:12] in out    # 고정 정의 1문장
 
 
@@ -71,14 +71,14 @@ def test_all_dictionary_anchors_differ_across_six_personas():
     qs = [q for lst in SUBCOMPETENCY_ANCHOR_QUESTIONS.values() for q in (lst if isinstance(lst, list) else [lst])]
     norm = lambda s: re.sub(r"[\s.,!?…'\"()]", "", s)  # noqa: E731
     same = [(a, b, q) for q in qs for a, b in itertools.combinations(NAMES, 2) if norm(voice_question(a, q)) == norm(voice_question(b, q))]
-    # (2026-11-04 P3-4) Michael 은 구어체 '~어요?'(Ella 기본형)로 되돌렸다 — '~던가요' 회상형이 운영에서 기계적으로 읽혀 폐지.
-    #   Ella·Michael 쌍만 같은 문장을 허용하고, 나머지 쌍은 여전히 전부 달라야 한다.
-    same = [x for x in same if {x[0], x[1]} != {"Ella", "Michael"}]
+    # (2026-11-04 P3-4 2차) Michael 은 요청형('…하셨던 일, 하나만 들려주세요.') — 6명 전부 달라야 한다(Ella·Michael 동일 허용 되돌림).
     assert same == [], same[:5]
-    assert not any("던가요" in voice_question("Michael", q) for q in qs)
     for q in qs:
+        m = voice_question("Michael", q)
+        assert "던가요" not in m and "?" not in m and is_question(m) and m.endswith(("들려주세요.", "는지도요.")), m
         for n in NAMES:
-            assert voice_question(n, q).count("?") == 1
+            if n != "Michael":
+                assert voice_question(n, q).count("?") == 1
 
 
 # ── P0-4·P0-7 입력 이상 판정 ────────────────────────────────────────────────────
@@ -393,9 +393,9 @@ def test_michael_voice_does_not_split_verb_before_hasin_jeok():
     out = voice_question("Michael", "성과가 기대와 달랐던 팀원에게 솔직한 피드백을 전하신 적이 최근에 있었다면 어떤 상황이었을까요?")
     assert "전직접" not in out and "전하신 적" in out
     out2 = voice_question("Michael", "경험이 적은 팀원에게 일부러 비중 있는 일을 맡기신 적, 근래에 있으세요?")
-    assert "직접" in out2 or "맡기신" in out2
+    assert "직접" in out2 or "맡기셨던" in out2
     out3 = voice_question("Michael", "팀 목표를 다시 세우신 뒤 팀원들과 같이 하신 적이 있었어요?")
-    assert "같이 직접 하신 적" in out3
+    assert "같이 직접 하셨던 일, 하나만 들려주세요." in out3
 
 
 def test_ladder_duplicate_guard_wired():

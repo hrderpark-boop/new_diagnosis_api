@@ -39,7 +39,8 @@ def is_question(sentence: str) -> bool:
 
 
 # (2026-10-28 P0-4) '떠올려 주시면 좋겠습니다'·'들려주시지요' 류 청유도 간접 질문 — 정의 턴에서 LLM 질문으로 남아 고정 정의 질문과 겹쳤다.
-_INDIRECT_Q_RE = re.compile(r"(궁금(해요|합니다|하네요|한데요|해지네요)|들려주(세요|시죠|시지요|실래요)|떠올려\s*주세요|말씀해\s*주세요|"
+# (2026-11-04 P3-4 2차) Michael 요청형 '…됐는지도요.'(생략형 청유)도 질문.
+_INDIRECT_Q_RE = re.compile(r"((는지|은지|인지)도요|궁금(해요|합니다|하네요|한데요|해지네요)|들려주(세요|시죠|시지요|실래요)|떠올려\s*주세요|말씀해\s*주세요|"
                             r"말씀해\s*주시(면|겠)|들려주시(면|겠)|이야기해\s*주세요|알려주세요|"
                             r"(떠올려|들려|말씀해|이야기해|알려|보여|설명해)\s*주시면\s*(좋겠|감사|됩니다|돼요)[가-힣]*|"
                             r"(떠올려|들려|말씀해|이야기해|알려|보여|설명해)\s*주(시겠|십시오|실까요|시지요|시죠)[가-힣]*|"
@@ -311,6 +312,16 @@ def receive_sentences(text: str, max_statements: int = 2, allow_question: bool =
     if not out:
         return fallback
     return " ".join(out)
+
+
+_REQUEST_Q_RE = re.compile(r"(들려주세요|는지도요)[.!…]?$")
+
+
+def count_questions(text: str) -> int:
+    """(2026-11-04 P3-4 2차) 질문 수 = 물음표 수 + 물음표 없는 Michael 요청형 문장('…하나만 들려주세요.' / '…됐는지도요.').
+    ALIGN 안내문('떠올려 주시면 됩니다')처럼 is_question 이 간접 질문으로 보는 고정 문장은 세지 않는다 — 앵커·ALIGN '질문 1개' 판정용."""
+    t = text or ""
+    return t.count("?") + t.count("？") + sum(1 for s in split_sentences(t) if "?" not in s and _REQUEST_Q_RE.search(s.strip()))
 
 
 def keep_last_question(text: str) -> tuple[str, int]:

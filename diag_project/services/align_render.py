@@ -19,7 +19,7 @@ import re
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 from diag_project.services.intro_messages import align_topic_bridge, persona_line
 from diag_project.services.korean import with_josa
-from diag_project.services.output_guard import is_question, split_sentences
+from diag_project.services.output_guard import is_question, split_sentences, count_questions
 
 RECEIVE_MAX_SENTENCES = 3
 _LIST_LINE_RE = re.compile(r"^\s*([·•\-*]|\d+[.)])\s*")
@@ -128,8 +128,10 @@ def align_shape_ok(text: str, sub_names: list[str]) -> tuple[bool, list[str]]:
     missing = [n for n in sub_names if n not in listed]
     if missing:
         reasons.append(f"목록 누락: {missing}")
-    if text.count("?") != 1:
-        reasons.append(f"물음표 {text.count('?')}개")
+    # (2026-11-04 P3-4 2차) Michael 요청형 앵커('…하나만 들려주세요.')는 물음표가 없다 — 질문 문장 수(is_question)로 센다.
+    _nq = count_questions(text)
+    if _nq != 1:
+        reasons.append(f"질문 문장 {_nq}개")
     last = split_sentences(lines[-1] if lines else "")
     last_s = last[-1] if last else ""
     if not is_question(last_s):
