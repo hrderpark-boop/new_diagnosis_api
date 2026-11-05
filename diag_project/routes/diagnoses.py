@@ -1635,6 +1635,11 @@ async def _submit_message_phase3a(
             # (2026-10-21) 되물음이 일·업무·역할·팀을 물으면(다음 턴 담당) 되물음을 지우고 되받기 1~2문장으로 끝낸다.
             from diag_project.services.output_guard import smalltalk_followup_ok as _sf_ok
             _q_last = next((x for x in reversed(split_sentences_g(_recv)) if is_question_g(x)), "")
+            from diag_project.services.output_guard import count_question_markers as _cqm_r
+            if _q_last and _cqm_r(_recv) >= 2:   # (2026-11-05 s2d) 되물음이 두 질문('어떻게 정하세요, 누구와 조율하셨어요?')이면 되물음을 뺀다
+                _tm["work_q"] = 1
+                _recv = _recv_multi(_recv, max_statements=2, allow_question=False)
+                _q_last = ""
             if _q_last and not _sf_ok(_q_last):
                 _tm["work_q"] = 1
                 _recv = _recv_multi(_recv, max_statements=2, allow_question=False)
@@ -1815,13 +1820,25 @@ async def _submit_message_phase3a(
                 # (2026-11-05 2단계 판정 4) SWEEP 마지막 답이 '없음'이면 그 답을 받는 문장·'방향을 바꿔/좁혀' 류를 걷어낸다
                 _sum = " ".join(x for x in _ss_e(_sum) if not re.search(r"(없(었|으|다|을|는)|떠오르|좁혀|방향을\s*(조금\s*)?바꿔|다른\s*(방향|쪽|질문)|여쭙|여쭤)", x))
             _sum = " ".join([x.strip() for x in _ss_e(_sum) if x.strip()][:2]).strip()
+            if _sum and state.get("bei_close_episodes"):
+                # (2026-11-05 s2d) LLM 이 요약 대신 마지막 답을 받는 문장만 냈으면(사례 인용과 겹침 0) 요약으로 치지 않는다
+                from diag_project.services.output_guard import _content_chunks as _cc_e
+                _ep_chunks = {c for e in state["bei_close_episodes"] for k in ("context", "action", "result") for c in _cc_e(e.get(k) or "") if len(c) >= 2}
+                if len(_ep_chunks & set(_cc_e(_sum))) < 2:
+                    _tm["close_summary_llm_dropped"] = 1
+                    _sum = ""
             if not _sum and state.get("bei_close_episodes"):
                 # 요약이 남지 않으면 리더 인용으로 조립(지어낸 서술 없음)
-                _qs = [q for e in state["bei_close_episodes"] for q in (e.get("context"), e.get("action")) if q][:2]
+                # 인용 기반 요약: 사례마다 '행동' 인용 하나(없으면 상황) — "첫 사례에서는 '…' 하셨고, 다음 사례에서는 '…' 하셨다고 들었습니다."
+                _qs = [((e.get("action") or e.get("context") or "").strip().rstrip(".。")) for e in state["bei_close_episodes"]]
+                _qs = [q for q in _qs if q][:2]
                 if _qs:
                     def _cut_q(q: str) -> str:
-                        return q if len(q) <= 60 else q[:60].rsplit(" ", 1)[0] + "…"
-                    _sum = "'" + "', '".join(_cut_q(q) for q in _qs) + "' 이야기를 들었습니다."
+                        return q if len(q) <= 70 else q[:70].rsplit(" ", 1)[0] + "…"
+                    if len(_qs) == 2:
+                        _sum = f"첫 사례에서는 '{_cut_q(_qs[0])}' 하셨고, 다음 사례에서는 '{_cut_q(_qs[1])}' 하셨다고 들었습니다."
+                    else:
+                        _sum = f"'{_cut_q(_qs[0])}' 하셨다고 들었습니다."
                     _tm["close_summary_from_quotes"] = 1
             wrap_up = f"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch), (state.get('coach_persona') or {}).get('name'))}".strip()
         else:

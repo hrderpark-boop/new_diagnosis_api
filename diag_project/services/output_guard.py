@@ -40,7 +40,7 @@ def is_question(sentence: str) -> bool:
 
 # (2026-10-28 P0-4) '떠올려 주시면 좋겠습니다'·'들려주시지요' 류 청유도 간접 질문 — 정의 턴에서 LLM 질문으로 남아 고정 정의 질문과 겹쳤다.
 # (2026-11-04 P3-4 2차) Michael 요청형 '…됐는지도요.'(생략형 청유)도 질문.
-_INDIRECT_Q_RE = re.compile(r"((는지|은지|인지)도요|궁금(해요|합니다|하네요|한데요|해지네요)|들려주(세요|시죠|시지요|실래요)|떠올려\s*주세요|말씀해\s*주세요|얘기해\s*주세요|있으면요|"
+_INDIRECT_Q_RE = re.compile(r"((는지|은지|인지)도요|궁금(해요|합니다|하네요|한데요|해지네요)|부탁(드려요|드립니다|합니다|해요)|들려주(세요|시죠|시지요|실래요)|떠올려\s*주세요|말씀해\s*주세요|얘기해\s*주세요|있으면요|"
                             r"말씀해\s*주시(면|겠)|들려주시(면|겠)|이야기해\s*주세요|알려주세요|"
                             r"(떠올려|들려|말씀해|이야기해|얘기해|알려|보여|설명해)\s*주시면\s*(좋겠|감사|됩니다|돼요)[가-힣]*|"
                             r"(떠올려|들려|말씀해|이야기해|얘기해|알려|보여|설명해)\s*주(시겠|십시오|실까요|시지요|시죠)[가-힣]*|"
@@ -259,7 +259,7 @@ def smalltalk_followup_ok(question: str) -> bool:
     return not _WORK_Q_RE.search(question or "")
 
 
-_WORK_Q_RE = re.compile(r"(업무|역할|담당|맡고|맡으|맡은|맡기|챙기|직무|직책|직급|프로젝트|일정|무슨 일|어떤 일|어떤 분야|일로|일은|일이|일에|팀(은|이|을|에|에서|원|장)|회사에서|부서|조직|직접)")   # (2026-11-05) s2a: '직접 챙기시나요, 팀에 맡기시나요' 가 통과했다
+_WORK_Q_RE = re.compile(r"(업무|역할|담당|맡고|맡으|맡은|맡기|챙기|직무|직책|직급|프로젝트|일정|교육|조율|우선순위|회의|보고|고객|무슨 일|어떤 일|어떤 분야|일로|일은|일이|일에|팀(은|이|을|에|에서|원|장)|회사에서|부서|조직|직접)")   # (2026-11-05) s2a: '직접 챙기시나요, 팀에 맡기시나요' 가 통과했다
 
 
 def replace_statements(text: str, replacement: str = "그러셨군요.") -> str:
@@ -311,9 +311,9 @@ def split_compound_question(text: str) -> tuple[str, int]:
     for s_ in split_sentences(text or ""):
         s0 = s_.strip()
         if s0 and is_question(s0) and _COMPOUND_Q_RE.search(s0):
-            parts = re.split(r"(?:는지|은지|인지|을지|였는지|었는지|했는지)[,，]\s*(?:그리고|또는|아니면|또)?\s*", s0, maxsplit=1)
-            if len(parts) == 2 and parts[1].strip():
-                s0 = parts[1].strip()
+            parts = re.split(r"(?:는지|은지|인지|을지|였는지|었는지|했는지)[,，]\s*(?:그리고|또는|아니면|또)?\s*", s0)
+            if len(parts) >= 2 and parts[-1].strip():      # '설득하셨는지, 속도를 조절하셨는지, 아니면 ~?' → 마지막 절만
+                s0 = parts[-1].strip()
                 n += 1
         out.append(s0)
     return " ".join(x for x in out if x), n

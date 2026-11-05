@@ -128,3 +128,10 @@ def test_episode_card_first_turn_rule_and_detail_probe():
     full["slots"] = {k: {"status": "filled", "quote": "x"} for k in B.SLOT_KEYS}
     card2 = EC.build_episode_card(instruction="EPISODE_PROBE", chapter=CH, ep=full, bei_turns=3, budget=16)
     assert "장면 구체화" in card2 and "그대로 한 마디" in card2
+
+
+def test_split_compound_question_keeps_last_clause_and_request_forms_are_questions():
+    from diag_project.services.output_guard import is_question, split_compound_question as S
+    out, n = S("설득을 하셨는지, 속도를 조절하셨는지, 아니면 다른 방식이었는지 궁금합니다.")
+    assert n == 1 and out == "다른 방식이었는지 궁금합니다."
+    assert is_question("그렇게 생각하시는 이유도 간단히 부탁드려요.")   # 정의 턴(8-k)이 LLM 요청 문장을 지운다
