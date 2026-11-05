@@ -304,3 +304,12 @@ Layer3 instruction 가이드(L3:810~1104, 33종)는 유지 11종(라포·INTRO·
   ⑥ CHAPTER_READY_TO_END 메시지는 종전대로 다음 챕터(START_CHAPTER)로 태깅된다 — 린트·테스트는 챕터 필터 없이 마지막 코치 턴을 본다.
 - 스텁(FM_LLM_STUB=1): 슬롯 판정은 실질 답 1개당 슬롯 1개가 순서대로 차고(없다는 답·단답은 비움), 매핑은 여는 하위역량 strong. 6코치 × 조직관리 완주: 사례 2개(각 6턴, 6/6), SWEEP 2건 없음→미확인, 챕터 리더 턴 16, covered 2/4(`tests/test_bei_stub_smoke.py`).
 - 시뮬: `tools/sim_leader.py TAG --coaches 5,2 --chapters 1 [--stub]`, 설정 `tools/sim_profiles/edu_team_lead.json`(사례 6개, 조직관리 2·성과 1·사람 2·일 1, no_case 3). 전문 `--dump`, 린트 `tools/transcript_lint.py sim_result_*.json`.
+
+
+## §14. 2단계 판정(2026-11-05) 반영 메모
+- 2단계 s2d 통과. 추가 3건: ① 매핑 정밀도 — `map_episode` 프롬프트에 하위역량 정의 + Lv.2 행동 예 1줄, 하위역량마다 strong/weak/none + confidence(0~1), strong 은 confidence ≥ 0.8 이고 인용이 리더 원문에 있을 때만(느슨 검증 `quote_matches_loosely`). 고정 사례 8개 실 LLM 테스트 `tests/test_bei_map_precision_live.py`(FM_LIVE_MAP_TEST=1) — 2026-11-05 실측 정밀도 0.94(17/18)·재현율 1.00(15/15). 과다 매핑이 SWEEP 을 생략시켜 분석 gate_dropped 로 가는 것을 막는 항목.
+  ② ANCHOR_REASK 는 형식 검사를 통과한 마지막 질문 문장만 되묻는다. 아니면 BEI 단계에서 새 질문(`bei_anomaly_reask`).
+  ③ 유도형 이지선다·가정형 질문 금지 — EPISODE_PROBE 가이드·턴 형식 규칙 + 8-w `leading_choice` 재생성.
+  ④ 종료 턴 인용 기반 2문장(6f7f2ca) 확정.
+- 시뮬 프로필(`tools/sim_profiles/edu_team_lead.json`) 5챕터: 사례 13개(E1~E13), 정답 하위역량 24/26, no_case 2(디지털 활용 능력·공감). 정답 보정: E3 에 KPI(분기별 지연 표 점검), E6 에 자원 및 시간관리(운영 일부를 강사에게) 추가.
+- 3단계 실행: `python3 tools/sim_leader.py s3 --coaches 1,2,3,4,5,6 --chapters 5 --provider claude` → 린트 → `tools/blind_transcript.py` 6벌 → `--analyze sim_result_s3_5.json`(Sonnet 1회) → `analysis_lint`.
