@@ -259,7 +259,7 @@ def smalltalk_followup_ok(question: str) -> bool:
     return not _WORK_Q_RE.search(question or "")
 
 
-_WORK_Q_RE = re.compile(r"(업무|역할|담당|맡고|맡으|맡은|직무|직책|직급|프로젝트|무슨 일|어떤 일|어떤 분야|일로|일은|일이|일에|팀(은|이|을|에서|원|장)|회사에서|부서|조직)")
+_WORK_Q_RE = re.compile(r"(업무|역할|담당|맡고|맡으|맡은|맡기|챙기|직무|직책|직급|프로젝트|일정|무슨 일|어떤 일|어떤 분야|일로|일은|일이|일에|팀(은|이|을|에|에서|원|장)|회사에서|부서|조직|직접)")   # (2026-11-05) s2a: '직접 챙기시나요, 팀에 맡기시나요' 가 통과했다
 
 
 def replace_statements(text: str, replacement: str = "그러셨군요.") -> str:
@@ -283,6 +283,40 @@ def receive_sentences(text: str, max_statements: int = 2, allow_question: bool =
 
 
 _REQUEST_Q_RE = re.compile(r"(들려주세요|는지도요|얘기해\s*주세요|말씀해\s*주세요|말씀해\s*주십시오)[.!…]?$")
+
+
+# (2026-11-05 2단계 판정 2) 한 문장 안의 두 질문: '~는지, 그리고 ~?' / '~는지, 또는 ~' / '~는지, (그때·어떤·무엇·언제·왜·어떻게·누구) ~?'
+#   — '~는지, 숫자든 현장 변화든 말씀해 주시겠습니까?' 처럼 뒤에 의문사·접속사가 없으면 한 질문이다(s2c Jessica 재생성 6턴 공회전의 원인).
+_COMPOUND_Q_RE = re.compile(r"(는지|은지|인지|을지|였는지|었는지|했는지)[,，]\s*(?=(그리고|또는|아니면|또\s|그때|어떤|무엇|언제|어디|왜\s|어떻게|누구|누가))"
+                            r"|[,，]\s*그리고\s+(?=(그때|그 뒤|리더님|어떤|무엇|언제|어디|왜\s|어떻게|배우신|느끼신|누구))")
+# '…과 이어서 여쭙니다.' 류는 질문이 아니라 다음 질문으로 가는 다리 — 질문 수에 넣지 않는다
+_LEAD_IN_Q_RE = re.compile(r"(이어서|이어|대해|관련해|관해|연결해서|연결해)\s*(여쭙니다|여쭤보겠습니다|여쭤볼게요|묻겠습니다|질문드리겠습니다|질문드립니다|여쭙겠습니다)[.…]?$")
+
+
+def count_question_markers(text: str) -> int:
+    """질문 표지 수 = 질문 문장(간접 질문·요청형 포함) 수 + 한 문장 안의 복합 질문 절. 2 이상이면 '두 질문'."""
+    n = 0
+    for s_ in split_sentences(text or ""):
+        s_ = s_.strip()
+        if not s_ or _LEAD_IN_Q_RE.search(s_):
+            continue
+        if is_question(s_):
+            n += 1 + len(_COMPOUND_Q_RE.findall(s_))
+    return n
+
+
+def split_compound_question(text: str) -> tuple[str, int]:
+    """두 질문이 한 문장에 든 질문 문장에서 앞 절('~는지, 그리고 ')을 떼고 뒤 질문만 남긴다. (결과, 고친 문장 수)"""
+    out, n = [], 0
+    for s_ in split_sentences(text or ""):
+        s0 = s_.strip()
+        if s0 and is_question(s0) and _COMPOUND_Q_RE.search(s0):
+            parts = re.split(r"(?:는지|은지|인지|을지|였는지|었는지|했는지)[,，]\s*(?:그리고|또는|아니면|또)?\s*", s0, maxsplit=1)
+            if len(parts) == 2 and parts[1].strip():
+                s0 = parts[1].strip()
+                n += 1
+        out.append(s0)
+    return " ".join(x for x in out if x), n
 
 
 def count_questions(text: str) -> int:
@@ -429,6 +463,21 @@ _STATE_LEAK_RE = re.compile(
     "|".join(re.escape(p) for p in sorted(set(BANNED_STATE_LEAK), key=len, reverse=True))
     + r"|사건\s*(한|두|세|네|다섯|\d+)\s*개|사례\s*(한|두|세|네|다섯|\d+)\s*(개|건)(가|이|를|을|는|은)?"
 )
+
+
+_META_ECHO_RE = re.compile(r"(답변\s*문장만|이렇게\s*됩니다|다시\s*쓰면|재생성|출력\s*규칙|지시문|시스템\s*지시)")
+
+
+def strip_meta_echo(text: str) -> tuple[str, int]:
+    """(2026-11-05 s2b) LLM 이 출력 규칙을 되읊은 문장('답변 문장만 드리면 이렇게 됩니다.')을 지우고, 남은 본문 전체가 따옴표로 감싸져 있으면 벗긴다."""
+    sents = [x for x in split_sentences(text or "") if x.strip()]
+    kept = [x for x in sents if not _META_ECHO_RE.search(x)]
+    n = len(sents) - len(kept)
+    out = " ".join(kept).strip()
+    if len(out) >= 2 and out[0] in "\"“'‘" and out[-1] in "\"”'’":
+        out = out[1:-1].strip()
+        n += 1
+    return out, n
 
 
 def find_state_leak(text: str) -> list[str]:

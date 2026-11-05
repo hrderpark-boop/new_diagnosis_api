@@ -59,7 +59,11 @@ def test_episode_done_reasons():
     st, ep = B.new_episode({}, CH, SUBS[0], "vision_sharing")
     assert B.episode_done_reason(ep, st, CH) is None
     full = dict(ep, slots={k: {"status": "filled", "quote": "x"} for k in B.SLOT_KEYS})
-    assert B.episode_done_reason(full, st, CH) == "slots"
+    assert B.episode_done_reason(full, st, CH) is None                        # (판정 1) 6/6 이어도 리더 턴 4 전에는 닫지 않는다
+    assert B.episode_done_reason(dict(full, leader_turns=4), st, CH) == "slots"
+    assert "그대로 한 마디" in B.detail_probe_hint(full)                     # 상대 말 인용이 없으면 그 말부터
+    full2 = dict(full); full2["slots"] = dict(full["slots"]); full2["slots"]["reaction"] = {"status": "filled", "quote": "'느리다'고 했어요"}
+    assert "숫자나 기간" in B.detail_probe_hint(full2)
     assert B.episode_done_reason(dict(ep, leader_turns=8), st, CH) == "turns"
     st["bei_turns"] = {CH: 16}
     assert B.episode_done_reason(ep, st, CH) == "budget"

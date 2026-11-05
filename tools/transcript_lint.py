@@ -293,7 +293,10 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         if chapter and g.get("closed"):
             m = re.match(r"(episode|sweep)(\d+):(\w+)", str(g.get("closed")))
             if m and m.group(1) == "episode":
-                ep_closed[(chapter, int(m.group(2)))] = {"status": m.group(3), "slots_filled": int(g.get("slots_filled") or 0)}
+                key_c = (chapter, int(m.group(2)))
+                ep_closed[key_c] = {"status": m.group(3), "slots_filled": int(g.get("slots_filled") or 0)}
+                # 종료 턴의 리더 답은 그 사례의 마지막 리더 턴 — guard closed_turns(신규)가 있으면 그것, 없으면 직전 최대 +1
+                ep_turn[key_c] = int(g.get("closed_turns") or (ep_turn.get(key_c, 0) + 1))
         for lb in (g.get("mapped") or []):
             if isinstance(lb, str) and lb.endswith(":s") and chapter:
                 mapped_by_ch[chapter].add(lb[:-2])

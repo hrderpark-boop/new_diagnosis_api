@@ -165,8 +165,8 @@ def test_bei_aggregation(lex):
             _row(11, "user", "올해 초 AI 도입을 미뤘어요."),
             _row(11, "model", "AI 도입을 미루셨군요. 그때 뭘 하셨어요?", instr="EPISODE_PROBE", guard=g(episode=2, ep_kind="episode", ep_turn=1, slots_filled=1, slot="Jessica"))]
     r = tl.analyze(_data(rows, coach="2"), lex)
-    assert r["episodes"]["organization_management"][0] == {"idx": 1, "leader_turns": 2, "status": "slots", "slots_filled": 6}
-    assert r["episode_turns"] == [2] and r["episode_turns_out_of_range"] == 1 and r["episodes_six_slots"] == 1
+    assert r["episodes"]["organization_management"][0] == {"idx": 1, "leader_turns": 3, "status": "slots", "slots_filled": 6}   # 종료 턴의 답 포함(+1)
+    assert r["episode_turns"] == [3] and r["episode_turns_out_of_range"] == 1 and r["episodes_six_slots"] == 1
     assert r["chapter_leader_turns"] == {"organization_management": 4}     # ALIGN 답 + 사례 턴 3
     assert r["coverage"]["organization_management"]["covered"] == 1 and r["coverage_ratio"] == 0.25
     assert r["receive_turns"] == 4 and r["no_receive_turns"] == 1            # t9 는 질문만

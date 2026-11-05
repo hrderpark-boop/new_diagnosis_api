@@ -40,6 +40,7 @@ SLOT_HINTS: dict[str, str] = {
 SLOT_STATUSES = ("empty", "partial", "filled")
 
 EPISODE_MAX_LEADER_TURNS = 8
+EPISODE_MIN_LEADER_TURNS = 4          # (2026-11-05 2단계 판정 1) 6/6 이 4턴 전에 차도 "장면 구체화" 턴을 더 묻는다
 EPISODE_MIN = 2
 EPISODE_MAX = 3
 EPISODE_OPEN_MIN_REMAINING = 5        # 사례 하나 더 열려면 최소 이만큼 남아야 한다(SWEEP 예비는 별도)
@@ -214,13 +215,30 @@ def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None
     """사례 종료 사유: 'slots'(6/6) | 'turns'(리더 턴 8) | 'budget'(챕터 예산) | None."""
     if not ep:
         return None
-    if len(filled_slots(ep)) >= len(SLOT_KEYS):
-        return "slots"
-    if int(ep.get("leader_turns") or 0) >= EPISODE_MAX_LEADER_TURNS:
+    turns = int(ep.get("leader_turns") or 0)
+    if turns >= EPISODE_MAX_LEADER_TURNS:
         return "turns"
     if remaining(store, chapter) <= 0:
         return "budget"
+    if len(filled_slots(ep)) >= len(SLOT_KEYS) and turns >= EPISODE_MIN_LEADER_TURNS:
+        return "slots"
     return None
+
+
+_QUOTE_MARK_RE = re.compile(r"[\"“”'‘’]|라고|라는 말|하더라|하시더라|했어요\"")
+_DIGIT_RE = re.compile(r"\d|한 달|두 달|세 달|반년|분기|주일|퍼센트|%|배|명|건")
+
+
+def detail_probe_hint(ep: dict | None) -> str:
+    """6/6 이 찼는데 최소 턴 전이면 '장면 구체화' 1턴 — 상대가 한 말 그대로 / 결과 수치 중 비어 있는 쪽."""
+    slots = (ep or {}).get("slots") or {}
+    reaction_q = (slots.get("reaction") or {}).get("quote") or ""
+    result_q = (slots.get("result") or {}).get("quote") or ""
+    if not _QUOTE_MARK_RE.search(reaction_q):
+        return "상대(팀원·상사)가 그때 실제로 한 말을 그대로 한 마디 — 어떤 표현이었는지"
+    if not _DIGIT_RE.search(result_q):
+        return "결과를 숫자나 기간으로 — 얼마나, 언제까지"
+    return "가장 또렷한 장면 하나에서 한 걸음 더 — 그 자리에서 리더님이 처음 꺼낸 말"
 
 
 # ── 커버리지 원장 ─────────────────────────────────────────────────────────────

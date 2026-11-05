@@ -106,7 +106,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희는 {cn_eul} '{defn}'으로 봐요.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 들어볼게요.",
-        "align_open": "먼저 하나를 깊게 들어볼게요.",
+        "align_open": "먼저 하나부터요.",
         "align_receive_fallback": "네, 말씀 잘 들었어요.",
         "reask_anchor": "그럼 여쭤볼게요.",
         "same_input": "앞서 말씀하신 내용과 같네요.",
@@ -133,7 +133,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희는 {cn_eul} '{defn}'으로 정의합니다.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 듣겠습니다.",
-        "align_open": "먼저 하나를 깊게 듣겠습니다.",
+        "align_open": "먼저 하나부터 듣겠습니다.",
         "align_receive_fallback": "알겠습니다.",
         "reask_anchor": "그러면 여쭙겠습니다.",
         "same_input": "앞서 말씀하신 내용과 같습니다.",
@@ -160,7 +160,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희는 {cn_eul} '{defn}'으로 봐요.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 천천히 깊게 들어보려고 해요.",
-        "align_open": "먼저 하나부터 깊게 들어볼게요.",
+        "align_open": "먼저 하나부터 볼게요.",
         "align_receive_fallback": "네, 잘 들었어요.",
         "reask_anchor": "그럼 바로 물어볼게요.",
         "same_input": "방금 말씀하신 내용과 같은 답이에요.",
@@ -187,7 +187,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희는 {cn_eul} '{defn}'으로 보고 있습니다.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 들어보겠습니다.",
-        "align_open": "먼저 하나를 깊게 들어보겠습니다.",
+        "align_open": "먼저 하나부터 여쭙겠습니다.",
         "align_receive_fallback": "네, 말씀 잘 들었습니다.",
         "reask_anchor": "그러면 여쭤보겠습니다.",
         "same_input": "앞서 말씀하신 내용과 같습니다.",
@@ -214,7 +214,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희는 {cn_eul} '{defn}'으로 봐요.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 제대로 깊게 들어볼게요.",
-        "align_open": "먼저 하나, 깊게 들어볼게요.",
+        "align_open": "먼저 하나부터 가 볼게요.",
         "align_receive_fallback": "네, 잘 들었어요.",
         "reask_anchor": "그럼 바로 여쭤볼게요.",
         "same_input": "앞서 말씀하신 내용과 같네요.",
@@ -241,7 +241,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희 정의는 {cn_eul} '{defn}'입니다.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 드러나는지, 있었던 일 몇 가지를 깊게 묻겠습니다.",
-        "align_open": "먼저 하나를 깊게 묻겠습니다.",
+        "align_open": "먼저 하나부터.",
         "align_receive_fallback": "알겠습니다.",
         "reask_anchor": "그럼 묻겠습니다.",
         "same_input": "앞서 말씀하신 내용과 같습니다.",

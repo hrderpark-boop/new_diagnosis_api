@@ -1061,6 +1061,7 @@ async def _submit_message_phase3a(
                 _bei_closed.append(_closed)
                 _tm["mapped"] = [f"{x['sub']}:{x['strength'][0]}" for x in (_closed.get("labels") or [])]
             _tm["closed"] = f"{ep.get('kind', 'episode')}{ep.get('idx')}:{status}"
+            _tm["closed_turns"] = int(ep.get("leader_turns") or 0)
 
         def _next_after_close() -> None:
             nonlocal _bei_ep, instruction_used, _store
@@ -1078,6 +1079,11 @@ async def _submit_message_phase3a(
             if plan == _bei.STATE_CLOSE:
                 _store = _bei.set_chapter_state(_store, chapter, _bei.STATE_CLOSE)
                 instruction_used = "CHAPTER_READY_TO_END"
+                # (2026-11-05 2단계 판정 4) 종료 턴 요약 재료 — 들은 사례의 상황·행동 인용. 직전 답이 '없다'면 그 답은 받지 않는다.
+                state["bei_close_episodes"] = [
+                    {"idx": e.get("idx"), **{k: ((e.get("slots") or {}).get(k) or {}).get("quote") or "" for k in ("context", "action", "result")}}
+                    for e in _bei.episodes(_store, chapter) if e.get("kind", "episode") == "episode" and e.get("status") in ("done", "turns", "budget")]
+                state["bei_close_no_case"] = bool(state.get("bei_last_no_case"))
             _tm["bei"] = plan
 
         if instruction_used == "COMPETENCY_ALIGN":
@@ -1100,6 +1106,7 @@ async def _submit_message_phase3a(
                 _tr = _ep_transcript(_ep)
                 _jd = await _judge_slots(llm, transcript=_tr, prev_slots=_ep.get("slots"))
                 _no_case = bool(_jd.get("no_case")) or _bei.is_no_case_text(_bei_user_text) or bool(state.get("bei_anomaly_repeat"))
+                state["bei_last_no_case"] = _no_case
                 if not (_no_case and int(_ep.get("leader_turns") or 0) <= 1 + int(_ep.get("retry") or 0)):
                     # 여는 답(재질문 답 포함)이 '그런 일 없다'면 슬롯을 채우지 않는다 — 없는 사례에 인용이 붙는 것을 막는다
                     _ep["slots"] = _bei.merge_slots(_ep.get("slots"), _jd.get("slots"), " ".join(t for r, t in _tr if r == "user"))
@@ -1802,8 +1809,20 @@ async def _submit_message_phase3a(
             _sum, _ = _ssl_e(_sum)
             from diag_project.services.output_guard import strip_transition_sentences as _sts_e
             _sum, _ = _sts_e(_sum)          # (2026-10-22 P1-3) LLM 이 '이어가 보겠습니다' 를 쓰면 고정 다리와 중복 → 제거
+            # (2026-11-05 s2c) 요약 턴에 '떠올려 보세요'·'되짚어 보겠습니다' 류 지시·예고 문장이 섞인다 — 요약(과거 사실 서술)만 남긴다
+            _sum = " ".join(x for x in _ss_e(_sum) if not re.search(r"(보세요|주세요|볼게요|보겠습니다|주십시오)[.!…]?$|되짚어|여쭙|여쭤|궁금", x))
+            if state.get("bei_close_no_case"):
+                # (2026-11-05 2단계 판정 4) SWEEP 마지막 답이 '없음'이면 그 답을 받는 문장·'방향을 바꿔/좁혀' 류를 걷어낸다
+                _sum = " ".join(x for x in _ss_e(_sum) if not re.search(r"(없(었|으|다|을|는)|떠오르|좁혀|방향을\s*(조금\s*)?바꿔|다른\s*(방향|쪽|질문)|여쭙|여쭤)", x))
             _sum = " ".join([x.strip() for x in _ss_e(_sum) if x.strip()][:2]).strip()
-            # (2026-10-29 P1-6) 요약이 남지 않으면 다리 문장만 — 과거 폴백 '여기서 정리하겠습니다'는 상태 보고문이었다.
+            if not _sum and state.get("bei_close_episodes"):
+                # 요약이 남지 않으면 리더 인용으로 조립(지어낸 서술 없음)
+                _qs = [q for e in state["bei_close_episodes"] for q in (e.get("context"), e.get("action")) if q][:2]
+                if _qs:
+                    def _cut_q(q: str) -> str:
+                        return q if len(q) <= 60 else q[:60].rsplit(" ", 1)[0] + "…"
+                    _sum = "'" + "', '".join(_cut_q(q) for q in _qs) + "' 이야기를 들었습니다."
+                    _tm["close_summary_from_quotes"] = 1
             wrap_up = f"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch), (state.get('coach_persona') or {}).get('name'))}".strip()
         else:
             wrap_up = final_closing_message((state.get("coach_persona") or {}).get("name"))
@@ -2133,7 +2152,7 @@ async def _submit_message_phase3a(
     from diag_project.services.receive_check import RECEIVE_REQUIRED_INSTRUCTIONS as _RECV_INSTR
     if (system_override_text is None and not _llm_error and (clean_reply or "").strip() and not needs_user_decision
             and chapter and instruction_used in _RECV_INSTR and _align_ctx is None):
-        from diag_project.services.output_guard import count_questions as _cq_w, keep_last_question as _klq_w
+        from diag_project.services.output_guard import count_question_markers as _cq_w, keep_last_question as _klq_w   # 복합 질문 절도 센다
         from diag_project.services.receive_check import (
             _compact as _cpt_w, check_receive as _chk_r, lead_cap_for as _lcf_w, quote_phrase as _qp_r, splice_receive as _spl_r,
         )
@@ -2191,8 +2210,11 @@ async def _submit_message_phase3a(
         if _iss:
             _tm["format_miss"] = list(_iss)
             if "two_questions" in _iss:
-                clean_reply, _n_qo = _klq_w(clean_reply)   # 결정 1: 2회 뒤에도 질문 2개면 마지막 질문만
-                _tm["one_q"] = _n_qo
+                # 결정 1: 2회 뒤에도 질문 2개면 — 한 문장 안의 복합 질문은 뒤 질문만 남기고, 문장이 여럿이면 마지막 질문만
+                from diag_project.services.output_guard import split_compound_question as _scq
+                clean_reply, _n_sc = _scq(clean_reply)
+                clean_reply, _n_qo = _klq_w(clean_reply)
+                _tm["one_q"] = _n_qo + _n_sc
             if "no_receive" in _iss or "no_quote" in _iss:
                 _tm["receive_miss"] = 1
                 _tm["receive_phrase"] = _ph
@@ -2247,6 +2269,9 @@ async def _submit_message_phase3a(
             if _slot_txt:
                 _tm["slot"] = _pn_s; _tm["slot_text"] = _slot_txt
                 logger.info("🎭 페르소나 슬롯(%s): [%s] 사례 %s 턴 %d", _pn_s, chapter, _bei_ep.get("idx"), _ep_turn_s)
+        elif _pn_s != "Ella" and _ep_turn_s in (3, 4, 5) and not _bei_ep.get("slot_used"):
+            logger.info("🎭 슬롯 건너뜀(%s): 사례 %s 턴 %d lead=%d target_filled=%s", _pn_s, _bei_ep.get("idx"), _ep_turn_s, len(_lead_s),
+                        _slot_target.get(_pn_s) in _filled_s)
 
     # 8-p. (2026-10-23 6번 보정) Michael "좋습니다" 도입: 턴당 최대 1회, 챕터에서 2턴에 1회 이하(직전 턴에 썼으면 이번 턴은 뗀다).
     #   고정 문장 턴(안내·확인 템플릿)도 센다 — 재생에서 4·5·6턴 연속 '좋습니다' 가 템플릿 턴에서 났다.
@@ -2370,6 +2395,14 @@ async def _submit_message_phase3a(
                 logger.info("🎭 슬롯 문장 복원(뒤 단계가 덮음): [%s] %s", chapter, _tm["slot"])
         except Exception as _se_x:   # noqa: BLE001
             logger.warning("슬롯 복원 실패 — 건너뜀: %s", _se_x)
+
+    # 8-y0. (2026-11-05 s2b) 출력 규칙 되읊기 제거 — 재생성 출력이 '답변 문장만 드리면 이렇게 됩니다. "…"' 꼴로 나온 턴(Michael SWEEP_FOLLOWUP)
+    if system_override_text is None and not _llm_error and (clean_reply or "").strip():
+        from diag_project.services.output_guard import strip_meta_echo as _sme
+        clean_reply, _n_me = _sme(clean_reply)
+        if _n_me:
+            _tm["meta_echo"] = _n_me
+            logger.info("🧹 출력 규칙 되읊기 %d건 제거", _n_me)
 
     # 8-y. (2026-10-29) 최종 누설 소거 — 8-i 뒤의 재생성(8-j 전환·8-n 입버릇·8-h 느낌표)이 만든 새 LLM 출력은 8-i 의 누설 검사를
     #   거치지 않았다(s291 Jessica t10: 8-n 재생성 출력이 '되받기 한 문장 + 다리 한 문장으로 답하겠습니다.'로 시작). 엄격 사전 어휘·
@@ -2628,7 +2661,8 @@ async def _submit_message_phase3a(
             #   anchor_attached 시스템 앵커 삽입 · format_regen 턴 형식 재생성 횟수 · format_miss 미해결 사유 · receive_miss 되받기 없이 나감(폴백 없음)
             "bei": _tm.get("bei"), "episode": (_bei_ep or {}).get("idx"), "ep_kind": (_bei_ep or {}).get("kind"),
             "ep_turn": (_bei_ep or {}).get("leader_turns"), "slots_filled": _tm.get("slots_filled"), "slot_judge": _tm.get("slot_judge"),
-            "closed": _tm.get("closed"), "mapped": _tm.get("mapped"), "target": current_target_sub,
+            "closed": _tm.get("closed"), "closed_turns": _tm.get("closed_turns"), "mapped": _tm.get("mapped"), "target": current_target_sub,
+            "meta_echo": _tm.get("meta_echo"),
             "anchor_attached": int(_tm.get("anchor_attached") or 0), "format_regen": int(_tm.get("format_regen") or 0),
             "format_miss": _tm.get("format_miss"), "receive_miss": int(_tm.get("receive_miss") or 0), "receive_phrase": _tm.get("receive_phrase"),
         })

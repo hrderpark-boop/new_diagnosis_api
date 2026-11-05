@@ -56,7 +56,7 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
     reached_end = False
     for i in range(1, 45):
         u = queue.pop(0) if queue else asyncio.run(leader.answer(coach_text, chapter=meta.get("chapter"), instr=meta.get("instruction_used"),
-                                                                 target_sub=meta.get("target"), bei_state=meta.get("bei_state")))
+                                                                 target_sub=meta.get("target"), bei_state=meta.get("bei_state"), probe=meta.get("probe_type_used")))
         r = client.post("/api/v1/diagnoses/submit_message", json={"session_id": sid, "diagnosis_id": sid, "content": u}, headers=hdr)
         assert r.status_code in (200, 201), f"코치 {coach_key} 턴 {i} HTTP {r.status_code}: {r.text[:300]}"
         body = r.json()
@@ -78,9 +78,11 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
     eps = [e for e in B.episodes(store, CH) if e.get("kind") == "episode"]
     assert len(eps) == 2 and all(e["status"] == "done" and len(B.filled_slots(e)) == 6 for e in eps), eps
     cov = B.coverage_summary(store, CH, [v["name"] for v in __import__("diag_project.data.competencies", fromlist=["COMPETENCY_FRAMEWORK"]).COMPETENCY_FRAMEWORK[CH]["indicators"].values()])
-    assert cov["covered"] == ["비전 제시 및 공유", "전략적 사고"] and cov["not_explored"] == [] and len(cov["unconfirmed"]) == 2
+    # 사례 2개(비전·전략 여는 질문) + SWEEP 변화관리에 리더가 남은 사례(E7)를 꺼내 strong, 혁신은 사례 없음 → 미확인
+    assert cov["covered"] == ["변화관리(변화지향)", "비전 제시 및 공유", "전략적 사고"] and cov["not_explored"] == [] and cov["unconfirmed"] == ["혁신적 사고"]
     # 파생 원장: 분석이 읽는 asked_subs = covered ∪ SWEEP 앵커 하위역량
     assert set(store["asked_subs"][CH]) == {"비전 제시 및 공유", "전략적 사고", "변화관리(변화지향)", "혁신적 사고"}
+    assert "SWEEP_FOLLOWUP" in instrs or "SWEEP_ANCHOR" in instrs
     # 사례 행(Event) 2건 — 분석 입력 '[수집된 핵심 사건]' 블록의 재료
     from diag_project.database import async_session
     from diag_project.models.event import Event
@@ -90,7 +92,7 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
         async with async_session() as db:
             return (await db.execute(select(Event).where(Event.session_id == uuid.UUID(sid)))).scalars().all()
     evs = client.portal.call(_events)
-    assert len(evs) == 2 and all(e.situation and e.action and e.mapped_subcompetency for e in evs)
+    assert len(evs) == 3 and all(e.situation and e.mapped_subcompetency for e in evs)   # 사례 2 + SWEEP 보완 1
     # 페르소나 슬롯은 사례당 1회(Ella 없음)
     slot_turns = [g for g in store.get("guard_log", []) if g.get("slot") and g.get("slot") != "Michael_q"]
     assert len(slot_turns) == (0 if coach_key == "1" else 2), [(g.get("episode"), g.get("slot")) for g in slot_turns]

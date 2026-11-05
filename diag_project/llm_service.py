@@ -1416,11 +1416,14 @@ class GeminiService:
             # 회귀 테스트용: LLM 호출 실패를 흉내낸다(402·429·타임아웃 공통 경로)
             return {"reply": "", "state": {}, "event_metadata": None, "error": True, "error_kind": "stub"}
         if os.getenv("FM_LLM_STUB") == "1":
-            _n = self.__dict__.setdefault("_stub_n", 0) + 1
-            self._stub_n = _n
+            # 요청마다 GeminiService 가 새로 만들어지므로(Depends) 카운터는 모듈 전역 — 인스턴스 카운터는 늘 1 이라 입버릇 가드에 걸렸다
+            global _STUB_TURN_N
+            _STUB_TURN_N = globals().get("_STUB_TURN_N", 0) + 1
+            _n = _STUB_TURN_N
             _pool = ["그때 구체적으로 어떻게 하셨습니까?", "그 뒤로 달라진 게 있었습니까?", "팀원들은 그것을 어떻게 받아들였습니까?",
                      "그 결정의 기준은 무엇이었습니까?", "지금 돌아보면 어떤 결과였습니까?", "가장 어려웠던 지점은 어디였습니까?"]
-            return {"reply": f"그러셨군요, {_n}번째 이야기군요. {_pool[_n % len(_pool)]}", "state": {}, "event_metadata": None}
+            # (2026-11-05) 되받기 꼬리에 턴 번호를 넣어 8-n 입버릇 가드(같은 꼬리 3회 → 삭제)에 걸리지 않게 한다 — 스텁 스모크의 슬롯 조립이 되받기를 요구한다
+            return {"reply": f"잘 들었어요, 지금이 {_n}번째예요. {_pool[_n % len(_pool)]}", "state": {}, "event_metadata": None}
 
         # (2026-09-22) 모든 코치 턴 텍스트 전용: JSON 봉투(state·event_metadata 자기보고) 폐기.
         #   사건·STAR·탐침 종류·일시중지는 백엔드(event_tracker)가 결정한다. thinking 0, 출력 토큰 = 답변 문장만.

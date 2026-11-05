@@ -110,3 +110,21 @@ def test_report_ledger_three_kinds_and_not_explored_blank():
     assert tot["not_explored_total"] == 1 and tot["gate_dropped_total"] == 1 and tot["no_case_total"] == 1 and tot["probe_deficit_unconfirmed"] == 0
     assert results[CH]["sub_scores"]["혁신적 사고"] is None and results[CH]["not_explored_count"] == 1
     assert results[CH]["behavior_score"] == round((3.0 + 1.0 + 1.0) / 3, 2)   # 미탐색은 평균에서 제외
+
+
+def test_count_question_markers_catches_compound_questions():
+    from diag_project.services.output_guard import count_question_markers as C
+    assert C("그 결과를 두 강사에게 어떻게 보여주셨는지, 그리고 그때 가장 크게 배운 점은 무엇이었나요?") == 2
+    assert C("그 순간 어떤 판단을 하셨습니까? 그날 이후 무엇을 기준으로 확인하셨는지도 함께 들려주시면 좋겠습니다.") == 2   # 요청형도 질문
+    assert C("월별 계획을 보여드리기로 하셨을 때, 어떤 선택지들을 버리고 그 방법을 고르셨나요?") == 1
+    assert C("있었다면 언제였고, 어떤 장면이었나요?") == 1
+
+
+def test_episode_card_first_turn_rule_and_detail_probe():
+    ep = _ep(leader_turns=1)
+    card = EC.build_episode_card(instruction="EPISODE_PROBE", chapter=CH, ep=ep, bei_turns=1, budget=16)
+    assert "첫 턴 규칙: 먼저 리더가 방금 말한 상황을 한 문장으로 받는다" in card
+    full = _ep(leader_turns=3)
+    full["slots"] = {k: {"status": "filled", "quote": "x"} for k in B.SLOT_KEYS}
+    card2 = EC.build_episode_card(instruction="EPISODE_PROBE", chapter=CH, ep=full, bei_turns=3, budget=16)
+    assert "장면 구체화" in card2 and "그대로 한 마디" in card2

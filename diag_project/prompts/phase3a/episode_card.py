@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK, SUBCOMPETENCY_ANCHORS, SUBCOMPETENCY_MUST_ASK
 from diag_project.services.bei_engine import (
-    BEI_INSTRUCTIONS, EPISODE_MAX_LEADER_TURNS, SLOT_HINTS, SLOT_KEYS, SLOT_LABELS, filled_slots, unfilled_slots,
+    BEI_INSTRUCTIONS, EPISODE_MAX_LEADER_TURNS, SLOT_HINTS, SLOT_KEYS, SLOT_LABELS, detail_probe_hint, filled_slots, unfilled_slots,
 )
 
 
@@ -71,7 +71,9 @@ def build_episode_card(
             L.append(f"이번 턴: '{SLOT_LABELS[nxt]}' 하나를 묻는다 — {SLOT_HINTS[nxt]}. "
                      "리더가 다른 데로 가면 한 번은 따라가되 질문은 이 사례로 돌아온다.")
         else:
-            L.append("이번 턴: 여섯 가지가 다 나왔다. 들은 것 중 가장 또렷한 장면 하나를 짧게 받고, 그 장면에서 한 걸음 더 들어가는 질문 하나.")
+            L.append(f"이번 턴(장면 구체화): 여섯 가지가 다 나왔다. 되받기 뒤 질문 하나 — {detail_probe_hint(ep)}.")
+        if k <= 1:
+            L.append("첫 턴 규칙: 먼저 리더가 방금 말한 상황을 한 문장으로 받는다(리더가 쓴 말 하나를 그대로 넣어서). '궁금합니다' 류로 시작하지 않는다. 그 다음에 질문.")
     elif instruction == "EPISODE_OPEN":
         L.append("# 다음 사례로 넘어가는 턴")
         L.append("직전 사례를 닫는 되받기 1문장(들은 핵심 사실 하나, 평가 없이) + 다음 질문으로 잇는 다리 1문장. 질문은 쓰지 않는다 — "
@@ -126,7 +128,7 @@ BEI_GUIDES: dict[str, str] = {
 
 TURN_FORMAT_RULES = (
     "[턴 형식]\n"
-    "- 되받기 1~3문장 + 질문 1개. 되받기 없이 질문만 쓰지 않는다. 질문 두 개를 잇지 않는다.\n"
+    "- 되받기 1~3문장 + 질문 1개. 되받기 없이 질문만 쓰지 않는다. 질문 두 개를 잇지 않는다 — '~는지, 그리고 ~는지' 처럼 한 문장에 두 가지를 묻는 것도 두 질문이다.\n"
     "- 되받기에는 리더가 방금 쓴 말을 그대로 하나 넣는다(뜻만 옮겨 쓰지 않는다). 리더가 말하지 않은 사정을 보태지 않는다.\n"
     "- 질문은 리더가 쓴 말(명사구)로 대상을 분명히 한다. '그것·그럴 때·그렇게'만으로 가리키지 않는다.\n"
     "[금지]\n"

@@ -400,6 +400,20 @@ def _get_instruction_guide(
     # 현재 챕터의 하위역량 목록 (BEI '하위역량 릴레이'용)
     _cur_fw = COMPETENCY_FRAMEWORK.get(_cur, {})
     _cur_chapter_name = _cur_fw.get("name", "이 영역")
+    # (2026-11-05 2단계 판정 4) 종료 턴 요약 재료 — 사례 단계가 들은 사례의 리더 인용. 직전 답이 '없다'면 그 답은 받지 않는다.
+    _close_eps = (state or {}).get("bei_close_episodes") or []
+    _close_material = ""
+    if _close_eps:
+        _lines_c = []
+        for e in _close_eps:
+            _parts = [f"{lab} '{e.get(k)}'" for k, lab in (("context", "상황"), ("action", "행동"), ("result", "결과")) if e.get(k)]
+            if _parts:
+                _lines_c.append(f"   - 사례 {e.get('idx')}: " + " / ".join(_parts))
+        _close_material = ("\n\n📎 **요약 재료(리더님 말 그대로 — 이 안의 사실만 두 문장으로 되짚는다)**:\n" + "\n".join(_lines_c)
+                           + "\n   ✅ 출력은 오직 이 재료로 만든 과거 사실 서술 2문장('~하셨고, ~하셨습니다.' 꼴). 리더님의 마지막 답에 반응하지 않는다. "
+                           "'되짚어 보겠습니다'·'떠올려 보세요'·'여쭙니다' 같은 예고·지시·질문 문장은 한 줄도 쓰지 않는다(시스템이 지운다)."
+                           + ("\n   ⚠ 리더님의 마지막 답은 '그런 일이 없다'였습니다. 그 답을 받거나('없으셨군요', '떠오르는 장면이 없을 수도') "
+                              "질문을 좁히겠다·방향을 바꾸겠다는 말을 쓰지 마세요 — 바로 위 사례 요약 두 문장만." if (state or {}).get("bei_close_no_case") else ""))
     if _next_name:
         # 🎯 강제 전환(Force Transition): 이 영역 데이터가 충분히 수집됐으므로
         #   사용자에게 '계속할지/쉴지' 선택권을 넘기지 않는다. 코치가 세션의
@@ -435,6 +449,7 @@ def _get_instruction_guide(
             "- [CHAPTER_COMPLETE]/[START_CHAPTER] 태그 ❌ → 시스템이 부착.\n\n"
             f"예({EXAMPLE_LABEL}): '팀원 의견을 받아 교육 체계를 새로 짜셨고, 반발한 팀원과는 따로 만나 이유를 설명하셨습니다. "
             "그 뒤 체계가 자리 잡기까지 두 달이 걸렸다고 하셨고요.'"
+            + _close_material
         )
     else:
         # 🏁 마지막 영역(자기관리) — 다음 영역 없음. Grand Finale 강제.

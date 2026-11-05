@@ -221,7 +221,7 @@ def test_tail_guard_runs_on_align_receive_before_assembly():
     out = render_align(llm_text="말씀 잘 들었어요. 그 결이 선명하게 들어왔어요.", chapter="self_management",
                        sub_names=["자기인식", "회복탄력성", "중심성"], persona_name="Ella", anchor="그런 순간이 최근에 있었어요?")
     assert align_shape_ok(out, ["자기인식", "회복탄력성", "중심성"])[0]
-    assert "· 자기인식" in out and out.rstrip().endswith("있었어요?") and "먼저 하나를 깊게 들어볼게요." in out   # (BEI 결정 6) 새 안내·다리
+    assert "· 자기인식" in out and out.rstrip().endswith("있었어요?") and "먼저 하나부터요." in out   # (BEI 결정 6·2단계 판정 5) 새 안내·다리
 
 
 

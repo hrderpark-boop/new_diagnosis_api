@@ -35,13 +35,7 @@ if str(ROOT) not in sys.path:
 TEMPLATE_ID = "10000000-0000-0000-0000-000000000008"
 NEXT = "네, 다음으로 이어가 주세요."
 CONTINUE = "괜찮아요, 계속 진행할게요."
-ONBOARDING = [
-    "안녕하세요, 박기진입니다.",
-    "바쁜 쪽이에요. 하반기 교육 일정이 몰려서요.",
-    "교육팀 팀장이고 팀원은 4명, 교육 기획과 운영을 맡고 있습니다.",
-    "아니요, 특별히 기대하는 건 없어요.",
-    "네.",
-]
+ONBOARDING = ["안녕하세요, 박기진입니다."]   # 이름만 고정 — 스몰톡·역할·기대는 코치 턴 종류(probe ROLE_ASK 등)로 답한다
 SLOT_ORDER = ("context", "action", "reaction", "result", "criterion", "reflection")
 # 스텁 리더: 코치 질문의 낱말로 어느 슬롯을 묻는지 고른다(결정론). 못 고르면 아직 말 안 한 다음 슬롯.
 _SLOT_CUES = [
@@ -95,8 +89,20 @@ class Leader:
             self.used.add(ep["id"])
 
     # ── 답 생성 ──────────────────────────────────────────────────────────────
-    async def answer(self, coach_text: str, *, chapter: str | None, instr: str | None, target_sub: str | None, bei_state: str | None) -> str:
+    async def answer(self, coach_text: str, *, chapter: str | None, instr: str | None, target_sub: str | None, bei_state: str | None,
+                     probe: str | None = None) -> str:
         self.n_answers += 1
+        if instr == "RAPPORT_BUILDING":
+            # 온보딩은 위치가 아니라 코치 턴의 종류로 답한다(스몰톡 → 역할 질문(ROLE_ASK) → 기대 질문)
+            ob = self.p.get("onboarding") or {}
+            if probe == "ROLE_ASK":
+                return ob.get("role", "교육팀 팀장이고 팀원은 4명입니다.")
+            if probe == "READY_FOR_INTRO" or re.search(r"기대하시는", coach_text or ""):
+                return ob.get("expectation", "아니요, 특별히 기대하는 건 없어요.")
+            if not getattr(self, "_smalltalk_done", False):
+                self._smalltalk_done = True
+                return ob.get("smalltalk", "바쁜 쪽이에요.")
+            return ob.get("smalltalk_more", "네, 그 정도예요.")
         if instr == "DIAGNOSIS_INTRO":
             return "네, 시작하겠습니다."
         if instr in ("COMPETENCY_ASK", "DIAGNOSIS_CONFIRM") and chapter:
@@ -151,7 +157,7 @@ class Leader:
             f"당신은 리더십 진단에 참여한 리더입니다. {persona['role']} 팀원: {', '.join(persona['members'])}.\n"
             f"말하는 방식: {persona['style']}\n"
             "규칙: 아래 [이번에 말할 사실]만 자기 말로 2~4문장으로 답한다. 사실에 없는 내용을 지어내지 않는다. 다른 슬롯(결과·기준·배운 점 등)을 먼저 꺼내지 않는다. "
-            "코치의 말을 되풀이하지 않는다. 존댓말, 구어체. 질문하지 않는다."
+            "코치의 말을 되풀이하지 않는다. 존댓말, 구어체. 질문하지 않는다. '음,'·'네,'·'그랬죠' 같은 추임새로 문장을 시작하지 않는다."
         )
         recent = "\n".join(f"{'코치' if r == 'model' else '나'}: {t}" for r, t in self.history[-6:])
         prompt = (f"[최근 대화]\n{recent}\n\n[코치의 이번 질문]\n{coach_text}\n\n[이번에 말할 사실 — {slot}]\n{fact}\n\n"
@@ -188,6 +194,22 @@ def _serve() -> None:
             pass
         return _orig_rec(call_type, model, inp, out, thoughts, cache_write, cache_read)
     llm_service.USAGE_METER.record = _rec
+    cap = usage.replace("sim_usage_", "sim_prompts_")
+    _orig_gen = llm_service.GeminiService._generate_with_retry
+
+    async def _patched(self, *args, **kwargs):
+        out = await _orig_gen(self, *args, **kwargs)
+        try:
+            prompt = kwargs.get("prompt") if "prompt" in kwargs else (args[0] if args else "")
+            if str(kwargs.get("call_type", "")).startswith("coach"):
+                with open(cap, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"ts": time.strftime("%H:%M:%S"), "call_type": kwargs.get("call_type"),
+                                        "system_tail": (kwargs.get("system_instruction") or "")[-2500:], "prompt_tail": (prompt or "")[-1500:],
+                                        "response": out if isinstance(out, str) else str(out)}, ensure_ascii=False) + "\n")
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+    llm_service.GeminiService._generate_with_retry = _patched
     import uvicorn
     uvicorn.run("diag_project.main:app", host="127.0.0.1", port=port, log_level="info")
 
@@ -273,7 +295,7 @@ async def run_session(tag: str, coach: str, port: int, out_dir: Path, profile: d
                 u = queue.pop(0)
             else:
                 u = await leader.answer(coach_text, chapter=meta.get("chapter"), instr=meta.get("instruction_used"),
-                                        target_sub=meta.get("target"), bei_state=meta.get("bei_state"))
+                                        target_sub=meta.get("target"), bei_state=meta.get("bei_state"), probe=meta.get("probe_type_used"))
             leader.history.append(("user", u))
             r = await c.post(f"{base}/diagnoses/submit_message", json={"session_id": sid, "diagnosis_id": sid, "content": u}, headers=hdr)
             turns += 1
@@ -308,8 +330,9 @@ async def run_session(tag: str, coach: str, port: int, out_dir: Path, profile: d
     con.close()
     store = json.loads(sad[0]) if sad and sad[0] else {}
     gl = {(g.get("ch"), g.get("t")): g for g in store.get("guard_log", []) if isinstance(g, dict)}
+    gl_t = {g.get("t"): g for g in store.get("guard_log", []) if isinstance(g, dict)}   # 종료 턴은 다음 챕터로 태깅되므로 t 로 보조 매칭
     out_rows = [{"t": t, "role": role, "chapter": ch, "probe": probe, "instr": instr, "content": content,
-                 "guard": (gl.get((ch, t)) if role == "model" else None)} for t, role, ch, probe, instr, content in rows]
+                 "guard": ((gl.get((ch, t)) or gl_t.get(t)) if role == "model" else None)} for t, role, ch, probe, instr, content in rows]
     ledger = {k: store.get(k) for k in ("chapter_state", "bei_turns", "episodes", "covered", "weak", "sweep_asked", "unconfirmed",
                                         "no_case_subs", "asked_subs", "anchored_subs") if store.get(k) is not None}
     truth = {"episodes": [{"id": e["id"], "chapter": e["chapter"], "subs": e["subs"], "used": e["id"] in leader.used} for e in profile["episodes"]],
