@@ -107,7 +107,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "align_definition": "저희는 {cn_eul} '{defn}'으로 봐요.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 들어볼게요.",
         "align_open": "먼저 하나부터요.",
-        "align_receive_fallback": "네, 말씀 잘 들었어요.",
+        "align_receive_quote": "{phrase_eul} 먼저 짚어 주셨네요.",   # (2026-11-05) ALIGN 되받기 인용 조립 — 일반 폴백 없음
         "reask_anchor": "그럼 여쭤볼게요.",
         "same_input": "앞서 말씀하신 내용과 같네요.",
         "repeat_event": "앞서 들려주신 이야기와 같은 사례로 보여요. 그 사례는 잘 들었으니, 다른 장면 하나를 떠올려 주시면 좋겠어요.",
@@ -134,7 +134,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "align_definition": "저희는 {cn_eul} '{defn}'으로 정의합니다.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 듣겠습니다.",
         "align_open": "먼저 하나부터 듣겠습니다.",
-        "align_receive_fallback": "알겠습니다.",
+        "align_receive_quote": "{phrase_eul} 중심에 두고 계십니다.",   # (2026-11-05) ALIGN 되받기 인용 조립 — 일반 폴백 없음
         "reask_anchor": "그러면 여쭙겠습니다.",
         "same_input": "앞서 말씀하신 내용과 같습니다.",
         "repeat_event": "앞서 말씀하신 사례와 같은 건으로 보입니다. 그 건은 확인했으니, 다른 장면 하나를 말씀해 주십시오.",
@@ -161,7 +161,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "align_definition": "저희는 {cn_eul} '{defn}'으로 봐요.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 천천히 깊게 들어보려고 해요.",
         "align_open": "먼저 하나부터 볼게요.",
-        "align_receive_fallback": "네, 잘 들었어요.",
+        "align_receive_quote": "{phrase_eul} 먼저 보시는군요.",   # (2026-11-05) ALIGN 되받기 인용 조립 — 일반 폴백 없음
         "reask_anchor": "그럼 바로 물어볼게요.",
         "same_input": "방금 말씀하신 내용과 같은 답이에요.",
         "repeat_event": "앞서 들려주신 장면과 같은 이야기로 보여요. 그건 잘 들었으니, 다른 장면 하나를 꺼내 주시면 좋겠어요.",
@@ -188,7 +188,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "align_definition": "저희는 {cn_eul} '{defn}'으로 보고 있습니다.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 들어보겠습니다.",
         "align_open": "먼저 하나부터 여쭙겠습니다.",
-        "align_receive_fallback": "네, 말씀 잘 들었습니다.",
+        "align_receive_quote": "{phrase_eul} 먼저 꺼내셨군요.",   # (2026-11-05) ALIGN 되받기 인용 조립 — 일반 폴백 없음
         "reask_anchor": "그러면 여쭤보겠습니다.",
         "same_input": "앞서 말씀하신 내용과 같습니다.",
         "repeat_event": "앞서 들려주신 이야기와 같은 사례로 보입니다. 그 사례는 잘 들었으니, 다른 장면 하나를 떠올려 주시겠습니까.",
@@ -215,7 +215,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "align_definition": "저희는 {cn_eul} '{defn}'으로 봐요.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 제대로 깊게 들어볼게요.",
         "align_open": "먼저 하나부터 가 볼게요.",
-        "align_receive_fallback": "네, 잘 들었어요.",
+        "align_receive_quote": "{phrase_eul} 딱 짚으셨네요.",   # (2026-11-05) ALIGN 되받기 인용 조립 — 일반 폴백 없음
         "reask_anchor": "그럼 바로 여쭤볼게요.",
         "same_input": "앞서 말씀하신 내용과 같네요.",
         "repeat_event": "앞서 들려주신 이야기와 같은 사례로 보여요. 그건 잘 들었으니, 다른 장면 하나를 떠올려 주시면 됩니다.",
@@ -242,7 +242,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "align_definition": "저희 정의는 {cn_eul} '{defn}'입니다.",
         "align_guide": "이 {n} 가지가 실제로 어떻게 드러나는지, 있었던 일 몇 가지를 깊게 묻겠습니다.",
         "align_open": "먼저 하나부터.",
-        "align_receive_fallback": "알겠습니다.",
+        "align_receive_quote": "{phrase_eul} 먼저 두셨군요.",   # (2026-11-05) ALIGN 되받기 인용 조립 — 일반 폴백 없음
         "reask_anchor": "그럼 묻겠습니다.",
         "same_input": "앞서 말씀하신 내용과 같습니다.",
         "repeat_event": "앞서 말씀하신 사례와 같은 건입니다. 그 건은 확인했으니 다른 장면 하나만요.",
@@ -512,7 +512,7 @@ def final_closing_message(persona_name: str | None) -> str:
     return FINAL_CLOSINGS.get((persona_name or "").split(" ")[0], _FINAL_DEFAULT)
 
 
-# (2026-10-29 P2-1) Daniel 선배 관찰 문장 — 챕터 순서로 하나씩(챕터당 1회)
+# (2026-10-29 P2-1 → 2026-11-05) Daniel 선배 관찰 문장 — 사례당 1회. 챕터 순서 인덱스에서 시작해 같은 챕터 안에서는 쓴 문장을 건너뛴다(챕터 안 중복 0)
 DANIEL_OBSERVATIONS = [
     "그 자리, 저도 압니다. 쉽지 않지요.",
     "그런 결정은 혼자 짊어지게 되지요. 저도 그랬습니다.",
@@ -520,3 +520,12 @@ DANIEL_OBSERVATIONS = [
     "일이 몰릴 때 순서를 정하는 게 제일 어렵습니다. 저도 그 자리에 있어 봤습니다.",
     "스스로를 돌아보는 건 리더에게 가장 늦게 오는 과제지요.",
 ]
+
+
+def next_daniel_observation(chapter_index: int, used: list[int] | None) -> tuple[int, str]:
+    """(2026-11-05 3단계 소수정 3) 이 챕터에서 아직 안 쓴 관찰 문장의 (인덱스, 문장). 시작은 챕터 순서 인덱스, 전부 썼으면 시작 문장."""
+    n = len(DANIEL_OBSERVATIONS)
+    order = [(int(chapter_index) + k) % n for k in range(n)]
+    used_set = set(used or [])
+    idx = next((i for i in order if i not in used_set), order[0])
+    return idx, DANIEL_OBSERVATIONS[idx]

@@ -19,7 +19,8 @@ import re
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 from diag_project.services.intro_messages import persona_line
 from diag_project.services.korean import with_josa
-from diag_project.services.output_guard import is_question, split_sentences, count_questions
+from diag_project.services.output_guard import is_question, key_noun_phrase, split_sentences, count_questions
+from diag_project.services.receive_check import quote_phrase
 
 RECEIVE_MAX_SENTENCES = 3
 _LIST_LINE_RE = re.compile(r"^\s*([·•\-*]|\d+[.)])\s*")
@@ -96,6 +97,15 @@ def guide_sentence(n: int, persona_name: str | None) -> str:
     return persona_line(persona_name, "align_guide", n=_KO_NUM.get(n, str(n)))
 
 
+def leader_definition_body(chapter: str, user_text: str | None) -> str:
+    """리더 정의 답에서 역량 이름('자기관리는 …')을 뺀 본문 — 인용 후보에서 역량 이름을 제외한다(2026-11-05)."""
+    name = (COMPETENCY_FRAMEWORK.get(chapter or "", {}) or {}).get("name") or ""
+    t = user_text or ""
+    if name:
+        t = re.sub(rf"{re.escape(name)}(이란|란|이라는|라는|은|는|이|가|을|를|도)?\s*", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
 def render_align(
     *,
     llm_text: str,
@@ -108,7 +118,10 @@ def render_align(
     """ALIGN 최종 출력. anchor 는 이미 페르소나 어미가 적용된 앵커 질문 한 문장. user_text 는 리더의 이번 답(복사 문장 제거용)."""
     recv = receive_sentences(llm_text, chapter=chapter, sub_names=sub_names, user_text=user_text)
     if not recv:
-        recv = [persona_line(persona_name, "align_receive_fallback")]
+        # (2026-11-05 P3-1) 일반 폴백('네, 잘 들었어요') 금지 — 리더 정의의 명사구를 인용한 한 문장. 명사구가 없으면 되받기 생략.
+        body = leader_definition_body(chapter, user_text)
+        phrase = quote_phrase(body) or key_noun_phrase(body)
+        recv = [persona_line(persona_name, "align_receive_quote", phrase_eul=with_josa(f"'{phrase}'", "을/를"))] if phrase else []
     parts = [
         " ".join(recv),
         definition_sentence(chapter, persona_name) + "\n" + "\n".join(f"· {n}" for n in sub_names),

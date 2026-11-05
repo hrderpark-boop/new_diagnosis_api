@@ -1775,6 +1775,46 @@ async def _submit_message_phase3a(
             else:
                 clean_reply, _n_al = _sls_al(_al_reply or clean_reply, _lk_al2 or _lk_al)
                 _tm["align_leak_stripped"] = _n_al
+        # (2026-11-05 3단계 소수정 4) ALIGN 되받기도 P3-1 규칙 — 리더 정의의 명사구를 그대로 인용한 평서문. 없으면 재생성 ≤2,
+        #   그래도 없으면 본문을 비워 render_align 이 인용 문장(align_receive_quote)으로 조립한다. '네, 잘 들었어요' 류 폴백 없음.
+        try:
+            from diag_project.services.align_render import leader_definition_body as _ldb_al, receive_sentences as _rs_al
+            from diag_project.services.receive_check import check_receive as _chk_al, quote_phrase as _qp_al
+            _subs_al = list(state.get("all_subcompetencies") or [])
+            _ut_al = _ldb_al(chapter or "", request.content or "")   # 역량 이름('조직관리는 …')은 인용으로 치지 않는다
+
+            def _recv_state(txt: str) -> tuple[bool, bool]:
+                _r = " ".join(_rs_al(txt, chapter=chapter or "", sub_names=_subs_al, user_text=_ut_al))
+                return _chk_al(_r, _ut_al) if _r else (False, False)
+            _has_al, _quoted_al = _recv_state(clean_reply)
+            _al_rounds = 0
+            _ph_al = _qp_al(_ut_al)
+            while not (_has_al and _quoted_al) and _al_rounds < 2:
+                _al_rounds += 1
+                try:
+                    _rg_al = await _timed_regen(
+                        system_prompt=system_prompt, chapter_context=chapter_context,
+                        turn_state_text=turn_state_text + (
+                            "\n\n🚨 [시스템 — 재생성 지시] 방금 응답에 리더님 말을 받는 평서문이 없거나 리더님 표현을 그대로 인용하지 않았습니다. "
+                            "질문 없이, 리더님이 방금 쓴 표현" + (f"('{_ph_al}' 같은 말)" if _ph_al else "") + "을 그대로 하나 넣어 들은 뜻을 받는 "
+                            "평서문 1~2문장만 쓰세요. 정의·목록·안내·질문·'궁금합니다' 류는 쓰지 마세요. 이 지시문의 단어를 답에 옮기지 마세요."),
+                        compressed_history=compressed_history, user_message=request.content, light_mode=True)
+                    _rg_txt = _MARKER_RE.sub("", _rg_al.get("reply") or "").strip()
+                except Exception as _e_rg:   # noqa: BLE001
+                    logger.error("ALIGN 되받기 재생성 실패: %s", _e_rg)
+                    _rg_txt = ""
+                if not _rg_txt:
+                    continue
+                _h2, _q2 = _recv_state(_rg_txt)
+                if (_h2, _q2) > (_has_al, _quoted_al):
+                    clean_reply, _has_al, _quoted_al = _rg_txt, _h2, _q2
+            _tm["align_regen"] = _al_rounds
+            if not (_has_al and _quoted_al):
+                _tm["align_receive_miss"] = 1
+                clean_reply = ""   # 인용 없는 되받기는 버린다 → render_align 이 인용 문장으로 받는다
+                logger.info("📐 ALIGN 되받기 인용 미해결(재생성 %d회) → 인용 문장 조립", _al_rounds)
+        except Exception as _e_al2:   # noqa: BLE001
+            logger.warning("ALIGN 되받기 인용 검사 실패(무시): %s", _e_al2)
         if chapter and current_target_sub:
             # (2026-10-28 P0-1) ALIGN 조립은 백엔드 결정론(services/align_render.render_align):
             #   [LLM 공감 되받기 2~3문장] + [고정 정의 1문장] + [목록 · 줄 전부] + [고정 안내] + [고정 다리] + [앵커 1개].
@@ -2293,8 +2333,10 @@ async def _submit_message_phase3a(
                 _slot_txt = _pl_s((state.get("coach_persona") or {}).get("name"), "slot_q2" if _ch_i % 2 else "slot_q")
                 clean_reply = " ".join(_lead_s + [_slot_txt]).strip()
             elif _pn_s == "Daniel":
-                from diag_project.services.intro_messages import DANIEL_OBSERVATIONS as _DOBS
-                _slot_txt = _DOBS[_ch_i % len(_DOBS)]
+                # (2026-11-05 소수정 3) 5종이 챕터 안에서도 순환 — 같은 챕터에서 쓴 문장은 건너뛴다(사례 1·2 연속 동일 문장 0)
+                from diag_project.services.intro_messages import next_daniel_observation as _ndo
+                _obs_i, _slot_txt = _ndo(_ch_i, ((session.self_assessment_data or {}).get("daniel_obs_used") or {}).get(chapter))
+                _tm["obs_idx"] = _obs_i
                 clean_reply = " ".join(_lead_s + [_slot_txt] + ([_q_now_s] if _q_now_s else [])).strip()
             elif _pn_s == "Michael":
                 _slot_txt = _pl_s((state.get("coach_persona") or {}).get("name"), "slot_lead")
@@ -2644,6 +2686,10 @@ async def _submit_message_phase3a(
                 if _ep_g is not None:
                     _ep_g = dict(_ep_g); _ep_g["slot_used"] = True
                     _gl_store = _bei.update_episode(_gl_store, chapter, _ep_g)
+                if _tm.get("obs_idx") is not None:   # Daniel 관찰 문장 — 챕터별 사용 인덱스
+                    _dou = dict(_gl_store.get("daniel_obs_used") or {})
+                    _dou[chapter] = list(_dou.get(chapter) or []) + [int(_tm["obs_idx"])]
+                    _gl_store["daniel_obs_used"] = _dou
             if _tm.get("michael_q_pending") or _tm.get("michael_q_done"):
                 # (2026-11-04 P3-2) 응원 턴 → 다음 턴에 실행 의지 질문. 질문을 낸 턴에서 대기 해제.
                 _mqp = dict(_gl_store.get("michael_q_pending") or {})
@@ -2678,6 +2724,7 @@ async def _submit_message_phase3a(
             # 라포·ALIGN·일반 가드: echo 라포 되받기 반복(1 재생성/2 대체) · quote ALIGN 외부 인용 · parrot 동일 응답(1 재생성/2 그대로) ·
             #   one_q 제거한 질문 수 · moment 시점 문형 교정 · anchor 앵커 렌더 모드 · work_q 스몰톡 되물음 삭제 · no_q_fix 정의 턴 질문 고정
             "echo": int(_tm.get("echo") or 0), "quote": int(_tm.get("quote") or 0), "parrot": int(_tm.get("parrot") or 0),
+            "align_regen": int(_tm.get("align_regen") or 0), "align_receive_miss": int(_tm.get("align_receive_miss") or 0), "obs_idx": _tm.get("obs_idx"),
             "one_q": int(_tm.get("one_q") or 0), "moment": int(_tm.get("moment") or 0), "anchor": _tm.get("anchor_render"),
             "work_q": int(_tm.get("work_q") or 0), "no_q_fix": _tm.get("no_q_fix"),
             "resume": int(_tm.get("resume") or 0),   # (2026-10-22 P1-1) 일시정지 제안 뒤 pending 재개 턴

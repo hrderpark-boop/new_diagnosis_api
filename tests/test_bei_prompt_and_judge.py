@@ -143,3 +143,23 @@ def test_leading_choice_question_detection():
     assert L("두 분이 반대하셨다면 어떻게 하셨을까요?")
     assert not L("자료를 보셨군요. 그 자리에서 처음 꺼낸 말은 무엇이었나요?")
     assert not L("다시 한다면 어떻게 하고 싶으세요?")   # 돌아보기 질문(가정형 금지 대상 아님)
+
+
+def test_daniel_observation_rotates_within_chapter():
+    from diag_project.services.intro_messages import DANIEL_OBSERVATIONS as D, next_daniel_observation as N
+    i1, t1 = N(2, [])
+    i2, t2 = N(2, [i1])
+    i3, t3 = N(2, [i1, i2])
+    assert i1 == 2 and i2 == 3 and i3 == 4 and len({t1, t2, t3}) == 3
+    assert N(4, [4, 0, 1, 2, 3]) == (4, D[4])   # 전부 썼으면 시작 문장
+
+
+def test_cross_chapter_evidence_tagged_with_source_chapter():
+    from diag_project.llm_service import GeminiService
+    svc = GeminiService.__new__(GeminiService)
+    svc._analysis_user_turns = [("organization_management", "운영 보고서를 그 도구로 자동으로 만드는 방법을 제가 먼저 만들어 보여드렸고"),
+                                ("work_management", "열두 건을 난이도별로 나눠 강사 둘에게 운영 일부를 넘겼습니다")]
+    out = svc._tag_cross_chapter_evidence("work_management", ["운영 보고서를 그 도구로 자동으로 만드는 방법을 제가 먼저 만들어", "열두 건을 난이도별로 나눠 강사 둘에게"])
+    assert out[0].startswith("(조직관리 대화에서) ") and out[1].startswith("열두 건")
+    assert svc._tag_cross_chapter_evidence("work_management", out) == out   # 두 번 붙이지 않는다
+    assert svc._tag_cross_chapter_evidence("work_management", ["원문에 없는 인용"]) == ["원문에 없는 인용"]

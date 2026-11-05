@@ -1878,6 +1878,31 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             )
         return ",\n".join(lines)
 
+    def _tag_cross_chapter_evidence(self, competency_key: str, evidence: list) -> list:
+        """(2026-11-05 3단계 결정 1) 근거 인용이 다른 대역량 챕터의 리더 발화에서 왔으면 '(조직관리 대화에서) ' 를 앞에 붙인다.
+        게이트를 통과한 근거는 뒤의 '그런 일 없다' 답보다 우선하되(디지털 활용 Lv.4 사례), 리더가 어느 대화에서 한 말인지 납득하게 한다.
+        같은 인용이 자기 챕터에도 있으면 붙이지 않는다. 출처를 못 찾으면 그대로."""
+        turns = getattr(self, "_analysis_user_turns", None) or []
+        if not turns or not evidence:
+            return list(evidence or [])
+        from diag_project.data.competencies import COMPETENCY_FRAMEWORK as _FW
+
+        def _n(x: str) -> str:
+            return re.sub(r"[\s\"'“”‘’]+", "", x or "")
+        out = []
+        for q in evidence:
+            q0 = str(q or "")
+            if re.match(r"^\([^)]{1,12} 대화에서\) ", q0):
+                out.append(q0)
+                continue
+            nq = _n(q0)[:40]
+            srcs = [ch for ch, txt in turns if len(nq) >= 6 and nq in _n(txt)]
+            if srcs and competency_key not in srcs and srcs[0] in _FW:
+                out.append(f"({_FW[srcs[0]].get('name', srcs[0])} 대화에서) {q0}")
+            else:
+                out.append(q0)
+        return out
+
     def _finalize_ledger(self, result: Dict[str, Any], competency_key: str,
                          gate: Dict[str, Dict[str, Any]] | None) -> None:
         """파싱 결과 + 레벨 게이트 판정으로 sub_ledger·점수·gate_status 확정.
@@ -1929,7 +1954,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                     gate_status = "pending"
                     status = "measured"   # 대상자 응답은 존재(도구 상태와 구분)
                     level = claimed        # 표시용(점수 아님)
-                    disp_ev = ev
+                    disp_ev = self._tag_cross_chapter_evidence(competency_key, ev)
                 elif g.get("dropped"):
                     # 게이트 실행됨 + 근거 자격 미달 → 탈락(근거미확보)
                     gate_status = "failed"
@@ -1941,7 +1966,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                     score = float(level)
                     eff_measured = True
                     status = "measured"
-                    disp_ev = ev
+                    disp_ev = self._tag_cross_chapter_evidence(competency_key, ev)
 
             if eff_measured:
                 measured_count += 1
@@ -2588,6 +2613,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         태그 기반의 결정론적 필터링 데이터를 사용한다. (권장 경로)
         없으면 하위호환으로 기존 STEP 1(LLM 분류) 사용.
         """
+        # (2026-11-05 3단계 결정 1) 근거 인용의 출처 챕터 표기용 — 리더 발화(챕터 태그)만 보관. _finalize_ledger 가 쓴다.
+        self._analysis_user_turns = [(h.get("chapter"), str(h.get("parts") or "")) for h in (history or []) if h.get("role") == "user"]
         logger.info(f"🧠 [{user_name}] Map-Reduce 분석 시작")
         # §8 계측: 이 분석(재분석 1회)의 호출·토큰·비용을 스냅샷한다.
         #   (단일 세션 분석 기준. 동시 분석 시엔 합산되므로 fixture 재분석은

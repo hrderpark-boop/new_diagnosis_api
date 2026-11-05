@@ -48,11 +48,19 @@ def test_render_align_blocks_other_chapter_guide_and_choice_handing():
     assert recv == ["일정 관리가 늘 고민이라고 하셨죠."]
 
 
-def test_render_align_fallback_when_llm_gave_only_questions():
+def test_render_align_quotes_leader_phrase_when_llm_gave_only_questions():
+    """(2026-11-05 소수정 4) 되받기가 없으면 '네, 잘 들었어요' 폴백이 아니라 리더 정의의 명사구를 인용한 한 문장."""
     out = render_align(llm_text="정말요? 어떻게요?", chapter="self_management", sub_names=_subs("self_management"),
-                       persona_name="Daniel", anchor="그런 순간이 있었습니까?")
-    assert out.startswith(PERSONA_LINES["Daniel"]["align_receive_fallback"])
+                       persona_name="Daniel", anchor="그런 순간이 있었습니까?", user_text="자기관리는 흔들릴 때 중심을 잡고 컨디션을 유지하는 일이에요.")
+    first = out.split("\n")[0]
+    assert "'" in first and "잘 들었" not in first and ("중심" in first or "컨디션" in first), first
     assert align_shape_ok(out, _subs("self_management"))[0]
+    for name in ("Ella", "Jessica", "Olivia", "Daniel", "Michael", "Lucas"):
+        assert "{phrase_eul}" in PERSONA_LINES[name]["align_receive_quote"] and "align_receive_fallback" not in PERSONA_LINES[name]
+    # 명사구가 없는 답(짧은 단답)이면 되받기를 생략하고 정의부터
+    out2 = render_align(llm_text="그렇군요?", chapter="self_management", sub_names=_subs("self_management"),
+                        persona_name="Ella", anchor="그런 순간이 있었어요?", user_text="네.")
+    assert out2.startswith("저희는") and align_shape_ok(out2, _subs("self_management"))[0]
 
 
 
