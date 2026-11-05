@@ -99,6 +99,8 @@ def test_pipeline_wiring_rotation_broken_suggestion():
     # (2026-11-04 BEI) 사례 단계 배선: 슬롯 판정 → 종료·매핑 → 카드. 전환 다리·사다리·일반화·결과 폴백은 없다.
     assert "_judge_slots(llm, transcript=" in src and "_map_episode(llm, transcript=" in src and 'state["bei_card"] = _bec(' in src
     assert "_bei.restore(_pst, _ledger_snapshot)" in src
+    # (s2a 교정) 사례 경계에서 Michael 실행 의지 대기 해제 · 슬롯이 겨냥하는 슬롯이 찼으면 슬롯 생략 · SWEEP 앵커는 여는 질문과 다른 문안
+    assert '_mqp_o.pop(chapter, None)' in src and '_slot_target.get(_pn_s) not in _filled_s' in src and 'alt=(instruction_used == "SWEEP_ANCHOR"' in src
     for gone in ("target_bridge_line", "force_ladder_probe", "result_fallback_question", "receive_fallback(", "cap_leads_persona"):
         assert gone not in src, gone
     # 깨진 문장 재생성(8-i 칭찬 분기)·권유문 제거는 유지

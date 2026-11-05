@@ -1009,12 +1009,14 @@ async def _submit_message_phase3a(
     _ch_msgs_b = [m for m in history_messages if m.chapter == chapter] if chapter else []
     _turn_index_b = state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
 
-    def _anchor_for_sub(sub: str | None) -> str:
-        """여는 앵커·SWEEP 앵커 — 사전 52문(세션 회차로 회전) + 페르소나 어미."""
+    def _anchor_for_sub(sub: str | None, *, alt: bool = False) -> str:
+        """여는 앵커·SWEEP 앵커 — 사전 52문(세션 회차로 회전) + 페르소나 어미. alt=True 면 다른 문안(같은 하위역량을 이 챕터에서
+        이미 여는 질문으로 물었을 때 — s2a Jessica 가 SWEEP 에서 ALIGN 앵커를 그대로 되물었다)."""
         from diag_project.services.anchor_render import dict_anchor as _da
         from diag_project.services.output_guard import strip_frame_lead as _sfl
         _k = _fsk_b(chapter, sub) if (chapter and sub) else None
-        return _voiced_q(_sfl(_da(_k, int((session.self_assessment_data or {}).get("anchor_variant") or 0))))
+        _pos = int((session.self_assessment_data or {}).get("anchor_variant") or 0) + (1 if alt else 0)
+        return _voiced_q(_sfl(_da(_k, _pos)))
 
     def _ep_transcript(ep: dict) -> list[tuple[str, str]]:
         """사례 전문 = 사례를 연 코치 턴부터 이번 리더 답까지(opened_at = 열 때의 챕터 메시지 수)."""
@@ -1037,6 +1039,7 @@ async def _submit_message_phase3a(
                 return None
             _store, _ep_new = _bei.new_episode(_store, chapter, _sub, _fsk_b(chapter, _sub), kind=kind)
             _ep_new["opened_at"] = len(_ch_msgs_b)
+            _mqp_o = dict(_store.get("michael_q_pending") or {}); _mqp_o.pop(chapter, None); _store["michael_q_pending"] = _mqp_o   # 사례 경계에서 대기 해제
             _store = _bei.update_episode(_store, chapter, _ep_new)
             _store = _bei.set_chapter_state(_store, chapter, _bei.STATE_EPISODE if kind == "episode" else _bei.STATE_SWEEP)
             current_target_sub = _sub
@@ -1136,7 +1139,8 @@ async def _submit_message_phase3a(
         await db.flush()   # 턴 끝 1회 커밋 — 중간 커밋 없음
         state["instruction_for_this_turn"] = instruction_used
         if instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and current_target_sub:
-            _bei_anchor_text = _anchor_for_sub(current_target_sub)
+            _openers_b = [e.get("opener_sub") for e in _bei.episodes(_store, chapter) if e.get("kind", "episode") == "episode"]
+            _bei_anchor_text = _anchor_for_sub(current_target_sub, alt=(instruction_used == "SWEEP_ANCHOR" and current_target_sub in _openers_b))
         # 사례 카드(system 프롬프트의 턴 동적 부분)
         _signal = ""
         _ans_len = len((_bei_user_text or "").replace(" ", ""))
@@ -2206,16 +2210,24 @@ async def _submit_message_phase3a(
         _sd_s = session.self_assessment_data or {}
         _ep_turn_s = int(_bei_ep.get("leader_turns") or 0)
         _mq_pending = bool(((_sd_s.get("michael_q_pending") or {}).get(chapter))) if chapter else False
+        _ch_i_pre = [k for k in COMPETENCY_FRAMEWORK if k != "supplementary"].index(chapter) if chapter in COMPETENCY_FRAMEWORK else 0
         _sents_s = [x for x in split_sentences(clean_reply) if x.strip()]
         _lead_s = [x for x in _sents_s if not is_question_sentence(x) and not _swmc_s(x)][:2]
         _qi_s = next((i for i, x in enumerate(_sents_s) if is_question_sentence(x)), None)
         _q_now_s = " ".join(_sents_s[_qi_s:]) if _qi_s is not None else ""
+        _filled_s = set(_bei.filled_slots(_bei_ep))
+        # 슬롯 질문이 겨냥하는 슬롯이 이미 찼으면 넣지 않는다(s2a Jessica: '그 결정의 기준은' 이 직전 LLM 질문과 겹쳤다)
+        _slot_target = {"Jessica": "criterion", "Lucas": "criterion", "Olivia": ("reaction" if _ch_i_pre % 2 else "criterion"), "Michael_q": "reflection"}
+        if _pn_s == "Michael" and _mq_pending and "reflection" in _filled_s:
+            _tm["michael_q_done"] = 1   # 다시 한다면·배운 것이 이미 나왔다 — 대기 해제만
+            _mq_pending = False
         if _pn_s == "Michael" and _mq_pending and _lead_s:
             _mq = _pl_s((state.get("coach_persona") or {}).get("name"), "slot_q")
             clean_reply = " ".join(_lead_s + [_mq]).strip()
             _tm["slot"] = "Michael_q"; _tm["slot_text"] = _mq; _tm["michael_q_done"] = 1
             logger.info("🎭 Michael 실행 의지 질문(응원 다음 턴): [%s] 사례 %s", chapter, _bei_ep.get("idx"))
-        elif (_pn_s in ("Jessica", "Olivia", "Daniel", "Michael", "Lucas") and not _bei_ep.get("slot_used") and _ep_turn_s in (3, 4, 5) and _lead_s):
+        elif (_pn_s in ("Jessica", "Olivia", "Daniel", "Michael", "Lucas") and not _bei_ep.get("slot_used") and _ep_turn_s in (3, 4, 5) and _lead_s
+              and _slot_target.get(_pn_s) not in _filled_s):
             _ch_i = [k for k in COMPETENCY_FRAMEWORK if k != "supplementary"].index(chapter) if chapter in COMPETENCY_FRAMEWORK else 0
             _slot_txt = None
             if _pn_s in ("Jessica", "Lucas"):

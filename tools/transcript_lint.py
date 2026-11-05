@@ -206,7 +206,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         "receive_turns": 0, "no_receive_turns": 0, "receive_no_quote_turns": 0, "receive_issues": [],
         "format_regen_turns": 0, "receive_miss_turns": 0, "format_miss": {},
         # 고정 문장(시스템 앵커·슬롯) 연속 반복 — 목표 0
-        "tail_repeat": 0, "slot_repeat": 0, "repeat_issues": [],
+        "tail_repeat": 0, "slot_repeat": 0, "anchor_reuse": 0, "repeat_issues": [],
         # (BEI) 사례 단계
         "episodes": {}, "episode_turns": [], "episode_turns_out_of_range": 0, "episodes_six_slots": 0, "episodes_closed": 0,
         "chapter_leader_turns": {}, "chapter_leader_turns_max": 0, "coverage": {}, "coverage_ratio": None,
@@ -391,6 +391,9 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         got = {s for v in mapped_by_ch.values() for s in v}
         res["mapping_accuracy"] = round(len(want & got) / len(want), 2) if want else None
     res["good_lead_max"] = max([n for c, n in res["good_lead_by_chapter"].items() if c != "-"] or [0])
+    # 세션 안에서 같은 앵커 문장(여는·SWEEP)을 두 번 쓴 수 — 0 목표(s2a Jessica: SWEEP 이 ALIGN 앵커를 되물었다)
+    _seen_anchor: Counter = Counter(a["norm"] for a in res["anchors"])
+    res["anchor_reuse"] = sum(n - 1 for n in _seen_anchor.values() if n > 1)
     res["endings"] = dict(endings.most_common())
     return res
 
@@ -422,7 +425,7 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
     L: list[str] = []
     L.append("## 코치 재생 전문 린트 요약")
     L.append("")
-    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN | 잘림 | 미감지 a/b | 사례당 리더 턴(5~8 밖) | 6슬롯/종료 사례 | 챕터 리더 턴 최대 | 커버리지 | 미확인/미탐색 | 되받기 없음/미인용(대상) | 형식 재생성/미해결 | 고정문장 반복 꼬리/슬롯 | 슬롯 사례(보존/턴) | 좋습니다 최대 | 동일앵커 |")
+    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN | 잘림 | 미감지 a/b | 사례당 리더 턴(5~8 밖) | 6슬롯/종료 사례 | 챕터 리더 턴 최대 | 커버리지 | 미확인/미탐색 | 되받기 없음/미인용(대상) | 형식 재생성/미해결 | 고정문장 반복 꼬리/슬롯/앵커재사용 | 슬롯 사례(보존/턴) | 좋습니다 최대 | 동일앵커 |")
     L.append("|---|---|---:|---:|---:|---:|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|")
     for r in results:
         same = cross["per_coach"].get(r["coach"], 0)
@@ -433,7 +436,7 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
                  f"{r['repeat_a_missed']}/{r['repeat_a_cases']} · {r['repeat_b_missed']}/{r['repeat_b_cases']} | "
                  f"{ep_s}({r['episode_turns_out_of_range']}) | {r['episodes_six_slots']}/{r['episodes_closed']} | {r['chapter_leader_turns_max']} | {cov_s} | "
                  f"{r['unconfirmed_total']}/{r['not_explored_total']} | {r['no_receive_turns']}/{r['receive_no_quote_turns']}({r['receive_turns']}) | "
-                 f"{r['format_regen_turns']}/{r['receive_miss_turns']} | {r['tail_repeat']}/{r['slot_repeat']} | {r['slot_episodes']}({r['slot_kept']}/{r['slot_turns']}) | {r['good_lead_max']} | {same} |")
+                 f"{r['format_regen_turns']}/{r['receive_miss_turns']} | {r['tail_repeat']}/{r['slot_repeat']}/{r['anchor_reuse']} | {r['slot_episodes']}({r['slot_kept']}/{r['slot_turns']}) | {r['good_lead_max']} | {same} |")
     L.append("")
     L.append("- 미감지 a/b: (직전 사용자 턴 반복 미감지/발생) · (코치 질문 붙여넣기 미감지/발생)")
     L.append("- 사례당 리더 턴: 종료된 사례별 리더 턴 수(괄호는 5~8 밖 사례 수). 6슬롯/종료 사례: 6/6 로 닫힌 사례 수 / 종료 사례 수.")
