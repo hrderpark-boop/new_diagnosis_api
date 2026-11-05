@@ -155,6 +155,7 @@ async def render_opener(
         + f"\n[코치 말투] {persona_name or 'Ella'} — {register_hint or '존댓말, 부드럽게'}\n"
         "\n[결 참고 — 다른 영역의 예, 그대로 쓰지 말 것] 맡길 일과 직접 할 일을 어떻게 가르시는지 보는 쪽인데요, "
         "최근에 '이건 내가 안 하고 맡겨 보자' 하신 일이 있으셨어요? 작은 일이어도요.\n"
+        "\n순서가 중요합니다: 첫 문장은 물음표 없는 평서문(무엇을 보는지), 그 다음 문장이 질문입니다. 질문으로 시작하면 실패입니다.\n"
         "\n출력: 문장만. 따옴표·머리말·설명 없이."
     )
     mode = "llm"
@@ -171,6 +172,7 @@ async def render_opener(
             return text, mode
         logger.info("여는 문장 형식 불합격(%s) → %s: %r", why, "재생성" if attempt == 0 else "사전 폴백", text[:90])
         mode = "llm_regen"
-        prompt = base + f"\n\n🚨 방금 출력은 형식이 어긋났습니다({why}). 평서문 1문장 + 있었는지 묻는 질문 1문장으로 다시 쓰세요."
+        prompt = base + (f"\n\n🚨 방금 출력은 형식이 어긋났습니다({why}). 첫 문장 = 물음표 없는 평서문(이 영역에서 무엇을 보는지), "
+                         "둘째 문장 = 그런 일이 있었는지 묻는 질문. 이 순서로 두 문장만 다시 쓰세요.")   # p4b: 2/2 가 질문부터 시작(no_why)
     return fallback_question, "fallback"
 
