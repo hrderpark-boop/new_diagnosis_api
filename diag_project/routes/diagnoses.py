@@ -975,8 +975,18 @@ async def _submit_message_phase3a(
                     session.self_assessment_data = _store_a
                     from sqlalchemy.orm.attributes import flag_modified as _fm_dr
                     _fm_dr(session, "self_assessment_data")
-            else:   # ack_reask 1회째 — "그럼 여쭤볼게요." + 같은 앵커
-                _anomaly_override_text = f"{_pl_an(_pn_a, 'reask_anchor')} {_q_a}"; instruction_used = "ANCHOR_REASK"
+            else:   # ack_reask 1회째 — "그럼 여쭤볼게요." + 같은 질문(마지막 질문 문장만)
+                # (2026-11-05 3단계 전 2) 직전 코치 턴이 형식 검사를 못 넘었거나(format_miss) 질문이 둘·유도형이면 그대로 되묻지 않는다 —
+                #   사례 단계로 보내 LLM 이 더 작은 질문을 새로 쓴다(bei_anomaly_reask 신호). 사례 밖(라포·정의)에서는 종전대로.
+                from diag_project.services.output_guard import count_question_markers as _cqm_an, is_leading_choice_question as _ilc_an
+                _prev_gl = next((g for g in reversed(_store_a.get("guard_log") or []) if isinstance(g, dict)), {})
+                _q_ok = bool(_q_a) and not _prev_gl.get("format_miss") and _cqm_an(_q_a) == 1 and not _ilc_an(_q_a)
+                if _q_ok or not (chapter and _tgt_an != "-"):
+                    _anomaly_override_text = f"{_pl_an(_pn_a, 'reask_anchor')} {_q_a}"; instruction_used = "ANCHOR_REASK"
+                else:
+                    _skip_an = True
+                    state["bei_anomaly_reask"] = 1
+                    _tm["anomaly"] = f"{_anomaly.kind}→bei(regen)"
             if not _skip_an:
                 state["instruction_for_this_turn"] = instruction_used
                 _tm["anomaly"] = _anomaly.kind if _ac_n < 2 else f"{_anomaly.kind}#{_ac_n}"
@@ -1158,6 +1168,8 @@ async def _submit_message_phase3a(
                 _signal = "직전 답이 길고 구체적 — 되받기는 2문장까지, 가장 또렷한 장면 하나를 골라 받는다"
             if state.get("bei_switched"):
                 _signal = (_signal + " / " if _signal else "") + "리더가 다른 사례로 넘어간 듯하다 — 한 번은 받되 질문은 지금 사례로 돌아온다"
+            if state.get("bei_anomaly_reask"):
+                _signal = "리더가 '네' 정도로만 받았고 직전 질문은 형식이 어긋나 되묻지 않는다 — 되받기 없이 짧게, 같은 슬롯을 장면 하나로 좁힌 새 질문 하나"
         _weak_hint = None
         if instruction_used == "SWEEP_ANCHOR" and current_target_sub:
             _w_eps = [x for x in (_bei.weak_map(_store, chapter).get(current_target_sub) or []) if isinstance(x, int)]
@@ -2170,6 +2182,7 @@ async def _submit_message_phase3a(
     if (system_override_text is None and not _llm_error and (clean_reply or "").strip() and not needs_user_decision
             and chapter and instruction_used in _RECV_INSTR and _align_ctx is None):
         from diag_project.services.output_guard import count_question_markers as _cq_w, keep_last_question as _klq_w   # 복합 질문 절도 센다
+        from diag_project.services.output_guard import is_leading_choice_question as _ilc_w
         from diag_project.services.receive_check import (
             _compact as _cpt_w, check_receive as _chk_r, lead_cap_for as _lcf_w, quote_phrase as _qp_r, splice_receive as _spl_r,
         )
@@ -2192,6 +2205,8 @@ async def _submit_message_phase3a(
                 issues.append("no_question")
             if _nq > 1:
                 issues.append("two_questions")
+            if _ilc_w(txt):
+                issues.append("leading_choice")   # (2026-11-05) 유도형 이지선다·가정형 — 열린 질문으로 재생성
             return issues
 
         _iss = _format_issues(clean_reply)
@@ -2208,6 +2223,8 @@ async def _submit_message_phase3a(
                 _notes_w.append("- 질문이 없습니다. 마지막은 리더님께 묻는 질문 한 문장이어야 합니다.")
             if "two_questions" in _iss:
                 _notes_w.append("- 질문이 두 개 이상입니다. 질문은 하나만 남기세요.")
+            if "leading_choice" in _iss:
+                _notes_w.append("- 선택지를 주는 질문(…나요, 아니면 …나요?)이나 가정형(…하셨다면 어떻게)입니다. 리더가 스스로 말하게 열린 질문 하나로 바꾸세요.")
             try:
                 _r_out = await _timed_regen(
                     system_prompt=system_prompt, chapter_context=chapter_context, turn_state_text=turn_state_text + "\n".join(_notes_w),

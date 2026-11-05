@@ -373,6 +373,49 @@ def dump_transcript(path: str) -> str:
     return "\n".join(L)
 
 
+async def analyze_result(path: str) -> None:
+    """(2026-11-05 3단계) sim_result_*.json 의 세션을 그 sqlite 로 서버를 다시 띄워 분석(Sonnet) 1회 실행 → 비용·analysis_lint 표.
+    CLAUDE.md 규칙: 분석은 지시문에 횟수·USD 가 있을 때만, 1회씩."""
+    import httpx
+    out_dir = Path(path).resolve().parent
+    m = re.match(r"sim_result_(.+)_(\d+)\.json$", Path(path).name)
+    if not m:
+        raise SystemExit("sim_result_TAG_COACH.json 형식이어야 합니다")
+    tag, coach = m.group(1), m.group(2)
+    d = json.load(open(path, encoding="utf-8"))
+    sid = d["session"]
+    db = out_dir / f"sim_{tag}_{coach}.db"
+    usage = out_dir / f"sim_usage_{tag}_{coach}_analysis.jsonl"
+    if usage.exists():
+        usage.unlink()
+    port = int(os.environ.get("RP_PORT_BASE", "8070"))
+    env = dict(os.environ, SIM_PORT=str(port), SIM_DB=str(db), SIM_USAGE=str(usage), LLM_PROVIDER=d.get("provider") or "claude")
+    env.pop("FM_LLM_STUB", None)
+    log = open(out_dir / f"sim_server_{tag}_{coach}_analysis.log", "w")
+    proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--serve"], env=env, cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT)
+    try:
+        con = sqlite3.connect(str(db))
+        uid = con.execute("select user_id from diagnosis_sessions where id=?", (sid.replace("-", ""),)).fetchone()[0]
+        con.close()
+        from diag_project.services.participant_auth import create_participant_token
+        hdr = {"Authorization": f"Bearer {create_participant_token(uuid.UUID(str(uid)))}"}
+        async with httpx.AsyncClient(timeout=3600.0) as c:
+            for _ in range(180):
+                try:
+                    await c.get(f"http://127.0.0.1:{port}/docs", timeout=2.0)
+                    break
+                except Exception:  # noqa: BLE001
+                    await asyncio.sleep(1)
+            t0 = time.time()
+            r = await c.post(f"http://127.0.0.1:{port}/api/v1/reports/{sid}/analyze", headers=hdr)
+            print(f"=== analyze {tag}_{coach} HTTP {r.status_code} {time.time() - t0:.0f}s {r.text[:200]}")
+    finally:
+        proc.terminate()
+    print(f"분석 비용: ${_cost_usd(usage)} (usage {usage.name})")
+    from tools.analysis_lint import main as _lint_main
+    _lint_main(["--db", str(db)])
+
+
 async def _main_async(args) -> None:
     out_dir = Path(os.environ.get("SIM_OUT") or os.getcwd())
     profile = _load_profile(args.profile)
@@ -402,9 +445,13 @@ def main(argv=None) -> int:
     ap.add_argument("--profile", default=str(ROOT / "tools/sim_profiles/edu_team_lead.json"))
     ap.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--dump", help="sim_result_*.json 전문 출력")
+    ap.add_argument("--analyze", help="sim_result_*.json 의 세션을 분석(Sonnet 1회) — 지시문에 횟수·USD 가 있을 때만")
     args = ap.parse_args(argv)
     if args.serve:
         _serve()
+        return 0
+    if args.analyze:
+        asyncio.run(analyze_result(args.analyze))
         return 0
     if args.dump:
         print(dump_transcript(args.dump))

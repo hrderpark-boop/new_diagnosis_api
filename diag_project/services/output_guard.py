@@ -305,6 +305,16 @@ def count_question_markers(text: str) -> int:
     return n
 
 
+# (2026-11-05 3단계 전 3) 유도형 이지선다·가정형: '직접 밀어붙이셨나요, 아니면 한 발 물러서셨나요?' / '반대하셨다면 어떻게' — 답을 고르게 하는 질문
+_LEADING_CHOICE_RE = re.compile(
+    r"(나요|까요|어요|아요|였어요|셨죠|죠|습니까|ㅂ니까|는지|은지|인지)\s*[,，]?\s*아니면\s|(?:하셨|했|였|었|있었|없었|이었)다면\s*(어떻게|어땠|무엇|뭘|어느|누구)")
+
+
+def is_leading_choice_question(text: str) -> bool:
+    """질문 문장 중 선택지를 주는('…나요, 아니면 …나요?') 또는 가정형('…하셨다면 어떻게') 질문이 있으면 True."""
+    return any(is_question(s_.strip()) and _LEADING_CHOICE_RE.search(s_) for s_ in split_sentences(text or "") if s_.strip())
+
+
 def split_compound_question(text: str) -> tuple[str, int]:
     """두 질문이 한 문장에 든 질문 문장에서 앞 절('~는지, 그리고 ')을 떼고 뒤 질문만 남긴다. (결과, 고친 문장 수)"""
     out, n = [], 0

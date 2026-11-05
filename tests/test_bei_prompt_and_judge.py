@@ -79,13 +79,13 @@ def test_slot_judge_stub_fills_one_slot_per_leader_turn(monkeypatch):
     out2 = asyncio.run(SJ.judge_slots(None, transcript=tr + [("model", "결과는요?"), ("user", "딱히 없었어요.")], prev_slots=None))
     assert out2["no_case"] is True
     labels = asyncio.run(SJ.map_episode(None, transcript=tr, chapter_name="조직관리", sub_defs=SJ.sub_defs_for(CH), opener_sub="전략적 사고"))
-    assert labels == [{"sub": "전략적 사고", "strength": "strong", "quote": "작년 3월에 개편이 있었어요."}]
+    assert labels == [{"sub": "전략적 사고", "strength": "strong", "quote": "작년 3월에 개편이 있었어요.", "confidence": 1.0}]
 
 
 def test_sub_defs_have_action_cues():
     defs = SJ.sub_defs_for(CH)
     assert [d["name"] for d in defs] == ["비전 제시 및 공유", "전략적 사고", "변화관리(변화지향)", "혁신적 사고"]
-    assert all(d["action_cue"] for d in defs)
+    assert all(d["action_cue"] and d["lv2_example"] and d["description"] for d in defs)
 
 
 def test_report_ledger_three_kinds_and_not_explored_blank():
@@ -135,3 +135,11 @@ def test_split_compound_question_keeps_last_clause_and_request_forms_are_questio
     out, n = S("설득을 하셨는지, 속도를 조절하셨는지, 아니면 다른 방식이었는지 궁금합니다.")
     assert n == 1 and out == "다른 방식이었는지 궁금합니다."
     assert is_question("그렇게 생각하시는 이유도 간단히 부탁드려요.")   # 정의 턴(8-k)이 LLM 요청 문장을 지운다
+
+
+def test_leading_choice_question_detection():
+    from diag_project.services.output_guard import is_leading_choice_question as L
+    assert L("자료를 보셨군요. 그때 직접 밀어붙이셨나요, 아니면 한 발 물러서셨나요?")
+    assert L("두 분이 반대하셨다면 어떻게 하셨을까요?")
+    assert not L("자료를 보셨군요. 그 자리에서 처음 꺼낸 말은 무엇이었나요?")
+    assert not L("다시 한다면 어떻게 하고 싶으세요?")   # 돌아보기 질문(가정형 금지 대상 아님)

@@ -17,6 +17,7 @@ def summarize(label: str, scores: dict) -> dict:
     cov = scores.get("coverage") or {}
     rows = []
     unc = ne = ev = gate = noc = 0
+    levels: dict = {}
     for ck, comp in det.items():
         led = (comp or {}).get("sub_ledger") or {}
         for sub, r in led.items():
@@ -35,8 +36,10 @@ def summarize(label: str, scores: dict) -> dict:
                 rows.append((ck, sub, kind))
             elif r.get("measured"):
                 ev += 1
+                lv = r.get("level")
+                levels[str(lv)] = levels.get(str(lv), 0) + 1
     return {"label": label, "unconfirmed": unc, "no_case": noc, "gate_dropped": gate, "not_explored": ne, "evidence_measured": ev,
-            "banner": bool(cov.get("unconfirmed_banner")), "rows": rows,
+            "banner": bool(cov.get("unconfirmed_banner")), "rows": rows, "levels": dict(sorted(levels.items())),
             "comp_labels": {ck: (comp or {}).get("level_label") for ck, comp in det.items()}}
 
 
@@ -49,18 +52,17 @@ def main(argv):
     else:
         for p in argv:
             items.append((p.split("/")[-1], json.load(open(p, encoding="utf-8"))))
-    print("| 리포트 | 근거 측정 | 사례 미확인(없음/게이트 탈락) | 미탐색 | 배너(≥6) | 대역량 라벨 |")
-    print("|---|---:|---:|---:|---|---|")
+    print("| 리포트 | 근거 측정 | 사례 미확인(없음/게이트 탈락) | 미탐색 | 레벨 분포 | 배너(≥6) | 대역량 라벨 |")
+    print("|---|---:|---:|---:|---|---|---|")
     warn = 0
     for label, sc in items:
         s = summarize(label, sc)
         flag = " ⚠" if s["not_explored"] >= NOT_EXPLORED_WARN_MIN else ""
         warn += int(s["not_explored"] >= NOT_EXPLORED_WARN_MIN)
         print(f"| {s['label']} | {s['evidence_measured']} | {s['unconfirmed']}({s['no_case']}/{s['gate_dropped']}) | {s['not_explored']}{flag} | "
-              f"{'예' if s['banner'] else '-'} | " + ", ".join(f"{k[:4]}:{v or '-'}" for k, v in s["comp_labels"].items()) + " |")
+              + " ".join(f"Lv{k}:{v}" for k, v in s["levels"].items()) + f" | {'예' if s['banner'] else '-'} | " + ", ".join(f"{k[:4]}:{v or '-'}" for k, v in s["comp_labels"].items()) + " |")
         for ck, sub, kind in s["rows"]:
-            if kind == "not_explored":
-                print(f"    · 미탐색: {ck}/{sub}")
+            print(f"    · {kind}: {ck}/{sub}")
     print(f"\n미탐색 2개 이상 세션: {warn} (0 이어야 함)")
     return 0 if warn == 0 else 1
 

@@ -96,28 +96,56 @@ async def judge_slots(llm, *, transcript: list[tuple[str, str]], prev_slots: dic
             "no_case": bool(out.get("no_case")), "switched_case": bool(out.get("switched_case")), "error": not bool(slots)}
 
 
+MAP_STRONG_MIN_CONFIDENCE = 0.8
+
+
+def quote_matches_loosely(quote: str | None, leader_text: str | None) -> bool:
+    """매핑 인용 검증(느슨): 원문 그대로 들어 있거나, 인용의 어절(2자 이상) 중 70% 이상이 리더 원문에 있으면 참.
+    슬롯 인용(merge_slots)은 엄격 검증을 유지하고, 매핑은 모델이 인용을 조금 줄여 쓰는 일이 잦아(E3 '표로 정리해서' 류) 느슨하게 본다."""
+    from diag_project.services.bei_engine import quote_in_text
+    if quote_in_text(quote, leader_text):
+        return True
+    import re as _re
+    toks = [t for t in _re.split(r"[\s,.'\"“”‘’…·!?()]+", quote or "") if len(t) >= 2]
+    if len(toks) < 2:
+        return False
+    body = (leader_text or "").replace(" ", "")
+    hit = sum(1 for t in toks if t.replace(" ", "") in body)
+    return hit / len(toks) >= 0.7   # (2026-11-05 3단계 전 1) strong = 인용 문장이 정의의 행동을 직접 보여주고 확신도 ≥ 0.8. 아니면 weak → SWEEP 대상
+
+
 def _stub_labels(transcript: list[tuple[str, str]], opener_sub: str | None) -> list[dict]:
     first = next((t for r, t in transcript if r == "user"), "")
-    return [{"sub": opener_sub, "strength": "strong", "quote": (first or "")[:40]}] if opener_sub else []
+    return [{"sub": opener_sub, "strength": "strong", "quote": (first or "")[:40], "confidence": 1.0}] if opener_sub else []
 
 
 async def map_episode(llm, *, transcript: list[tuple[str, str]], chapter_name: str,
                       sub_defs: list[dict], opener_sub: str | None) -> list[dict]:
-    """sub_defs = [{"name", "description", "action_cue"}]. 반환 [{sub, strength, quote}] — 인용은 호출자(bei_engine)가 원문 검증하지 않는다;
+    """sub_defs = [{"name", "description", "action_cue", "lv2_example"}]. 반환 [{sub, strength, quote, confidence}] — 인용은 호출자(bei_engine)가 원문 검증하지 않는다;
     여기서 리더 원문에 없는 인용은 quote 를 비운다(strength 는 유지)."""
     if _stub_on() or llm is None:
         return _stub_labels(transcript, opener_sub)
     from diag_project.llm_schemas import episode_map_schema
-    from diag_project.services.bei_engine import quote_in_text
-    defs = "\n".join(f"- {d['name']}: {d.get('description', '')}" + (f" (행동 단서: {d['action_cue']})" if d.get("action_cue") else "")
-                     for d in sub_defs)
+    defs = "\n".join(
+        f"- {d['name']}: {d.get('description', '')}"
+        + (f"\n    Lv.2 행동 예: {d['lv2_example']}" if d.get("lv2_example") else "")
+        + (f"\n    행동 단서: {d['action_cue']}" if d.get("action_cue") else "")
+        for d in sub_defs)
     prompt = (
-        f"아래는 리더십 진단 '{chapter_name}' 영역에서 리더가 들려준 사례 하나입니다. 이 사례가 아래 하위역량 중 어느 것의 근거가 되는지 "
-        "전부 고르세요(여러 개 가능, 해당 없으면 빈 목록).\n"
-        "strength: 'strong' = 그 하위역량에 해당하는 **리더가 직접 한 행동**이 리더의 말에 있다. 'weak' = 태도·방침·생각으로만 스쳤다.\n"
-        "quote: 근거가 되는 리더의 말을 원문 그대로 40자 이내로. 코치의 말은 근거가 아닙니다.\n\n"
+        f"아래는 리더십 진단 '{chapter_name}' 영역에서 리더가 들려준 사례 하나입니다. 아래 하위역량 **각각**에 대해 이 사례가 근거가 되는지 "
+        "판정하세요 — 목록의 하위역량마다 항목 하나씩, 빠뜨리지 말고(해당 없으면 strength 'none').\n"
+        "[판정 규칙]\n"
+        "- strength 'strong': quote 에 적은 리더의 문장이 그 하위역량 정의(또는 Lv.2 행동 예)에 적힌 행동을 **직접** 보여준다. "
+        "사례의 전체 인상이 아니라 문장 하나로 확인되어야 한다. 그 행동이 다른 하위역량 정의에 더 잘 맞으면 그쪽만 strong.\n"
+        "- strength 'weak': 태도·방침·생각으로만 스쳤거나, 행동이 있어도 그 정의와 간접적으로만 닿는다(예: 설득을 '숫자로' 했다는 것만으로 비전 공유가 되지 않는다. "
+        "사용법을 가르쳤다는 것만으로 변화관리가 되지 않는다. 작게 먼저 해 보자는 제안만으로 혁신이 되지 않는다).\n"
+        "- confidence(0~1): 그 라벨이 맞을 확신. 정의의 행동을 quote 문장에서 그대로 확인할 수 있을 때만 0.8 이상.\n"
+        "- 한 사례에 strong 은 보통 1~2개(행동이 또렷하면 3개까지). 리더가 그 정의의 행동을 실제로 했는데 none 으로 두는 것도 오류다 — "
+        "행동이 한 문장이라도 있으면 strong 후보로 보고 확신도로 가른다.\n"
+        "- 'none': 그 하위역량과 닿는 말이 없다.\n"
+        "- quote: 근거가 되는 리더의 말을 원문 그대로 40자 이내로. 코치의 말은 근거가 아닙니다.\n\n"
         f"[하위역량]\n{defs}\n\n[사례 대화]\n{_transcript_text(transcript)}\n\n"
-        "JSON 으로만 답하세요: {\"labels\": [{\"sub\": \"하위역량 이름(목록 표기 그대로)\", \"strength\": \"strong|weak\", \"quote\": \"\"}]}"
+        "JSON 으로만 답하세요: {\"labels\": [{\"sub\": \"하위역량 이름(목록 표기 그대로)\", \"strength\": \"strong|weak|none\", \"confidence\": 0.0, \"quote\": \"\"}]}"
     )
     try:
         raw = await llm._generate_with_retry(
@@ -133,7 +161,7 @@ async def map_episode(llm, *, transcript: list[tuple[str, str]], chapter_name: s
     names = {d["name"] for d in sub_defs}
     clean: list[dict] = []
     for lb in labels:
-        if not isinstance(lb, dict):
+        if not isinstance(lb, dict) or str(lb.get("strength") or "").lower() == "none":
             continue
         sub = str(lb.get("sub") or "").strip()
         if sub not in names:
@@ -141,21 +169,37 @@ async def map_episode(llm, *, transcript: list[tuple[str, str]], chapter_name: s
         if not sub:
             continue
         quote = str(lb.get("quote") or "").strip()
-        clean.append({"sub": sub, "strength": "strong" if str(lb.get("strength") or "").lower() == "strong" else "weak",
-                      "quote": quote if quote_in_text(quote, leader) else ""})
+        quote_ok = quote_matches_loosely(quote, leader)
+        try:
+            conf = float(lb.get("confidence") if lb.get("confidence") is not None else 0.0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        # strong 은 (판정 strong) ∧ (확신도 ≥ 0.8) ∧ (인용이 리더 원문에 있음) — 하나라도 빠지면 weak(SWEEP 대상)
+        strong = str(lb.get("strength") or "").lower() == "strong" and conf >= MAP_STRONG_MIN_CONFIDENCE and quote_ok
+        clean.append({"sub": sub, "strength": "strong" if strong else "weak", "quote": quote if quote_ok else "", "confidence": round(conf, 2)})
+    # 같은 하위역량이 여러 번 나오면 가장 강한 것 하나만(strong > weak, 확신도 높은 쪽)
+    best: dict[str, dict] = {}
+    for c in clean:
+        k = c["sub"]
+        if k not in best or (c["strength"], c["confidence"]) > (best[k]["strength"], best[k]["confidence"]):
+            best[k] = c
+    clean = list(best.values())
     if opener_sub and opener_sub in names and all(c["sub"] != opener_sub for c in clean):
         clean.append({"sub": opener_sub, "strength": "weak", "quote": ""})   # 여는 하위역량은 최소 weak
     return clean
 
 
 def sub_defs_for(chapter: str) -> list[dict]:
-    """매핑 프롬프트 재료: 챕터 하위역량 이름·설명·must_ask 의 '행동:' 항목."""
+    """매핑 프롬프트 재료: 챕터 하위역량 이름·정의(없으면 Lv.2 기술)·Lv.2 행동 예 첫 줄·must_ask 의 '행동:' 항목."""
     from diag_project.data.competencies import COMPETENCY_FRAMEWORK, SUBCOMPETENCY_MUST_ASK
     out = []
     for key, ind in (COMPETENCY_FRAMEWORK.get(chapter, {}).get("indicators") or {}).items():
         cues = [c.split(":", 1)[1].strip() for c in (SUBCOMPETENCY_MUST_ASK.get(key) or []) if c.startswith("행동")]
-        out.append({"key": key, "name": ind.get("name", ""), "description": (ind.get("description") or "").strip()[:120],
-                    "action_cue": cues[0] if cues else ""})
+        ex2 = str((ind.get("examples") or {}).get(2) or "")
+        lv2 = next((ln.strip().lstrip("・•·-").strip() for ln in ex2.split("\n") if ln.strip()), "")
+        desc = (ind.get("description") or "").strip() or str((ind.get("levels") or {}).get(2) or "").strip()
+        out.append({"key": key, "name": ind.get("name", ""), "description": desc[:120],
+                    "action_cue": cues[0] if cues else "", "lv2_example": lv2[:80]})
     return out
 
 

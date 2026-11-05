@@ -101,8 +101,8 @@ def slot_judge_schema() -> Dict[str, Any]:
 
 
 def episode_map_schema() -> Dict[str, Any]:
-    """(2026-11-04 BEI) 사례→하위역량 다중 라벨(services/slot_judge.map_episode): {"labels": [{sub, strength, quote}]}."""
-    item = _obj({"sub": _STR, "strength": {"type": "string", "enum": ["strong", "weak"]}, "quote": _STR})
+    """(2026-11-04 BEI) 사례→하위역량 다중 라벨(services/slot_judge.map_episode): {"labels": [{sub, strength, confidence, quote}]}. strong 확정은 slot_judge 가 확신도 ≥ 0.8 로 거른다."""
+    item = _obj({"sub": _STR, "strength": {"type": "string", "enum": ["strong", "weak", "none"]}, "confidence": {"type": "number"}, "quote": _STR})
     return _obj({"labels": _arr(item)})
 
 
