@@ -72,12 +72,18 @@ class Leader:
         self.usage = {"calls": 0, "in": 0, "out": 0}
 
     # ── 사례 선택 ────────────────────────────────────────────────────────────
-    def pick_episode(self, chapter: str, target_sub: str | None) -> dict | None:
+    def pick_episode(self, chapter: str, target_sub: str | None, *, allow_reuse: bool = False) -> dict | None:
+        """안 쓴 사례 중 겨냥 하위역량이 맞는 것 → (SWEEP 이면) 이미 말한 사례 중 맞는 것(다시 꺼냄) → 없는 항목이면 None → 안 쓴 아무 사례.
+        (2026-11-05 s3) SWEEP 은 '아까 그 이야기에서' 결로 같은 사례의 행동을 다시 말하는 것이 실제 리더에 가깝다."""
         cands = [e for e in self.p["episodes"] if e["chapter"] == chapter and e["id"] not in self.used]
         if target_sub:
             hit = [e for e in cands if target_sub in e.get("subs", [])]
             if hit:
                 return hit[0]
+            if allow_reuse:
+                used_hit = [e for e in self.p["episodes"] if e["chapter"] == chapter and e["id"] in self.used and target_sub in e.get("subs", [])]
+                if used_hit:
+                    return used_hit[0]
         if target_sub and target_sub in (self.p.get("no_case_subs") or []):
             return None
         return cands[0] if cands else None
@@ -108,10 +114,14 @@ class Leader:
         if instr in ("COMPETENCY_ASK", "DIAGNOSIS_CONFIRM") and chapter:
             return self.p["definitions"].get(chapter, "글쎄요, 팀이 잘 돌아가게 하는 일이요.")
         if instr in ("COMPETENCY_ALIGN", "EPISODE_OPEN", "SWEEP_ANCHOR"):
-            ep = self.pick_episode(chapter or "", target_sub)
+            ep = self.pick_episode(chapter or "", target_sub, allow_reuse=(instr == "SWEEP_ANCHOR"))
+            reuse = ep is not None and ep["id"] in self.used
             self.start_episode(ep)
             if ep is None:
                 return self._no_case_reply()
+            if reuse:   # 이미 말한 사례 — 상황은 다시 말하지 않고 '아까 그 일에서' 한 행동을 말한다
+                self.said.add("context")
+                return await self._say("action", coach_text, reopening=True)
             return await self._say("context", coach_text, opening=True)
         if self.short_every and self.n_answers % self.short_every == 0:
             return self.rng.choice(self.short_answers)
@@ -140,15 +150,15 @@ class Leader:
                 return s
         return "reflection"
 
-    async def _say(self, slot: str, coach_text: str, *, opening: bool = False) -> str:
+    async def _say(self, slot: str, coach_text: str, *, opening: bool = False, reopening: bool = False) -> str:
         ep = self.current or {}
         self.said.add(slot)
         fact = ep.get(slot, "")
         if self.stub or not fact:
             return fact or "그 부분은 특별히 기억나는 게 없어요."
-        return await self._llm(slot, fact, coach_text, opening)
+        return await self._llm(slot, fact, coach_text, opening, reopening)
 
-    async def _llm(self, slot: str, fact: str, coach_text: str, opening: bool) -> str:
+    async def _llm(self, slot: str, fact: str, coach_text: str, opening: bool, reopening: bool = False) -> str:
         from diag_project.llm_service import GeminiService
         if self._svc is None:
             self._svc = GeminiService().bind_provider(self.provider)
@@ -156,13 +166,14 @@ class Leader:
         system = (
             f"당신은 리더십 진단에 참여한 리더입니다. {persona['role']} 팀원: {', '.join(persona['members'])}.\n"
             f"말하는 방식: {persona['style']}\n"
-            "규칙: 아래 [이번에 말할 사실]만 자기 말로 2~4문장으로 답한다. 사실에 없는 내용을 지어내지 않는다. 다른 슬롯(결과·기준·배운 점 등)을 먼저 꺼내지 않는다. "
+            "규칙: 아래 [이번에 말할 사실]만 자기 말로 답한다. 사실에 있는 내용은 한 가지도 빠뜨리지 않는다(문장 수는 사실의 길이에 맞춘다, 2~5문장). 사실에 없는 내용을 지어내지 않는다. 다른 슬롯(결과·기준·배운 점 등)을 먼저 꺼내지 않는다. "
             "코치의 말을 되풀이하지 않는다. 존댓말, 구어체. 질문하지 않는다. '음,'·'네,'·'그랬죠' 같은 추임새로 문장을 시작하지 않는다. "
             "코치 질문과 [이번에 말할 사실]이 어긋나도 '질문은 ~인데', '그 답이 아니라', '이번에 말할 사실' 같은 설명 없이 사실만 자연스럽게 말한다."
         )
         recent = "\n".join(f"{'코치' if r == 'model' else '나'}: {t}" for r, t in self.history[-6:])
         prompt = (f"[최근 대화]\n{recent}\n\n[코치의 이번 질문]\n{coach_text}\n\n[이번에 말할 사실 — {slot}]\n{fact}\n\n"
-                  + ("사례의 첫 장면만 말한다(언제·누구·무엇이 걸렸는지). " if opening else "") + "답변:")
+                  + ("사례의 첫 장면만 말한다(언제·누구·무엇이 걸렸는지). " if opening else "")
+                  + ("아까 이미 말한 사례를 다시 꺼내는 답이다 — '아까 말씀드린 그 일에서요,' 처럼 시작해 그때 내가 한 행동을 말한다. " if reopening else "") + "답변:")
         try:
             out = await self._svc._generate_with_retry(prompt=prompt, system_instruction=system, max_tokens=300, thinking_budget=0,
                                                        call_type="sim_leader", temperature=0.0)

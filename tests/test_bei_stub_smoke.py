@@ -1,7 +1,7 @@
 """(2026-11-04 BEI 1단계) 스텁 스모크 — 6명 코치 × 조직관리 1챕터를 실제 라우트(FM_LLM_STUB=1: 코치·슬롯 판정·매핑 전부 스텁)로 완주한다.
 
 시뮬 리더(tools/sim_leader.Leader, stub 모드)가 고정 설정(교육팀장·사례 6개)으로 답한다. 어느 턴이든 500 이면 실패.
-확인: ALIGN → 사례 2개(6슬롯 종료) → SWEEP(사례 없음 → 미확인) → CHAPTER_READY_TO_END, 챕터 리더 턴 ≤ 예산(16), covered 2/4(스텁 매핑은 여는 하위역량만 strong).
+확인: ALIGN → 사례 2개(6슬롯 종료) → SWEEP 2개(사례 1 다시 꺼냄·남은 사례) → CHAPTER_READY_TO_END, 챕터 리더 턴 ≤ 예산(16), covered 4/4(스텁 매핑은 여는 하위역량만 strong).
 CI(.github/workflows/tests.yml)에 포함된다.
 """
 import asyncio
@@ -78,8 +78,8 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
     eps = [e for e in B.episodes(store, CH) if e.get("kind") == "episode"]
     assert len(eps) == 2 and all(e["status"] == "done" and len(B.filled_slots(e)) == 6 for e in eps), eps
     cov = B.coverage_summary(store, CH, [v["name"] for v in __import__("diag_project.data.competencies", fromlist=["COMPETENCY_FRAMEWORK"]).COMPETENCY_FRAMEWORK[CH]["indicators"].values()])
-    # 사례 2개(비전·전략 여는 질문) + SWEEP 변화관리에 리더가 남은 사례(E7)를 꺼내 strong, 혁신은 사례 없음 → 미확인
-    assert cov["covered"] == ["변화관리(변화지향)", "비전 제시 및 공유", "전략적 사고"] and cov["not_explored"] == [] and cov["unconfirmed"] == ["혁신적 사고"]
+    # 사례 2개(비전·전략 여는 질문) + SWEEP 변화관리는 리더가 사례 1(E1)을 다시 꺼내 strong, SWEEP 혁신은 남은 사례(E7) → 4/4, 미확인 없음
+    assert cov["covered"] == ["변화관리(변화지향)", "비전 제시 및 공유", "전략적 사고", "혁신적 사고"] and cov["not_explored"] == [] and cov["unconfirmed"] == []
     # 파생 원장: 분석이 읽는 asked_subs = covered ∪ SWEEP 앵커 하위역량
     assert set(store["asked_subs"][CH]) == {"비전 제시 및 공유", "전략적 사고", "변화관리(변화지향)", "혁신적 사고"}
     assert "SWEEP_FOLLOWUP" in instrs or "SWEEP_ANCHOR" in instrs
@@ -92,7 +92,7 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
         async with async_session() as db:
             return (await db.execute(select(Event).where(Event.session_id == uuid.UUID(sid)))).scalars().all()
     evs = client.portal.call(_events)
-    assert len(evs) == 3 and all(e.situation and e.mapped_subcompetency for e in evs)   # 사례 2 + SWEEP 보완 1
+    assert len(evs) == 4 and all(e.situation and e.mapped_subcompetency for e in evs)   # 사례 2 + SWEEP 보완 2
     # 페르소나 슬롯은 사례당 1회(Ella 없음)
     slot_turns = [g for g in store.get("guard_log", []) if g.get("slot") and g.get("slot") != "Michael_q"]
     assert len(slot_turns) == (0 if coach_key == "1" else 2), [(g.get("episode"), g.get("slot")) for g in slot_turns]

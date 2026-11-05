@@ -149,7 +149,7 @@ async def map_episode(llm, *, transcript: list[tuple[str, str]], chapter_name: s
     )
     try:
         raw = await llm._generate_with_retry(
-            prompt=prompt, max_tokens=600, json_mode=True, json_schema=episode_map_schema(),
+            prompt=prompt, max_tokens=1600, json_mode=True, json_schema=episode_map_schema(),   # 하위역량 9개 × 4필드 — 600 이면 잘린다(2026-11-05 s3)
             thinking_budget=0, call_type="episode_map", temperature=0.0,
         )
     except Exception as e:  # noqa: BLE001
@@ -157,6 +157,8 @@ async def map_episode(llm, *, transcript: list[tuple[str, str]], chapter_name: s
         return [{"sub": opener_sub, "strength": "weak", "quote": ""}] if opener_sub else []
     out = _parse(raw)
     labels = out.get("labels") if isinstance(out.get("labels"), list) else []
+    if not labels:
+        logger.warning("사례 매핑 응답에 라벨이 없음(잘림·파싱 실패 가능, %d자) — 여는 하위역량 weak 폴백: %s", len(raw or ""), (raw or "")[-120:])
     leader = _leader_text(transcript)
     names = {d["name"] for d in sub_defs}
     clean: list[dict] = []

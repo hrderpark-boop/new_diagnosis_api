@@ -2205,8 +2205,8 @@ async def _submit_message_phase3a(
                 issues.append("no_question")
             if _nq > 1:
                 issues.append("two_questions")
-            if _ilc_w(txt):
-                issues.append("leading_choice")   # (2026-11-05) 유도형 이지선다·가정형 — 열린 질문으로 재생성
+            if _ilc_w(" ".join(x for x in split_sentences(txt) if _cpt_w(x) not in _fixed_wc)):
+                issues.append("leading_choice")   # (2026-11-05) 유도형 이지선다·가정형(LLM 문장만; 시스템 앵커·슬롯 제외) — 열린 질문으로 재생성
             return issues
 
         _iss = _format_issues(clean_reply)
