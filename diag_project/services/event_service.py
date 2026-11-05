@@ -105,47 +105,5 @@ async def complete_event(
     return event
 
 
-async def increment_probe_count(
-    db: AsyncSession,
-    event_id: UUID,
-    commit: bool = True,
-) -> None:
-    """탐침 횟수 증가."""
-    event = await db.get(Event, event_id)
-    if event:
-        event.probe_count += 1
-        db.add(event)
-        if commit:
-            await db.commit()
 
 
-async def get_active_event(
-    db: AsyncSession,
-    session_id: UUID,
-    chapter: str,
-) -> Event | None:
-    """현재 챕터의 진행 중인 사건 (is_complete == False) 1개 반환."""
-    result = await db.execute(
-        select(Event)
-        .where(Event.session_id == session_id)
-        .where(Event.chapter == chapter)
-        .where(Event.is_complete == False)  # noqa: E712
-        .order_by(Event.sequence_num.desc())
-        .limit(1)
-    )
-    return result.scalars().first()
-
-
-async def get_chapter_events(
-    db: AsyncSession,
-    session_id: UUID,
-    chapter: str,
-) -> list[Event]:
-    """현재 챕터의 모든 사건 (완료/미완료 모두) 반환."""
-    result = await db.execute(
-        select(Event)
-        .where(Event.session_id == session_id)
-        .where(Event.chapter == chapter)
-        .order_by(Event.sequence_num)
-    )
-    return list(result.scalars().all())

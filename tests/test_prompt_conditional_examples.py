@@ -82,12 +82,6 @@ def test_intro_with_expectation_receives_one_sentence_only():
     assert g.count(L.EXAMPLE_LABEL) >= 1
 
 
-# ── CROSS_CHAPTER ──
-def test_cross_chapter_quote_only_with_signals():
-    g0 = _guide("CROSS_CHAPTER_OPPORTUNITY", last_user_response="네", cross_chapter_signals=None)
-    assert "인용 없이" in g0 and "아까 X 말씀하셨는데" not in g0
-    g1 = _guide("CROSS_CHAPTER_OPPORTUNITY", last_user_response="네", cross_chapter_signals=["팀원과 부딪혔다"])
-    assert "실제 말" in g1
 
 
 # ── 기대 답변 추출 (라포 순서: ROLE_ASK → user(담당) → model(기대 질문) → user(기대 답)) ──

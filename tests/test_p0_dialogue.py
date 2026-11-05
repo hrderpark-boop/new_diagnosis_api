@@ -10,7 +10,7 @@ from diag_project.data.competencies import COMPETENCY_FRAMEWORK, SUBCOMPETENCY_A
 from diag_project.services import input_anomaly as IA
 from diag_project.services.align_render import align_shape_ok, receive_sentences, render_align
 from diag_project.services.intro_messages import PERSONA_LINES
-from diag_project.services.output_guard import cap_lead_sentences, count_questions, is_question, starts_without_main_clause
+from diag_project.services.output_guard import count_questions, is_question, starts_without_main_clause
 from diag_project.services.persona_voice import voice_question
 from diag_project.services.time_greeting import daypart, get_time_greeting, get_time_phrase
 
@@ -31,7 +31,6 @@ def test_render_align_shape_every_chapter_every_persona(chapter, persona):
     llm = ("리더님 말씀처럼 방향을 함께 세우는 게 핵심이죠. 그 결을 저희도 같이 봅니다. 크게 다르지 않죠? "
            "구체적으로는 네 가지를 살펴볼게요.\n· 엉뚱한 목록\n먼저 어느 쪽부터 볼까요?")
     out = render_align(llm_text=llm, chapter=chapter, sub_names=_subs(chapter), persona_name=persona,
-                       bridge_sub_key=None, bridge_sub_name=_subs(chapter)[0],
                        anchor=voice_question(persona, "최근에 방향을 새로 잡으신 적이 있었어요?"))
     ok, why = align_shape_ok(out, _subs(chapter))
     assert ok, (out, why)
@@ -51,18 +50,11 @@ def test_render_align_blocks_other_chapter_guide_and_choice_handing():
 
 def test_render_align_fallback_when_llm_gave_only_questions():
     out = render_align(llm_text="정말요? 어떻게요?", chapter="self_management", sub_names=_subs("self_management"),
-                       persona_name="Daniel", bridge_sub_key=None, bridge_sub_name="자기인식", anchor="그런 순간이 있었습니까?")
+                       persona_name="Daniel", anchor="그런 순간이 있었습니까?")
     assert out.startswith(PERSONA_LINES["Daniel"]["align_receive_fallback"])
     assert align_shape_ok(out, _subs("self_management"))[0]
 
 
-def test_persona_lines_have_all_new_keys():
-    keys = ["align_definition", "align_guide", "align_receive_fallback", "reask_anchor", "same_input", "repeat_event",
-            "question_returned", "confirm_reask", "definition_reask", "continue_ack", "align_bridge"]
-    for p in NAMES:
-        assert all(k in PERSONA_LINES[p] for k in keys), p
-        assert "{phrase}부터" in PERSONA_LINES[p]["align_bridge"]
-        assert "{n}" in PERSONA_LINES[p]["align_guide"]
 
 
 # ── P0-3 페르소나 어미: 6명 간 동일 앵커 0 ──────────────────────────────────────
@@ -134,19 +126,6 @@ def test_confirm_and_definition_reask():
 
 # ── P0-5 질문 잘림 ─────────────────────────────────────────────────────────────
 
-def test_lead_cap_keeps_dependent_clause_of_compound_question():
-    t = "성과 이야기를 하셨네요. 관련해서 지표를 쓰셨는지요. 있었다면 어떤 지표였는지 궁금합니다."
-    assert cap_lead_sentences(t) == (t, 0)
-    t2 = "리드1. 반대 의견이 있었을 텐데요. 있었다면 어떻게 설득하셨는지 궁금해요."
-    assert cap_lead_sentences(t2) == (t2, 0)
-    assert cap_lead_sentences("리드1. 리드2. 리드3. 그때 어떻게 하셨어요?") == ("리드1. 그때 어떻게 하셨어요?", 2)
-    from diag_project.services.output_guard import keep_last_question
-    kept, n = keep_last_question("확인해 보고 싶습니다. 그 팀원이 위험 신호를 먼저 알려온 적이 있었나요? 있었다면 언제였고, 그때 어떻게 대응하셨습니까?")
-    assert "알려온 적이 있었나요?" in kept and kept.endswith("대응하셨습니까?") and n == 0     # 조건절 질문은 앞 질문과 한 쌍
-    assert starts_without_main_clause("있었다면 어떻게 설득하셨는지 궁금해요.")
-    assert starts_without_main_clause("이유였는지, 다음 차수라는 시점이었는지 궁금합니다.")
-    assert not starts_without_main_clause("그때 어떻게 하셨어요?")
-    assert is_question("지표를 쓰셨는지요.")
 
 
 # ── P0-6 시간 인사 ─────────────────────────────────────────────────────────────
@@ -176,9 +155,9 @@ def test_leak_lexicon_contains_internal_words_and_excludes_coach_speech():
     from diag_project.services.leak_lexicon import cached_lexicon, find_leaks, strip_leak_sentences
     lex = cached_lexicon()
     # '가이드' 는 사다리 질문("가이드로 만드신 적")에 코치 발화로 쓰여 사전에서 빠진다(코치 어휘 우선)
-    for w in ("되받기", "다리", "탐침", "턴", "사건", "태그", "지시", "오버라이드", "앵커"):   # (2026-10-29 P1) 반례·발화는 프롬프트에서 뺐다
+    for w in ("되받기", "다리", "탐침", "턴", "사건", "태그", "지시", "앵커"):   # (2026-10-29 P1) 반례·발화는 프롬프트에서 뺐다
         assert w in lex["korean"], w
-    for w in ("star", "probe", "instruction"):
+    for w in ("abort", "probe", "instruction"):   # (2026-11-04 BEI) 'star' 는 프롬프트에서 사라졌다(슬롯 6개로 대체)
         assert w in lex["english"], w
     for w in ("자기인식", "회복탄력성", "갈등관리", "리더님", "팀원", "사례", "경험", "결과"):
         assert w not in lex["korean"], w
@@ -195,11 +174,6 @@ def test_leak_lexicon_contains_internal_words_and_excludes_coach_speech():
     assert "태그" not in find_leaks("태그 작업을 직접 하셨군요. 그 뒤에는 어떻게 됐어요?", ["제가 태그 작업을 정리했어요"])
 
 
-def test_route_has_leak_guard_wired():
-    import os
-    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
-    assert 'v["leak"] = lk' in src and '"leak"}' in src and "strip_leak_sentences as _sls" in src
-    assert "_anomaly_override_text" in src and "render_align as _ra" in src and "_voiced_q(template_anchor" in src
 
 
 # ── 2026-10-29 재생(s281) 후속 ─────────────────────────────────────────────────
@@ -210,12 +184,6 @@ def test_last_question_keeps_main_clause_of_compound_question():
     assert q.startswith("팀원 한 명을") and q.endswith("알려주시면 됩니다.")
 
 
-def test_transition_bridges_are_not_state_reports():
-    from diag_project.services.intro_messages import TRANSITION_BRIDGES
-    from diag_project.services.leak_lexicon import find_state_report
-    for name, pool in TRANSITION_BRIDGES.items():
-        for b in pool:
-            assert find_state_report(b) == [], (name, b)
 
 
 def test_definition_answer_mentioning_rest_is_not_pause_request():
@@ -232,10 +200,10 @@ def test_definition_answer_mentioning_rest_is_not_pause_request():
 def test_strict_lexicon_excludes_leader_vocabulary_but_keeps_internal_words():
     from diag_project.services.leak_lexicon import guard_lexicon
     g = guard_lexicon()
-    for w in ("턴", "탐침", "되받기", "앵커", "태그", "페르소나", "라포", "재생성", "사건"):   # (2026-10-29 P1) 반례·발화는 템플릿에서 사라져 자동 사전에서도 빠짐
+    for w in ("턴", "탐침", "되받기", "태그", "페르소나", "라포", "재생성", "사건"):   # (2026-11-04 BEI) '앵커'는 템플릿 10회 미만으로 내려가 엄격 사전에서 빠졌다(전체 사전에는 남는다)
         assert w in g["korean"], w          # '태그'·'사건'은 GUARD_KEEP 수동 복원(2026-10-29·2026-11-02 승인)
     assert "사건" in g["kept_manually"]
-    for w in ("전환", "응답", "요약", "안내", "직전", "현재", "메시지"):
+    for w in ("응답", "안내", "직전", "메시지"):   # (2026-11-04 BEI) '전환'·'요약'·'현재'는 템플릿 10회 미만으로 내려가 목록에서 뺐다
         assert w not in g["korean"], w      # 운영 세션 리더 입력에 한 번이라도 나온 말
         assert w in g["leader_excluded"], w
     assert "태그" in g["kept_manually"] and "태그" not in g["leader_excluded"]
@@ -248,33 +216,14 @@ def test_tail_guard_runs_on_align_receive_before_assembly():
     src = inspect.getsource(d._submit_message_phase3a)
     tail = src.index("_TAIL_EXEMPT = {")
     assert '"COMPETENCY_ALIGN"' not in src[tail: src.index("\n", tail)]
-    assert src.index("# 8-n.") < src.index("# 8-h.") < src.index("# 8-z.") < src.index("# 9. 사건 생명주기")
+    assert src.index("# 8-n.") < src.index("# 8-h.") < src.index("# 8-z.") < src.index("# 9. 사례 행(Event) 저장")
     from diag_project.services.align_render import render_align, align_shape_ok
-    from diag_project.services.output_guard import strip_lead_sentences, lead_tails
     out = render_align(llm_text="말씀 잘 들었어요. 그 결이 선명하게 들어왔어요.", chapter="self_management",
-                       sub_names=["자기인식", "회복탄력성", "중심성"], persona_name="Ella", bridge_sub_key=None,
-                       bridge_sub_name="자기인식", anchor="그런 순간이 최근에 있었어요?")
+                       sub_names=["자기인식", "회복탄력성", "중심성"], persona_name="Ella", anchor="그런 순간이 최근에 있었어요?")
     assert align_shape_ok(out, ["자기인식", "회복탄력성", "중심성"])[0]
-    # 조립 결과에 입버릇 삭제를 걸어도(실제 파이프라인에서는 걸리지 않음) 목록·앵커는 그대로다
-    out2, _ = strip_lead_sentences(out, set(lead_tails(out)))
-    assert "· 자기인식" in out2 and out2.rstrip().endswith("있었어요?")
+    assert "· 자기인식" in out and out.rstrip().endswith("있었어요?") and "먼저 하나를 깊게 들어볼게요." in out   # (BEI 결정 6) 새 안내·다리
 
 
-def test_definition_answer_with_rest_word_is_not_pause_at_h4():
-    """s291 Lucas: 자기관리 정의 답의 '잠깐 쉬면서'가 H4(챕터 중 일시정지 감지)에서 USER_REQUESTS_PAUSE 로 새지 않는다."""
-    from diag_project.services.instruction_decider import detect_pause_request, _is_substantive_definition_answer
-    txt = ("저는 자기관리라고 하면 일이 몰리거나 예상치 못한 문제가 생겨도 감정적으로 흔들리지 않고, 우선순위를 정해 차분하게 처리하는 "
-           "모습이 먼저 떠올라요. 그래서 업무 일정뿐 아니라 제 컨디션을 챙기고, 필요할 때는 잠깐 쉬면서 다시 집중하는 것도 중요하게 보고 있어요.")
-    assert detect_pause_request(txt)       # 낱말 감지 자체는 그대로(전제)
-    assert _is_substantive_definition_answer({"last_instruction": "COMPETENCY_ASK", "last_user_response": txt})
-    assert _is_substantive_definition_answer({"last_instruction": "STAR_INCOMPLETE", "last_user_response": txt})   # 60자 이상 실질 답은 어디서든 예외
-    assert not _is_substantive_definition_answer({"last_instruction": "STAR_INCOMPLETE", "last_user_response": "오늘은 좀 지쳐서 잠깐 쉬었다가 다시 이어가도 될까요?"})
-    assert not _is_substantive_definition_answer({"last_instruction": "COMPETENCY_ASK", "last_user_response": "잠깐 쉬었다 할게요"})
-    import inspect
-    from diag_project.services import instruction_decider as d
-    src = inspect.getsource(d.decide_instruction) if hasattr(d, "decide_instruction") else inspect.getsource(d)
-    h4 = src.index("H4: 휴식·미루기 요청")
-    assert "_pause_req(state)" in src[h4: h4 + 900]   # (p13) 단일 입구 _pause_req 가 실질 답변 예외를 품는다
 
 
 def test_final_leak_sweep_runs_after_tail_regen_and_before_align_assembly():
@@ -300,80 +249,20 @@ def test_state_report_catches_coach_self_reference_and_question_announcement():
 
 
 # ── P1 (2026-10-29) ─────────────────────────────────────────────────────────────
-def test_apply_probe_turn_anchors_volunteered_sub_when_all_asked():
-    """P1-5: asked 는 전부지만 앵커를 못 받은(자발적 사례) 하위역량이 남았으면 그것을 다음 타겟으로."""
-    from diag_project.services.traversal import apply_probe_turn, MAX_TURNS_PER_SUB
-    subs = ["자기인식", "회복탄력성", "중심성"]
-    store = {"asked_subs": {"self_management": subs}, "anchored_subs": {"self_management": ["자기인식", "중심성"]},
-             "current_target": {"self_management": "중심성"}, "turns_on_target": {"self_management": MAX_TURNS_PER_SUB}}
-    store2, cur = apply_probe_turn(store, "self_management", subs, event_done=False)
-    assert cur == "회복탄력성" and "회복탄력성" in store2["anchored_subs"]["self_management"]
-    assert store2["turns_on_target"]["self_management"] == 1
-    # 전부 앵커까지 끝났으면 현재 타겟 유지(turns 만 증가하지 않음 — 기존 동작)
-    store3, cur3 = apply_probe_turn(store2 | {"turns_on_target": {"self_management": MAX_TURNS_PER_SUB}}, "self_management", subs, event_done=False)
-    assert cur3 == "회복탄력성"
 
 
-def test_ladder_question_prefers_unused_step():
-    from diag_project.data.ladder_questions import ladder_question, LADDER_QUESTIONS
-    assert ladder_question("vision_sharing", 2)[1] == "2_3"
-    assert ladder_question("vision_sharing", 2, avoid=["2_3"])[1] == "3_4"
-    assert ladder_question("vision_sharing", 3, avoid=["3_4"])[1] == "2_3"
-    assert ladder_question("vision_sharing", 2, avoid=["2_3", "3_4"])[1] == "2_3"
-    assert ladder_question("vision_sharing", 2, avoid=["2_3"])[0] == LADDER_QUESTIONS["vision_sharing"]["3_4"]
 
 
-def test_ladder_turn_trigger_and_precedence_wired():
-    import inspect
-    from diag_project.routes import diagnoses as d
-    from diag_project.services import instruction_decider as dec
-    src = inspect.getsource(d._submit_message_phase3a)
-    i = src.index("사다리 탐침(턴 조건)")
-    assert "turns_on_target" in src[i - 1500: i] and ">= 3" in src[i - 1500: i]
-    j = src.index("사다리 턴 → R/A/일반화 강제 해제")
-    assert i < j < src.index("if _force_r:\n            from diag_project.services.output_guard import needs_quantify_probe")
-    assert 'return "CROSS_CHAPTER_OPPORTUNITY"' not in inspect.getsource(dec.decide_instruction)
-    assert '"이 영역에서 들려주신 이야기는 여기서 정리하겠습니다."' not in src
 
 
-def test_direct_action_question_detector_and_soft_lines():
-    from diag_project.services.output_guard import is_direct_action_question
-    from diag_project.services.intro_messages import PERSONA_LINES
-    from diag_project.services.traversal import is_action_probe_text, ACTION_FALLBACK_QUESTION
-    assert is_direct_action_question("그때 리더님이 직접 하신 일은 무엇이었어요?")
-    assert not is_direct_action_question("그 자리에서 리더님 몫은 어디까지였어요?")
-    assert is_action_probe_text(ACTION_FALLBACK_QUESTION)
-    for p, d in PERSONA_LINES.items():
-        assert is_action_probe_text(d["action"]), (p, d["action"])     # 완화 문안도 행동 질문으로 인식(A 원장)
-        assert "—" not in d["generalize"]
-        assert d["reask_anchor_2"].startswith("비슷한 다른 장면이라도") and "여기까지 듣고 넘어" in d["skip_item"]
 
 
-def test_generalized_answer_rule_time_marker_alone():
-    from diag_project.services.avoidance_detector import is_generalized_answer as G
-    assert G("저는 팀원들과 먼저 이야기를 나누고 역할을 나눈 뒤에 일정을 다시 잡는 식으로 진행합니다.")   # 시점 없음·습관 표지 없음·20자 이상
-    assert not G("지난달에 팀원들과 먼저 이야기를 나누고 역할을 나눈 뒤에 일정을 다시 잡았습니다.")       # 시점 표지
-    assert not G("기존 대면교육 일부를 온라인 사전학습으로 바꾸자고 했을 때 팀원들이 효과를 의심했어요. 한 과정에만 시범 적용해 보자고 했습니다.")  # 시점 없어도 서술된 사건(과거형 2+)
-    assert G("보통 제가 먼저 정리해서 공유하는 편입니다.")                                            # 짧아도 습관 표지
-    assert not G("네, 그렇게 했습니다.")                                                            # 짧고 표지 없음 → 보류
-
-
-def test_p1_anomaly_escalation_and_direct_cap_wired():
-    import inspect
-    from diag_project.routes import diagnoses as d
-    src = inspect.getsource(d._submit_message_phase3a)
-    a = src.index("anomaly_counts"); assert "_ac_n >= 3" in src[a: a + 2500] and "skip_bridge" in src[a: a + 2500]
-    assert "'reask_anchor_2' if _ac_n == 2 else 'reask_anchor'" in src
-    j = src.index("# 8-j."); assert 'state.get("skip_bridge")' in src[j: j + 1500]
-    c = src.index("'리더님이 직접 하신 일' 질문 상한"); assert "direct_q_count" in src[c: c + 1500] and "a_present" in src[c: c + 1500]
-    g = src.index("generalize_pending"); assert '"generalized"' in src[g: g + 1200]
 
 
 def test_anchor_rotation_second_session_first_questions_all_differ():
     """P1-4: 같은 참가자의 두 번째 세션(variant 1)은 26개 하위역량의 첫 질문이 전부 달라진다. 대상화 표현 0."""
     from diag_project.data.competencies import COMPETENCY_FRAMEWORK, get_anchor_questions
     from diag_project.services.anchor_render import dict_anchor
-    from diag_project.services.intro_messages import build_chapter_opening_with_user_def
     keys = [k for ch, fw in COMPETENCY_FRAMEWORK.items() if ch != "supplementary" for k in fw["indicators"]]
     assert len(keys) == 26
     allq = [q for k in keys for q in get_anchor_questions(k)]
@@ -382,10 +271,6 @@ def test_anchor_rotation_second_session_first_questions_all_differ():
     bad = ("키우신", "봐주며", "손을 놓은", "서툰 팀원", "방어적인", "반신반의", "수긍 못", "경계하는", "개성 강한", "안 도와주던", "떠날 것 같은", "끼어들어")
     for q in allq:
         assert not any(b in q for b in bad), q
-    for ch in ("organization_management", "people_management", "self_management"):
-        a = build_chapter_opening_with_user_def(ch, "정의", "", variant=0)
-        b = build_chapter_opening_with_user_def(ch, "정의", "", variant=1)
-        assert a != b
 
 
 def test_michael_voice_does_not_split_verb_before_hasin_jeok():
@@ -398,15 +283,6 @@ def test_michael_voice_does_not_split_verb_before_hasin_jeok():
     assert "같이 직접 하셨던 일, 하나만 들려주세요." in out3
 
 
-def test_ladder_duplicate_guard_wired():
-    import inspect
-    from diag_project.routes import diagnoses as d
-    from diag_project.services import llm_judge as j
-    src = inspect.getsource(d._submit_message_phase3a)
-    assert src.count("await _choose_ladder(") == 2 and src.count("_mark_ladder_answered(_store") == 2
-    assert "ladder_already_answered" in inspect.getsource(j)
-    h = src.index("async def _choose_ladder"); body = src[h: h + 1400]
-    assert '"swapped"' in body and '"answered"' in body and "ladder_skip" in body
 
 
 def test_indirect_question_with_yeojjwo_bolgeyo_pairs_conditional_followup():
@@ -416,54 +292,11 @@ def test_indirect_question_with_yeojjwo_bolgeyo_pairs_conditional_followup():
     assert not is_question("하나 여쭤볼게요.")
 
 
-def test_strip_praise_keeps_question_sentence_and_pause_single_entry():
-    from diag_project.services.output_guard import strip_praise
-    out, n = strip_praise("역할을 정리하셔서 조정까지 이어졌네요. 정말 인상적이네요, 혹시 반발은 없었나요? 있었다면 어떻게 뚫고 나가셨는지 궁금합니다.")
-    assert "반발은 없었나요?" in out and "인상적" not in out and out.endswith("궁금합니다.")
-    import inspect
-    from diag_project.services import instruction_decider as d
-    src = inspect.getsource(d.decide_instruction)
-    assert "detect_pause_request(" not in src and src.count("_pause_req(") >= 6
-    st = {"last_user_response": "저는 자기관리라고 하면 일이 몰리거나 예상치 못한 문제가 생겨도 감정적으로 흔들리지 않고 우선순위를 정해 차분하게 처리하는 모습이 먼저 떠올라요. 필요할 때는 잠깐 쉬면서 다시 집중하는 것도 중요하게 보고 있어요.",
-          "last_instruction": "COMPETENCY_ALIGN"}
-    assert not d._pause_req(st) and d._pause_req({"last_user_response": "잠깐 쉬었다 할게요", "last_instruction": "STAR_INCOMPLETE"})
 
 
-def test_ladder_overridden_question_is_not_marked_used():
-    import inspect
-    from diag_project.routes import diagnoses as d
-    from diag_project.services.output_guard import _content_chunks
-    src = inspect.getsource(d._submit_message_phase3a)
-    i = src.index('_tm["ladder_dropped"] = "overridden"')
-    assert i < src.index("mark_ladder_probed as _mlp_g")
-    q = "그 아이디어를 작게 먼저 시험해 보고 고치신 적이 있었어요?"
-    assert len({c for c in _content_chunks(q) if len(c) >= 2} & set(_content_chunks("들으셨군요. 그 아이디어를 작게 먼저 시험해 보고 고치신 적이 있었던가요?"))) >= 3
-    assert len({c for c in _content_chunks(q) if len(c) >= 2} & set(_content_chunks("네, 그러셨군요. 이제 '사람관리'로 이어가겠습니다."))) < 3
 
 
 # ── P2-1 페르소나 고정 슬롯 ────────────────────────────────────────────────────
-def test_persona_slot_lines_and_wiring():
-    import inspect
-    from diag_project.services.intro_messages import PERSONA_LINES, DANIEL_OBSERVATIONS
-    from diag_project.services.output_guard import number_token
-    from diag_project.services.persona_voice import is_contrast_question
-    from diag_project.routes import diagnoses as d
-    assert PERSONA_LINES["Jessica"]["slot_q"].endswith("무엇이었습니까?")
-    assert is_contrast_question(PERSONA_LINES["Olivia"]["slot_q"]) and is_contrast_question(PERSONA_LINES["Olivia"]["slot_q2"])
-    assert len(DANIEL_OBSERVATIONS) == 5 and PERSONA_LINES["Michael"]["slot_lead"] and PERSONA_LINES["Michael"]["slot_q"].endswith("?")
-    assert "한 줄로" in PERSONA_LINES["Lucas"]["slot_q"] and PERSONA_LINES["Ella"]["slot_q"] == ""
-    assert number_token("재구매율이 8% 올랐습니다") == "8%" and number_token("두 달 걸렸어요") is None and number_token("3명을 새로 뽑았어요") == "3명"
-    src = inspect.getsource(d._submit_message_phase3a)
-    i = src.index("페르소나 고정 슬롯")
-    blk = src[i: i + 9000]
-    assert all(k in blk for k in ('_pn_s == "Jessica"', '_pn_s == "Olivia"', '_pn_s == "Daniel"', '_pn_s == "Michael"', "Lucas", '_tm["slot"] = _pn_s'))
-    # (2026-11-04 P3-2) 되받기 없으면 슬롯 건너뜀 · Michael 응원은 되받기 뒤 + LLM 질문, 실행 의지 질문은 다음 턴 · Daniel 관찰은 되받기 뒤
-    assert '_slot_used = "no_receive"' in blk and '_tm["michael_q_pending"] = 1' in blk and '_tm["slot"] = "Michael_q"' in blk
-    assert '" ".join(_lead_s + [_DOBS[_ch_i % len(_DOBS)]]' in blk and '" ".join(_lead_s + [_sl] + ([_q_now_s] if _q_now_s else []))' in blk
-    assert "persona_slot_used" in src and "j_number_restated" in src
-    # (2026-11-02 p2c) 슬롯 문장 복원(8-x2): 슬롯 조립 시 slot_text 기록 → 8-y 앞에서 복원 → 원장 slot_restored
-    assert blk.count('_tm["slot_text"]') >= 5 and "슬롯 문장 복원" in src and "restore_slot_sentence" in src and '"slot_restored"' in src
-    assert src.index("슬롯 문장 복원") < src.index("8-y. (2026-10-29) 최종 누설 소거")
 
 
 def test_restore_slot_sentence_rebuilds_lost_fixed_line():
@@ -519,68 +352,3 @@ def test_indirect_question_with_want_to_confirm_is_question():
     assert is_question("리더님께서 직접 팀원과 이런 과정을 밟아보신 장면이 있었는지 여쭙고 싶습니다.")
 
 
-
-def test_ladder_restore_step_precedes_final_sweep():
-    import inspect
-    from diag_project.routes import diagnoses as d
-    src = inspect.getsource(d._submit_message_phase3a)
-    assert src.index("# 8-n.") < src.index("# 8-h.") < src.index("# 8-x.") < src.index("# 8-y.") < src.index("# 8-z.")
-    i = src.index("# 8-x."); assert "ladder_restored" in src[i: i + 2000] and "voice_question as _vq_x" in src[i: i + 2000]
-
-
-# ── p2f (2026-11-02) push 전 3건: Michael '좋습니다' 챕터 상한 · '사건'/역량 분류 누설 · Jessica 숫자 재진술 범위 ─────────────
-def test_p2f_michael_good_lead_chapter_cap_and_cheer_slot():
-    import inspect
-    from diag_project.routes import diagnoses as d
-    from diag_project.services.persona_voice import restore_slot_sentence
-    from diag_project.services.intro_messages import PERSONA_LINES
-    src = inspect.getsource(d._submit_message_phase3a)
-    i = src.index("# 8-p.")
-    blk = src[i: i + 1800]
-    assert "len(_good_prev) < _mcap" in blk and '_tm.get("slot") != "Michael"' in blk and '_tm["good_lead_cap"] = 1' in blk
-    assert "add=bool(chapter) and not needs_user_decision" in blk and "not needs_user_decision\n" not in blk[: blk.index("_mlg(")]   # 일시정지 제안 턴도 가드 대상
-    assert '"good_lead_cap"' in src and '"incident_word"' in src
-    # (2026-11-04 P3-2) 실행 의지 질문 턴: 질문이 남아 있으면 손대지 않는다(응원 문장은 이 턴의 슬롯이 아니다)
-    q = PERSONA_LINES["Michael"]["slot_q"]
-    out, r = restore_slot_sentence(f"좋습니다, {q}", "Michael", q)
-    assert not r and out == f"좋습니다, {q}"
-
-
-def test_p2f_incident_word_rewrite_and_classification_leak():
-    import pathlib
-    from diag_project.services.output_guard import rewrite_incident_word
-    from diag_project.services.leak_lexicon import find_state_report, find_leaks
-    assert rewrite_incident_word("리더님이 말씀하신 결정이 이번 사건의 중심으로 보입니다. 그래서 그 뒤에는 어떻게 됐습니까?") == \
-        ("리더님이 말씀하신 결정이 그 일의 중심으로 보입니다. 그래서 그 뒤에는 어떻게 됐습니까?", 1)
-    assert rewrite_incident_word("앞서 말씀하신 세 사건에서는 기준이 일관돼 보였습니다.")[0] == "앞서 말씀하신 세 가지에서는 기준이 일관돼 보였습니다."
-    assert rewrite_incident_word("이 사건에서 신경 쓰신 부분이 있었나요? 사건 하나가 설문으로 이어졌네요.") == \
-        ("그 일에서 신경 쓰신 부분이 있었나요? 일 하나가 설문으로 이어졌네요.", 2)
-    assert rewrite_incident_word("그때 어떻게 하셨어요?") == ("그때 어떻게 하셨어요?", 0)
-    # 치환 뒤에는 엄격 사전('사건' 수동 복원)에 걸리지 않는다
-    assert "사건" in find_leaks("이번 사건의 중심으로 보입니다.", []) and not find_leaks(rewrite_incident_word("이번 사건의 중심으로 보입니다.")[0], [])
-    # 역량 분류 설명은 상태 보고문
-    s = "주 과제는 \"이 일 관리\" 역량인데, 방금 말씀하신 실패 복기 방식은 \"시도와 실행\" 쪽 이야기에 가깝네요."
-    assert find_state_report(s) and find_state_report("그 얘기는 조직 쪽 이야기에 가깝습니다.")
-    assert not find_state_report("그 결정을 내리셨군요. 그때 팀원들 반응은 어땠습니까?")
-    # 배선: 8-i 앞 치환 + 8-y 안 치환
-    import inspect
-    from diag_project.routes import diagnoses as d
-    src = inspect.getsource(d._submit_message_phase3a)
-    assert src.index("rewrite_incident_word as _riw") < src.index("# 8-i.") and "rewrite_incident_word as _riw_y" in src[src.index("# 8-y."):]
-    # 프롬프트: 전환 턴에 탐색/미탐색 이름 목록이 없고 분류 설명 금지가 있다
-    txt = pathlib.Path(d.__file__).resolve().parents[1].joinpath("prompts/phase3a/layer3_state.py").read_text()
-    blk = txt[txt.index('"STAR_COMPLETE_NEW_EVENT": ('): txt.index('"ABSENCE_PROBE": (')]
-    assert "이미 탐색:" not in blk and "{_unexplored_str}" not in blk and "역량인데" in blk
-
-
-def test_p2f_number_token_quantities_only_and_restate_needs_question():
-    from diag_project.services.output_guard import number_token
-    assert number_token("40% 줄었어요") == "40%" and number_token("2주 걸렸어요") == "2주" and number_token("3명 뽑았어요") == "3명"
-    assert number_token("10건이었어요") == "10건" and number_token("6개월 걸렸습니다") == "6개월" and number_token("300만원 들었어요") == "300만원"
-    for t in ("1차 면접에서", "2차로 넘어가", "3회 진행했어요", "5회차에", "2번째 시도", "3일차에 결정", "2주차부터", "10번째"):
-        assert number_token(t) is None, t
-    import inspect
-    from diag_project.routes import diagnoses as d
-    src = inspect.getsource(d._submit_message_phase3a)
-    i = src.index("_num = _ntk(_ans_s)")
-    assert "any(is_question_sentence(x) for x in split_sentences(clean_reply))" in src[i: i + 400]

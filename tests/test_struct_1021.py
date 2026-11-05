@@ -89,13 +89,6 @@ def test_foreign_quote_guard():
     assert G.foreign_quotes("'조직의 방향을 세우고 구성원의 참여를 이끌어내는 능력'으로 봅니다", user2) == ["조직의 방향을 세우고 구성원의 참여를 이끌어내는 능력"]
 
 
-def test_transition_guide_two_sentences_no_question_anchor_by_system():
-    g = _g("STAR_COMPLETE_NEW_EVENT")
-    assert "질문은 쓰지 않습니다" in g and "받는 문장(1문장, 필수)" in g and "다리(1문장, 필수)" in g
-    assert "단독 출력 금지" in g and "시스템이 붙일 앵커" in g
-    assert "새로운 사례를 들려주셨네요" not in g and "진행 상태를 알리는 문장 금지" in g   # (2026-10-29 P1) 금지 예시도 베낀다(s31 '새로운 사건') → 예시 삭제
-    assert G.is_transition_only("이번엔 조금 다른 장면입니다.")
-    assert not G.is_transition_only("반발한 팀원을 따로 만나 이유부터 설명하신 거군요. 이번엔 조금 다른 장면입니다.")
 
 
 def test_state_leak_guard():
@@ -104,15 +97,6 @@ def test_state_leak_guard():
     assert G.find_state_leak("이 영역은 여기까지 충분히 들었습니다.") and not G.find_state_leak("팀원과 따로 만나 이유를 설명하셨군요.")
 
 
-def test_chapter_end_summary_contract():
-    g = _g("CHAPTER_READY_TO_END", no_yield_forced=False)
-    assert "들은 것 요약(2문장, 사실만)" in g and "시스템이 붙입니다" in g
-    assert "고민과 노력을 엿볼 수 있었습니다" in g        # 평가 어휘 금지 예
-    assert chapter_end_bridge("성과관리") == "이제 '성과관리'로 이어가 보겠습니다."
-    src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
-    code_only = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
-    assert "여기까지 충분히 들었습니다" not in code_only          # 주석 제외, 출력 경로에는 없다
-    assert "wrap_up = f\"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch), " in src
 
 
 # ── C. 탐침 품질 ──
@@ -125,13 +109,6 @@ def test_one_question_and_moment_form():
     assert G.fix_moment_question("예상과 다르게 흘러갔던 순간은 없었을까요?")[0].endswith("흘러갔던 장면은 언제였을까요?")   # g_llm 11턴
 
 
-def test_route_wires_probe_quality_and_transition_glue():
-    src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
-    assert "same_question_as_recent as _sqr" in src and "_klq(clean_reply)" in src and "_fmq(clean_reply)" in src
-    assert "# 8-j." in src and "_render_anchor_for(current_target_sub)" in src
-    assert "if _is_probe and not _is_anchor:" in src                 # 전환 턴은 질문 검사 제외
-    assert 'v["anchor_missing"] = True' not in src                    # 앵커는 시스템이 붙인다
-    assert '"state_leak"' in src and '"semrep"' in src and '"quote"' in src and '"bridge"' in src
 
 
 # ── D. 앵커 렌더링 플래그 ──

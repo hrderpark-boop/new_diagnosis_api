@@ -132,13 +132,6 @@ _RESULT_MARK_RE = re.compile(r"결과|됐|되었|달라졌|줄었|늘었|올랐|
                              r"만에|부터는|이후로|그 뒤")
 
 
-def has_full_star(text: str | None) -> bool:
-    """(2026-10-22 P2-2) 리더 답변이 상황·행동·결과를 이미 다 담았는가 — 과거형 동사 2개 이상(행동) + 결과 표지 + 80자 이상."""
-    t = (text or "").strip()
-    if len(t.replace(" ", "")) < 80:
-        return False
-    return len(_PAST_VERB_RE.findall(t)) >= 2 and bool(_RESULT_MARK_RE.search(t))
-
 
 def has_narrative(text: str | None) -> bool:
     """(2026-10-22 P2-0) 발화에 상황·행동 서술이 있는가 — 과거형 동사 2개 이상 또는 공백 제외 30자 이상."""
@@ -159,21 +152,6 @@ _HABIT_MARK_RE = re.compile(
     r"(일수록|때는|때마다|때면|하는 편|는 편이|편입니다|편이에요|늘 |항상|보통|주로|평소|대개|대체로|매번|경우에는|경우엔|으면 보통|면 일단)"
 )
 
-
-def is_generalized_answer(text: str | None) -> bool:
-    """시점 없이 습관 표지로만 말한 답변인가. 구체 사례 탐침(generalize_probe) 1회의 발동 조건."""
-    t = (text or "").strip()
-    if not t:
-        return False
-    # (2026-10-29 P1-3) 습관 표지가 없어도 '시점 표지 없음' 단독으로 일반화로 본다(짧은 답은 제외 — 20자 미만은 판정 보류).
-    #   프로젝트 '이름'은 패턴으로 못 잡으므로 과탐 가능 — 타겟당 1회만 묻고 그래도 일반화면 generalized 원장에 기록.
-    if _TIME_MARK_RE.search(t):
-        return False
-    if _HABIT_MARK_RE.search(t):
-        return True
-    # (2026-10-29 P1-3 보정) 시점 표지가 없어도 과거형 동사 2개 이상으로 '일어난 일'을 서술했으면 일반화가 아니다 —
-    #   p11 재생: 시점 없음 단독 규칙이 세션당 10.5회 발동했고 대부분 구체 사건("…바꾸자고 했을 때 … 시범 적용하자고 했습니다")이었다.
-    return len(t.replace(" ", "")) >= 20 and len(_PAST_LOOSE_RE.findall(t)) < 2
 
 
 # 일반화 판정용 과거형 세기 — _PAST_VERB_RE 는 어간 앞 글자를 요구해 어절 첫머리의 '했을 때'·'했습니다'를 놓친다(has_full_star 는 그대로 둔다)
@@ -519,55 +497,6 @@ def detect_closing_intent(text: str | None) -> str | None:
         return "soft"
     return None
 
-
-def detect_abstract_avoidance(text: str | None) -> bool:
-    """'그럴듯한 공허함' 감지 — 추상적 개념/이론만 늘어놓고 구체가 없는 답변.
-
-    구체성의 증거(고유명사·수치/기간·직접 발화)가 거의 없으면서 추상어
-    밀도가 높은, 충분히 긴 답변을 True 로 판정한다.
-    - 너무 짧은 답(단답 회피)은 check_avoidance 가 따로 처리하므로 제외.
-    - 구체 증거가 하나라도 뚜렷하면 (사람 이름+직접 발화 등) 통과시킨다.
-    """
-    import re
-
-    if not text:
-        return False
-    stripped = text.strip()
-    # 충분히 길어야(개념 나열형은 길다) 판정 대상. 짧은 답은 단답 회피로.
-    if len(stripped) < 60:
-        return False
-
-    # 1) 구체성 증거 카운트
-    concrete = 0
-    # 직접 발화: '~라고 말/했' , 따옴표로 감싼 발화
-    if re.search(r"라고\s*(말|얘기|이야기|하|했|말씀)", stripped):
-        concrete += 2
-    if re.search(r"[\"'“”].{2,}[\"'“”]", stripped):
-        concrete += 1
-    # 수치/기간/날짜: 숫자+단위, 연·월·일, 지난주/이번달 등
-    if re.search(r"\d+\s*(년|월|일|주|시간|분|명|건|%|퍼센트|억|만|천|개|차)",
-                 stripped):
-        concrete += 1
-    if re.search(r"(지난|이번|저번|작년|올해|어제|그제|당시)\s*"
-                 r"(주|달|월|해|분기|회의|프로젝트)?", stripped):
-        concrete += 1
-    # 고유명사 신호: 'OO 팀/부/과/파트', 'A씨/B님/○ 대리·과장·차장·부장'
-    if re.search(r"[가-힣A-Za-z]{1,6}\s*(팀|부서|본부|파트|과|실|센터)",
-                 stripped):
-        concrete += 1
-    if re.search(r"[가-힣A-Za-z]{1,4}\s*"
-                 r"(씨|님|대리|과장|차장|부장|팀장|사원|주임|이사|대표)",
-                 stripped):
-        concrete += 1
-
-    # 2) 추상어 밀도
-    abstract_hits = sum(1 for kw in ABSTRACT_KEYWORDS if kw in stripped)
-
-    # 구체 증거가 뚜렷하면(2점 이상) 회피 아님.
-    if concrete >= 2:
-        return False
-    # 추상어가 3개 이상 쏟아지고 구체 증거가 빈약하면 '공허한 추상' 회피.
-    return abstract_hits >= 3
 
 
 def detect_prompt_injection(text: str | None) -> bool:

@@ -32,10 +32,7 @@ from diag_project.services.avoidance_detector import (
     detect_rush,
 )
 from diag_project.services.conversation_compressor import compress_conversation_history
-from diag_project.services.event_service import (
-    create_event, update_event_star, complete_event,
-    increment_probe_count, get_active_event, get_chapter_events,
-)
+from diag_project.services.event_service import create_event, update_event_star, complete_event
 from diag_project.prompts.phase3a.layer1_system import (
     LAYER1_SYSTEM_PROMPT,
     build_layer1_with_persona,
@@ -44,18 +41,12 @@ from diag_project.services.time_greeting import (
     build_rapport_greeting,
     build_rapport_first_turn_response,
 )
-from diag_project.services.intro_messages import (
-    build_intro_anchor_section,
-    build_chapter_opening_with_user_def,
-)
+from diag_project.services.intro_messages import build_intro_anchor_section
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
-from diag_project.prompts.phase3a.layer2_chapters import CHAPTER_CONTEXTS
+from diag_project.prompts.phase3a.episode_card import chapter_context_bei   # (2026-11-04 BEI) Layer2 축약
 from diag_project.prompts.phase3a.layer3_state import format_turn_state_for_llm
 from diag_project.prompts.phase3a.layer3_state import expectation_usable as _expectation_usable
-from diag_project.services.traversal import (
-    advanced_to_new_target, is_result_probe_text,
-)
-from diag_project.services.style_tracker import is_recap_turn, starts_with_ne_recap
+from diag_project.services import bei_engine as _bei   # (2026-11-04 BEI) 사례 상태기계
 
 logger = logging.getLogger(__name__)
 
@@ -698,13 +689,9 @@ async def _submit_message_phase3a(
     import time as _time
     # ⏱ (2026-09-18) 턴 계측: decider / LLM 1차 / 재생성 횟수·시간 / 후처리+DB. 로그 한 줄로 남긴다.
     _tm = {"t0": _time.perf_counter(), "decider": 0.0, "llm": 0.0, "regen_n": 0, "regen_s": 0.0}
-    _rcv_snap: dict = {}   # (2026-11-04 P3-1 2차) 단계별 본문 스냅숏 — 8-w 폴백 시 되받기를 지운 단계를 원장에 남긴다
 
     def _vv_total() -> int:   # (2026-11-04 P3 3차) 어미 변주 인덱스는 세션 누적 — 챕터 경계에서 같은 꼬리가 이어지지 않게
         return sum(int(v or 0) for v in ((session.self_assessment_data or {}).get("voice_variant_count") or {}).values())
-
-    def _bridge_idx() -> int:   # (2026-11-04 P3 3차) 전환 다리 3종 순환 인덱스(원장 bridge_idx)
-        return int((session.self_assessment_data or {}).get("bridge_idx") or 0)
     from diag_project.database import sql_count as _sqlc
     _sqlc.set(0)   # 이 턴의 SQL 문 수(FM_SQL_COUNT=1 일 때만 집계)
     _style_tail = ""
@@ -819,13 +806,8 @@ async def _submit_message_phase3a(
     #   ABORT_DISENGAGED 를 결정한다.
     # 직전 코치 턴이 '실제 BEI 프로브'였을 때만 이탈 카운팅한다. 라포·인트로·
     #   컨펌·역량합의 등 온보딩 턴은 프로브가 아니므로 제외(조기 중단 방지).
-    _BEI_PROBE_INSTR = {
-        "CHAPTER_OPENING", "CONTINUE_NORMAL", "STAR_INCOMPLETE",
-        "STAR_COMPLETE_NEW_EVENT", "CONTRARY_NEEDED", "ABSTRACT_AVOIDANCE",
-        "AVOIDANCE_DETECTED", "ABSENCE_PROBE", "ABORT_CONFIRM",
-        "CHAPTER_NO_YIELD_ULTIMATUM",
-        "COMPETENCY_ALIGN",  # #2: ALIGN 턴이 첫 앵커를 품으므로 그 답변도 프로브 답변
-    }
+    # (2026-11-04 BEI) 사례 단계 턴 + ALIGN(첫 앵커를 품는다) 뒤의 답만 이탈 카운팅 대상
+    _BEI_PROBE_INSTR = set(_bei.BEI_INSTRUCTIONS) | {"COMPETENCY_ALIGN", "ABORT_CONFIRM"}
     _last_probe = None
     if chapter:
         # (2026-09-22) 스냅샷에서: 직전 코치 턴의 instruction (SQL 없음)
@@ -884,6 +866,15 @@ async def _submit_message_phase3a(
     # 4. Turn State 빌드
     state = await build_turn_state(db, session.id, chapter, messages=history_messages, events_all=all_events)
     _tm["decider"] = _time.perf_counter() - _tm["t0"]
+
+    # 4-b. 코치 페르소나 — 모든 고정 문장(여는 앵커·정의 질문·슬롯)의 어미 변환과 Layer3 페르소나 블록이 읽는다.
+    coach_key = _coach_key_from_id(session.coach_id)
+    _persona = COACHES_PERSONA.get(coach_key) or {}
+    state["coach_persona"] = {
+        "name": _persona.get("name", ""),
+        "coaching_style": _persona.get("coaching_style", ""),
+        "tags": _persona.get("tags", ""),
+    }
 
     # 4-a. user 메시지 메타데이터 소급 기록 (ML 학습 데이터 구조화):
     #   - 진단 전 단계면 chapter 를 NULL 로 소급 변경 (라포 사담 분리)
@@ -944,7 +935,8 @@ async def _submit_message_phase3a(
             _q_a = _anomaly.question
             # (2026-10-29 P1) 같은 타겟에서 같은 종류의 이상이 반복되면 단계적으로: ANCHOR_REASK 2회째 변형 문장, 3회째·INPUT_DUPLICATE 3회째는
             #   '이 항목은 여기까지 듣고 넘어간다' — 미확인(unconfirmed) 기록 + 타겟 전진(turns 상한). 전진 턴의 본문은 8-j 가 skip_bridge 로 쓴다.
-            _tgt_an = ((_store_a.get("current_target") or {}).get(chapter) or "-") if chapter else "-"
+            _ep_an = _bei.current_episode(_store_a, chapter) if chapter else None
+            _tgt_an = ((_ep_an or {}).get("opener_sub") or "-") if chapter else "-"
             _ac_all = dict(_store_a.get("anomaly_counts") or {}); _ac_key = f"{chapter}|{_tgt_an}|{_anomaly.kind}"
             _ac_n = int(_ac_all.get(_ac_key, 0) or 0) + 1
             if _anomaly.kind in ("repeat_any", "ack_reask"):
@@ -952,22 +944,16 @@ async def _submit_message_phase3a(
                 session.self_assessment_data = _store_a
                 from sqlalchemy.orm.attributes import flag_modified as _fm_ac
                 _fm_ac(session, "self_assessment_data")
-            _skip_an = _anomaly.kind in ("repeat_any", "ack_reask") and _ac_n >= 3 and chapter and _tgt_an != "-"
-            if _skip_an:
-                from diag_project.services.traversal import MAX_TURNS_PER_SUB as _MAXT_an, mark_result_probed as _mrp_an
-                _unc = dict(_store_a.get("unconfirmed") or {}); _unc[chapter] = sorted(set((_unc.get(chapter) or []) + [_tgt_an]))
-                _store_a["unconfirmed"] = _unc
-                _store_a.setdefault("turns_on_target", {})[chapter] = _MAXT_an
-                _store_a = _mrp_an(_store_a, chapter)
+            # (2026-11-04 BEI) 같은 사례에서 2회째 단답·반복은 고정 응답 없이 사례 단계로 — 더 작은 단위 재질문(EPISODE_RETRY) 1회, 그 뒤 사례 폐기
+            if _anomaly.kind == "repeat_prev":
+                _ac_all[_ac_key] = _ac_n; _store_a["anomaly_counts"] = _ac_all
                 session.self_assessment_data = _store_a
-                from sqlalchemy.orm.attributes import flag_modified as _fm_sk
-                _fm_sk(session, "self_assessment_data")
-                state["skip_bridge"] = _pl_an(_pn_a, "skip_item")
-                _tm["anomaly"] = f"{_anomaly.kind}#3→skip"
-                _tm["unconfirmed"] = _tgt_an
-                logger.info("🧷 입력 이상 3회째(%s) → [%s] %s 미확인 기록·전진", _anomaly.kind, chapter, _tgt_an)
+                from sqlalchemy.orm.attributes import flag_modified as _fm_ac2
+                _fm_ac2(session, "self_assessment_data")
+            _skip_an = _anomaly.kind in ("repeat_any", "ack_reask", "repeat_prev") and _ac_n >= 2 and chapter and _tgt_an != "-"
             if _skip_an:
-                pass   # 고정 응답 없이 이번 턴을 정상 진행 — T2 가 다음 타겟으로 전진(STAR_COMPLETE_NEW_EVENT)
+                state["bei_anomaly_repeat"] = _anomaly.kind
+                _tm["anomaly"] = f"{_anomaly.kind}#{_ac_n}→bei"
             elif _anomaly.kind == "repeat_prev":
                 _anomaly_override_text = f"{_pl_an(_pn_a, 'same_input')} {_q_a}"; instruction_used = "INPUT_REPEATED"
             elif _anomaly.kind == "repeat_any":
@@ -989,8 +975,8 @@ async def _submit_message_phase3a(
                     session.self_assessment_data = _store_a
                     from sqlalchemy.orm.attributes import flag_modified as _fm_dr
                     _fm_dr(session, "self_assessment_data")
-            else:   # ack_reask — 2회째는 '비슷한 다른 장면이라도 괜찮아요' 변형
-                _anomaly_override_text = f"{_pl_an(_pn_a, 'reask_anchor_2' if _ac_n == 2 else 'reask_anchor')} {_q_a}"; instruction_used = "ANCHOR_REASK"
+            else:   # ack_reask 1회째 — "그럼 여쭤볼게요." + 같은 앵커
+                _anomaly_override_text = f"{_pl_an(_pn_a, 'reask_anchor')} {_q_a}"; instruction_used = "ANCHOR_REASK"
             if not _skip_an:
                 state["instruction_for_this_turn"] = instruction_used
                 _tm["anomaly"] = _anomaly.kind if _ac_n < 2 else f"{_anomaly.kind}#{_ac_n}"
@@ -1007,306 +993,174 @@ async def _submit_message_phase3a(
         "SESSION_ABORT_3STRIKE",
     }
 
-    # 🔒 T2 제어 역전(§0/§1-1): LLM 호출 '이전'에 다음 타겟 하위역량을 결정하고
-    #   asked 원장(session.self_assessment_data)에 기록한다. 이 기록이 asked 의
-    #   유일 소스이며, LLM 응답이 무엇이든 되돌리지 않는다. 그 타겟의 앵커를
-    #   프롬프트에 주입(state["current_target_sub"]) → LLM 은 표현만.
-    from diag_project.services.traversal import (
-        apply_probe_turn, asked_for_chapter,
-    )
-    _PROBE_INSTR = {
-        "CHAPTER_OPENING", "CONTINUE_NORMAL", "STAR_INCOMPLETE",
-        "STAR_COMPLETE_NEW_EVENT", "CONTRARY_NEEDED", "ABSTRACT_AVOIDANCE",
-        "AVOIDANCE_DETECTED", "ABSENCE_PROBE",
-        # #2(2026-09-07): 정의 제시(ALIGN) 턴이 첫 앵커까지 한 메시지로 나간다.
-        #   asked 기록은 여전히 LLM 호출 '이전'(이 스텝) — 합치는 것은 출력 조립만.
-        "COMPETENCY_ALIGN",
-    }
+    # ── (2026-11-04 BEI) 사례 단계 — LLM 호출 '이전'에 슬롯 판정(Haiku 1콜)·사례 종료·하위역량 매핑(1콜)·다음 상태를 결정한다.
+    #   결정기는 EPISODE_PROBE 를 내고, 여기서 EPISODE_OPEN / EPISODE_RETRY / SWEEP_ANCHOR / SWEEP_FOLLOWUP / CHAPTER_READY_TO_END 로 덮어쓴다.
+    #   원장(episodes·covered·bei_turns…)은 session.self_assessment_data 에 두고, LLM 실패·일시정지 제안 턴은 스냅숏으로 되돌린다.
+    #   설계: docs/design_bei_2026-11.md §1~§4 · 순수 함수: services/bei_engine · 판정: services/slot_judge
+    from diag_project.data.competencies import find_sub_key_by_name as _fsk_b
+    from diag_project.services.slot_judge import judge_slots as _judge_slots, map_episode as _map_episode, sub_defs_for as _sub_defs
     current_target_sub = None
-    _cur_before = None          # 프로브 스텝 '이전' 타겟(프로브 턴이 아니면 None 유지)
-    # H5: LLM 호출 실패 시 이 턴의 원장 전진을 되돌리기 위한 스냅샷(프로브 턴만).
     _ledger_snapshot = None
-    if chapter and instruction_used in _PROBE_INSTR:
-        from diag_project.services.traversal import snapshot_ledger
-        # 재개 테스트(T-E)와 동일한 순수 스텝을 공유한다 — 원장이 유일 소스.
+    _bei_ep = None                 # 이번 턴 LLM 이 겨냥하는 사례(카드)
+    _bei_closed: list[dict] = []   # 이번 턴에 종료된 사례 — 9단계에서 Event 행으로 쓴다
+    _bei_anchor_text = None        # EPISODE_OPEN·SWEEP_ANCHOR 에 시스템이 붙일 앵커
+    _bei_user_text = (state.get("resume_pending") or {}).get("user_text") or request.content or ""
+    _all_subs_b = list(state.get("all_subcompetencies") or [])
+    _ch_msgs_b = [m for m in history_messages if m.chapter == chapter] if chapter else []
+    _turn_index_b = state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
+
+    def _anchor_for_sub(sub: str | None) -> str:
+        """여는 앵커·SWEEP 앵커 — 사전 52문(세션 회차로 회전) + 페르소나 어미."""
+        from diag_project.services.anchor_render import dict_anchor as _da
+        from diag_project.services.output_guard import strip_frame_lead as _sfl
+        _k = _fsk_b(chapter, sub) if (chapter and sub) else None
+        return _voiced_q(_sfl(_da(_k, int((session.self_assessment_data or {}).get("anchor_variant") or 0))))
+
+    def _ep_transcript(ep: dict) -> list[tuple[str, str]]:
+        """사례 전문 = 사례를 연 코치 턴부터 이번 리더 답까지(opened_at = 열 때의 챕터 메시지 수)."""
+        _from = int(ep.get("opened_at") or 0)
+        out = [("model" if (m.role == MessageRole.MODEL or m.role == "model") else "user", m.content or "") for m in _ch_msgs_b[_from:]]
+        if not out or out[-1][0] != "user" or out[-1][1] != (request.content or ""):
+            out.append(("user", _bei_user_text))
+        elif state.get("resume_pending"):
+            out[-1] = ("user", _bei_user_text)
+        return out
+
+    if chapter and instruction_used in ("COMPETENCY_ALIGN", "EPISODE_PROBE"):
         _store = dict(session.self_assessment_data or {})
-        _ledger_snapshot = snapshot_ledger(_store)
-        _all_subs = state.get("all_subcompetencies") or []
-        # 4(2026-09-17) 부재 진술 2단: 직전 코치 턴이 폴백(ABSENCE_PROBE)이었는데도 또 부재 진술이면
-        #   더 캐묻지 않고 이번 턴에 다음 하위역량으로 전진(현재 타겟 턴을 상한으로 올려 apply 가 전진하게).
-        from diag_project.services.avoidance_detector import detect_absence_statement as _abs
-        if (state.get("last_instruction") == "ABSENCE_PROBE" and _abs(request.content)
-                and (_store.get("current_target") or {}).get(chapter)):
-            from diag_project.services.traversal import MAX_TURNS_PER_SUB as _MAXT
-            _store.setdefault("turns_on_target", {})[chapter] = _MAXT
-            logger.info("🚫 부재 진술 2회(폴백 후) → [%s] 타겟 전진", chapter)
-        # 🌱 태도 진술(2026-09-29): 30자 미만·시점/인물/행동 없음. 2회 연속이면 R 강제 해제 + 계기 질문 1회,
-        #   그 뒤에도 태도·부재·단답이면 이번 턴에 다음 하위역량으로 전진(3턴 상한은 최대치이지 목표가 아니다).
-        from diag_project.services.event_tracker import is_attitude_statement as _is_att
-        _att_now = _is_att(request.content)
-        _att_map = dict(_store.get("attitude_streak") or {})
-        _att_trig = dict(_store.get("attitude_trigger") or {})
-        _tgt_now = (_store.get("current_target") or {}).get(chapter)
-        if _att_trig.get(chapter) and _att_trig.get(chapter) == _tgt_now and (
-                _att_now or _abs(request.content) or len((request.content or "").replace(" ", "")) < 12):
-            from diag_project.services.traversal import MAX_TURNS_PER_SUB as _MAXT2
-            _store.setdefault("turns_on_target", {})[chapter] = _MAXT2
-            logger.info("🌱 계기 질문 뒤에도 태도·부재 → [%s] 타겟 전진", chapter)
-        _att_map[chapter] = (int(_att_map.get(chapter, 0) or 0) + 1) if _att_now else 0
-        _store["attitude_streak"] = _att_map
-        _event_done = instruction_used == "STAR_COMPLETE_NEW_EVENT"
-        # 🔑 타겟 전진 감지용: 스텝 '이전'의 현재 타겟(없으면 None=챕터 첫 앵커).
-        _cur_before = (_store.get("current_target") or {}).get(chapter)
-        # (2026-10-22 P2-0) 자발적 사례: 리더가 앵커 질문 없이 '아직 안 다룬' 하위역량의 사례를 분명히 말했으면(flash 판정)
-        #   asked 원장에 기록해 같은 앵커를 다시 묻지 않는다. 현재 타겟과 같으면 기록하지 않는다(그건 정상 답변).
-        if len((request.content or "").replace(" ", "")) >= 60:
-            from diag_project.data.competencies import SUBCOMPETENCY_ANCHORS as _SA, find_sub_key_by_name as _fsk_v
-            from diag_project.services.llm_judge import volunteered_subcompetency as _vol
-            _asked_now = set(asked_for_chapter(_store, chapter))
-            _cands = {}
-            for _nm in _all_subs:
-                if _nm in _asked_now or _nm == _cur_before:
-                    continue
-                _k = _fsk_v(chapter, _nm)
-                _cands[_nm] = " / ".join(_SA.get(_k) or []) if _k else ""
-            if _cands:
-                _vsub = await _vol(llm, request.content, _cands)
-                if _vsub:
-                    from diag_project.services.traversal import record_asked as _rec_v
-                    _store = _rec_v(_store, chapter, _vsub)
-                    _tm["volunteered"] = _vsub
-                    logger.info("🗂️ 자발적 사례 → asked 기록: [%s] %s (앵커 재질문 금지)", chapter, _vsub)
-        _store, current_target_sub = apply_probe_turn(
-            _store, chapter, _all_subs, _event_done, priority=[]
-        )
-        # (2026-10-22 P2-2) 리더 답변이 S-A-R 을 이미 다 담았으면(과거형 행동 2+ · 결과 표지 · 80자+) 이번 턴 탐침 1회로 줄이고
-        #   다음 턴에 전진 — 현재 타겟 turns 를 상한으로 올리고 result_probed 를 True 로(답에 결과가 있으므로 R 강제 불필요).
-        #   되받기(다음 전환 턴의 8-j 본문)가 들은 것을 요약하고 넘어간다.
-        # (2026-10-29 P1) 사다리 중복 방지 — 사다리 문장을 내기 전에 직전 리더 답에 그 행동이 이미 있는지 Haiku 1콜로 판정.
-        #   있으면 2단계 중 미사용 단계로 교체, 둘 다 이미 있으면 건너뛰고 ladder_probed 표시('답에 있었음'으로 기록, 미발동 아님).
-        async def _choose_ladder(sub_key: str, lvl, answer: str):
-            from diag_project.data.ladder_questions import LADDER_QUESTIONS as _LQS, ladder_question as _lq_c
-            from diag_project.services.llm_judge import ladder_already_answered as _laa
-            _avoid = ((_store.get("ladder_avoid") or {}).get(sub_key) or [])
-            q, step = _lq_c(sub_key, lvl if lvl is not None else 2, avoid=_avoid)
-            if not q:
-                return None, None, None
-            if await _laa(llm, answer, q) is not True:
-                return q, step, None
-            other = "3_4" if step == "2_3" else "2_3"
-            q2 = (_LQS.get(sub_key) or {}).get(other)
-            if q2 and await _laa(llm, answer, q2) is not True:
-                _tm["ladder_swap"] = 1
-                return q2, other, "swapped"
-            _tm["ladder_skip"] = "answered"
-            return None, None, "answered"
+        _ledger_snapshot = _bei.snapshot(_store)
 
-        def _mark_ladder_answered(store: dict, sub: str) -> dict:
-            from diag_project.services.traversal import mark_ladder_probed as _mlp_a
-            store = _mlp_a(store, chapter, sub)
-            _ls = dict(store.get("ladder_skipped") or {}); _lsc = dict(_ls.get(chapter) or {}); _lsc[sub] = "answered"
-            _ls[chapter] = _lsc; store["ladder_skipped"] = _ls
-            logger.info("🪜 사다리 건너뜀(답에 이미 있음): [%s] %s", chapter, sub)
-            return store
+        def _open(kind: str) -> dict | None:
+            nonlocal _store, current_target_sub
+            _sub = _bei.pick_opener(_store, chapter, _all_subs_b) if kind == "episode" else _bei.sweep_target(_store, chapter, _all_subs_b)
+            if not _sub:
+                return None
+            _store, _ep_new = _bei.new_episode(_store, chapter, _sub, _fsk_b(chapter, _sub), kind=kind)
+            _ep_new["opened_at"] = len(_ch_msgs_b)
+            _store = _bei.update_episode(_store, chapter, _ep_new)
+            _store = _bei.set_chapter_state(_store, chapter, _bei.STATE_EPISODE if kind == "episode" else _bei.STATE_SWEEP)
+            current_target_sub = _sub
+            return _ep_new
 
-        from diag_project.services.avoidance_detector import has_full_star as _hfs
-        from diag_project.services.traversal import MAX_TURNS_PER_SUB as _MAXT_sar, advanced_to_new_target as _adv_sar
-        if (current_target_sub and not _adv_sar(_cur_before, current_target_sub) and _hfs(request.content)
-                and int((_store.get("turns_on_target") or {}).get(chapter, 0) or 0) < _MAXT_sar):
-            _store.setdefault("turns_on_target", {})[chapter] = _MAXT_sar
-            _store.setdefault("result_probed", {})[chapter] = True
-            state["sar_complete_answer"] = True
-            _tm["sar_full"] = 1
-            logger.info("🧭 S-A-R 완비 답변 → [%s] %s 탐침 1회 후 전진", chapter, current_target_sub)
-            # (2026-10-23 P3) 레벨 사다리 탐침 — 추가가 아니라 교체: 이 '탐침 1회'를 현재 레벨 +1 의 루브릭 차별 행동 질문으로.
-            #   현재 레벨은 flash 판정(실패면 Lv.2 기준). Lv.4 면 사다리 없음. 타겟당 1회. 답이 일반화든 아니든 다음 턴에 전진.
-            from diag_project.data.competencies import find_sub_key_by_name as _fsk_l
-            from diag_project.data.ladder_questions import ladder_question as _lq
-            from diag_project.services.llm_judge import judge_rubric_level as _jrl
-            from diag_project.services.traversal import ladder_probed as _lpd
-            _sub_key_l = _fsk_l(chapter, current_target_sub)
-            if _sub_key_l and not _lpd(_store, chapter, current_target_sub):
-                _lvl = await _jrl(llm, chapter, current_target_sub, request.content)
-                _lq_text, _lq_step, _lq_why = await _choose_ladder(_sub_key_l, _lvl, request.content)
-                if _lq_text:
-                    state["force_ladder_probe"] = {"q": _lq_text, "step": _lq_step, "level": _lvl, "sub": current_target_sub}
-                    logger.info("🪜 사다리 탐침: [%s] %s 판정 Lv.%s → %s%s", chapter, current_target_sub, _lvl, _lq_step, " (미사용 단계로 교체)" if _lq_why == "swapped" else "")
-                elif _lq_why == "answered":
-                    _store = _mark_ladder_answered(_store, current_target_sub)
-        # (2026-10-29 P1-1) 사다리 발동 조건 확장 — S-A-R 완비 판정과 무관하게, 이 타겟에 탐침을 2턴 이상 썼고(이번이 3번째 턴)
-        #   사다리를 아직 안 썼으면 이번 탐침은 사다리. s31 25세션: Michael 세션당 1.2회·Jessica 조직관리 0회 — 완비 판정이 실세션에
-        #   안 맞았다. 목표 챕터당 2회 이상(린트 집계). 사다리 턴은 R·A·일반화 강제보다 우선한다(아래 force 블록).
-        _ans_l = (request.content or "").strip()
-        if (chapter and current_target_sub and not state.get("force_ladder_probe") and not _adv_sar(_cur_before, current_target_sub)
-                and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE")
-                and int((_store.get("turns_on_target") or {}).get(chapter, 0) or 0) >= 3
-                and len(_ans_l.replace(" ", "")) >= 30 and not _ans_l.endswith("?")):   # (p11) '무슨 말씀이시죠?' 뒤에도 사다리가 나갔다
-            from diag_project.data.competencies import find_sub_key_by_name as _fsk_l2
-            from diag_project.data.ladder_questions import ladder_question as _lq2
-            from diag_project.services.llm_judge import judge_rubric_level as _jrl2
-            from diag_project.services.traversal import ladder_probed as _lpd2
-            _sub_key_l2 = _fsk_l2(chapter, current_target_sub)
-            if _sub_key_l2 and not _lpd2(_store, chapter, current_target_sub):
-                _lvl2 = await _jrl2(llm, chapter, current_target_sub, request.content)
-                _lq_text2, _lq_step2, _lq_why2 = await _choose_ladder(_sub_key_l2, _lvl2, request.content)
-                if _lq_text2:
-                    state["force_ladder_probe"] = {"q": _lq_text2, "step": _lq_step2, "level": _lvl2, "sub": current_target_sub}
-                    _tm["ladder_trigger"] = "turns"
-                    logger.info("🪜 사다리 탐침(턴 조건): [%s] %s 판정 Lv.%s → %s%s", chapter, current_target_sub, _lvl2, _lq_step2, " (미사용 단계로 교체)" if _lq_why2 == "swapped" else "")
-                elif _lq_why2 == "answered":
-                    _store = _mark_ladder_answered(_store, current_target_sub)
+        async def _close_and_map(ep: dict, status: str) -> None:
+            nonlocal _store
+            labels: list[dict] = []
+            if status != "no_case" and _bei.filled_slots(ep):
+                labels = await _map_episode(llm, transcript=_ep_transcript(ep), chapter_name=COMPETENCY_FRAMEWORK.get(chapter, {}).get("name", chapter),
+                                            sub_defs=_sub_defs(chapter), opener_sub=ep.get("opener_sub"))
+            _store = _bei.close_episode(_store, chapter, ep, status, labels, _all_subs_b)
+            if status == "no_case":
+                _store = (_bei.mark_unconfirmed(_store, chapter, ep.get("opener_sub")) if ep.get("kind") == "sweep"
+                          else _bei.mark_no_case(_store, chapter, ep.get("opener_sub")))
+            _closed = next((e for e in _bei.episodes(_store, chapter)
+                            if e.get("idx") == ep.get("idx") and e.get("kind", "episode") == ep.get("kind", "episode")), None)
+            if _closed:
+                _bei_closed.append(_closed)
+                _tm["mapped"] = [f"{x['sub']}:{x['strength'][0]}" for x in (_closed.get("labels") or [])]
+            _tm["closed"] = f"{ep.get('kind', 'episode')}{ep.get('idx')}:{status}"
+
+        def _next_after_close() -> None:
+            nonlocal _bei_ep, instruction_used, _store
+            plan = _bei.plan_after_episode(_store, chapter, _all_subs_b)
+            if plan == _bei.STATE_EPISODE:
+                _bei_ep = _open("episode")
+                instruction_used = "EPISODE_OPEN"
+                if _bei_ep is None:
+                    plan = _bei.STATE_SWEEP
+            if plan == _bei.STATE_SWEEP:
+                _bei_ep = _open("sweep")
+                instruction_used = "SWEEP_ANCHOR"
+                if _bei_ep is None:
+                    plan = _bei.STATE_CLOSE
+            if plan == _bei.STATE_CLOSE:
+                _store = _bei.set_chapter_state(_store, chapter, _bei.STATE_CLOSE)
+                instruction_used = "CHAPTER_READY_TO_END"
+            _tm["bei"] = plan
+
+        if instruction_used == "COMPETENCY_ALIGN":
+            # 사례 1 여는 앵커 = ALIGN 꼬리(앵커 문장은 8-b/8-z 가 붙인다). 리더 턴은 다음 답부터 센다.
+            _bei_ep = _open("episode")
+            _tm["bei"] = "open1"
+        else:
+            _ep = _bei.current_episode(_store, chapter)
+            if _ep is None:
+                _bei_ep = _open("episode")
+                if _bei_ep is not None:
+                    instruction_used = "EPISODE_OPEN"
+                    _tm["bei"] = "open_fallback"
+                else:
+                    _store = _bei.set_chapter_state(_store, chapter, _bei.STATE_CLOSE)
+                    instruction_used = "CHAPTER_READY_TO_END"
+                    _tm["bei"] = "close"
+            else:
+                _store, _ep = _bei.record_leader_turn(_store, chapter, _ep, turn_index=_turn_index_b)
+                _tr = _ep_transcript(_ep)
+                _jd = await _judge_slots(llm, transcript=_tr, prev_slots=_ep.get("slots"))
+                _no_case = bool(_jd.get("no_case")) or _bei.is_no_case_text(_bei_user_text) or bool(state.get("bei_anomaly_repeat"))
+                if not (_no_case and int(_ep.get("leader_turns") or 0) <= 1 + int(_ep.get("retry") or 0)):
+                    # 여는 답(재질문 답 포함)이 '그런 일 없다'면 슬롯을 채우지 않는다 — 없는 사례에 인용이 붙는 것을 막는다
+                    _ep["slots"] = _bei.merge_slots(_ep.get("slots"), _jd.get("slots"), " ".join(t for r, t in _tr if r == "user"))
+                _store = _bei.update_episode(_store, chapter, _ep)
+                _tm["slot_judge"] = "stub" if _jd.get("stub") else ("error" if _jd.get("error") else "ok")
+                _tm["slots_filled"] = len(_bei.filled_slots(_ep))
+                if _ep.get("kind") == "sweep":
+                    # SWEEP 항목: 앵커 답 1턴 → (허용되면) 후속 1턴 → 매핑 → 다음
+                    if _no_case and int(_ep.get("leader_turns") or 0) <= 1:
+                        await _close_and_map(_ep, "no_case")
+                        _next_after_close()
+                    elif int(_ep.get("leader_turns") or 0) == 1 and _bei.sweep_followup_allowed(_store, chapter, _all_subs_b, _ep):
+                        _bei_ep = _ep; instruction_used = "SWEEP_FOLLOWUP"; _tm["bei"] = "sweep_followup"
+                    else:
+                        await _close_and_map(_ep, "sweep_done")
+                        _next_after_close()
+                else:
+                    _reason = _bei.episode_done_reason(_ep, _store, chapter)
+                    if _no_case and not _bei.filled_slots(_ep):
+                        if int(_ep.get("retry") or 0) < _bei.EPISODE_RETRY_MAX and int(_ep.get("leader_turns") or 0) <= 2 and _reason is None:
+                            _ep["retry"] = int(_ep.get("retry") or 0) + 1
+                            _store = _bei.update_episode(_store, chapter, _ep)
+                            _bei_ep = _ep; instruction_used = "EPISODE_RETRY"; _tm["bei"] = "retry"
+                        else:
+                            await _close_and_map(_ep, "no_case")
+                            _next_after_close()
+                    elif _reason:
+                        await _close_and_map(_ep, "done" if _reason == "slots" else _reason)
+                        _next_after_close()
+                    else:
+                        _bei_ep = _ep; instruction_used = "EPISODE_PROBE"; _tm["bei"] = "probe"
+                        if _jd.get("switched_case"):
+                            state["bei_switched"] = True
         session.self_assessment_data = _store
-        from sqlalchemy.orm.attributes import flag_modified as _flag_mod
-        _flag_mod(session, "self_assessment_data")
-        await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
-        # 🔒 T2 기록=발화 결합(넓이 게이트 허수 방지): apply_probe_turn 이 '새'
-        #   하위역량으로 타겟을 전진(record)시켰다면(=asked_subs 에 방금 1개 추가),
-        #   그 턴의 instruction 을 앵커 발화형(STAR_COMPLETE_NEW_EVENT)으로
-        #   오버라이드한다. 이렇게 해야 LLM 이 실제로 새 하위역량 앵커로 '피벗'해
-        #   질문을 던지고, asked_subs 기록 수 == 실제 앵커 발화 지시 수가 된다.
-        #   (기록 시점은 여전히 LLM 응답 '이전' — 텍스트 확인 방식으로 회귀 X.)
-        #   · _cur_before is None → 챕터 첫 앵커(CHAPTER_OPENING 템플릿) → 유지.
-        #   · 전진 조건은 apply_probe_turn 내부(STAR 완성 OR 3턴 상한). 상한 도달
-        #     시엔 STAR 미완이어도 전진→피벗한다(넓이 > 깊이, 기존 결정 유지).
-        #     3턴 이내엔 전진하지 않으므로 진행 중 STAR 를 끊지 않는다.
-        from diag_project.services.traversal import advanced_to_new_target
-        if (advanced_to_new_target(_cur_before, current_target_sub)
-                and instruction_used != "STAR_COMPLETE_NEW_EVENT"):
-            logger.info(
-                "🧭 T2 타겟 전진 감지: [%s] %s→%s ⇒ instruction 오버라이드 "
-                "%s→STAR_COMPLETE_NEW_EVENT (앵커 발화 강제)",
-                chapter, _cur_before, current_target_sub, instruction_used,
-            )
-            instruction_used = "STAR_COMPLETE_NEW_EVENT"
-            state["instruction_for_this_turn"] = "STAR_COMPLETE_NEW_EVENT"
-        # 🎯 R 탐침 강제(2026-09-14): 이 하위역량의 마지막 프로브 턴(turns==상한)인데 아직
-        #   결과(R)를 묻지 않았다면 이번 턴을 결과 탐침으로 고정한다. 3턴 상한은 그대로 —
-        #   '묻지도 않고' 다음 앵커로 넘어가는 것만 막는다(답이 약해도 다음 턴엔 전진).
-        #   앵커(전진) 턴·특수 처리(회피·부재 등) 턴은 대상이 아니다.
-        from diag_project.services.traversal import needs_result_probe
-        _target_advanced_now = (
-            _cur_before is None
-            or advanced_to_new_target(_cur_before, current_target_sub)
-        )
-        # 2026-09-17: decider 가 STAR 완결(LLM 자기보고)로 새 사건을 청하려 했지만 result_probed=False 라
-        #   원장이 전진을 막은 턴 → 새 사건 대신 현재 사건의 결과(R)를 묻는다(깊이 유지).
-        from diag_project.services.traversal import result_probed as _rp
-        if (instruction_used == "STAR_COMPLETE_NEW_EVENT" and not _target_advanced_now
-                and current_target_sub and not _rp(session.self_assessment_data, chapter)):
-            logger.info("🧭 조기 전진 차단: [%s] target=%s STAR 완결 보고됐으나 result_probed=False → R 탐침",
-                        chapter, current_target_sub)
-            instruction_used = "STAR_INCOMPLETE"
-            state["instruction_for_this_turn"] = "STAR_INCOMPLETE"
-            state["force_result_probe"] = True
-        _force_r = (
-            not _target_advanced_now
-            and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE")
-            and needs_result_probe(session.self_assessment_data, chapter)
-        ) or bool(state.get("force_result_probe"))
-        # 🌱 태도 진술 2회 연속 → 계기 질문 1회(R 강제 해제). 새 타겟으로 넘어갔으면 카운터·트리거 리셋.
-        _st_att = dict(session.self_assessment_data or {})
-        _am = dict(_st_att.get("attitude_streak") or {}); _tm_att = dict(_st_att.get("attitude_trigger") or {})
-        if _target_advanced_now:
-            _am[chapter] = 0; _tm_att.pop(chapter, None)
-        elif int(_am.get(chapter, 0) or 0) >= 2 and _tm_att.get(chapter) != current_target_sub \
-                and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE"):
-            _tm_att[chapter] = current_target_sub
-            state["attitude_trigger"] = True
-            _force_r = False
-            from diag_project.services.traversal import mark_result_probed as _mrp_att
-            _st_att = _mrp_att(_st_att, chapter)
-            logger.info("🌱 태도 진술 2회 연속 → [%s] %s 계기 질문(R 강제 해제)", chapter, current_target_sub)
-        _st_att["attitude_streak"] = _am; _st_att["attitude_trigger"] = _tm_att
-        session.self_assessment_data = _st_att
-        from sqlalchemy.orm.attributes import flag_modified as _fm_att
-        _fm_att(session, "self_assessment_data")
-        state["force_result_probe"] = _force_r
-        # (2026-10-22 P2-2) S-A-R 중 빈 요소 먼저: 상황(S)은 들었는데 리더가 직접 한 행동(A)이 비어 있고 아직 A 를 묻지 않았으면
-        #   이번 탐침은 행동 질문(R 강제가 아닐 때). 원장 action_probed 는 코치 질문이 행동 표지일 때 턴 끝에 기록.
-        from diag_project.services.traversal import action_probed as _ap
-        _cov_sar = state.get("current_event_star_coverage") or {}
-        _force_a = (not _target_advanced_now and not _force_r and not state.get("sar_complete_answer")
-                    and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE")
-                    and bool(_cov_sar) and bool(_cov_sar.get("S")) and not _cov_sar.get("A")
-                    and not _ap(session.self_assessment_data, chapter))
-        state["force_action_probe"] = _force_a
-        if _force_a:
-            logger.info("🎯 A 탐침 강제: [%s] target=%s (S 있음·A 비어 있음)", chapter, current_target_sub)
-        # (2026-10-23, 4-1) 일반화 답변 → 구체 사례 탐침 1회. 앵커 답변(이 타겟 2번째 코치 턴)에 시점이 없고 습관 표지가
-        #   있으면 이번 질문은 "그중 가장 최근 일 하나만요"(페르소나별). 타겟당 1회, 그래도 일반화면 그대로 전진.
-        from diag_project.services.avoidance_detector import is_generalized_answer as _iga
-        from diag_project.services.traversal import generalize_probed as _gpd
-        # (2026-10-29 P1-3) 직전 턴이 일반화 탐침이었는데 이번 답도 시점이 없으면 → generalized 원장(챕터별 하위역량 목록)
-        _gp_store = dict(session.self_assessment_data or {})
-        _gp_pending = (_gp_store.get("generalize_pending") or {}).get(chapter) if chapter else None
-        if _gp_pending:
-            _gpd_map = dict(_gp_store.get("generalize_pending") or {}); _gpd_map.pop(chapter, None); _gp_store["generalize_pending"] = _gpd_map
-            if _iga((state.get("resume_pending") or {}).get("user_text") or request.content):
-                _gz = dict(_gp_store.get("generalized") or {}); _gz[chapter] = sorted(set((_gz.get(chapter) or []) + [_gp_pending]))
-                _gp_store["generalized"] = _gz
-                _gt = dict(_gp_store.get("generalized_text") or {}); _gtc = dict(_gt.get(chapter) or {})
-                _gtc[_gp_pending] = ((state.get("resume_pending") or {}).get("user_text") or request.content or "").strip()[:160]
-                _gt[chapter] = _gtc; _gp_store["generalized_text"] = _gt   # (P2-3) 리포트 '사례 미확인' 서술에 한 줄 인용
-                _tm["generalized"] = _gp_pending
-                logger.info("🧭 일반화 탐침 뒤에도 시점 없음 → generalized 기록: [%s] %s", chapter, _gp_pending)
-            session.self_assessment_data = _gp_store
-            from sqlalchemy.orm.attributes import flag_modified as _fm_gp
-            _fm_gp(session, "self_assessment_data")
-        _tot_g = int((session.self_assessment_data.get("turns_on_target") or {}).get(chapter, 0) or 0)
-        _force_g = bool(chapter and current_target_sub and not _target_advanced_now and _tot_g == 2
-                        and instruction_used in ("CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_INCOMPLETE")
-                        and not state.get("sar_complete_answer")
-                        and _iga((state.get("resume_pending") or {}).get("user_text") or request.content)
-                        and not _gpd(session.self_assessment_data, chapter, current_target_sub))
-        state["force_generalize_probe"] = _force_g
-        state["contrast_used"] = int(((session.self_assessment_data or {}).get("contrast_q_count") or {}).get(chapter, 0) or 0) >= 1
-        if _force_g:
-            _force_a = False
-            _force_r = False
-            state["force_action_probe"] = False
-            state["force_result_probe"] = False
-            logger.info("🧭 일반화 탐침: [%s] target=%s (시점 없음·습관 표지)", chapter, current_target_sub)
-        if state.get("force_ladder_probe"):
-            # (2026-10-29 P1-1) 사다리 턴에는 R·A·일반화 강제를 걸지 않는다 — 사다리 질문 하나만 나간다.
-            if _force_r or _force_a or _force_g:
-                logger.info("🪜 사다리 턴 → R/A/일반화 강제 해제 (R=%s A=%s G=%s)", _force_r, _force_a, _force_g)
-            _force_r = False; _force_a = False; _force_g = False
-            state["force_result_probe"] = False; state["force_action_probe"] = False; state["force_generalize_probe"] = False
-        if _force_r:
-            from diag_project.services.output_guard import needs_quantify_probe as _nqp
-            state["result_quantify"] = _nqp((state.get("resume_pending") or {}).get("user_text") or request.content)
-        if _force_r and chapter:
-            # (2026-09-29) 풀 문장을 넣지 않는다 — 직전 발화의 명사구를 주고 LLM 이 결과 질문을 만든다.
-            from diag_project.services.output_guard import key_noun_phrase as _knp
-            state["result_focus"] = _knp((state.get("resume_pending") or {}).get("user_text") or request.content)
-        if _force_r and instruction_used != "STAR_INCOMPLETE":
-            logger.info(
-                "🎯 R 탐침 강제: [%s] target=%s turns=%d instr %s→STAR_INCOMPLETE",
-                chapter, current_target_sub,
-                (session.self_assessment_data.get("turns_on_target") or {}).get(chapter, 0),
-                instruction_used,
-            )
-            instruction_used = "STAR_INCOMPLETE"
-            state["instruction_for_this_turn"] = "STAR_INCOMPLETE"
-        logger.info(
-            "🧭 T2 타겟: [%s] target=%s asked=%d turns=%d instr=%s force_R=%s",
-            chapter, current_target_sub,
-            len(asked_for_chapter(session.self_assessment_data, chapter)),
-            (session.self_assessment_data.get("turns_on_target") or {}).get(chapter, 0),
-            instruction_used, _force_r,
-        )
-    # (2026-09-21) 교정·재생성과 무관하게 모든 코치 턴은 turns_on_target 에 세어진다 — 프로브 집합 밖 턴
-    #   (META_QUESTION_FROM_USER 등)은 전진 없이 턴 수만 +1.
-    if chapter and instruction_used not in _PROBE_INSTR and instruction_used in (
-            "META_QUESTION_FROM_USER", "DUPLICATE_SUSPECTED", "CROSS_CHAPTER_OPPORTUNITY"):
-        from diag_project.services.traversal import bump_turns_only
-        _st_b, _cur_b = bump_turns_only(session.self_assessment_data, chapter)
-        if _cur_b:
-            session.self_assessment_data = _st_b
-            from sqlalchemy.orm.attributes import flag_modified as _fm_b
-            _fm_b(session, "self_assessment_data")
-            await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
-            current_target_sub = _cur_b
+        from sqlalchemy.orm.attributes import flag_modified as _fm_bei
+        _fm_bei(session, "self_assessment_data")
+        await db.flush()   # 턴 끝 1회 커밋 — 중간 커밋 없음
+        state["instruction_for_this_turn"] = instruction_used
+        if instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and current_target_sub:
+            _bei_anchor_text = _anchor_for_sub(current_target_sub)
+        # 사례 카드(system 프롬프트의 턴 동적 부분)
+        _signal = ""
+        _ans_len = len((_bei_user_text or "").replace(" ", ""))
+        if instruction_used in ("EPISODE_PROBE", "EPISODE_RETRY", "SWEEP_FOLLOWUP"):
+            if _ans_len < 20 or state.get("contains_avoidance_keywords"):
+                _signal = f"직전 답이 짧거나 회피 표지({_ans_len}자) — 더 작은 단위(그날 그 자리에서 처음 한 말)로 묻는다"
+            elif _ans_len >= 150:
+                _signal = "직전 답이 길고 구체적 — 되받기는 2문장까지, 가장 또렷한 장면 하나를 골라 받는다"
+            if state.get("bei_switched"):
+                _signal = (_signal + " / " if _signal else "") + "리더가 다른 사례로 넘어간 듯하다 — 한 번은 받되 질문은 지금 사례로 돌아온다"
+        _weak_hint = None
+        if instruction_used == "SWEEP_ANCHOR" and current_target_sub:
+            _w_eps = [x for x in (_bei.weak_map(_store, chapter).get(current_target_sub) or []) if isinstance(x, int)]
+            if _w_eps:
+                _weak_hint = f"아까 {_w_eps[0]}번째 사례에서 이쪽 이야기가 살짝 나왔다 — '그쪽을 하나 더' 결로 잇는다"
+        _prev_eps_card = [{"idx": i + 1, "summary": f"[{e.get('chapter')}] {e.get('summary')}"}
+                          for i, e in enumerate((state.get("all_collected_events") or [])[-5:])]
+        from diag_project.prompts.phase3a.episode_card import build_episode_card as _bec
+        state["bei_card"] = _bec(instruction=instruction_used, chapter=chapter, ep=_bei_ep, bei_turns=_bei.bei_turns(_store, chapter),
+                                 budget=_bei.chapter_budget(chapter), prev_episodes=_prev_eps_card, signal=_signal,
+                                 anchor_text=_bei_anchor_text, sweep_sub=current_target_sub, weak_hint=_weak_hint)
+        logger.info("🧭 BEI [%s] state=%s instr=%s ep=%s%s turns=%d/%d filled=%s closed=%s", chapter, _bei.chapter_state(_store, chapter),
+                    instruction_used, (_bei_ep or {}).get("kind", "-"), (_bei_ep or {}).get("idx", "-"), _bei.bei_turns(_store, chapter),
+                    _bei.chapter_budget(chapter), _tm.get("slots_filled"), _tm.get("closed"))
     state["current_target_sub"] = current_target_sub
     _turn_index = (
         state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
@@ -1325,27 +1179,11 @@ async def _submit_message_phase3a(
     # Layer 2: COMPETENCY_INTRO/ALIGN 단계에선 챕터 시작 스크립트가
     # LLM 응답에 섞이는 문제 방지를 위해 빈 값 전달.
     # 두 instruction 은 state.chapter_framework 로 필요 정보 받음.
-    _LAYER2_EXCLUDED = {"COMPETENCY_INTRO", "COMPETENCY_ALIGN", "DIAGNOSIS_INTRO"}
-    if instruction_used in _LAYER2_EXCLUDED:
-        chapter_context = ""
-    else:
-        chapter_context = CHAPTER_CONTEXTS.get(
-            chapter, CHAPTER_CONTEXTS["organization_management"]
-        )
-        # 구버전 '챕터 시작 스크립트'(일반 질문 + 중립성 선언 + 위로성 backup)는
-        # 첫 질문이 시스템 템플릿(CHAPTER_OPENING)으로 대체되어 더 이상 불필요.
-        # LLM 이 이를 그대로 echo 하는 문제 방지를 위해 BEI 턴 컨텍스트에서 제거.
-        chapter_context = chapter_context.split("## 챕터 시작 스크립트")[0].rstrip()
+    # (2026-11-04 BEI) Layer2 = 역량 정의 1문장 + 하위역량 이름·행동 단서(내부용). 목표·특수 지시·시작 스크립트·Backup 은 폐지.
+    _LAYER2_EXCLUDED = {"COMPETENCY_ALIGN", "DIAGNOSIS_INTRO"}
+    chapter_context = "" if instruction_used in _LAYER2_EXCLUDED else chapter_context_bei(chapter)
     # 페르소나 통합 system prompt — 사용자가 '선택한' 코치(session.coach_id) 기준.
-    coach_key = _coach_key_from_id(session.coach_id)
-    # #6: 매 턴 Layer3 상단에도 페르소나를 상기시킨다(Layer1 끝의 3줄만으로는
-    #   가이드 예시 문장의 균일한 톤에 묻혀 어느 코치든 같은 말투가 나왔다).
-    _persona = COACHES_PERSONA.get(coach_key) or {}
-    state["coach_persona"] = {
-        "name": _persona.get("name", ""),
-        "coaching_style": _persona.get("coaching_style", ""),
-        "tags": _persona.get("tags", ""),
-    }
+    # (2026-11-04 BEI) 페르소나는 BEI 단계 앞(아래 4-b)에서 state 에 넣는다 — 여는 앵커 어미 변환이 페르소나를 봐야 한다.
     # (2026-09-18) 문체 제약을 프롬프트 꼬리(사용자 메시지 직전)로. FM_STYLE_TAIL=0 이면 기존 위치(A/B 측정용).
     import os as _os_st
     state["style_at_tail"] = _os_st.getenv("FM_STYLE_TAIL", "1") != "0"
@@ -1371,7 +1209,7 @@ async def _submit_message_phase3a(
     _LIGHT_LAYER1_INSTRUCTIONS = {
         "RAPPORT_BUILDING", "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "COMPETENCY_ASK", "COMPETENCY_ALIGN",
         "META_QUESTION_FROM_USER", "USER_REQUESTS_PAUSE", "INVALID_INPUT", "PROMPT_INJECTION_DETECTED",
-        "CHAPTER_CONTINUE_CONFIRMED", "NAME_RECONFIRM", "CHAPTER_ONE_MORE_ASK",
+        "NAME_RECONFIRM",
     }
     system_prompt = build_layer1_with_persona(
         coach_id=coach_key,
@@ -1497,25 +1335,6 @@ async def _submit_message_phase3a(
         #   바로 안내 — LLM 미호출. '괜찮습니다, 뚜렷하지 않으셔도' 류 위로 문장은 INTRO 에서 제거.
         from diag_project.services.intro_messages import persona_line as _pl_i
         system_override_text = f"{_pl_i((state.get('coach_persona') or {}).get('name'), 'intro_bridge')}\n\n{build_intro_anchor_section()}"
-    elif instruction_used == "CHAPTER_OPENING":
-        # 챕터 도입 — 첫 BEI 앵커 질문. item4: LLM 대신 백엔드 '템플릿 풀'로
-        #   문장 틀을 챕터마다 다르게 골라(무반복·결정론) '시점+인물+행동·은유금지'
-        #   앵커 품질을 구조적으로 보장한다. 앵커 내용(타겟 하위역량)은 주입,
-        #   틀만 변주 → 제어 역전 유지. 브릿지(직전 사건 요약)로 대화 연결.
-        _collected = state.get("all_collected_events") or []
-        _bridge_ctx = None
-        for _ev in reversed(_collected):
-            _kw = (_ev.get("summary") or "").strip()
-            if _kw:
-                _bridge_ctx = _kw
-                break
-        system_override_text = _voiced_q(build_chapter_opening_with_user_def(
-            chapter=chapter,
-            user_definition=state.get("last_user_response", "") or "",
-            first_subcompetency_name=state.get("first_subcompetency_name", ""),
-            bridge_context=_bridge_ctx,
-            variant=int((session.self_assessment_data or {}).get("anchor_variant") or 0),
-        ))
 
     # (2026-10-28 P0-4) 입력 이상 턴은 위 어떤 분기보다 우선 — 고정 응답, LLM 미호출
     if _anomaly_override_text is not None:
@@ -1536,11 +1355,8 @@ async def _submit_message_phase3a(
             "META_QUESTION_FROM_USER",
             "USER_REQUESTS_PAUSE",
             "INVALID_INPUT",
-            # 주입 대응 턴: 사건 수집 없음 — 거절+복귀 문장만 (경량)
+            # 주입 대응 턴: 사례 수집 없음 — 거절+복귀 문장만 (경량)
             "PROMPT_INJECTION_DETECTED",
-            # 경계 브릿지 턴: 한 문장 브릿지만 (경량)
-            "CHAPTER_CONTINUE_CONFIRMED",
-            "CHAPTER_ONE_MORE_ASK",   # (2026-10-22 P2-0) 되받기 한 문장만
         }
         _l0 = _time.perf_counter()
         llm_output = await llm.generate_phase3a_interaction(
@@ -1647,11 +1463,7 @@ async def _submit_message_phase3a(
     # [CHAPTER_COMPLETE] 를 환각으로 내면 챕터가 조기 전환되던 구멍 차단.
     # 8-d/8-e 블록이 READY_TO_END/CONTINUE_CONFIRMED 의 플래그를 코드로
     # 확정하므로, 이 게이트는 그 외 턴의 환각만 걸러낸다.)
-    _COMPLETE_ALLOWED = {
-        "CHAPTER_READY_TO_END",       # 최종 챕터 Grand Finale (코드가 확정)
-        "CHAPTER_CONTINUE_CONFIRMED",  # 사용자 '계속' 동의 (코드가 확정)
-        "MAX_TURNS_REACHED",           # 강제 종료 지시 턴
-    }
+    _COMPLETE_ALLOWED = {"CHAPTER_READY_TO_END"}   # 챕터 종료는 코드가 확정한다(8-d)
     if is_chapter_completed and instruction_used not in _COMPLETE_ALLOWED:
         logger.warning(
             "⛔ 환각 차단: instruction=%s 턴에서 [CHAPTER_COMPLETE] 감지 → 무시.",
@@ -1668,12 +1480,8 @@ async def _submit_message_phase3a(
     # [SESSION_END_EARLY] 게이트: 코치의 능동적 조기 종료(Core Rule 7/9)는
     # '실제 대화 턴'에서만 신뢰한다. 시스템 조립/전환 턴(INTRO·ALIGN·경계 등)
     # 에서 나오면 환각으로 간주해 무시 — 정당하면 일시중지로 전환.
-    _EARLY_END_ALLOWED = {
-        "CONTINUE_NORMAL", "STAR_INCOMPLETE", "STAR_COMPLETE_NEW_EVENT",
-        "CONTRARY_NEEDED", "AVOIDANCE_DETECTED", "DUPLICATE_SUSPECTED",
-        "CROSS_CHAPTER_OPPORTUNITY", "META_QUESTION_FROM_USER",
-        "FIRST_TURN_AVOIDANCE", "INVALID_INPUT", "RAPPORT_BUILDING",
-        "PROMPT_INJECTION_DETECTED",
+    _EARLY_END_ALLOWED = set(_bei.BEI_INSTRUCTIONS) | {
+        "META_QUESTION_FROM_USER", "INVALID_INPUT", "RAPPORT_BUILDING", "PROMPT_INJECTION_DETECTED",
         # 진단 전 단계에서도 극심한 스트레스 호소는 발생한다 — 실전 검증에서
         # 감정 호소자가 CONFIRM 단계에 갇힌 채 코치의 종료 선언이 8회나
         # 차단됐던 사례의 재발 방지.
@@ -1738,7 +1546,6 @@ async def _submit_message_phase3a(
     clean_reply = (
         clean_reply.replace("\\n", "\n").replace('\\"', '"').replace("\\t", "\t")
     )
-    _rcv_snap["llm"] = clean_reply
 
     # 2-Strike 승격 턴: LLM 이 '제안'형 문장을 썼지만 시스템이 강제 종료로
     # 승격했으므로, 어색하지 않게 단호한 마무리 선언을 시스템이 덧붙인다.
@@ -1944,31 +1751,19 @@ async def _submit_message_phase3a(
             # (2026-10-28 P0-1) ALIGN 조립은 백엔드 결정론(services/align_render.render_align):
             #   [LLM 공감 되받기 2~3문장] + [고정 정의 1문장] + [목록 · 줄 전부] + [고정 안내] + [고정 다리] + [앵커 1개].
             #   LLM 출력의 질문·목록·다른 챕터 문구·선택 넘기기 문장은 전부 제거. 고정 문장은 페르소나 어미. 챕터 크기와 무관하게 같은 렌더러.
-            _anchor = build_chapter_opening_with_user_def(
-                chapter=chapter,
-                user_definition=request.content or "",
-                first_subcompetency_name=current_target_sub,
-                bridge_context=None,
-                variant=int((session.self_assessment_data or {}).get("anchor_variant") or 0),
-            )
             # (2026-10-21) ANCHOR_RENDER=llm 이면 렌더링 질문으로(판정 불합격·실패는 사전 문장 폴백). dict 모드는 그대로(어미 변환 포함).
             _ar_q, _ar_mode = await _render_anchor_for(current_target_sub)
             _tm["anchor_render"] = _ar_mode
-            _anchor = _ar_q if _ar_mode in ("llm", "dict", "fallback") else _anchor
             from diag_project.services.output_guard import strip_frame_lead
-            from diag_project.data.competencies import find_sub_key_by_name as _fsk_ab
-            from diag_project.services.align_render import align_shape_ok as _aso, render_align as _ra
-            _anchor = strip_frame_lead(_anchor)
-            # 조립은 모든 후처리(8-i 가드·8-n 입버릇·8-h 느낌표 …)가 끝난 뒤 '마지막'에 한다 — 중간 단계의 재생성이
-            #   조립 결과를 덮지 못하게(10/28 재생 1~3라운드: 8-i·8-n·8-h 재생성이 각각 ALIGN 목록을 지웠다).
-            #   여기서는 재료만 보관하고, clean_reply 는 LLM 되받기 원문 그대로 가드를 통과시킨다.
+            _anchor = strip_frame_lead(_ar_q)
+            # 조립은 모든 후처리(8-i 가드·8-n 입버릇·8-h 느낌표 …)가 끝난 뒤 '마지막'(8-z)에 한다 — 중간 단계의 재생성이
+            #   조립 결과를 덮지 못하게. 여기서는 재료만 보관하고, clean_reply 는 LLM 되받기 원문 그대로 가드를 통과시킨다.
+            #   (2026-11-04 BEI) 끝은 '먼저 하나를 깊게 들어볼게요.'(align_open) + 사례 1 여는 앵커.
             _align_ctx = dict(
                 sub_names=list(state.get("all_subcompetencies") or []),
                 persona_name=(state.get("coach_persona") or {}).get("name"),
-                bridge_sub_key=_fsk_ab(chapter, current_target_sub), bridge_sub_name=current_target_sub,
                 anchor=_anchor, user_text=request.content or "",
             )
-            del _ra, _aso
             # 다음 턴 decider 가 CHAPTER_OPENING 을 다시 내지 않도록 원장에 표식.
             _st_om = dict(session.self_assessment_data or {})
             _om = dict(_st_om.get("opening_merged") or {})
@@ -1979,10 +1774,6 @@ async def _submit_message_phase3a(
             _fm_om(session, "self_assessment_data")
             await db.flush()   # (2026-09-22) 턴 끝 1회 커밋 — 중간 커밋 폐지
 
-    # 8-c. CHAPTER_OPENING 은 Step 7 에서 시스템이 전체 출력 (하이브리드 폐지).
-    # build_chapter_opening_with_user_def 가 정의 + 첫 BEI 질문까지 포함하므로
-    # 별도 후처리 불필요.
-
     _next_ch = _get_next_chapter(chapter)
 
     # 8-d. CHAPTER_READY_TO_END 하이브리드 (종결 + 강제 전환):
@@ -1991,19 +1782,9 @@ async def _submit_message_phase3a(
     #   코치가 주도권을 쥐고 즉시 다음 챕터로 전환한다.
     #   → CHAPTER_CONTINUE_CONFIRMED 와 동일하게 완료·시작 마커를 세운다.
     if instruction_used == "CHAPTER_READY_TO_END":
-        if _tm.get("ladder"):   # (2026-10-29 P1 p13) 사다리 질문이 종료 턴에 삼켜졌다 — 사용 표시를 지운다(p131_4: 전환 문장이 사다리로 집계)
-            _tm.pop("ladder", None); _tm["ladder_dropped"] = "chapter_end"; state["force_ladder_probe"] = None
         # 1-b: 내부 종료 사유는 로그에만 남긴다(리더에게 나가는 문구는 중립).
-        logger.info(
-            "🏁 챕터 종료 [%s] no_yield_forced=%s star70=%s avoid=%s asked=%s "
-            "turns_on_target=%s ultimatum=%s turn_count=%s",
-            chapter, state.get("no_yield_forced"),
-            state.get("events_with_star_70"),
-            state.get("avoidance_count_in_chapter"),
-            len(state.get("asked_in_chapter") or []),
-            state.get("turns_on_current_target"),
-            state.get("no_yield_ultimatum_given"), state.get("turn_count"),
-        )
+        logger.info("🏁 챕터 종료 [%s] bei_state=%s bei_turns=%s asked=%s turn_count=%s", chapter, state.get("bei_state"),
+                    state.get("bei_turns"), len(state.get("asked_in_chapter") or []), state.get("turn_count"))
         # 5(2026-09-17) 마무리 총평 금지: LLM 문장을 쓰지 않고 고정 문구만.
         from diag_project.services.intro_messages import final_closing_message
         if _next_ch:
@@ -2054,71 +1835,31 @@ async def _submit_message_phase3a(
             is_chapter_starting = False
             is_diagnosis_complete = True
 
-    # 8-e. CHAPTER_CONTINUE_CONFIRMED (사용자가 '계속' 동의):
-    #   짧은 브릿지 멘트 + 이제 실제로 챕터 완료·다음 챕터 시작 마커를 세운다.
-    #   → 다음 턴에 다음 영역 COMPETENCY_ALIGN 으로 자연스럽게 진입.
-    if instruction_used == "CHAPTER_CONTINUE_CONFIRMED":
-        clean_reply = clean_reply.strip() or "좋습니다. 그럼 바로 이어가 볼게요."
-        # 브릿지 한 문장만. 다음 역량의 정의 질문은 다음 턴 COMPETENCY_ASK 가
-        # 첫 발화로 던진다(시스템 템플릿 질문 덧붙임 폐지 — 조사 오류·중복 질문).
-        is_chapter_completed = True
-        is_chapter_starting = True
-
-    # 8-f. 🦜 앵무새 방어: 직전 AI 멘트와 '동일한' 응답이 또 생성되면
-    #   (상태 정체 + 사용자 '네' 단답 시 같은 요약을 반복하는 병목),
-    #   반복 대신 대화를 앞으로 미는 진행 유도 질문으로 교체한다.
+    # 8-f. 🦜 앵무새 방어: 직전 AI 멘트와 '동일한' 응답이 또 생성되면 제약을 붙여 재생성 1회. (2026-11-04 BEI) 앵커 폴백 문장은 없다 —
+    #   재생성도 같으면 그대로 두고 guard_log parrot=2 로 남긴다(린트가 잡는다).
     if system_override_text is None and clean_reply:
         _last_model_msg = next((m for m in reversed(history_messages)
                                 if (m.role == MessageRole.MODEL or m.role == "model")), None)
-        if (_last_model_msg
-                and _last_model_msg.content
-                and _last_model_msg.content.strip() == clean_reply.strip()):
-            # 후처리 #5(개정): 고정 3문장 교체 폐지 — 그 문장들은 전부 "네,/좋습니다,"
-            #   로 시작하고 현재 타겟 앵커·문체 제약을 우회했다. 대신 '직전과 같은
-            #   응답 금지 + 현재 타겟 질문' 제약을 붙여 LLM 재생성 1회. 재생성도
-            #   동일하면 그때만 폴백(현재 타겟 질문 1개, 없으면 판단 기준 질문).
+        if (_last_model_msg and _last_model_msg.content and _last_model_msg.content.strip() == clean_reply.strip()):
             logger.warning("🦜 동일 응답 반복 감지 → 제약 추가 후 LLM 재생성 1회")
-            from diag_project.data.competencies import (
-                find_sub_key_by_name, get_anchor_questions,
-            )
-            _tq = []
-            if chapter and current_target_sub:
-                _k = find_sub_key_by_name(chapter, current_target_sub)
-                _tq = get_anchor_questions(_k) if _k else []
-            _retry_note = (
-                "\n\n🚨 [시스템 — 재생성 지시] 방금 만든 응답이 직전 코치 발화와 "
-                "완전히 동일합니다. 같은 문장을 다시 쓰지 마세요. 요약하는 첫 문장 없이, "
-                "'네,'로 시작하지 말고, 바로 새로운 질문 하나로 대화를 앞으로 미세요."
-                + (
-                    "\n이번 질문 본문(하위역량 이름 언급 금지): "
-                    + " / ".join(_tq)
-                    if _tq else ""
-                )
-            )
+            _tm["parrot"] = 1
             _regen: dict = {}
             try:
                 _regen = await _timed_regen(
-                    system_prompt=system_prompt,
-                    chapter_context=chapter_context,
-                    turn_state_text=turn_state_text + _retry_note,
-                    compressed_history=compressed_history,
-                    user_message=request.content,
-                    light_mode=True,  # 문장만 필요(state 는 1차 응답 것 유지)
-                )
+                    system_prompt=system_prompt, chapter_context=chapter_context,
+                    turn_state_text=turn_state_text + (
+                        "\n\n🚨 [시스템 — 재생성 지시] 방금 만든 응답이 직전 코치 발화와 완전히 동일합니다. 같은 문장을 다시 쓰지 마세요. "
+                        "리더님이 방금 한 말에서 출발해 다른 되받기와 다른 질문 하나로 다시 쓰세요."),
+                    compressed_history=compressed_history, user_message=request.content, light_mode=True)
                 _regen_reply = _MARKER_RE.sub("", _regen.get("reply") or "").strip()
-            except Exception as _e:  # 재생성 실패는 폴백으로
+            except Exception as _e:
                 logger.error("🦜 재생성 실패: %s", _e)
                 _regen_reply = ""
-            if (_regen_reply and not _regen.get("error")
-                    and _regen_reply != clean_reply.strip()):
+            if _regen_reply and not _regen.get("error") and _regen_reply != clean_reply.strip():
                 clean_reply = _regen_reply
             else:
-                logger.warning("🦜 재생성도 동일/실패 → 폴백 질문")
-                clean_reply = (
-                    _tq[0] if _tq else
-                    "그 상황에서 리더님이 내리신 판단의 기준이 궁금한데요 — "
-                    "어떤 기준이었어요?"
-                )
+                _tm["parrot"] = 2
+                logger.warning("🦜 재생성도 동일/실패 → 그대로 내보냄(폴백 없음)")
 
     # 8-g. 최종 안전망: 하이브리드 조립 이후에도 남아있을 수 있는 시스템
     #   마커를 프론트 전달 직전에 한 번 더 완벽 제거.
@@ -2134,66 +1875,22 @@ async def _submit_message_phase3a(
             _tm["incident_word"] = _n_riw
             logger.info("✏️ 낱말 바꿈 %d곳", _n_riw)
 
-    # 8-i. 통합 출력 가드(2026-09-16 도입, 09-18 C 모드, 09-21 질문·연결 절 보존 보강) — LLM 턴만.
-    #   위반 감지 → [names·off_target·no_question] 만 재생성 1회 → 남은 위반은 하드 교정(문장 단위).
-    #   하드 교정의 두 가지 보장(사람관리 09-21 사고 — 교정이 연결 절·질문을 잘라 턴이 깨졌다):
-    #     (1) 질문 보존: 어떤 교정도 질문을 없애지 않는다. 없애게 되면 그 교정을 건너뛰거나(칭찬·이름 구절)
-    #         현재 타겟의 템플릿 앵커로 간다(전환 문장이 곧 질문인 경우).
-    #     (2) (2026-09-22) 되받기 리드·전환 문장은 자르지 않는다 — 자른 문장이 어색하다(4번). 관찰 항목으로만 guard_log 에 남는다.
-    #   프로브 턴이 끝까지 질문 없이 남으면 결과 질문 풀이 아니라 현재 타겟 템플릿 앵커(연결 절 포함).
-    #   부재 폴백 턴(ABSENCE_PROBE)·템플릿 턴은 가드 대상 아님. 모든 결과는 guard_log 에 남는다.
-    #   후처리 단계 전체 표: docs/postprocess_pipeline.md — 프롬프트 규칙을 추가할 때 이 표와 대조한다.
-    if system_override_text is None and not _llm_error and clean_reply and instruction_used != "ABSENCE_PROBE":
+    # 8-i. 통합 출력 가드(2026-09-16 도입 → 2026-11-04 BEI 축소) — LLM 턴만.
+    #   위반 감지 → [names_mention·no_question·same_question·bare_ref·leak] 재생성 1회 → 남은 위반은 하드 교정(문장 단위, 질문 보존).
+    #   (BEI) off_target·transition·recap 관찰·앵커 폴백은 폐지 — 질문이 끝내 없으면 8-w 턴 형식 검사가 다시 재생성한다(폴백 문장 없음).
+    #   후처리 단계 전체 표: docs/postprocess_pipeline.md
+    _is_probe = instruction_used in ("EPISODE_PROBE", "EPISODE_RETRY", "SWEEP_FOLLOWUP")   # 질문을 LLM 이 쓰는 사례 턴
+    _is_open = instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR")                        # 질문은 시스템 앵커, LLM 은 되받기+다리
+    if system_override_text is None and not _llm_error and clean_reply:
         from diag_project.services.output_guard import (
-            TRANSITION_ALLOWED_INSTRUCTIONS, find_praise, find_sub_names, has_question, has_transition_claim,
-            off_target_overlap, split_sentences, strip_praise, strip_sub_name_mentions,
-            template_anchor, cap_lead_sentences, same_question_as_previous,
-            find_revisit_greeting, strip_revisit_greeting, find_state_leak, strip_state_leak,
+            find_praise, find_sub_names, has_question, split_sentences, strip_praise, strip_sub_name_mentions,
+            same_question_as_previous, find_revisit_greeting, strip_revisit_greeting, find_state_leak, strip_state_leak,
         )
-        _guard_replaced = False   # (2026-10-21) 교정이 응답을 템플릿 앵커로 통째 교체했는가 — 8-j 앵커 접착이 건너뛴다
         from diag_project.services.output_guard import is_question as is_question_sentence
-        # (2026-10-16) 재방문 인사 가드는 같은 자리 안에서만. 자리가 바뀐 뒤 첫 턴(재개: 이번 자리 메시지가 방금 저장한
-        #   사용자 메시지 하나뿐)에는 "다시 뵙게 되어" 가 정당하므로 제외한다.
+        # (2026-10-16) 재방문 인사 가드는 같은 자리 안에서만. 자리가 바뀐 뒤 첫 턴(재개)에는 "다시 뵙게 되어" 가 정당하므로 제외한다.
         _resumed_sitting = (_sit_n <= 1 and len(history_messages) > 1)
-        # _prev_coach_text / _recent_coach_texts 는 히스토리 로드 직후 계산됨(2026-09-22)
-
-        def _anchor_fallback() -> str:
-            """교정 폴백 문장: 현재 타겟 템플릿 앵커(연결 절). 그 앵커가 직전 2턴에 이미 나갔으면(리플레이 F 16·11턴 —
-            폴백이 폴백을 반복) 결과 질문 풀에서 안 쓴 문장으로."""
-            from diag_project.services.output_guard import norm_sentence as _ns_fb
-            nonlocal session
-            # (2026-09-29) 직전 2턴이 아니라 이 챕터에서 한 번이라도 나간 앵커면 반복하지 않는다
-            _ch_coach_texts = " ".join((m.content or "") for m in history_messages
-                                       if (m.role == MessageRole.MODEL or m.role == "model") and m.chapter == chapter)
-            # (2026-10-28 P0-3) 사전 앵커 폴백도 페르소나 어미를 거친다(운영에서 6명 동일 앵커의 주 원인).
-            if _tgt_q and chapter and _ns_fb(_tgt_q) not in _ns_fb(_ch_coach_texts + " " + " ".join(_recent_coach_texts)):
-                return _voiced_q(template_anchor(_tgt_q))
-            if chapter:
-                from diag_project.services.output_guard import result_fallback_question as _rfq
-                _alt = sum(1 for _t in _recent_coach_texts if "그 뒤에는 어떻게 됐어요" in _t)   # 직전 폴백이 A 면 B
-                return _rfq((state.get("resume_pending") or {}).get("user_text") or request.content, _prev_user_text, alt=_alt,
-                            persona=(state.get("coach_persona") or {}).get("name"))
-            return _voiced_q(template_anchor(_tgt_q))
-        from diag_project.data.competencies import (
-            COMPETENCY_FRAMEWORK as _CF, find_sub_key_by_name as _fsk, get_anchor_questions as _gaq,
-        )
-        _sc = state.get("style_constraints") or {}
-        # ALIGN(정의 제시+목록+앵커)·CHAPTER_OPENING 은 리드가 여러 문장인 것이 정상 — 되받기/리드 검사 제외.
-        _is_probe = (instruction_used in _PROBE_INSTR
-                     and instruction_used not in ("COMPETENCY_ALIGN", "CHAPTER_OPENING"))
-        _is_anchor = instruction_used == "STAR_COMPLETE_NEW_EVENT"
+        from diag_project.data.competencies import COMPETENCY_FRAMEWORK as _CF
         _all_names = [v.get("name") for c in _CF.values() for v in (c.get("indicators") or {}).values()]
-        _asked_qs: list[str] = []
-        _tgt_q = ""
-        if chapter and current_target_sub:
-            _kt = _fsk(chapter, current_target_sub)
-            _tgt_q = (_gaq(_kt) or [""])[0] if _kt else ""
-            if _is_anchor:
-                for _nm2 in (state.get("asked_in_chapter") or []):
-                    if _nm2 == current_target_sub:
-                        continue
-                    _k2 = _fsk(chapter, _nm2)
-                    _asked_qs += (_gaq(_k2) if _k2 else [])
 
         def _violations(txt: str) -> dict:
             v: dict = {}
@@ -2207,40 +1904,18 @@ async def _submit_message_phase3a(
             sl = find_state_leak(txt)
             if sl:
                 v["state_leak"] = sl        # (2026-10-21) '새로운 사례를 들려주셨네요'·'충분히 들었습니다' 류 상태 누설
-            # (2026-10-28 P0-2) 내부 어휘 누설 — 프롬프트 템플릿에서 자동 추출한 사전(services/leak_lexicon, 린트와 동일).
-            #   리더가 쓴 어절 되받기는 제외. 재생성 1회 → 그래도 남으면 그 문장 삭제(질문 보존).
             try:
                 from diag_project.services.leak_lexicon import find_leaks as _find_leaks
-                lk = _find_leaks(txt, _prev_user_texts + [request.content or ""])
-                lk = [w for w in lk if w not in (sl or [])]
+                lk = [w for w in _find_leaks(txt, _prev_user_texts + [request.content or ""]) if w not in (sl or [])]
                 if lk:
                     v["leak"] = lk
             except Exception as _le:   # noqa: BLE001 — 사전 로드 실패가 턴을 막지 않게
                 logger.warning("누설 사전 검사 실패(무시): %s", _le)
-            if instruction_used not in TRANSITION_ALLOWED_INSTRUCTIONS and has_transition_claim(txt):
-                v["transition"] = True
-            if _is_anchor:
-                nm = find_sub_names(txt, _all_names)
-                if nm:
-                    v["names"] = nm
-                # (2026-10-21) anchor_missing 폐지 — 앵커 질문은 LLM 이 아니라 시스템이 붙인다(8-j).
-                off, oq = off_target_overlap(txt, _asked_qs)
-                if off:
-                    v["off_target"] = oq
-            elif _is_probe:
+            if chapter and (_is_probe or _is_open):
                 nm = find_sub_names(txt, _all_names)
                 if nm:
                     v["names_mention"] = nm
-            if _is_probe and not _is_anchor:
-                # (2026-10-21) 전환 턴(_is_anchor)은 LLM 이 질문을 쓰지 않으므로 질문 검사 제외 — 앵커는 8-j 가 붙인다.
-                # (2026-09-22, 4번) 되받기·'네' 시작·리드 겹침은 더 이상 위반이 아니다(자르지 않는다). 관찰용으로만 센다.
-                leads = []
-                for _s2 in split_sentences(txt):
-                    if is_question_sentence(_s2):
-                        break
-                    leads.append(_s2)
-                if leads and (is_recap_turn(leads[0], request.content) or starts_with_ne_recap(leads[0])):
-                    v["recap_obs"] = True
+            if _is_probe:
                 if not has_question(txt):
                     v["no_question"] = True
                 _sq = same_question_as_previous(txt, _prev_coach_text)
@@ -2254,10 +1929,7 @@ async def _submit_message_phase3a(
 
         _v = _violations(clean_reply)
         _tm["violations"] = dict(_v)
-        # (2026-09-18 A/B 측정) recap·lead_stack·praise·transition·ne_opening 은 재생성해도 대부분 그대로 남는다
-        #   (19턴 중 recap 12 → 재생성 후 11 잔존) → 재생성 없이 바로 교정. 재생성은 문장 교체가 어색한
-        #   names·off_target 과, 출력 자체에 질문이 없는 no_question·same_question 에만.
-        _REGEN_KEYS = {"names", "off_target", "no_question", "same_question", "bare_ref", "anchor_missing", "leak"}
+        _REGEN_KEYS = {"names_mention", "no_question", "same_question", "bare_ref", "leak"}
         # (2026-10-28 P0-1) ALIGN 은 재생성하지 않는다 — 조립(정의·목록·다리·앵커)을 LLM 새 출력이 덮는다. 남은 위반은 하드 교정만.
         _need_regen = bool(set(_v) & _REGEN_KEYS) and instruction_used != "COMPETENCY_ALIGN"
         if _v and not _need_regen:
@@ -2267,20 +1939,14 @@ async def _submit_message_phase3a(
             _notes = ["\n\n🚨 [시스템 — 재생성 지시] 방금 만든 응답에 다음 위반이 있습니다. 내용은 유지하되 고쳐 다시 쓰세요."]
             if "praise" in _v:
                 _notes.append(f"- 평가적 칭찬 금지: {', '.join(_v['praise'])} 같은 표현을 빼세요. 인정은 사실 확인('그 결정을 내리셨군요')까지.")
-            if "transition" in _v:
-                _notes.append("- 이번 턴은 영역을 마치거나 다음 챕터로 넘어가는 턴이 아닙니다. 전환·마무리 선언 문장을 빼고 질문으로 이어가세요.")
             if "revisit" in _v:
                 _notes.append(f"- 첫 세션(같은 자리)입니다. {', '.join(_v['revisit'])} 같은 재방문·재회 인사를 빼세요.")
-            if "names" in _v or "off_target" in _v or "names_mention" in _v:
-                _notes.append("- 하위역량 이름을 말하지 말고, 이미 다룬 사건·주제를 다시 묻지 마세요."
-                              + (f" 이번 앵커 질문 본문: {_tgt_q}" if (_tgt_q and _is_anchor) else ""))
+            if "names_mention" in _v:
+                _notes.append("- 하위역량 이름을 말하지 말고, 리더님 답이 어느 역량에 속하는지 설명하지 마세요.")
             if "no_question" in _v:
                 _notes.append("- 응답에 질문이 없습니다. 반드시 리더님께 묻는 질문 한 문장으로 끝내세요.")
             if "same_question" in _v:
                 _notes.append("- 직전 턴과 같은 질문을 되묻고 있습니다. 리더님이 방금 답한 내용에서 한 걸음 더 들어가는 다른 질문을 하세요.")
-            if "anchor_missing" in _v:
-                _notes.append(f"- 이번 턴은 새 주제로 넘어가는 턴입니다. 직전 사건을 더 묻지 말고 이 질문의 주제로 넘어가세요: {_tgt_q} "
-                              "(주제가 이어지지 않으면 '다른 이야기를 하나 여쭤볼게요.' 한 문장 후 질문)")
             if "bare_ref" in _v:
                 _notes.append("- 질문이 '그것·그럴 때·그렇게'로만 대상을 가리킵니다. 리더님이 방금 쓴 말(명사구)을 질문에 넣어 무엇을 묻는지 분명히 하세요.")
             if "leak" in _v:
@@ -2288,12 +1954,9 @@ async def _submit_message_phase3a(
                               + ". 그 문장을 빼거나 리더님께 하는 자연스러운 말로 바꾸세요. 진행 상태·방법을 설명하지 말고 대화만 하세요.")
             try:
                 _g_regen = await _timed_regen(
-                    system_prompt=system_prompt,
-                    chapter_context=chapter_context,
+                    system_prompt=system_prompt, chapter_context=chapter_context,
                     turn_state_text=turn_state_text + "\n".join(_notes),
-                    compressed_history=compressed_history,
-                    user_message=request.content,
-                    light_mode=True,
+                    compressed_history=compressed_history, user_message=request.content, light_mode=True,
                 )
                 _g_reply = _MARKER_RE.sub("", _g_regen.get("reply") or "").strip()
             except Exception as _e:
@@ -2305,27 +1968,9 @@ async def _submit_message_phase3a(
                     clean_reply = _g_reply
                     _v = _v2
         # 하드 교정(남은 위반) — 각 단계는 질문을 없애지 않는다.
-        _OBS_ONLY = {"recap_obs", "transition"}
-        if _v and (set(_v) - _OBS_ONLY):
+        if _v:
             _tm["hard"] = True
             logger.info("🛡️ 출력 가드 하드 교정: %s", _v)
-        elif _v:
-            _tm["hard"] = False
-            logger.info("🛡️ 출력 가드 관찰(교정 없음): %s", _v)
-        if _v and (set(_v) - _OBS_ONLY):
-            if ("names" in _v or "off_target" in _v) and _tgt_q:
-                clean_reply = _anchor_fallback()
-                _guard_replaced = True
-                _v = {}
-            if "anchor_missing" in _v and _tgt_q:
-                from diag_project.services.output_guard import ANCHOR_TRANSITIONS as _ATR
-                clean_reply = f"{_ATR[len(asked_for_chapter(session.self_assessment_data, chapter) or []) % len(_ATR)]} {_tgt_q}"
-                logger.info("🧭 앵커 미발화 → 전환 문장 + 템플릿 앵커")
-            if "same_question" in _v and chapter:
-                # 재생성 후에도 직전 턴과 같은 질문 → 타겟 앵커(직전 2턴에 없을 때) 또는 결과 질문(풀)으로 한 걸음 전진.
-                clean_reply = _anchor_fallback()
-                _guard_replaced = True
-                logger.info("🛡️ 직전 턴과 같은 질문 → 교체: %s", clean_reply[:60])
             if "names_mention" in _v:
                 _c2, _n = strip_sub_name_mentions(clean_reply, _all_names)
                 if has_question(_c2) or not has_question(clean_reply):
@@ -2362,7 +2007,6 @@ async def _submit_message_phase3a(
                     clean_reply = _c2
                     logger.info("🛡️ 상태 누설 %d문장 제거", _n)
             if "leak" in _v:
-                # (2026-10-28 P0-2) 재생성 후에도 내부 어휘가 남으면 그 문장을 지운다(질문 문장이면 어절만 뗀다)
                 from diag_project.services.leak_lexicon import strip_leak_sentences as _sls
                 _c2, _n = _sls(clean_reply, list(_v["leak"]))
                 if _c2.strip() and (has_question(_c2) or not has_question(clean_reply)):
@@ -2370,371 +2014,29 @@ async def _submit_message_phase3a(
                     _tm["leak_stripped"] = _n
                     logger.info("🛡️ 내부 어휘 누설 %d문장 제거: %s", _n, _v["leak"])
             if "bare_ref" in _v and _is_probe:
-                from diag_project.services.output_guard import bare_demonstrative_questions as _bdq2, result_fallback_question as _rfq2
-                from diag_project.services.output_guard import followup_from_user as _ffu
+                from diag_project.services.output_guard import bare_demonstrative_questions as _bdq2, followup_from_user as _ffu
                 for _bq in _bdq2(clean_reply, request.content):
-                    clean_reply = clean_reply.replace(_bq, _rfq2(request.content, _prev_user_text, alt=len(_recent_coach_texts), persona=(state.get("coach_persona") or {}).get("name")) if state.get("force_result_probe")
-                                                      else _ffu(request.content), 1)
+                    clean_reply = clean_reply.replace(_bq, _ffu(request.content), 1)
                     logger.info("🧹 대명사 단독 질문 교체: %s", _bq[:40])
-            # (2026-09-22, 4번) 전환 선언·되받기 리드는 자르지 않는다 — 자른 문장이 어색하다. 위반은 guard_log 에만 남는다.
-            # 최종 보장: 프로브 턴에 질문이 없으면 현재 타겟 템플릿 앵커(결과 질문 풀 대체는 폐기 — 같은 문장 반복 사고).
-            if _is_probe and not _is_anchor and not has_question(clean_reply.strip()) and _tgt_q:
-                clean_reply = _anchor_fallback()
-                _guard_replaced = True
-                logger.info("🛡️ 질문 없는 출력 → 현재 타겟 템플릿 앵커(직전 2턴에 있으면 결과 질문)")
 
-        # (2026-09-29) 앵커 턴의 상투적 다리('그런 경험처럼,') 제거 → 전환 문장
-        if _is_anchor:
-            from diag_project.services.output_guard import strip_filler_bridge as _sfb
-            clean_reply, _fb_hit = _sfb(clean_reply)
-            if _fb_hit:
-                logger.info("🌉✂️ 앵커 군말 다리 제거 → 전환 문장")
-
-        # (2026-10-22 P1-2) 결과 강제 턴 + 정도 부사·숫자 없음 → 수치 질문 우선(LLM 질문이 수치를 묻지 않으면 교체)
-        if (_is_probe and not _is_anchor and not _llm_error and not _guard_replaced
-                and state.get("force_result_probe") and state.get("result_quantify")):
-            from diag_project.services.intro_messages import persona_line as _pl_q
-            from diag_project.services.output_guard import is_quantify_question as _isq
-            _qs_now = [x for x in split_sentences(clean_reply) if is_question_sentence(x)]
-            if not _qs_now or not _isq(_qs_now[-1]):
-                _lead_q = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                clean_reply = " ".join(_lead_q + [_pl_q((state.get("coach_persona") or {}).get("name"), "quantify")]).strip()
-                _tm["quantify"] = 1
-                logger.info("📏 정도 부사·숫자 없음 → 수치 질문으로 교체")
-
-        # (2026-10-21) 탐침 품질 — 프로브 턴(전환 턴 제외): 한 턴 한 질문(마지막만) · 시점 문형 · 의미 반복 flash 판정 1회
-        if _is_probe and not _is_anchor and not _llm_error and not _guard_replaced:
-            from diag_project.services.output_guard import fix_moment_question as _fmq, keep_last_question as _klq
-            clean_reply, _n_q = _klq(clean_reply)
-            if _n_q:
-                _tm["one_q"] = _n_q
-                logger.info("✂️ 한 턴 한 질문: 앞선 질문 %d문장 제거", _n_q)
+        # (2026-11-04 BEI) 여는 턴·SWEEP 앵커 턴 조립: LLM 본문에서 질문을 지우고 [되받기+다리 ≤3문장] + 시스템 앵커(사전 문장·페르소나 어미).
+        if _is_open and _bei_anchor_text:
+            from diag_project.services.output_guard import drop_question_sentences as _dqs_o
+            _body_o, _nq_o = _dqs_o(clean_reply)
+            _body_o = " ".join([x.strip() for x in split_sentences(_body_o) if x.strip()][:3])
+            clean_reply = f"{_body_o} {_bei_anchor_text}".strip()
+            _tm["anchor_attached"] = 1
+            if _nq_o:
+                _tm["open_q_dropped"] = _nq_o
+        # 사례 탐침 턴: 시점 문형 결정론 교정 + 되받기 뒤 권유 평서문('…떠올려 주셔도 좋아요') 제거(질문 보존). 질문 수·되받기는 8-w 가 본다.
+        if _is_probe:
+            from diag_project.services.output_guard import fix_moment_question as _fmq, strip_suggestion_statements as _sss_c
             clean_reply, _n_m = _fmq(clean_reply)
             if _n_m:
                 _tm["moment"] = _n_m
-            # (2026-10-22 P2-3) 되받기 상한을 페르소나별로(Ella·Daniel 2, Jessica·Lucas 1, Olivia·Michael 2) — 관찰 문장 우선 보존
-            from diag_project.services.output_guard import cap_leads_persona as _clp, persona_lead_cap as _plc2
-            from diag_project.services.receive_check import lead_cap_for as _lcf
-            clean_reply, _n_cap = _clp(clean_reply, _lcf(_llm_user_text), _llm_user_text)   # (2026-11-04 P3-1) 리더 답 150자 이상 2문장, 미만 1문장
-            if _n_cap:
-                _tm["lead_cap"] = _n_cap
-            # (2026-10-22 P2-2) 감정·표정·마음속 질문은 챕터당 1회 — 초과면 재생성 1회, 그래도면 행동 질문으로 교체
-            from diag_project.services.output_guard import is_emotion_question as _ieq
-            from diag_project.services.intro_messages import persona_line as _pl_a
-            from diag_project.services.traversal import is_action_probe_text as _iapt
-            _AFQ = _pl_a((state.get("coach_persona") or {}).get("name"), "action")   # 페르소나별 행동 질문
-            _eq_store = dict(session.self_assessment_data or {})
-            _eq_n = int((_eq_store.get("emotion_q_count") or {}).get(chapter, 0) or 0)
-            _cur_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
-            # (2026-10-23 P3) 감정·표정·마음 질문은 S-A-R 미완일 때만, 챕터당 1회 — 완비·사다리 턴이면 바로 교체 대상
-            if _cur_q and _ieq(_cur_q) and (_eq_n >= 1 or state.get("sar_complete_answer") or state.get("force_ladder_probe")):
-                _tm["emotion"] = 1
-                _e_txt = ""
-                try:
-                    _e_out = await _timed_regen(
-                        system_prompt=system_prompt, chapter_context=chapter_context,
-                        turn_state_text=turn_state_text + (
-                            "\n\n🚨 [시스템 — 재생성 지시] 이 영역에서 감정·표정·마음을 묻는 질문은 이미 한 번 했습니다. "
-                            "이번 질문은 리더님이 그때 직접 한 행동이나 그 뒤의 결과를 묻는 질문 하나로 다시 쓰세요."),
-                        compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
-                    _e_txt = _MARKER_RE.sub("", _e_out.get("reply") or "").strip()
-                except Exception as _e:
-                    logger.error("감정 질문 재생성 실패: %s", _e)
-                _e_q = next((x for x in reversed(split_sentences(_e_txt)) if is_question_sentence(x)), "") if _e_txt else ""
-                if _e_q and not _ieq(_e_q):
-                    clean_reply, _ = _klq(_e_txt)
-                else:
-                    _tm["emotion"] = 2
-                    _lead_e = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                    clean_reply = " ".join(_lead_e + [_AFQ]).strip()
-                    logger.info("💭 감정 질문 초과 → 행동 질문으로 교체")
-            # (2026-10-23 6번 보정) 대조 도입구는 실제 대조 질문에만. 대조 탐침은 챕터당 1회 — 초과면 재생성 1회, 그래도면 행동 질문으로.
-            from diag_project.services.persona_voice import is_contrast_question as _icq, strip_contrast_lead as _scl
-            clean_reply, _n_lead = _scl(clean_reply)
-            if _n_lead:
-                _tm["contrast_lead_fix"] = _n_lead
-            _cq_now = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
-            _cq_cnt = int(((session.self_assessment_data or {}).get("contrast_q_count") or {}).get(chapter, 0) or 0)
-            if _cq_now and _icq(_cq_now) and _cq_cnt >= 1:
-                _tm["contrast_fix"] = 1
-                _c_txt = ""
-                try:
-                    _c_out = await _timed_regen(
-                        system_prompt=system_prompt, chapter_context=chapter_context,
-                        turn_state_text=turn_state_text + (
-                            "\n\n🚨 [시스템 — 재생성 지시] 이 영역에서 '반대로 했다면' 식 대조 질문은 이미 한 번 했습니다. "
-                            "이번 질문은 리더님이 그때 직접 한 행동이나 그 뒤의 결과를 묻는 질문 하나로 다시 쓰세요."),
-                        compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
-                    _c_txt = _MARKER_RE.sub("", _c_out.get("reply") or "").strip()
-                except Exception as _e:
-                    logger.error("대조 질문 재생성 실패: %s", _e)
-                _c_q = next((x for x in reversed(split_sentences(_c_txt)) if is_question_sentence(x)), "") if _c_txt else ""
-                if _c_q and not _icq(_c_q):
-                    clean_reply, _ = _klq(_scl(_c_txt)[0])
-                else:
-                    _tm["contrast_fix"] = 2
-                    _lead_c = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                    clean_reply = " ".join(_lead_c + [_AFQ]).strip()
-                    logger.info("🔁 대조 질문 초과 → 행동 질문으로 교체")
-            # (2026-10-22 P2-2) A 강제 턴인데 행동 질문이 아니면 고정 행동 질문으로
-            _cur_q2 = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
-            if state.get("force_action_probe") and not _iapt(_cur_q2):
-                _lead_a = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                clean_reply = " ".join(_lead_a + [_AFQ]).strip()
-                _tm["action_fix"] = 1
-                logger.info("🎯 A 강제 턴에 행동 질문 없음 → 고정 행동 질문")
-            # (2026-10-23, 4-1) 일반화 탐침 턴: 되받기 1문장 + 페르소나별 "그중 가장 최근 일 하나만요" (LLM 질문은 버린다)
-            if state.get("force_generalize_probe"):
-                _lead_g = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                clean_reply = " ".join(_lead_g + [_pl_a((state.get("coach_persona") or {}).get("name"), "generalize")]).strip()
-                _tm["generalize"] = 1
-                logger.info("🧭 일반화 탐침 질문 삽입")
-            # (2026-10-23 P3) 사다리 탐침 턴: 되받기 1문장 + 사전 질문(현재 레벨 +1). LLM 질문은 버린다.
-            if state.get("force_ladder_probe"):
-                _lp = state["force_ladder_probe"]
-                _lead_l = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                from diag_project.services.persona_voice import voice_question as _vq_l
-                clean_reply = " ".join(_lead_l + [_vq_l((state.get("coach_persona") or {}).get("name"), _lp["q"],
-                                                        variant=_vv_total())]).strip()
-                _tm["voiced"] = 1
-                _tm["ladder"] = _lp["step"]
-                logger.info("🪜 사다리 질문 삽입 [%s] %s", _lp.get("sub"), _lp["step"])
-            # (2026-10-29 P1-2) '리더님이 직접 하신 일' 질문 상한 — 하위역량당 1회, 답에 행동(A)이 이미 있으면 묻지 않는다.
-            #   초과·불필요면 결과 질문(페르소나 폴백)으로 교체. s28 운영: Jessica 5회·Michael 5회(공격적으로 들림).
-            from diag_project.services.output_guard import is_direct_action_question as _idaq, result_fallback_question as _rfq_d
-            _dq_now = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
-            if _dq_now and _idaq(_dq_now) and not state.get("force_ladder_probe"):
-                _dqc = ((session.self_assessment_data or {}).get("direct_q_count") or {}).get(chapter) or {}
-                _dq_used = int(_dqc.get(current_target_sub or "", 0) or 0)
-                # A 가 답에 있는가 — LLM 커버리지 판정 또는 결정론(과거형 행동 서술 2개 이상). p12a Jessica: '프롬프트를 직접 설계하고 검수하며
-                #   최종 확정까지' 라고 답했는데 커버리지가 A 비어 있음으로 나와 '직접 하신 부분은?' 을 또 물었다.
-                from diag_project.services.avoidance_detector import _PAST_LOOSE_RE as _plr_d
-                _a_present = (bool((state.get("current_event_star_coverage") or {}).get("A"))
-                              or len(_plr_d.findall((state.get("resume_pending") or {}).get("user_text") or request.content or "")) >= 2)
-                if _dq_used >= 1 or _a_present:
-                    _lead_d = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                    _alt_d = sum(1 for _t in _recent_coach_texts if "그 뒤에는 어떻게 됐어요" in _t)
-                    clean_reply = " ".join(_lead_d + [_rfq_d(request.content, _prev_user_text, alt=_alt_d,
-                                                              persona=(state.get("coach_persona") or {}).get("name"))]).strip()
-                    _tm["direct_q_fix"] = "a_present" if _a_present else "cap"
-                    logger.info("🧭 '직접 하신' 질문 교체(%s): [%s] %s", _tm["direct_q_fix"], chapter, current_target_sub)
-                else:
-                    _tm["direct_q"] = 1
-            # (2026-10-29 P2-1) 페르소나 고정 슬롯 — 어미가 아니라 '하는 일'. 챕터당 1회, 타겟 2~3번째 턴, 사다리·일반화 턴이 아닐 때.
-            #   Jessica 기준 질문 / Olivia 대조 질문(챕터 홀짝으로 두 문형) / Daniel 선배 관찰 1문장(질문 유지) /
-            #   Michael 응원 1문장 + 실행 의지 질문 / Lucas '한 줄로' 질문. Ella 는 슬롯 없음.
-            from diag_project.services.persona_voice import persona_key as _pk_s
-            _pn_s = _pk_s((state.get("coach_persona") or {}).get("name"))
-            _ans_s = (state.get("resume_pending") or {}).get("user_text") or request.content or ""
-            _sd_s = session.self_assessment_data or {}
-            if _pn_s == "Jessica" and not state.get("force_ladder_probe") and not state.get("force_generalize_probe"):
-                # 수치 탐침 최우선 — 정도부사·'향상' 류 답이면 챕터당 1회 수치 질문으로 교체. 되받기에 숫자 재진술.
-                from diag_project.services.output_guard import needs_quantify_probe as _nqp_s, number_token as _ntk
-                if (_nqp_s(_ans_s) and not int(((_sd_s.get("quantify_used") or {}).get(chapter, 0)) or 0) and not _tm.get("quantify")):
-                    _lead_j = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                    clean_reply = " ".join(_lead_j + [_pl_a((state.get("coach_persona") or {}).get("name"), "quantify")]).strip()
-                    _tm["quantify"] = 1; _tm["j_quantify_first"] = 1
-                    logger.info("🔢 Jessica 수치 탐침 최우선: [%s] %s", chapter, current_target_sub)
-                _num = _ntk(_ans_s)
-                # (2026-11-02 p2f) 재진술은 뒤에 질문이 붙을 때만 — 단독 턴('40%라고 하셨죠.' 만 남는 턴) 금지. 서수·'N회'는 number_token 이 제외.
-                if (_num and _num.replace(" ", "") not in clean_reply.replace(" ", "")
-                        and any(is_question_sentence(x) for x in split_sentences(clean_reply))):
-                    from diag_project.services.korean import quote_josa as _qj
-                    clean_reply = f"{_num}{_qj(_num)} 하셨죠. {clean_reply}".strip()
-                    _tm["j_number_restated"] = _num
-            # (2026-11-04 P3-2) Michael 실행 의지 질문은 응원 턴의 다음 턴에(한 턴 한 질문). 되받기 1문장 + 고정 질문.
-            _mq_pending = bool(((_sd_s.get("michael_q_pending") or {}).get(chapter))) if chapter else False
-            if (_pn_s == "Michael" and _mq_pending and current_target_sub and not state.get("force_ladder_probe")
-                    and not state.get("force_generalize_probe") and not _tm.get("quantify")):
-                from diag_project.services.output_guard import starts_without_main_clause as _swmc_m
-                _lead_m = [x for x in split_sentences(clean_reply) if not is_question_sentence(x) and not _swmc_m(x)][:1]
-                if _lead_m:
-                    _mq = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")
-                    clean_reply = " ".join(_lead_m + [_mq]).strip()
-                    _tm["slot"] = "Michael_q"; _tm["slot_text"] = _mq; _tm["michael_q_done"] = 1
-                    logger.info("🎭 Michael 실행 의지 질문(응원 다음 턴): [%s] %s", chapter, current_target_sub)
-            _slot_used = ((_sd_s.get("persona_slot_used") or {}).get(chapter)) if chapter else "x"
-            _tot_s = int((_sd_s.get("turns_on_target") or {}).get(chapter, 0) or 0)
-            if (_pn_s in ("Jessica", "Olivia", "Daniel", "Michael", "Lucas") and chapter and current_target_sub and not _slot_used
-                    and _tot_s in (2, 3) and not state.get("force_ladder_probe") and not state.get("force_generalize_probe")
-                    and not _tm.get("quantify")):   # (p2b) turns==2 한정은 Jessica 일관리·Daniel 성과관리에서 슬롯 0 — 사다리 미달과 무관했다(되돌림)
-                from diag_project.data.competencies import COMPETENCY_FRAMEWORK as _CF_s
-                _ch_i = [k for k in _CF_s if k != "supplementary"].index(chapter) if chapter in _CF_s else 0
-                from diag_project.services.output_guard import starts_without_main_clause as _swmc_s
-                _lead_s = [x for x in split_sentences(clean_reply) if not is_question_sentence(x) and not _swmc_s(x)][:1]
-                _sents_s = [x for x in split_sentences(clean_reply) if x.strip()]
-                _qi_s = next((i for i, x in enumerate(_sents_s) if is_question_sentence(x)), None)
-                # 질문부: 첫 질문부터 끝까지(조건절 쌍 '…있으셨습니까? 있었다면 …' 보존 — p2a Daniel 잘림 3건은 마지막 질문만 남겨서였다)
-                _q_now_s = " ".join(_sents_s[_qi_s:]) if _qi_s is not None else ""
-                if not _lead_s:
-                    # (2026-11-04 P3-2) 되받기가 없는 턴에는 슬롯을 넣지 않는다(단독 슬롯 금지) — 사용 표시를 남기지 않아 다음 턴에 다시 시도
-                    _slot_used = "no_receive"
-                elif _pn_s == "Jessica":
-                    clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip(); _tm["slot_text"] = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")
-                elif _pn_s == "Olivia":
-                    _cq_used = int(((_sd_s.get("contrast_q_count") or {}).get(chapter, 0)) or 0)
-                    if _cq_used:
-                        _slot_used = "contrast_already"   # LLM 이 이미 대조 질문을 했으면 그것이 슬롯
-                    else:
-                        _oq = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q2" if _ch_i % 2 else "slot_q")
-                        clean_reply = " ".join(_lead_s + [_oq]).strip(); _tm["slot_text"] = _oq
-                        _tm["contrast_q"] = 1
-                elif _pn_s == "Daniel":
-                    # (P3-2) 관찰은 되받기 뒤에: [되받기] + 관찰 + 질문부
-                    from diag_project.services.intro_messages import DANIEL_OBSERVATIONS as _DOBS
-                    clean_reply = " ".join(_lead_s + [_DOBS[_ch_i % len(_DOBS)]] + ([_q_now_s] if _q_now_s else [])).strip(); _tm["slot_text"] = _DOBS[_ch_i % len(_DOBS)]
-                elif _pn_s == "Michael":
-                    # (P3-2) 응원 = [리더 결정 요약(LLM 되받기)] + "그 선택, 응원합니다." + LLM 질문 그대로. 실행 의지 질문은 다음 턴(michael_q_pending).
-                    _sl = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_lead")
-                    clean_reply = " ".join(_lead_s + [_sl] + ([_q_now_s] if _q_now_s else [])).strip(); _tm["slot_text"] = _sl
-                    _tm["michael_q_pending"] = 1
-                else:   # Lucas
-                    clean_reply = " ".join(_lead_s + [_pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")]).strip(); _tm["slot_text"] = _pl_a((state.get("coach_persona") or {}).get("name"), "slot_q")
-                if _slot_used not in ("contrast_already", "no_receive"):
-                    _tm["slot"] = _pn_s
-                    logger.info("🎭 페르소나 슬롯(%s): [%s] %s", _pn_s, chapter, current_target_sub)
-            _new_q = next((x for x in reversed(split_sentences(clean_reply)) if is_question_sentence(x)), "")
-            _prev_qs = [x for t in _recent_coach_texts for x in split_sentences(t) if is_question_sentence(x)]
-            if _new_q and _prev_qs:
-                from diag_project.services.llm_judge import same_question_as_recent as _sqr
-                if await _sqr(llm, _new_q, _prev_qs) is True:
-                    _tm["semrep"] = 1
-                    logger.info("🔁 의미 반복 판정: %r → 재생성 1회", _new_q[:50])
-                    _r_txt = ""
-                    try:
-                        _r_out = await _timed_regen(
-                            system_prompt=system_prompt, chapter_context=chapter_context,
-                            turn_state_text=turn_state_text + (
-                                "\n\n🚨 [시스템 — 재생성 지시] 방금 질문이 직전 턴에서 이미 물은 것과 같은 것을 묻고 있습니다. "
-                                "같은 대상·시점·행동을 다시 묻지 말고, 리더님이 방금 답한 내용에서 한 걸음 더 들어가는 다른 질문 하나로 다시 쓰세요."),
-                            compressed_history=compressed_history, user_message=request.content, light_mode=True)
-                        _r_txt = _MARKER_RE.sub("", _r_out.get("reply") or "").strip()
-                    except Exception as _e:
-                        logger.error("🔁 의미 반복 재생성 실패: %s", _e)
-                    _r_txt, _ = _klq(_r_txt)
-                    _r_txt, _ = _fmq(_r_txt)
-                    _r_q = next((x for x in reversed(split_sentences(_r_txt)) if is_question_sentence(x)), "")
-                    if _r_q and await _sqr(llm, _r_q, _prev_qs) is not True:
-                        clean_reply = _r_txt
-                    else:
-                        _tm["semrep"] = 2
-                        clean_reply = _anchor_fallback()
-                        logger.info("🔁 재생성 후에도 의미 반복 → 다음 앵커: %s", clean_reply[:60])
-
-        # 8-j. (2026-10-21) 전환 턴(STAR_COMPLETE_NEW_EVENT) 앵커 접착 — LLM 본문(되받기+다리, 질문 제거, 최대 2문장) + 시스템 앵커 1개.
-        #   본문이 전환 문장뿐('이번엔 조금 다른 장면입니다' 단독)이면 재생성 1회, 그래도면 전환 문장만. 모드·폴백은 guard_log.
-        if _is_anchor and not _llm_error and not _guard_replaced:
-            from diag_project.services.output_guard import ANCHOR_TRANSITIONS as _ATR_j
-            from diag_project.services.output_guard import drop_question_sentences as _dqs_j, is_transition_only as _ito
-
-            def _body_of(txt: str) -> str:
-                _b, _ = _dqs_j(txt)
-                return " ".join([x.strip() for x in split_sentences(_b) if x.strip()][:2])
-
-            _body = _body_of(clean_reply)
-            if state.get("skip_bridge"):
-                # (2026-10-29 P1) 입력 이상 3회째 전진 턴 — 본문은 고정 '이 항목은 여기까지 듣고 넘어갈게요' 한 문장
-                _body = state["skip_bridge"]
-                _tm["skip_bridge"] = 1
-            elif _ito(_body):
-                _tm["bridge"] = 1
-                logger.info("🌉 전환 턴 본문이 전환 문장뿐(되받기 없음) → 재생성 1회")
-                _b2 = ""
-                try:
-                    _b_out = await _timed_regen(
-                        system_prompt=system_prompt, chapter_context=chapter_context,
-                        turn_state_text=turn_state_text + (
-                            "\n\n🚨 [시스템 — 재생성 지시] 리더님 말을 받는 첫 문장 없이 전환 문장만 냈습니다. 방금 리더님 답변의 핵심 사실 한 문장을 먼저 쓰고, "
-                            "그 뒤에 다리 한 문장. 질문은 쓰지 마세요."),
-                        compressed_history=compressed_history, user_message=request.content, light_mode=True)
-                    _b2 = _body_of(_MARKER_RE.sub("", _b_out.get("reply") or ""))
-                except Exception as _e:
-                    logger.error("🌉 전환 재생성 실패: %s", _e)
-                if _b2 and not _ito(_b2):
-                    _body = _b2
-                else:
-                    _tm["bridge"] = 2
-                    _body = _ATR_j[0]
-            # (2026-11-04 P3-3) 하위역량 전환 다리 — [되받기 1문장(리더 답 인용)] + 페르소나 고정 다리 + 앵커. LLM 의 다리·전환 문장은 쓰지 않는다
-            #   (P2-3 의 '되받기만 있으면 다리 추가'를 대체. 운영 11/4: 앵커로 건너뛰는 턴이 기계적으로 읽혔다).
-            if not state.get("skip_bridge"):
-                from diag_project.services.intro_messages import target_bridge_line as _tbl_j
-                _recv_j = [x.strip() for x in split_sentences(_body) if x.strip() and not _ito(x)][:1]
-                _body = " ".join(_recv_j + [_tbl_j((state.get("coach_persona") or {}).get("name"), _bridge_idx())]).strip()
-                _tm["bridge_added"] = 1
-                _tm["target_bridge"] = 1
-            _ar_q, _ar_mode = await _render_anchor_for(current_target_sub)
-            _tm["anchor_render"] = _ar_mode
-            clean_reply = f"{_body} {_ar_q}".strip()
-
-        # (2026-09-29) 태도 진술 계기 질문 턴: '계기'를 묻지 않았으면 질문 문장을 계기 질문으로(리드 1문장 유지)
-        if state.get("attitude_trigger") and "계기" not in clean_reply:
-            from diag_project.services.event_tracker import ATTITUDE_TRIGGER_QUESTION as _ATQ
-            _lead_t = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-            clean_reply = " ".join(_lead_t + [_ATQ]).strip()
-            if _tm.get("ladder"):   # (2026-10-29 P1) 사다리 질문이 덮였다 — 원장에 사용으로 남기지 않는다(p11 샘플: 계기 질문이 사다리로 집계)
-                _tm.pop("ladder", None); _tm["ladder_dropped"] = "attitude"; state["force_ladder_probe"] = None
-            logger.info("🌱 계기 질문 강제")
-
-        # (2026-09-29) 결과 강제 턴에 결과 질문이 없으면 → 직전 발화 명사구로 만든 결과 질문(풀 문장 X)
-        if state.get("force_result_probe") and _is_probe and not is_result_probe_text(
-                " ".join(q for q in split_sentences(clean_reply) if is_question_sentence(q))):
-            # 먼저 재생성 1회 — 리더의 말(감정·판단)에서 출발한 결과 질문을 LLM 이 만들게 한다(듣기 우선).
-            try:
-                _rr = await _timed_regen(
-                    system_prompt=system_prompt, chapter_context=chapter_context,
-                    turn_state_text=turn_state_text + (
-                        "\n\n🚨 [시스템 — 재생성 지시] 이번 턴은 결과(R)를 물어야 하는데 결과 질문이 없습니다. "
-                        "리더님이 방금 한 말(감정·판단·장면)에서 출발해, 그 일 뒤에 무엇이 어떻게 됐는지 묻는 한 문장으로 끝내세요. "
-                        "리더님이 쓴 말을 문장에 넣고 '그것·그럴 때'만으로 가리키지 마세요."),
-                    compressed_history=compressed_history, user_message=request.content, light_mode=True,
-                )
-                _rr_txt = _MARKER_RE.sub("", _rr.get("reply") or "").strip()
-            except Exception:
-                _rr_txt = ""
-            if _rr_txt and is_result_probe_text(" ".join(q for q in split_sentences(_rr_txt) if is_question_sentence(q))):
-                clean_reply, _ = cap_lead_sentences(_rr_txt)
-                logger.info("🎯 결과 질문 재생성 채택: %s", clean_reply[-60:])
-        if state.get("force_result_probe") and _is_probe and not is_result_probe_text(
-                " ".join(q for q in split_sentences(clean_reply) if is_question_sentence(q))):
-            from diag_project.services.output_guard import result_fallback_question as _rfq3
-            _lead3 = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-            clean_reply = " ".join(_lead3 + [_rfq3(request.content, _prev_user_text, persona=(state.get("coach_persona") or {}).get("name"))]).strip()
-            _tm["hard"] = True
-            logger.info("🎯 결과 질문 없음 → 명사구 폴백: %s", clean_reply[-50:])
-
-        # (2026-09-22 결정) 리드 한 문장 상한: 질문 앞 리드가 2문장 이상이면 첫 문장만. 매 턴 한 문장 되받기는 허용,
-        #   3턴 1회 제한은 없다. 질문부터는 불변. 프로브 턴만(ALIGN·OPENING 은 정의·목록이 리드).
-        #   (2026-11-04 P3 2차) 상한은 리더 답 길이(150자 미만 1·이상 2, P3-1)로 — p3q 1차에서 이 1문장 상한이 8-j·슬롯 조립 뒤에 돌아 고정 다리·응원
-        #   문장을 잘라냈고 2문장 되받기가 한 번도 살아남지 못했다. 전환 다리·슬롯 턴은 조립 단계에서 이미 [되받기 1 + 고정 문장]이라 건드리지 않는다.
-        if _is_probe:
-            # (2026-11-04 P3 3차) 되받기 뒤 LLM 권유문('…떠올려 주셔도 좋아요.')은 상한 밖 — 먼저 지운다(질문 보존)
-            from diag_project.services.output_guard import strip_suggestion_statements as _sss_c
             clean_reply, _n_sug = _sss_c(clean_reply)
             if _n_sug:
-                _tm["suggestion_cut"] = int(_tm.get("suggestion_cut") or 0) + _n_sug
-        if _is_probe and not _tm.get("target_bridge") and not _tm.get("slot"):
-            from diag_project.services.output_guard import cap_leads_persona as _clp_c
-            from diag_project.services.receive_check import lead_cap_for as _lcf_c
-            _cap_c = _lcf_c(_llm_user_text)
-            clean_reply, _lc = _clp_c(clean_reply, _cap_c, _llm_user_text)
-            if _lc:
-                _v["lead_cap"] = _lc
-                _tm["hard"] = True
-                logger.info("✂️ 리드 %d문장 → %d문장", _lc + _cap_c, _cap_c)
-
-        # 3(2026-09-17) Result 탐침 문장 변주: 상투형('그렇게 하니 어떻게 됐습니까') 또는 이 챕터에서 이미 쓴
-        #   결과 질문과 같은 문장이면 풀에서 안 쓴 문장으로 교체(직전 2턴 제외).
-        if chapter and _is_probe:
-            from diag_project.services.output_guard import find_repeated_result_probe
-            from diag_project.services.traversal import pick_result_probe, used_result_probes
-            _dup = find_repeated_result_probe(clean_reply, used_result_probes(session.self_assessment_data, chapter))
-            if _dup:
-                from diag_project.services.output_guard import result_fallback_question as _rfq4
-                _new_q = _rfq4(request.content, _prev_user_text)
-                if _new_q not in clean_reply:
-                    clean_reply = clean_reply.replace(_dup, _new_q, 1)
-                    logger.info("🔁 결과 질문 반복 교체: '%s' → '%s'", _dup[:40], _new_q)
+                _tm["suggestion_cut"] = _n_sug
 
     # (2026-09-29) 대명사 단독 질문 정리 — 가드 밖 턴(ABSENCE_PROBE 등) 포함 모든 LLM 턴: 다른 질문이 남으면
     #   '그럴 때는 어떠셨습니까?' 같은 지시 대상 없는 질문 문장만 뺀다(질문 보존 원칙 유지).
@@ -2758,7 +2060,6 @@ async def _submit_message_phase3a(
     if clean_reply:
         clean_reply = clean_reply.replace("있으시겠습니까", "있으셨습니까").replace("있으시겠어요", "있으셨어요")
 
-    _rcv_snap["probe"] = clean_reply   # 8-i 가드·프로브 조립·8-j 전환 다리까지 끝난 본문
     # 8-n. (2026-10-22 P2-1) 입버릇 반복 가드 — 되받기 마무리 어구(마지막 어절 2개)를 세션 단위로 센다.
     #   같은 어구 2회째 → 재생성 1회, 3회째(또는 재생성 후에도) → 그 문장 삭제. 금지 어구(마음에 남아요·짐작이 되네요·
     #   인상에 남네요·그려지네요·분명하게 들어왔어요)는 1회째부터 재생성. '리더님,' 문두 호칭은 3턴에 1회(직전 2턴에 있으면 뗀다).
@@ -2774,10 +2075,10 @@ async def _submit_message_phase3a(
         _tc = dict((session.self_assessment_data or {}).get("tail_counts") or {})
         # (2026-11-04 P3 2차) 고정 문장(전환 다리·응원·관찰)은 입버릇 집계·삭제·재생성 대상이 아니다 — p3r 에서 다리 '다른 쪽이에요'가
         #   2회째부터 입버릇으로 잡혀 전환 턴 전체가 재생성되며 다리·앵커가 사라졋다(Michael 2/3턴, Jessica 1/3턴).
-        from diag_project.services.intro_messages import persona_line as _pl_tn, target_bridge_lines as _tbls_n
+        from diag_project.services.intro_messages import persona_line as _pl_tn
         from diag_project.services.receive_check import lead_cap_for as _lcf_n, splice_receive as _spl_n, _compact as _cpt_n
         _pn_n = (state.get("coach_persona") or {}).get("name")
-        _fixed_n = [x for x in (_tm.get("slot_text"), _pl_tn(_pn_n, "slot_lead"), *_tbls_n(_pn_n)) if x]
+        _fixed_n = [x for x in (_tm.get("slot_text"), _pl_tn(_pn_n, "slot_lead"), _bei_anchor_text) if x]   # (BEI) 고정 문장 = 슬롯·시스템 앵커
         _fixed_n_c = {_cpt_n(x) for x in _fixed_n}
 
         def _sans_fixed(txt: str) -> str:
@@ -2788,8 +2089,8 @@ async def _submit_message_phase3a(
             _b = _fbt(_t)
             _r = [t for t in _lts(_t) if int(_tc.get(t, 0) or 0) >= 1]
             return _b, _r
-        # 앵커·사다리·슬롯 턴은 질문부가 시스템 문장 — 재생성 본문으로 통째로 바꾸지 않고 되받기만 교체한다.
-        _keep_q_n = bool(_is_anchor or _tm.get("target_bridge") or _tm.get("slot") or _tm.get("ladder") or state.get("force_ladder_probe"))
+        # 앵커·슬롯 턴은 질문부가 시스템 문장 — 재생성 본문으로 통째로 바꾸지 않고 되받기만 교체한다.
+        _keep_q_n = bool(_tm.get("anchor_attached") or _tm.get("slot"))
 
         _b0, _r0 = _tail_hits(clean_reply)
         if _b0 or _r0:
@@ -2816,74 +2117,124 @@ async def _submit_message_phase3a(
                 clean_reply, _n_tail = _sls(clean_reply, set(_r0))
                 _tm["tail_fix"] = 2
                 logger.info("🗣️ 입버릇 반복(%s) → 되받기 문장 %d개 삭제", _tm["tail"], _n_tail)
-                if instruction_used == "STAR_COMPLETE_NEW_EVENT" and not any(
-                        not is_question_sentence(x) for x in split_sentences(clean_reply)):
-                    # 전환 턴은 되받기·다리 없이 앵커만 남으면 안 된다 → 페르소나 다리 한 문장을 앞에
-                    # (2026-11-04 P3 2차) 옛 전환 문구(transition_bridge) 대신 P3-3 고정 다리 — 되받기는 뒤의 8-w 가 앞에 보강한다
-                    from diag_project.services.intro_messages import target_bridge_line as _tbl_n
-                    clean_reply = f"{_tbl_n((state.get('coach_persona') or {}).get('name'), _bridge_idx())} {clean_reply}".strip()
-                    _tm["bridge_added"] = 1
-                    _tm["target_bridge"] = 1
         if _swh(clean_reply) and any(_swh(_t) for _t in _recent_coach_texts):
             clean_reply, _hon = _slh(clean_reply)
             if _hon:
                 _tm["honorific"] = 1
                 logger.info("🗣️ '리더님,' 문두 호칭 반복 → 제거")
 
-    _rcv_snap["8-n"] = clean_reply
-    # 8-o. (2026-10-22) 최종 '한 턴 한 질문' — 8-n 입버릇 재생성·감정 재생성이 바꾼 본문에도 질문이 2개 이상이면 마지막만 남긴다.
-    if (system_override_text is None and not _llm_error and clean_reply and not needs_user_decision
-            and instruction_used not in ("DIAGNOSIS_INTRO", "CHAPTER_READY_TO_END", "USER_REQUESTS_PAUSE", "AWAIT_NEXT_CHAPTER_CHOICE",
-                                         "COMPETENCY_ALIGN", "STAR_COMPLETE_NEW_EVENT")):
-        from diag_project.services.output_guard import keep_last_question as _klq_o
-        clean_reply, _n_qo = _klq_o(clean_reply)
-        if _n_qo:
-            _tm["one_q"] = int(_tm.get("one_q") or 0) + _n_qo
-            logger.info("✂️ 최종 한 턴 한 질문: %d문장 제거", _n_qo)
-
-    _rcv_snap["8-o"] = clean_reply
-    # 8-w. (2026-11-04 P3-1) 되받기 필수 — 모든 대화 턴은 [되받기 1~2문장(리더 직전 답의 명사구 인용)] + [질문]. 8-n 입버릇·8-o 한 질문·8-i 가드가
-    #   되받기를 지웠거나 LLM 이 질문만 냈으면 되받기만 재생성 1회(질문부는 그대로 둔다), 그래도 없으면 백엔드 폴백
-    #   "'[명사구]'까지 말씀해 주셨네요." 질문만 나가는 턴 금지. (운영 Michael 11/4 세션: 질문만 이어지는 턴이 기계적으로 읽혔다.)
-    #   (2차) 8-p 좋습니다 가드·8-h 느낌표 상한보다 앞에 둔다 — p3q 1차에서 재생성 되받기가 '좋습니다!'로 시작해 두 가드를 우회했다(챕터 5회).
+    # 8-w. (2026-11-04 BEI) 턴 형식 검사 — [되받기 1~3문장(리더 직전 답의 명사구 인용)] + [질문 1개]. 위반 사유를 모아 재생성 최대 2회.
+    #   폴백 문장은 없다: 2회 뒤에도 되받기가 없으면 그대로 내보내고 guard_log receive_miss(린트 '되받기 없는 턴' 0 기준),
+    #   질문이 2개면 마지막 질문만 남긴다(결정 1). 질문부가 시스템 문장(앵커·슬롯)인 턴은 되받기만 교체한다(splice_receive).
     from diag_project.services.receive_check import RECEIVE_REQUIRED_INSTRUCTIONS as _RECV_INSTR
     if (system_override_text is None and not _llm_error and (clean_reply or "").strip() and not needs_user_decision
-            and chapter and instruction_used in _RECV_INSTR and _align_ctx is None and not state.get("skip_bridge")):
+            and chapter and instruction_used in _RECV_INSTR and _align_ctx is None):
+        from diag_project.services.output_guard import count_questions as _cq_w, keep_last_question as _klq_w
         from diag_project.services.receive_check import (
-            check_receive as _chk_r, lead_cap_for as _lcf_w, quote_phrase as _qp_r,
-            receive_fallback as _rfb, splice_receive as _spl_r,
+            _compact as _cpt_w, check_receive as _chk_r, lead_cap_for as _lcf_w, quote_phrase as _qp_r, splice_receive as _spl_r,
         )
-        _has_r, _quoted_r = _chk_r(clean_reply, _llm_user_text)
-        if not (_has_r and _quoted_r):
-            _ph = _qp_r(_llm_user_text)
-            # 되받기를 잃은 단계(원장용): LLM 원문부터 순서대로 처음 판정이 깨진 지점. 'llm' 이면 LLM 이 질문만 냈다.
-            _tm["receive_src"] = next((k for k, v in _rcv_snap.items() if not all(_chk_r(v, _llm_user_text))), "8-o")
-            _tm["receive_phrase"] = _ph
-            _pn_w = (state.get("coach_persona") or {}).get("name")
-            from diag_project.services.intro_messages import persona_line as _pl_w, target_bridge_lines as _tbls_w
-            _fixed_w = [x for x in (_tm.get("slot_text"), _pl_w(_pn_w, "slot_lead"), *_tbls_w(_pn_w)) if x]
-            _new_r = ""
+        _q_expected = _is_probe                       # 여는·SWEEP 앵커 턴은 시스템 질문이 이미 붙어 있다
+        _fixed_w = [x for x in (_tm.get("slot_text"), _bei_anchor_text) if x]
+        _fixed_wc = {_cpt_w(x) for x in _fixed_w}
+
+        def _format_issues(txt: str) -> list[str]:
+            issues: list[str] = []
+            _has_r, _quoted_r = _chk_r(txt, _llm_user_text)
+            if not _has_r:
+                issues.append("no_receive")
+            elif not _quoted_r:
+                issues.append("no_quote")
+            _n_st = sum(1 for x in split_sentences(txt) if x.strip() and not is_question_sentence(x) and _cpt_w(x) not in _fixed_wc)
+            if _n_st > 3:
+                issues.append("long_receive")
+            _nq = _cq_w(txt)
+            if _q_expected and _nq == 0:
+                issues.append("no_question")
+            if _nq > 1:
+                issues.append("two_questions")
+            return issues
+
+        _iss = _format_issues(clean_reply)
+        _rounds = 0
+        _ph = _qp_r(_llm_user_text)
+        while _iss and _rounds < 2:
+            _rounds += 1
+            _notes_w = ["\n\n🚨 [시스템 — 재생성 지시] 방금 응답의 형식이 어긋났습니다. 되받기 1~3문장 + 질문 1개로 다시 쓰세요. 이 지시문의 단어를 답에 옮기지 마세요."]
+            if "no_receive" in _iss or "no_quote" in _iss:
+                _notes_w.append("- 첫 문장은 리더님이 방금 쓴 표현" + (f"('{_ph}' 같은 말)" if _ph else "") + "을 그대로 하나 넣어 들은 사실을 받는 평서문으로 쓰세요(평가·칭찬 없이).")
+            if "long_receive" in _iss:
+                _notes_w.append("- 되받기가 길어요. 질문 앞 평서문은 3문장을 넘기지 마세요.")
+            if "no_question" in _iss:
+                _notes_w.append("- 질문이 없습니다. 마지막은 리더님께 묻는 질문 한 문장이어야 합니다.")
+            if "two_questions" in _iss:
+                _notes_w.append("- 질문이 두 개 이상입니다. 질문은 하나만 남기세요.")
             try:
                 _r_out = await _timed_regen(
-                    system_prompt=system_prompt, chapter_context=chapter_context,
-                    turn_state_text=turn_state_text + (
-                        "\n\n🚨 [시스템 — 재생성 지시] 첫 문장이 리더님 답을 받지 못했습니다. 첫 문장은 리더님이 방금 쓴 표현"
-                        + (f"('{_ph}' 같은 말)" if _ph else "") + "을 그대로 하나 넣어 들은 사실을 받는 평서문 1문장으로 쓰고, "
-                        "그 뒤에 질문 하나를 이어 쓰세요. 이 지시문의 단어를 답에 옮기지 마세요."),
+                    system_prompt=system_prompt, chapter_context=chapter_context, turn_state_text=turn_state_text + "\n".join(_notes_w),
                     compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
                 _r_txt = _MARKER_RE.sub("", _r_out.get("reply") or "").strip()
-                if _r_txt and all(_chk_r(_r_txt, _llm_user_text)):
-                    _new_r = _r_txt
             except Exception as _e_r:
-                logger.error("되받기 재생성 실패: %s", _e_r)
-            if _new_r:
-                clean_reply = _spl_r(clean_reply, _new_r, _lcf_w(_llm_user_text), keep_fixed=_fixed_w)
-                _tm["receive_fix"] = 1
-                logger.info("🗣️ 되받기 재생성으로 보강(인용=%s)", _ph)
-            elif _ph or not _has_r:
-                clean_reply = _spl_r(clean_reply, _rfb(_pn_w, _ph), 1, keep_fixed=_fixed_w)
-                _tm["receive_fix"] = 2
-                logger.info("🗣️ 되받기 폴백 삽입(인용=%s)", _ph)
+                logger.error("턴 형식 재생성 실패: %s", _e_r)
+                _r_txt = ""
+            if not _r_txt:
+                continue
+            # 질문부가 시스템 문장인 턴(앵커·슬롯)은 되받기만 바꾼다. LLM 질문 턴은 재생성 본문 전체를 후보로.
+            _cand = _spl_r(clean_reply, _r_txt, 3, keep_fixed=_fixed_w) if (_fixed_w or not _q_expected) else _r_txt
+            _iss2 = _format_issues(_cand)
+            if len(_iss2) < len(_iss):
+                clean_reply, _iss = _cand, _iss2
+        _tm["format_regen"] = _rounds
+        if _iss:
+            _tm["format_miss"] = list(_iss)
+            if "two_questions" in _iss:
+                clean_reply, _n_qo = _klq_w(clean_reply)   # 결정 1: 2회 뒤에도 질문 2개면 마지막 질문만
+                _tm["one_q"] = _n_qo
+            if "no_receive" in _iss or "no_quote" in _iss:
+                _tm["receive_miss"] = 1
+                _tm["receive_phrase"] = _ph
+            logger.info("📐 턴 형식 미해결(폴백 없음): %s", _iss)
+
+    # 8-s. (2026-11-04 BEI) 페르소나 고정 슬롯 — 사례당 1회, 사례 리더 턴 3~5, 되받기 뒤. Jessica·Lucas·Olivia 는 LLM 질문을 slot_q 로 대체,
+    #   Daniel 은 [되받기] + 관찰 + LLM 질문, Michael 은 [되받기] + "그 선택, 응원합니다." + LLM 질문(실행 의지 질문은 다음 턴). Ella 는 슬롯 없음.
+    #   8-w 뒤에서 조립해 '되받기 뒤' 자리를 보장한다. 되받기가 없는 턴에는 넣지 않는다(단독 슬롯 금지 — 다음 턴에 다시 시도).
+    if (instruction_used == "EPISODE_PROBE" and _bei_ep and system_override_text is None and not _llm_error and chapter
+            and not needs_user_decision and (clean_reply or "").strip()):
+        from diag_project.services.intro_messages import persona_line as _pl_s
+        from diag_project.services.output_guard import starts_without_main_clause as _swmc_s
+        from diag_project.services.persona_voice import persona_key as _pk_s
+        _pn_s = _pk_s((state.get("coach_persona") or {}).get("name"))
+        _sd_s = session.self_assessment_data or {}
+        _ep_turn_s = int(_bei_ep.get("leader_turns") or 0)
+        _mq_pending = bool(((_sd_s.get("michael_q_pending") or {}).get(chapter))) if chapter else False
+        _sents_s = [x for x in split_sentences(clean_reply) if x.strip()]
+        _lead_s = [x for x in _sents_s if not is_question_sentence(x) and not _swmc_s(x)][:2]
+        _qi_s = next((i for i, x in enumerate(_sents_s) if is_question_sentence(x)), None)
+        _q_now_s = " ".join(_sents_s[_qi_s:]) if _qi_s is not None else ""
+        if _pn_s == "Michael" and _mq_pending and _lead_s:
+            _mq = _pl_s((state.get("coach_persona") or {}).get("name"), "slot_q")
+            clean_reply = " ".join(_lead_s + [_mq]).strip()
+            _tm["slot"] = "Michael_q"; _tm["slot_text"] = _mq; _tm["michael_q_done"] = 1
+            logger.info("🎭 Michael 실행 의지 질문(응원 다음 턴): [%s] 사례 %s", chapter, _bei_ep.get("idx"))
+        elif (_pn_s in ("Jessica", "Olivia", "Daniel", "Michael", "Lucas") and not _bei_ep.get("slot_used") and _ep_turn_s in (3, 4, 5) and _lead_s):
+            _ch_i = [k for k in COMPETENCY_FRAMEWORK if k != "supplementary"].index(chapter) if chapter in COMPETENCY_FRAMEWORK else 0
+            _slot_txt = None
+            if _pn_s in ("Jessica", "Lucas"):
+                _slot_txt = _pl_s((state.get("coach_persona") or {}).get("name"), "slot_q")
+                clean_reply = " ".join(_lead_s + [_slot_txt]).strip()
+            elif _pn_s == "Olivia":
+                _slot_txt = _pl_s((state.get("coach_persona") or {}).get("name"), "slot_q2" if _ch_i % 2 else "slot_q")
+                clean_reply = " ".join(_lead_s + [_slot_txt]).strip()
+            elif _pn_s == "Daniel":
+                from diag_project.services.intro_messages import DANIEL_OBSERVATIONS as _DOBS
+                _slot_txt = _DOBS[_ch_i % len(_DOBS)]
+                clean_reply = " ".join(_lead_s + [_slot_txt] + ([_q_now_s] if _q_now_s else [])).strip()
+            elif _pn_s == "Michael":
+                _slot_txt = _pl_s((state.get("coach_persona") or {}).get("name"), "slot_lead")
+                clean_reply = " ".join(_lead_s + [_slot_txt] + ([_q_now_s] if _q_now_s else [])).strip()
+                _tm["michael_q_pending"] = 1
+            if _slot_txt:
+                _tm["slot"] = _pn_s; _tm["slot_text"] = _slot_txt
+                logger.info("🎭 페르소나 슬롯(%s): [%s] 사례 %s 턴 %d", _pn_s, chapter, _bei_ep.get("idx"), _ep_turn_s)
 
     # 8-p. (2026-10-23 6번 보정) Michael "좋습니다" 도입: 턴당 최대 1회, 챕터에서 2턴에 1회 이하(직전 턴에 썼으면 이번 턴은 뗀다).
     #   고정 문장 턴(안내·확인 템플릿)도 센다 — 재생에서 4·5·6턴 연속 '좋습니다' 가 템플릿 턴에서 났다.
@@ -2902,21 +2253,6 @@ async def _submit_message_phase3a(
         _tm["good_lead"] = 1 if _used_good else 0
         if not _allow_good:
             _tm["good_lead_cut"] = 1
-
-    # 8-m. (2026-10-22 P2-0) 리더 종료 요청 + 넓이 미충족: 되받기 한 문장 + "하나만 더 여쭤봐도 될까요?" + 다음 미탐색 앵커 1개.
-    #   원장은 기록하지 않는다 — 답하면 다음 프로브 스텝이 같은 타겟을 골라 기록하고, 거절하면 미탐색으로 남는다.
-    if instruction_used == "CHAPTER_ONE_MORE_ASK" and system_override_text is None and not _llm_error:
-        from diag_project.data.competencies import find_sub_key_by_name as _fsk_om
-        from diag_project.services.anchor_render import dict_anchor as _dict_anchor_om
-        from diag_project.services.output_guard import receive_sentence as _recv_om
-        from diag_project.services.traversal import select_next_target as _snt_om
-        _recv_text = _recv_om(clean_reply, fallback="네, 이 영역은 충분히 들려주셨어요.")
-        _next_sub = _snt_om(asked_for_chapter(session.self_assessment_data, chapter), state.get("all_subcompetencies") or [], [])
-        _om_q = _dict_anchor_om(_fsk_om(chapter, _next_sub) if _next_sub else None)
-        from diag_project.services.intro_messages import persona_line as _pl_om
-        clean_reply = f"{_recv_text} {_pl_om((state.get('coach_persona') or {}).get('name'), 'one_more')} {_om_q}"
-        _tm["one_more"] = _next_sub or "-"
-        logger.info("🙏 종료 요청(넓이 미충족) → 하나만 더: [%s] %s", chapter, _next_sub)
 
     # 8-k. (2026-10-22 P1-3) 모든 코치 턴은 질문 하나로 끝난다 — LLM 출력에 질문이 없으면 그 턴의 고정 질문을 붙인다.
     #   라포(8-0)·INTRO(안내 끝 '시작해볼까요?')·ALIGN/전환(앵커)·프로브(템플릿 앵커·결과 폴백)는 각자 보장하고,
@@ -2992,14 +2328,13 @@ async def _submit_message_phase3a(
         #   리더가 '계속'이면 다음 턴 decider 가 pending 을 그대로 실행(같은 타겟·같은 탐침), '다음에'면 paused.
         from diag_project.services.intro_messages import pause_suggestion_text
         from diag_project.services.output_guard import receive_sentence as _recv_pause
-        from diag_project.services.traversal import restore_ledger as _restore_ledger
         _recv_only = _recv_pause(clean_reply, fallback="")
-        if _tm.get("ladder"):   # (2026-10-29 P1) 일시정지 제안이 사다리 질문을 삼켰다 — 재개 턴에서 다시 사다리가 잡히도록 사용 표시를 지운다
-            _tm.pop("ladder", None); _tm["ladder_dropped"] = "pause"; state["force_ladder_probe"] = None
         clean_reply = f"{_recv_only}\n\n{pause_suggestion_text(_sit_elapsed, (state.get('coach_persona') or {}).get('name'))}".strip()
         _pst = dict(session.self_assessment_data or {})
         if _ledger_snapshot is not None:
-            _pst = _restore_ledger(_pst, _ledger_snapshot)
+            _pst = _bei.restore(_pst, _ledger_snapshot)   # (BEI) 이 턴의 리더 턴·슬롯·사례 종료를 되돌린다 — 재개 턴이 같은 답으로 다시 판정한다
+            _bei_closed.clear()
+            _tm["slot"] = None
         _pst["pending_instruction"] = {
             "instruction": instruction_used, "chapter": chapter, "target": current_target_sub,
             "user_text": (request.content or "")[:1000], "at": datetime.utcnow().isoformat(timespec="seconds"),
@@ -3009,25 +2344,6 @@ async def _submit_message_phase3a(
         _fm_pst(session, "self_assessment_data")
         logger.info("⏸️ 일시정지 제안: 질문 보류 → pending=%s target=%s (원장 되돌림=%s)",
                     instruction_used, current_target_sub, _ledger_snapshot is not None)
-
-    # 8-x. (2026-11-02 P2) 사다리 질문 복원 — 8-h 느낌표·8-n 입버릇 재생성이 본문을 통째로 바꾸면 사다리 질문이 사라진다
-    #   (p2b Michael 일관리: ladder_dropped=overridden 2턴 → 챕터 사다리 1회). 강제 사다리 턴이면 마지막 질문을 사다리 질문으로 되돌린다.
-    if (state.get("force_ladder_probe") and _tm.get("ladder") and system_override_text is None and not _llm_error
-            and _align_ctx is None and (clean_reply or "").strip()):
-        try:
-            from diag_project.services.output_guard import _content_chunks as _cc_x
-            from diag_project.services.persona_voice import voice_question as _vq_x
-            _lq_raw_x = (state.get("force_ladder_probe") or {}).get("q") or ""
-            _ov_x = len({c for c in _cc_x(_lq_raw_x) if len(c) >= 2} & set(_cc_x(clean_reply)))
-            if _lq_raw_x and _ov_x < 3:
-                _lead_x = [x for x in split_sentences(clean_reply) if not is_question_sentence(x)][:1]
-                _lq_v = _vq_x((state.get("coach_persona") or {}).get("name"), _lq_raw_x,
-                              variant=_vv_total())
-                clean_reply = " ".join(_lead_x + [_lq_v]).strip()
-                _tm["ladder_restored"] = 1
-                logger.info("🪜 사다리 질문 복원(재생성이 덮음): [%s] %s", chapter, (state.get("force_ladder_probe") or {}).get("sub"))
-        except Exception as _le_x:   # noqa: BLE001
-            logger.warning("사다리 복원 실패 — 건너뜀: %s", _le_x)
 
     # 8-x2. (2026-11-02 p2c) 페르소나 슬롯 문장 복원 — 슬롯은 프로브 스텝에서 본문을 조립하지만 8-n 입버릇 재생성·8-o 한 질문·
     #   8-p Michael 리드 보정이 뒤에서 본문을 바꾸면 고정 문장이 사라진다(p2c 24세션: Michael 16/25·Jessica 5/25 유실 — 린트 슬롯 열은
@@ -3083,17 +2399,18 @@ async def _submit_message_phase3a(
         if not _ok_z:
             logger.warning("📐 ALIGN 형식 자가점검 실패: %s", _why_z)
 
-    # 9. 사건 생명주기 처리 + AI 메시지 저장
-    #   (2026-09-22) 탐침 종류는 LLM 자기보고가 아니라 instruction·문장 표지로(event_tracker.probe_type_for).
-    from diag_project.services.event_tracker import probe_type_for as _ptf
-    probe_type_used = None if system_override_text is not None else _ptf(instruction_used, clean_reply)
+    # 9. 사례 행(Event) 저장 + AI 메시지 저장
+    #   (2026-11-04 BEI) 탐침 종류는 instruction 으로만: 여는 턴·SWEEP 앵커·ALIGN = INCIDENT, 사례 탐침 = SPECIFICATION, META = META.
+    _PROBE_TYPE_BY_INSTR = {"EPISODE_OPEN": "INCIDENT", "SWEEP_ANCHOR": "INCIDENT", "COMPETENCY_ALIGN": "INCIDENT",
+                            "EPISODE_PROBE": "SPECIFICATION", "EPISODE_RETRY": "SPECIFICATION", "SWEEP_FOLLOWUP": "SPECIFICATION",
+                            "META_QUESTION_FROM_USER": "META"}
+    probe_type_used = None if system_override_text is not None else _PROBE_TYPE_BY_INSTR.get(instruction_used)
 
     # 사용자가 '계속' 동의(CHAPTER_CONTINUE_CONFIRMED)했을 때만 다음 챕터를
     # '시작됨'으로 표시해, 중간 CONFIRM 턴 없이 바로 다음 영역 합의(ALIGN)로
     # 이어지게 한다. (CHAPTER_READY_TO_END 는 이제 전환하지 않고 대기만 한다.)
     _seamless_next_chapter = None
-    if (instruction_used in ("CHAPTER_CONTINUE_CONFIRMED", "CHAPTER_READY_TO_END")
-            and is_chapter_completed and is_chapter_starting):
+    if instruction_used == "CHAPTER_READY_TO_END" and is_chapter_completed and is_chapter_starting:
         # CHAPTER_READY_TO_END(중간 챕터)도 이제 대기 없이 강제 전환하므로
         # CONTINUE_CONFIRMED 와 동일하게 다음 챕터를 seamless 로 이어붙인다.
         _seamless_next_chapter = _get_next_chapter(chapter)
@@ -3108,11 +2425,6 @@ async def _submit_message_phase3a(
     elif needs_user_decision:
         # 조기 종료 '제안' 턴 — 2-Strike 카운팅과 /state 복원의 근거 마커.
         probe_type_used = "SUGGEST_PAUSE"
-    elif instruction_used == "CHAPTER_NO_YIELD_ULTIMATUM":
-        # 무수확 최후통첩 턴 — 다음 턴에 '이미 통첩함'을 판별하는 근거 마커.
-        probe_type_used = "NO_YIELD_ULTIMATUM"
-    elif instruction_used == "CHAPTER_ONE_MORE_ASK":
-        probe_type_used = "ONE_MORE_ASK"   # (2026-10-22 P2-0) 챕터당 1회 판별 마커
     elif _is_warning:
         # 최후 의향 확인(Warning) 턴 — 다음 턴에 '이미 경고함'을 판별해
         # 재경고 루프를 막고 곧바로 종료로 승격시키는 근거 마커.
@@ -3127,24 +2439,18 @@ async def _submit_message_phase3a(
         #   가 곧 '담당업무' 턴이다. 가이드가 이 턴의 [READY_FOR_INTRO] 를 금지하므로 위 READY_FOR_INTRO 분기에 가려지지 않는다.
         probe_type_used = "ROLE_ASK"
 
-    # 진단 전 단계는 사건 생명주기 스킵
+    # (2026-11-04 BEI) 이번 턴에 종료된 사례 → Event 행 1건씩(situation/action/result = 슬롯 인용, mapped_subcompetency = strong 라벨).
+    #   분석 입력 '[수집된 핵심 사건]' 블록과 이력 압축(완료 사례 → 요약 1줄)이 이 행을 읽는다. 일시정지 제안 턴은 쓰지 않는다(되돌림).
     is_pre_diagnosis = (instruction_used in PRE_DIAGNOSIS_INSTRUCTIONS)
-    if is_pre_diagnosis:
-        real_event_id = None
-    else:
-        real_event_id = await _handle_event_lifecycle(
-            db=db,
-            session_id=session.id,
-            chapter=chapter,
-            user_message_text=request.content,
-            instruction_used=instruction_used,
-            prev_instruction=state.get("last_instruction"),
-            prev_coach_text=_prev_coach_text,
-            target_changed=bool(_cur_before is not None and current_target_sub
-                                and advanced_to_new_target(_cur_before, current_target_sub)),
-            mapped_target=(_cur_before or current_target_sub),
-            events_all=all_events,
-        )
+    real_event_id = None
+    if chapter and _bei_closed and not needs_user_decision:
+        for _ep_c in _bei_closed:
+            try:
+                _ev_id = await _write_episode_event(db, session.id, chapter, _ep_c, events_all=all_events, messages=history_messages)
+                if _ev_id and _ep_c.get("kind", "episode") == "episode":
+                    real_event_id = _ev_id
+            except Exception as _ee:   # noqa: BLE001 — 사례 행 저장 실패가 턴을 막지 않게
+                logger.warning("사례 Event 저장 실패(무시): %s", _ee)
 
     # START_CHAPTER 마커 메시지는 진단 전 단계라도 해당 챕터로 태깅.
     # (chapter_started 쿼리가 chapter 별로 스코프되므로 — 안 그러면
@@ -3156,29 +2462,12 @@ async def _submit_message_phase3a(
     else:
         ai_msg_chapter = None if is_pre_diagnosis else chapter
 
-    # 🎯 R 탐침 기록(2026-09-14): 이 코치 턴이 결과를 물었으면(LLM 자기보고 MEASUREMENT
-    #   또는 문장 표지) 현재 타겟의 result_probed=True. 앵커(전진) 턴·LLM 실패 턴은 제외
-    #   (앵커 문장의 '결과' 표현이 새 타겟의 R 로 오기록되지 않게). 커밋은 아래 ai_msg 와 함께.
-    if (chapter and not _llm_error and current_target_sub
-            and instruction_used in _PROBE_INSTR
-            and not (_cur_before is None
-                     or advanced_to_new_target(_cur_before, current_target_sub))
-            and (probe_type_used == "MEASUREMENT" or is_result_probe_text(clean_reply))):
-        from diag_project.services.traversal import mark_result_probed
-        from sqlalchemy.orm.attributes import flag_modified as _flag_mod_r
-        session.self_assessment_data = mark_result_probed(
-            session.self_assessment_data, chapter
-        )
-        _flag_mod_r(session, "self_assessment_data")
-        logger.info("🎯 R 탐침 기록: [%s] target=%s probe_type=%s",
-                    chapter, current_target_sub, probe_type_used)
-
     ai_msg = ChatMessage(
         session_id=session.id,
         role="model",
         content=clean_reply,
         chapter=ai_msg_chapter,
-        event_id=None if is_pre_diagnosis else real_event_id,
+        event_id=None,   # (BEI) 사례 종료 시 그 사례의 메시지들에 event_id 를 일괄 태깅한다(_write_episode_event)
         probe_type_used=probe_type_used,
         # H5: LLM 실패 턴은 LLM_ERROR 로 태깅 — 다음 턴의 참여이탈 카운팅
         #   (_BEI_PROBE_INSTR 기준)과 학습 라벨에서 '앵커 턴'으로 오인되지 않게.
@@ -3265,37 +2554,18 @@ async def _submit_message_phase3a(
         if state.get("resume_pending") and instruction_used != "USER_REQUESTS_PAUSE":
             _gl_store.pop("pending_instruction", None)   # (2026-10-22 P1-1) 재개 턴이 pending 을 소비
         if chapter and system_override_text is None and not _llm_error:
-            # (2026-10-22 P2-2) 이번 코치 질문이 감정 질문이면 챕터 카운트 +1, 행동 질문이면 action_probed 기록
-            from diag_project.services.output_guard import is_emotion_question as _ieq_g, split_sentences as _ss_g
-            from diag_project.services.output_guard import is_question as _isq_g
-            from diag_project.services.traversal import is_action_probe_text as _iapt_g, mark_action_probed as _map_g
-            _fq = next((x for x in reversed(_ss_g(clean_reply)) if _isq_g(x)), "")
-            if _fq and _ieq_g(_fq):
-                _eqc = dict(_gl_store.get("emotion_q_count") or {})
-                _eqc[chapter] = int(_eqc.get(chapter, 0) or 0) + 1
-                _gl_store["emotion_q_count"] = _eqc
-            if _fq and _iapt_g(_fq):
-                _gl_store = _map_g(_gl_store, chapter)
             if _tm.get("voiced"):
                 _vvc = dict(_gl_store.get("voice_variant_count") or {})
                 _vvc[chapter] = int(_vvc.get(chapter, 0) or 0) + 1
                 _gl_store["voice_variant_count"] = _vvc
-            # (2026-10-23 P4) Olivia 대조 탐침 챕터당 1회 집계
-            from diag_project.services.persona_voice import is_contrast_question as _icq_g
-            if _fq and _icq_g(_fq):
-                _cqc = dict(_gl_store.get("contrast_q_count") or {})
-                _cqc[chapter] = int(_cqc.get(chapter, 0) or 0) + 1
-                _gl_store["contrast_q_count"] = _cqc
-                _tm["contrast_q"] = 1
-            if _tm.get("generalize"):
-                from diag_project.services.traversal import mark_generalize_probed as _mgp_g
-                _gl_store = _mgp_g(_gl_store, chapter, current_target_sub)
-                # (2026-10-29 P1-3) 다음 턴 답이 여전히 시점 없는 일반화면 generalized 원장에 남긴다(리포트 P2-3)
-                _gp = dict(_gl_store.get("generalize_pending") or {}); _gp[chapter] = current_target_sub
-                _gl_store["generalize_pending"] = _gp
-            if _tm.get("slot") and chapter:
-                _psu = dict(_gl_store.get("persona_slot_used") or {}); _psu[chapter] = _tm["slot"]; _gl_store["persona_slot_used"] = _psu
-            if chapter and (_tm.get("michael_q_pending") or _tm.get("michael_q_done")):
+            if _tm.get("slot") and _bei_ep and not needs_user_decision:
+                # (BEI) 페르소나 슬롯은 사례당 1회 — 그 사례에 사용 표시
+                _ep_g = next((e for e in _bei.episodes(_gl_store, chapter) if e.get("idx") == _bei_ep.get("idx")
+                              and e.get("kind", "episode") == _bei_ep.get("kind", "episode")), None)
+                if _ep_g is not None:
+                    _ep_g = dict(_ep_g); _ep_g["slot_used"] = True
+                    _gl_store = _bei.update_episode(_gl_store, chapter, _ep_g)
+            if _tm.get("michael_q_pending") or _tm.get("michael_q_done"):
                 # (2026-11-04 P3-2) 응원 턴 → 다음 턴에 실행 의지 질문. 질문을 낸 턴에서 대기 해제.
                 _mqp = dict(_gl_store.get("michael_q_pending") or {})
                 if _tm.get("michael_q_done"):
@@ -3303,38 +2573,10 @@ async def _submit_message_phase3a(
                 else:
                     _mqp[chapter] = 1
                 _gl_store["michael_q_pending"] = _mqp
-            if _tm.get("target_bridge"):   # (2026-11-04 P3 3차) 전환 다리 3종 순환
-                _gl_store["bridge_idx"] = (int(_gl_store.get("bridge_idx") or 0) + 1) % 3
-            if chapter and "!" in (clean_reply or ""):
+            if "!" in (clean_reply or ""):
                 # (2026-11-04 P3-4) 느낌표 챕터 누적(Michael 챕터당 2개 상한)
                 _exc = dict(_gl_store.get("excl_by_chapter") or {}); _exc[chapter] = int(_exc.get(chapter, 0) or 0) + (clean_reply or "").count("!")
                 _gl_store["excl_by_chapter"] = _exc
-            if _tm.get("quantify") and chapter:
-                _qu = dict(_gl_store.get("quantify_used") or {}); _qu[chapter] = int(_qu.get(chapter, 0) or 0) + 1; _gl_store["quantify_used"] = _qu
-            if _tm.get("direct_q") and current_target_sub:
-                # (2026-10-29 P1-2) '직접 하신' 질문 사용 횟수 — 하위역량당 1회 상한
-                _dqc_g = dict(_gl_store.get("direct_q_count") or {}); _dqc_ch = dict(_dqc_g.get(chapter) or {})
-                _dqc_ch[current_target_sub] = int(_dqc_ch.get(current_target_sub, 0) or 0) + 1
-                _dqc_g[chapter] = _dqc_ch; _gl_store["direct_q_count"] = _dqc_g
-            if _tm.get("ladder"):
-                # (2026-10-29 P1 p14) 사다리 문장이 실제로 나갔는지 확인 — 뒤 단계(입버릇 재생성·하드 교정·늦은 챕터 전환)가 질문을 덮으면
-                #   사용으로 남기지 않는다(p14 샘플 15건 중 3건이 사다리로 집계됐지만 다른 문장이 나갔다).
-                from diag_project.services.output_guard import _content_chunks as _cc_l
-                _lq_raw = (state.get("force_ladder_probe") or {}).get("q") or ""
-                _ov_l = len({c for c in _cc_l(_lq_raw) if len(c) >= 2} & set(_cc_l(clean_reply)))
-                if _lq_raw and _ov_l < 3:
-                    _tm.pop("ladder", None); _tm["ladder_dropped"] = "overridden"
-                    logger.info("🪜 사다리 문장이 뒤 단계에 덮임 → 사용 표시 제거(겹침 %d)", _ov_l)
-            if _tm.get("ladder"):
-                from diag_project.services.traversal import mark_ladder_probed as _mlp_g
-                _gl_store = _mlp_g(_gl_store, chapter, (state.get("force_ladder_probe") or {}).get("sub") or current_target_sub)
-                # (2026-10-29 P1-4) 세션 간 회전용: 어느 사다리 단계를 썼는지 하위역량 키로 남긴다(다음 세션 시작 시 ladder_avoid 로 모음)
-                from diag_project.data.competencies import find_sub_key_by_name as _fsk_lu
-                _lu_key = _fsk_lu(chapter, (state.get("force_ladder_probe") or {}).get("sub") or current_target_sub)
-                if _lu_key:
-                    _lu = dict(_gl_store.get("ladder_used") or {})
-                    _lu[_lu_key] = sorted(set((_lu.get(_lu_key) or []) + [str(_tm.get("ladder"))]))
-                    _gl_store["ladder_used"] = _lu
         if system_override_text is None and not _llm_error:
             # (2026-10-22 P2-1) 이번 턴 되받기 마무리 어구를 세션 카운터에 누적(최근 60개)
             from diag_project.services.output_guard import lead_tails as _lts_g
@@ -3354,55 +2596,29 @@ async def _submit_message_phase3a(
             "v": sorted((_tm.get("violations") or {}).keys()), "regen": _tm["regen_n"],
             "route": state.get("route_reason"),
             "hard": bool(_tm.get("hard")), "llm": round(_tm["llm"], 1), "total": round(_total, 1), "sql": _sqlc.get(),
-            # (2026-10-19) 라포 되받기 반복 가드: 0=미발동, 1=재생성으로 해결, 2=재생성 후에도 반복 → "그러셨군요." 대체
-            "echo": int(_tm.get("echo") or 0),
-            # (2026-10-21) quote: ALIGN 외부 인용(1 재생성 해결/2 따옴표 제거) · semrep: 의미 반복(1 재생성/2 다음 앵커) ·
-            #   bridge: 전환 턴 되받기 없음(1 재생성/2 전환 문장만) · one_q: 제거한 앞선 질문 수 · moment: 시점 문형 교정 수 ·
-            #   anchor: 앵커 렌더링 모드(dict/llm/fallback)
-            "quote": int(_tm.get("quote") or 0), "semrep": int(_tm.get("semrep") or 0),
-            "bridge": int(_tm.get("bridge") or 0), "one_q": int(_tm.get("one_q") or 0),
-            "moment": int(_tm.get("moment") or 0), "anchor": _tm.get("anchor_render"),
-            "work_q": int(_tm.get("work_q") or 0),   # (2026-10-21) 스몰톡 되물음이 업무·역할 질문이라 삭제됨
-            # (2026-10-22 P1) no_q_fix: 질문 없는 턴 보정 경로 · quantify: 정도 부사 → 수치 질문 교체
-            "no_q_fix": _tm.get("no_q_fix"), "quantify": int(_tm.get("quantify") or 0),
+            # 라포·ALIGN·일반 가드: echo 라포 되받기 반복(1 재생성/2 대체) · quote ALIGN 외부 인용 · parrot 동일 응답(1 재생성/2 그대로) ·
+            #   one_q 제거한 질문 수 · moment 시점 문형 교정 · anchor 앵커 렌더 모드 · work_q 스몰톡 되물음 삭제 · no_q_fix 정의 턴 질문 고정
+            "echo": int(_tm.get("echo") or 0), "quote": int(_tm.get("quote") or 0), "parrot": int(_tm.get("parrot") or 0),
+            "one_q": int(_tm.get("one_q") or 0), "moment": int(_tm.get("moment") or 0), "anchor": _tm.get("anchor_render"),
+            "work_q": int(_tm.get("work_q") or 0), "no_q_fix": _tm.get("no_q_fix"),
             "resume": int(_tm.get("resume") or 0),   # (2026-10-22 P1-1) 일시정지 제안 뒤 pending 재개 턴
-            # (2026-10-22 P2-0) volunteered: 자발적 사례로 asked 기록된 하위역량 · one_more: '하나만 더' 가 겨냥한 하위역량
-            "volunteered": _tm.get("volunteered"), "one_more": _tm.get("one_more"),
-            # (2026-10-22 P2-1) tail: 반복·금지 어구 · tail_fix 2=문장 삭제 폴백 · honorific: '리더님,' 문두 제거
+            # 입버릇·호칭·Michael 리드·느낌표
             "tail": _tm.get("tail"), "tail_fix": int(_tm.get("tail_fix") or 0), "honorific": int(_tm.get("honorific") or 0),
-            # (2026-10-22 P2-2) sar_full: S-A-R 완비 답변(탐침 1회 후 전진) · emotion 1 재생성/2 교체 · action_fix: A 강제 고정 질문
-            "sar_full": int(_tm.get("sar_full") or 0), "emotion": int(_tm.get("emotion") or 0),
-            "action_fix": int(_tm.get("action_fix") or 0),
-            # (2026-10-22 P2-3) lead_cap: 페르소나 상한으로 지운 되받기 문장 수 · bridge_added: 전환 턴에 페르소나 다리 삽입
-            "lead_cap": int(_tm.get("lead_cap") or 0), "bridge_added": int(_tm.get("bridge_added") or 0),
-            # (2026-10-23, 4-1) generalize_probe: 일반화 답변에 '가장 최근 일 하나' 탐침을 붙인 턴
-            "generalize_probe": int(_tm.get("generalize") or 0),
-            # (2026-10-23 P3) ladder_probe: 사다리 질문 단계("2_3"|"3_4") · ladder_level: flash 판정 레벨
-            "ladder_probe": _tm.get("ladder"), "ladder_level": (state.get("force_ladder_probe") or {}).get("level") if _tm.get("ladder") else None,
-            "contrast_q": int(_tm.get("contrast_q") or 0),   # (2026-10-23 P4) 대조 탐침 질문 턴
-            # (2026-10-23 6번 보정) contrast_fix 1 재생성/2 교체 · contrast_lead_fix 도입구 제거 수 · good_lead Michael 도입 사용 · good_lead_cut 직전 턴 사용으로 제거
-            "contrast_fix": int(_tm.get("contrast_fix") or 0), "contrast_lead_fix": int(_tm.get("contrast_lead_fix") or 0),
             "good_lead": int(_tm.get("good_lead") or 0), "good_lead_cut": int(_tm.get("good_lead_cut") or 0),
-            # (2026-10-29 P1) leak_final: 8-y 최종 누설 소거(어휘·상태) · ladder_trigger: 'turns'=턴 조건 사다리 · direct_q/direct_q_fix: '직접 하신' 상한 ·
-            #   generalized: 일반화 탐침 뒤에도 시점 없음(원장 기록) · skip_bridge/unconfirmed: 입력 이상 3회째 전진 · anomaly: 종류(#n 회차)
-            "leak_final": _tm.get("leak_final"), "ladder_trigger": _tm.get("ladder_trigger"),
-            # (2026-11-02 p2f) incident_word: '사건' 치환 수 · good_lead_cap: Michael '좋습니다' 챕터 상한 도달
-            "incident_word": _tm.get("incident_word"), "good_lead_cap": int(_tm.get("good_lead_cap") or 0),
-            "ladder_skip": _tm.get("ladder_skip"), "ladder_swap": int(_tm.get("ladder_swap") or 0), "ladder_dropped": _tm.get("ladder_dropped"),
-            "direct_q": int(_tm.get("direct_q") or 0), "direct_q_fix": _tm.get("direct_q_fix"),
-            "generalized": _tm.get("generalized"), "skip_bridge": int(_tm.get("skip_bridge") or 0), "unconfirmed": _tm.get("unconfirmed"),
-            "anomaly": _tm.get("anomaly"),
-            # (2026-10-29 P2-1) slot: 페르소나 고정 슬롯 발동(챕터당 1) · Jessica 수치 우선/숫자 재진술
-            "slot": _tm.get("slot"), "j_quantify_first": int(_tm.get("j_quantify_first") or 0), "j_number_restated": _tm.get("j_number_restated"),
-            "ladder_restored": int(_tm.get("ladder_restored") or 0),
-            "slot_restored": int(_tm.get("slot_restored") or 0),   # (2026-11-02 p2c) 슬롯 문장 복원(8-x2)
-            # (2026-11-04 P3) receive_fix 1 재생성/2 폴백 · target_bridge 전환 다리 삽입 · excl_chapter_cap 느낌표 챕터 상한 적용
-            "receive_fix": _tm.get("receive_fix"), "target_bridge": int(_tm.get("target_bridge") or 0),
-            # (2026-11-04 P3-1 2차) receive_src: 되받기가 깨진 단계(llm/probe/8-n/8-o/8-p/8-k/8-h) · receive_phrase: 폴백·재생성에 쓴 명사구
-            "receive_src": _tm.get("receive_src"), "receive_phrase": _tm.get("receive_phrase"),
-            # (2026-11-04 P3 3차) broken_fix 1 재생성/2 삭제 · suggestion_cut 권유문 제거 수
-            "broken_fix": _tm.get("broken_fix"), "suggestion_cut": int(_tm.get("suggestion_cut") or 0),
-            "excl_chapter_cap": int(_tm.get("excl_chapter_cap") or 0),
+            "good_lead_cap": int(_tm.get("good_lead_cap") or 0), "excl_chapter_cap": int(_tm.get("excl_chapter_cap") or 0),
+            # 누설·상태 보고문·낱말 치환·깨진 문장·권유문·입력 이상
+            "leak_final": _tm.get("leak_final"), "incident_word": _tm.get("incident_word"), "broken_fix": _tm.get("broken_fix"),
+            "suggestion_cut": int(_tm.get("suggestion_cut") or 0), "anomaly": _tm.get("anomaly"),
+            # 페르소나 슬롯(사례당 1회)·복원
+            "slot": _tm.get("slot"), "slot_restored": int(_tm.get("slot_restored") or 0),
+            # (2026-11-04 BEI) 사례 단계: bei 결정(open1/probe/retry/episode/sweep/sweep_followup/close) · episode 사례 번호·종류 · ep_turn 사례 리더 턴 ·
+            #   slots_filled 찬 슬롯 수 · slot_judge 판정 상태(ok/stub/error) · closed 종료 사례:사유 · mapped 매핑 라벨 · target 여는/SWEEP 하위역량 ·
+            #   anchor_attached 시스템 앵커 삽입 · format_regen 턴 형식 재생성 횟수 · format_miss 미해결 사유 · receive_miss 되받기 없이 나감(폴백 없음)
+            "bei": _tm.get("bei"), "episode": (_bei_ep or {}).get("idx"), "ep_kind": (_bei_ep or {}).get("kind"),
+            "ep_turn": (_bei_ep or {}).get("leader_turns"), "slots_filled": _tm.get("slots_filled"), "slot_judge": _tm.get("slot_judge"),
+            "closed": _tm.get("closed"), "mapped": _tm.get("mapped"), "target": current_target_sub,
+            "anchor_attached": int(_tm.get("anchor_attached") or 0), "format_regen": int(_tm.get("format_regen") or 0),
+            "format_miss": _tm.get("format_miss"), "receive_miss": int(_tm.get("receive_miss") or 0), "receive_phrase": _tm.get("receive_phrase"),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):
@@ -3457,6 +2673,10 @@ async def _submit_message_phase3a(
             "probe_type_used": probe_type_used,
             "turn_count": state.get("turn_count"),
             "events_collected": state.get("events_collected"),
+            # (2026-11-04 BEI) 시뮬 리더(tools/sim_leader.py)·린트가 읽는 사례 단계 메타
+            "bei": _tm.get("bei"), "bei_state": (_bei.chapter_state(session.self_assessment_data, chapter) if chapter else None),
+            "episode": (_bei_ep or {}).get("idx"), "episode_kind": (_bei_ep or {}).get("kind"), "slots_filled": _tm.get("slots_filled"),
+            "target": current_target_sub,
         },
     }
 
@@ -3469,72 +2689,49 @@ def _get_next_chapter(current_chapter: str) -> str | None:
     return get_next_chapter(current_chapter)
 
 
-async def _handle_event_lifecycle(
+async def _write_episode_event(
     db: AsyncSession,
     session_id: UUID,
     chapter: str,
-    user_message_text: str,
-    instruction_used: str | None,
-    prev_instruction: str | None,
-    prev_coach_text: str | None,
-    target_changed: bool,
-    mapped_target: str | None,
+    ep: dict,
+    *,
     events_all: list | None = None,
+    messages: list | None = None,
 ) -> UUID | None:
-    """사건 생명주기 — 백엔드 결정론 (2026-09-22, LLM 자기보고 폐기; 코드 리뷰 2-d 🟥 #1·#2·#5).
-
-    직전 코치 턴의 instruction·문장과 사용자 발화만으로: 새 사건 생성(앵커·부재 폴백·정의 합의 뒤 첫 서술),
-    STAR 슬롯 채움(직전 질문이 결과 질문이면 R, 아니면 A→R→T 순), 완결(타겟 전진 또는 새 사건 시작).
-    mapped_subcompetency 는 원장 타겟(LLM 추정 아님). 단답·부재·회피·메타 턴은 슬롯을 채우지 않는다.
-
-    Returns: 이 턴이 속한 사건 UUID (없으면 None)
-    """
-    from diag_project.services.event_tracker import plan_event_update
-
-    if events_all is not None:
-        _ch_events = [e for e in events_all if e.chapter == chapter]
-        active_event = max((e for e in _ch_events if not e.is_complete), key=lambda e: e.sequence_num, default=None)
-    else:
-        _ch_events = None
-        active_event = await get_active_event(db, session_id, chapter)
-    active_flags = None
-    if active_event:
-        active_flags = {
-            "situation": bool(active_event.situation), "task": bool(active_event.task),
-            "action": bool(active_event.action), "result": bool(active_event.result),
-        }
-    plan = plan_event_update(
-        user_text=user_message_text, instruction_used=instruction_used, prev_instruction=prev_instruction,
-        prev_coach_text=prev_coach_text, active=active_flags, target_changed=target_changed,
-    )
-    text = (user_message_text or "").strip()[:500]
-
-    async def _complete(ev) -> None:
-        await complete_event(db=db, event_id=ev.id, metadata={
-            "summary": (ev.situation or text)[:60],
-            "mapped_subcompetency": ev.mapped_subcompetency or mapped_target,
-        }, commit=False)
-
-    if plan.op == "new":
-        if active_event and plan.complete_active:
-            await _complete(active_event)
-        existing = _ch_events if _ch_events is not None else await get_chapter_events(db, session_id, chapter)
-        new_event = await create_event(db=db, session_id=session_id, chapter=chapter, sequence_num=len(existing) + 1, commit=False)
-        new_event.mapped_subcompetency = mapped_target
-        await update_event_star(db=db, event_id=new_event.id, situation=text, commit=False)
-        await increment_probe_count(db, new_event.id, commit=False)
-        if events_all is not None:
-            events_all.append(new_event)
-        return new_event.id
-
-    if active_event is None:
+    """(2026-11-04 BEI) 종료된 사례 1건 → Event 행 1건. situation/action/result = 슬롯 인용(리더 원문), mapped_subcompetency = strong 라벨,
+    tags = weak 라벨, summary = 상황 인용 앞 60자. 그 사례 구간의 ChatMessage(turn_index ≥ first_turn_index, 이 챕터)에 event_id 를 태깅해
+    이력 압축(conversation_compressor)이 완료 사례를 요약 1줄로 접게 한다. no_case 사례는 행을 만들지 않는다."""
+    if (ep or {}).get("status") == "no_case":
         return None
-    if plan.op == "fill" and plan.slot:
-        await update_event_star(db=db, event_id=active_event.id, commit=False, **{plan.slot: text})
-    await increment_probe_count(db, active_event.id, commit=False)
-    if plan.complete_after:
-        await _complete(active_event)
-    return active_event.id
+    slots = ep.get("slots") or {}
+
+    def _q(k: str) -> str | None:
+        v = (slots.get(k) or {}).get("quote") or ""
+        return v[:500] or None
+
+    labels = ep.get("labels") or []
+    strong = [x["sub"] for x in labels if x.get("strength") == "strong"]
+    weak = [x["sub"] for x in labels if x.get("strength") != "strong"]
+    existing = [e for e in (events_all or []) if e.chapter == chapter]
+    ev = await create_event(db=db, session_id=session_id, chapter=chapter, sequence_num=len(existing) + 1, commit=False)
+    await update_event_star(db=db, event_id=ev.id, situation=_q("context"), action=_q("action"), result=_q("result"), commit=False)
+    _ctx = _q("context") or _q("action") or ""
+    await complete_event(db=db, event_id=ev.id, metadata={
+        "summary": (f"사례 {ep.get('idx')}: " if ep.get("kind", "episode") == "episode" else "보완: ") + _ctx[:60],
+        "core_action": _q("action"), "mapped_subcompetency": ", ".join(strong) or ep.get("opener_sub"), "tags": weak,
+    }, commit=False)
+    ev.is_complete = ep.get("status") in ("done", "sweep_done") and len(_filled := [k for k in slots if (slots.get(k) or {}).get("status") == "filled"]) >= 6
+    ev.probe_count = int(ep.get("leader_turns") or 0)
+    db.add(ev)
+    if events_all is not None:
+        events_all.append(ev)
+    _first = ep.get("first_turn_index")
+    if _first is not None:
+        for m in (messages or []):
+            if m.chapter == chapter and (getattr(m, "turn_index", None) or 0) >= int(_first) and getattr(m, "event_id", None) is None:
+                m.event_id = ev.id
+                db.add(m)
+    return ev.id
 
 
 # ------------------------------------------------------------------

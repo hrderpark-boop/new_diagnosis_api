@@ -45,6 +45,23 @@ def _build_asked_subcompetencies(store: dict) -> Dict[str, set]:
     return asked
 
 
+def _build_store_meta(store: dict) -> Dict[str, Any]:
+    """(2026-11-04 BEI) 리포트 후처리(report_ledger)가 읽는 원장 메타. 챕터별 커버리지 요약 + 원본 키 일부."""
+    from diag_project.services.bei_engine import coverage_summary
+    store = store or {}
+    coverage: Dict[str, Any] = {}
+    for ck, cv in COMPETENCY_FRAMEWORK.items():
+        if ck == "supplementary":
+            continue
+        subs = [ind["name"] for ind in cv.get("indicators", {}).values()]
+        coverage[ck] = coverage_summary(store, ck, subs)
+    meta: Dict[str, Any] = {"coverage": coverage}
+    for k in ("covered", "weak", "sweep_asked", "unconfirmed", "no_case_subs", "anchored_subs", "episodes"):
+        if store.get(k):
+            meta[k] = store.get(k)
+    return meta
+
+
 def resolve_completion_status(completed_count: int) -> str:
     """V-6/조정3: analyze 시 세션 상태 — 3종만. 완주(5)면 'completed', 미완주면
     'in_progress'(재개 대상). 'completed_insufficient'·'incomplete' 는 만들지
@@ -125,9 +142,9 @@ async def load_analysis_inputs(db: AsyncSession, session) -> Dict[str, Any]:
         # 2026-09-17: 온보딩 담당 업무 맥락(참고 플래그용, 점수 무관)
         "role_summary": (store.get("participant_context") or {}).get(
             "role_summary"),
-        # (2026-10-29 P2-3) 대화 원장 메타 — 근거 미확보 1.0 정책의 서술(일반화 인용)·탐침 자격(일반화 1 + 구체화 1)
-        "store_meta": {k: store.get(k) for k in ("generalized", "generalized_text", "generalize_probed", "probes_on_sub",
-                                                 "unconfirmed", "ladder_skipped", "anchored_subs") if store.get(k)},
+        # (2026-11-04 BEI) 대화 원장 메타 — 사례 미확인 세 갈래(no_case / not_explored / gate_dropped)의 근거.
+        #   coverage[챕터] = bei_engine.coverage_summary(covered·sweep_asked·unconfirmed·not_explored·사례 수·리더 턴·예산)
+        "store_meta": _build_store_meta(store),
     }
 
 

@@ -90,6 +90,22 @@ def evidence_reselect_schema() -> Dict[str, Any]:
     return _obj({"evidence": _arr(_STR)})
 
 
+def slot_judge_schema() -> Dict[str, Any]:
+    """(2026-11-04 BEI) 슬롯 판정(services/slot_judge.judge_slots): 6슬롯 status·quote + no_case·switched_case."""
+    slot = _obj({"status": {"type": "string", "enum": ["filled", "partial", "empty"]}, "quote": _STR})
+    return _obj({
+        "slots": _obj({k: slot for k in ("context", "action", "reaction", "result", "criterion", "reflection")}),
+        "no_case": _BOOL,
+        "switched_case": _BOOL,
+    })
+
+
+def episode_map_schema() -> Dict[str, Any]:
+    """(2026-11-04 BEI) 사례→하위역량 다중 라벨(services/slot_judge.map_episode): {"labels": [{sub, strength, quote}]}."""
+    item = _obj({"sub": _STR, "strength": {"type": "string", "enum": ["strong", "weak"]}, "quote": _STR})
+    return _obj({"labels": _arr(item)})
+
+
 def summary_schema() -> Dict[str, Any]:
     """STEP 3 종합(_generate_comprehensive_summary): feedback_summary·archetype·blind_spot·idp·top_keywords."""
     return _obj({

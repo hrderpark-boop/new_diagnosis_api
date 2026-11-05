@@ -53,35 +53,20 @@ def _bei_state(chapter, turn_count, asked_ct):
     }
 
 
-def test_circuit_breaker_preempts_max_turns():
-    # 사람관리(min_explored 6, cap=22): 넓이 미충족(asked 2)이라도 22턴에
-    # 서킷브레이커가 챕터를 닫는다. MAX_TURNS(50)는 그 전에 도달 못 함.
+def test_budget_below_max_turns_and_close_paths():
+    """(2026-11-04 BEI) 챕터 종료는 라우트의 사례 단계(예산 16~20)가 먼저 닫는다 — 결정기는 bei_state=close 또는 MAX_TURNS 안전망에서만 닫는다."""
+    from diag_project.services import bei_engine as B
+    for ch, mx in ID.MAX_TURNS.items():
+        if ch == "supplementary":
+            continue
+        ck(f"{ch} 예산 < MAX_TURNS", B.chapter_budget(ch) < mx, f"({B.chapter_budget(ch)} < {mx})")
     ins = decide_instruction(_bei_state("people_management", 22, 2))
-    ck("사람관리 22턴(넓이 미충족) → CHAPTER_READY_TO_END(서킷브레이커)",
-       ins == "CHAPTER_READY_TO_END", f"(={ins})")
-    # cap 직전(21턴)에는 아직 안 닫힘(넓이·깊이 미충족)
-    ins2 = decide_instruction(_bei_state("people_management", 21, 2))
-    ck("사람관리 21턴 → 아직 종료 아님", ins2 != "CHAPTER_READY_TO_END"
-       or True, f"(={ins2})")  # 정보용: 21턴 결과
-
-
-def test_max_turns_is_unreachable_backstop():
-    # MAX_TURNS(사람 50) 이전에 cap(22)이 반드시 먼저 발동함을 수치로 고정.
-    cap = ID.MIN_EXPLORED["people_management"] * 3 + 4
-    mx = ID.MAX_TURNS["people_management"]
-    ck("서킷브레이커 cap < MAX_TURNS (backstop 도달 불가)", cap < mx,
-       f"(cap={cap} < max={mx})")
-    for ch in ("organization_management", "self_management"):
-        cap_c = ID.MIN_EXPLORED[ch] * 3 + 4
-        ck(f"{ch}: cap<{ID.MAX_TURNS[ch]}", cap_c < ID.MAX_TURNS[ch],
-           f"(cap={cap_c})")
-
-
-def test_min3_circuit_breaker():
-    # 조직관리(min_explored 4, cap=16): 16턴에 서킷브레이커 종료.
-    ins = decide_instruction(_bei_state("organization_management", 16, 1))
-    ck("조직관리 16턴 → CHAPTER_READY_TO_END(서킷브레이커)",
-       ins == "CHAPTER_READY_TO_END", f"(={ins})")
+    ck("사람관리 22턴(사례 진행 중) → EPISODE_PROBE(종료는 라우트)", ins == "EPISODE_PROBE", f"(={ins})")
+    st = _bei_state("people_management", 22, 2); st["bei_state"] = "close"
+    ins2 = decide_instruction(st)
+    ck("bei_state=close → CHAPTER_READY_TO_END", ins2 == "CHAPTER_READY_TO_END", f"(={ins2})")
+    ins3 = decide_instruction(_bei_state("organization_management", 40, 1))
+    ck("조직관리 40턴(MAX_TURNS 안전망) → CHAPTER_READY_TO_END", ins3 == "CHAPTER_READY_TO_END", f"(={ins3})")
 
 
 def _run():

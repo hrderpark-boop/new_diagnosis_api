@@ -24,7 +24,6 @@ from diag_project.data.coaches_persona import COACHES_PERSONA
 from diag_project.data.competencies import (
     COMPETENCY_FRAMEWORK,
     SUBCOMPETENCY_ANCHOR_QUESTIONS,
-    SUBCOMPETENCY_TOPIC_PHRASE,
 )
 from diag_project.services.output_guard import find_state_leak, is_question, split_sentences
 
@@ -34,6 +33,8 @@ LEAK_SOURCES = [
     ROOT / "diag_project/prompts/phase3a/layer1_system.py",
     ROOT / "diag_project/prompts/phase3a/layer2_chapters.py",
     ROOT / "diag_project/prompts/phase3a/layer3_state.py",
+    ROOT / "diag_project/prompts/phase3a/episode_card.py",   # (2026-11-04 BEI) 사례 카드·턴 가이드
+    ROOT / "diag_project/services/slot_judge.py",             # 슬롯 판정·매핑 프롬프트
     ROOT / "diag_project/services/instruction_decider.py",
     ROOT / "diag_project/services/persona_voice.py",
 ]
@@ -42,7 +43,6 @@ LOG_SOURCES = [ROOT / "diag_project/routes/diagnoses.py"]
 COACH_SPEECH_SOURCES = [
     ROOT / "diag_project/services/intro_messages.py",
     ROOT / "diag_project/services/time_greeting.py",
-    ROOT / "diag_project/data/ladder_questions.py",   # 사다리 질문도 코치 발화('반복 작업을 자동으로' 가 누설로 잡혔다)
 ]
 
 MIN_COUNT = 3           # 주 소스 합산 최소 빈도
@@ -250,7 +250,6 @@ def coach_speech_tokens(extra_texts: list[str] | None = None) -> set[str]:
             texts.append(ind.get("name", ""))
     for qs in SUBCOMPETENCY_ANCHOR_QUESTIONS.values():
         texts.extend(qs)
-    texts.extend(SUBCOMPETENCY_TOPIC_PHRASE.values())
     try:
         from diag_project.data import competencies as _c
         for qs in getattr(_c, "SUBCOMPETENCY_MUST_ASK", {}).values():
@@ -266,15 +265,6 @@ def coach_speech_tokens(extra_texts: list[str] | None = None) -> set[str]:
             texts.extend(pool)
         texts.extend(getattr(_pv, "CONTRAST_LEADS", []))
         texts.extend(getattr(_pv, "_OLIVIA_LEADS", []))
-    except Exception:  # pragma: no cover
-        pass
-    try:
-        from diag_project.services import output_guard as _og
-        for name in ("RESULT_FALLBACKS", "ANCHOR_TRANSITIONS", "_DEFAULT_BRIDGES", "_NO_KW_BRIDGES"):
-            texts.extend(getattr(_og, name, []))
-        texts.append(getattr(_og, "RESULT_QUANTIFY_QUESTION", ""))
-        for pool in getattr(_og, "ALIGN_BRIDGE_POOL", {}).values():
-            texts.extend(pool)
     except Exception:  # pragma: no cover
         pass
     for v in COACHES_PERSONA.values():
@@ -532,7 +522,8 @@ def guard_lexicon() -> dict:
                     break
     leader_words = {w for w, n in leader_counts.items() if n >= LEADER_MIN_COUNT} - GUARD_KEEP
     excluded = (everyday - GUARD_KEEP) | leader_words
-    return {"korean": {w: c for w, c in lex["korean"].items() if w not in excluded and c >= GUARD_MIN_COUNT},
+    # (2026-11-04 BEI) 수동 복원(GUARD_KEEP) 어절은 템플릿 빈도가 10회 아래로 내려가도 가드 사전에 남긴다('사건'은 프롬프트 축소로 7회).
+    return {"korean": {w: c for w, c in lex["korean"].items() if (w not in excluded and c >= GUARD_MIN_COUNT) or w in GUARD_KEEP},
             "english": dict(lex["english"]), "everyday_excluded": sorted(excluded),
             "leader_excluded": sorted(w for w in leader_words if lex["korean"].get(w, 0) >= GUARD_MIN_COUNT),
             "quoted_skipped": {w: n for w, n in quoted.items() if lex["korean"].get(w, 0) >= GUARD_MIN_COUNT},

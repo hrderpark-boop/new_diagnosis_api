@@ -56,15 +56,6 @@ def _state(no_yield):
     }
 
 
-def test_no_yield_close_uses_neutral_wording():
-    g = L3._get_instruction_guide("CHAPTER_READY_TO_END", _state(True))
-    assert "충분히 들었" in g
-    assert "무수확 강제 전환" not in g and "Fail-Fast" not in g
-    assert "'성과관리'로" in g
-    # 판정 문구는 '금지' 목록 안에만 등장한다
-    forbid_idx = g.index("판정 문구 절대 금지")
-    assert all(m.start() > forbid_idx for m in _JUDGE.finditer(g))
-
 
 def test_normal_close_unchanged_shape():
     g = L3._get_instruction_guide("CHAPTER_READY_TO_END", _state(False))
@@ -72,47 +63,8 @@ def test_normal_close_unchanged_shape():
 
 
 # ── #2 ──
-def test_align_turn_records_target_and_appends_anchor():
-    src = inspect.getsource(D._submit_message_phase3a)
-    # ALIGN 이 프로브 스텝(LLM 이전 asked 기록) 대상에 포함
-    i_probe = src.index("_PROBE_INSTR = {")
-    j_probe = src.index("}", i_probe)
-    assert '"COMPETENCY_ALIGN"' in src[i_probe:j_probe]
-    # 8-b 에서 앵커를 덧붙이고 opening_merged 표식을 남긴다
-    i = src.index('if instruction_used == "COMPETENCY_ALIGN" and not _suppress_mechanical_text:')
-    j = src.index("_next_ch = _get_next_chapter(chapter)", i)
-    block = src[i:j]
-    assert "build_chapter_opening_with_user_def(" in block
-    assert '"opening_merged"' in block
-    # 프로브 스텝(기록)이 LLM 호출·8-b 조립보다 앞에 있다
-    assert src.index("apply_probe_turn(") < src.index("generate_phase3a_interaction(") < i
 
 
-def test_decider_skips_chapter_opening_when_merged():
-    base = {
-        "chapter": "organization_management", "turn_count": 1,
-        "session_deflection_count": 0, "session_already_warned": False,
-        "disengagement_streak": 0, "probe_cycles": 1, "last_refusal": False,
-        "awaiting_abort_decision": False, "pending_abort": False,
-        "awaiting_continue_decision": False,
-        "rapport_complete": True, "intro_done": True, "chapter_started": True,
-        "competency_aligned": True, "definition_asked": True,
-        "chapter_message_count": 0,
-        "name_extraction_failed": False, "name_reconfirm_asked": False,
-        "rapport_turn_count": 0,
-        "last_user_response": "지난달에 팀원들과 새 교육 체계를 놓고 직접 설득했어요.",
-        "contains_avoidance_keywords": False,
-        "events_with_star_70": 0, "avoidance_count_in_chapter": 0,
-        "no_yield_ultimatum_given": False, "has_contrary_probe": False,
-        "duplicate_suspected": False, "asked_in_chapter": ["비전 제시 및 공유"],
-        "all_subcompetencies": ["a", "b", "c", "d"],
-        "unexplored_subcompetencies": ["b", "c", "d"], "events_collected": 0,
-        "current_event_id": None, "current_event_star_coverage": None,
-        "turns_on_current_target": 1,
-    }
-    assert decide_instruction({**base, "opening_merged": False}) == "CHAPTER_OPENING"
-    ins = decide_instruction({**base, "opening_merged": True})
-    assert ins != "CHAPTER_OPENING", ins
 
 
 def test_align_guide_forbids_confirmation_question():

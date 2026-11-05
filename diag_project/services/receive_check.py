@@ -4,7 +4,6 @@
   - lead_cap_for: 리더 답 150자 이상이면 되받기 2문장, 미만이면 1문장.
   - check_receive: (되받기 있음, 리더 명사구 인용함).
   - quote_phrase: 폴백·재생성 지시에 쓸 리더 명사구(연속 명사 2어절 우선).
-  - receive_fallback: "'[명사구]'까지 말씀해 주셨네요."(페르소나 격식에 맞춤). 명사구가 없으면 일반 되받기.
   - splice_receive: 본문의 되받기 부분만 새 되받기로 바꾸고 질문부(사다리·슬롯 질문 포함)는 그대로 둔다.
 전부 순수 함수. 린트(tools/transcript_lint.py)와 턴 파이프라인(8-w)이 같은 판정을 쓴다.
 """
@@ -15,13 +14,9 @@ import re
 from diag_project.services.output_guard import _SUGGESTION_RE, is_question, split_sentences
 
 LONG_ANSWER_CHARS = 150
-RECEIVE_REQUIRED_INSTRUCTIONS = frozenset({
-    "STAR_INCOMPLETE", "CONTINUE_NORMAL", "CONTRARY_NEEDED", "STAR_COMPLETE_NEW_EVENT",
-    "ABSENCE_PROBE", "CHAPTER_NO_YIELD_ULTIMATUM",
-})
-_FORMAL = {"Jessica", "Daniel", "Lucas"}
-_GENERIC_RECEIVE = {"Jessica": "말씀하신 내용, 잘 들었습니다.", "Daniel": "말씀하신 내용, 잘 들었습니다.", "Lucas": "알겠습니다.",
-                    "Michael": "네, 잘 들었어요.", "Olivia": "네, 잘 들었어요.", "Ella": "네, 말씀 잘 들었어요."}
+# (2026-11-04 BEI) 되받기 필수 턴 = 사례 탐침·여는 턴·SWEEP 턴 전부. 폴백 문장은 없다 — 재생성 2회 뒤에도 없으면 그대로 내보내고
+#   guard_log receive_miss 로 남긴다(린트 '되받기 없는 턴' 0 기준).
+RECEIVE_REQUIRED_INSTRUCTIONS = frozenset({"EPISODE_OPEN", "EPISODE_PROBE", "EPISODE_RETRY", "SWEEP_ANCHOR", "SWEEP_FOLLOWUP"})
 _QUOTE_STOP = {"그래서", "그리고", "그런데", "하지만", "그때", "당시", "저희", "우리", "제가", "저는", "저도", "팀원", "팀원들",
                "사람", "자신", "본인", "진행", "상황", "문제", "정도", "이후", "나중", "결국", "먼저", "다시", "계속", "조금", "많이",
                # (2026-11-04 2차) p3q 1차 인용구 '아니라 교육'·'특히 교육'·'구성해야 하니' — 부사·접속사·활용형이 명사로 잡혔다
@@ -148,13 +143,6 @@ def quote_phrase(user_text: str | None) -> str | None:
         return bare_pair or pair
     return max(nouns, key=len) if nouns else None
 
-
-def receive_fallback(persona_name: str | None, phrase: str | None) -> str:
-    """백엔드 폴백 되받기. 명사구가 있으면 그것을 인용, 없으면 페르소나 일반 되받기."""
-    k = _key(persona_name)
-    if phrase:
-        return f"'{phrase}'까지 말씀해 주셨습니다." if k in _FORMAL else f"'{phrase}'까지 말씀해 주셨네요."
-    return _GENERIC_RECEIVE.get(k, _GENERIC_RECEIVE["Ella"])
 
 
 def splice_receive(reply: str, new_receive: str, cap: int = 1, keep_fixed: list[str] | None = None) -> str:

@@ -71,14 +71,14 @@ def test_layer3_includes_persona_and_style_blocks():
     assert "[🎭 페르소나 유지] 당신은 Jessica (제시카)" in txt
     assert "[🎛 이번 턴 문체 제약" in txt
     assert "되풀이하지" in txt and "요약 되받기 금지" not in txt   # (2026-09-22)
-    # 블록은 Turn State 보다 앞에 온다
-    assert txt.index("🎭") < txt.index("[Turn State]")
+    # 블록은 instruction 보다 앞에 온다 — (2026-11-04 BEI) Turn State JSON 은 폐지
+    assert txt.index("🎭") < txt.index("[Instruction for this turn]")
 
 
 def test_layer3_without_persona_or_constraints_unchanged_shape():
     txt = format_turn_state_for_llm(_state())
     assert "🎭" not in txt and "🎛" not in txt
-    assert txt.lstrip().startswith("[Turn State]")
+    assert txt.lstrip().startswith("[Instruction for this turn]")
 
 
 def test_all_personas_have_speech_profile():

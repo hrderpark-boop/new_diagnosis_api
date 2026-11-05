@@ -24,9 +24,7 @@ from diag_project.services.avoidance_detector import (
     detect_pause_request,
     detect_meta_question,
     detect_prompt_injection,
-    detect_abstract_avoidance,
     detect_closing_intent,
-    detect_absence_statement,
     is_invalid_input,
 )
 
@@ -124,32 +122,6 @@ def _extract_user_name(text: str) -> str | None:
     return None
 
 
-def _norm_sub(text: str) -> str:
-    """하위역량 이름 정규화 — 공백·괄호 내용 제거 (방어 매칭용)."""
-    return text.strip().replace(" ", "").split("(")[0]
-
-
-def _match_subcompetency(
-    tagged: str | None, all_names: list[str]
-) -> str | None:
-    """LLM 이 태깅한 하위역량 값을 4개 정식 이름 중 하나로 안전 매칭.
-
-    정확히 일치하지 않아도(예: '변화 관리' vs '변화관리(변화지향)')
-    정규화·부분일치로 보정. 매칭 실패 시 None (방어 — 엉뚱한 값 무시).
-    """
-    if not tagged:
-        return None
-    t = tagged.strip()
-    if t in all_names:
-        return t
-    tn = _norm_sub(t)
-    if not tn:
-        return None
-    for name in all_names:
-        nn = _norm_sub(name)
-        if nn == tn or tn in nn or nn in tn:
-            return name
-    return None
 
 
 # instruction 타입
@@ -157,38 +129,26 @@ InstructionType = Literal[
     "SESSION_ABORT_3STRIKE",
     "SESSION_ABORT_WARNING",
     "NAME_RECONFIRM",
-    "ONBOARDING_LAUNCH",
-    "CHAPTER_OPENING",
     "RAPPORT_BUILDING",
     "DIAGNOSIS_INTRO",
     "DIAGNOSIS_CONFIRM",
-    "COMPETENCY_INTRO",
     "COMPETENCY_ASK",
     "COMPETENCY_ALIGN",
-    "CONTINUE_NORMAL",
-    "STAR_INCOMPLETE",
-    "STAR_COMPLETE_NEW_EVENT",
-    "CONTRARY_NEEDED",
-    "AVOIDANCE_DETECTED",
-    "ABSENCE_PROBE",
+    # (2026-11-04 BEI) 사례 단계 — 결정기는 EPISODE_PROBE 를 내고, 라우트의 BEI 단계가 슬롯 판정 뒤 아래 넷으로 덮어쓴다
+    "EPISODE_PROBE",
+    "EPISODE_OPEN",
+    "EPISODE_RETRY",
+    "SWEEP_ANCHOR",
+    "SWEEP_FOLLOWUP",
     "ABORT_CONFIRM",
     "ABORT_DISENGAGED",
-    "ABSTRACT_AVOIDANCE",
-    "CHAPTER_NO_YIELD_ULTIMATUM",
-    "DUPLICATE_SUSPECTED",
-    "CROSS_CHAPTER_OPPORTUNITY",
     "CHAPTER_READY_TO_END",
-    "CHAPTER_CONTINUE_CONFIRMED",
-    "MAX_TURNS_REACHED",
     "USER_REQUESTS_PAUSE",
     "PROMPT_INJECTION_DETECTED",
     "META_QUESTION_FROM_USER",
-    "FIRST_TURN_AVOIDANCE",
     "INVALID_INPUT",
     # 2026-09-16: 챕터 전환 직후(정의 질문 전) 버튼 대신 친 자유 텍스트 → 안내만, 상태 무변경
     "AWAIT_NEXT_CHAPTER_CHOICE",
-    # 2026-10-22 P2-0: 리더가 '이 영역은 충분하다'고 했는데 넓이 미충족 → "하나만 더 여쭤봐도 될까요?" 1회
-    "CHAPTER_ONE_MORE_ASK",
 ]
 
 # 챕터 전환 팝업에서 버튼 대신 텍스트로 '확인'한 것으로 볼 표현(이중 방어).
@@ -211,34 +171,9 @@ def is_next_chapter_consent(text: str | None) -> bool:
     return len(t) <= 25 and any(k in t for k in NEXT_CHAPTER_CONSENT_KEYWORDS)
 
 
-# 챕터별 최소 사건 수
-# T2: 두 축을 분리한다.
-#  · MIN_EVENTS = 한 하위역량에서 확보할 STAR 사례의 '깊이'(사건 수)
-#  · MIN_EXPLORED = 한 대역량에서 앵커를 발화할 하위역량의 '개수'(넓이)
-#    = max(3, ceil(n*0.6)) — 큰 대역량일수록 더 많이 탐색(사람관리 편중 방지)
-import math as _math  # noqa: E402
-MIN_EVENTS: dict[str, int] = {
-    "organization_management": 3,
-    "performance_management": 3,
-    "people_management": 3,
-    "work_management": 3,
-    "self_management": 3,
-}
-_SUB_COUNTS = {
-    "organization_management": 4, "performance_management": 5,
-    "people_management": 9, "work_management": 5, "self_management": 3,
-}
-MIN_EXPLORED: dict[str, int] = {
-    k: (n if n <= 4 else max(3, _math.ceil(n * 0.6))) for k, n in _SUB_COUNTS.items()
-}  # → 조직 4 / 성과 3 / 사람 6 / 일 3 / 자기 3 (합 19). traversal.min_explored_for 와 동일식
-#   (2026-09-16: 하위역량 4개 이하 챕터는 전부 묻는다 — cap 도 조직 4×3+4=16 으로)
-
-# 챕터별 최대 턴 수 (user 메시지 기준)
-#   🚨 §6: MAX_TURNS_REACHED 는 '도달 불가한 backstop' 이다. 챕터 종료는 항상
-#   chapter_over_budget 서킷브레이커(cap = MIN_EXPLORED*3+4 = 13~22)가 먼저
-#   발동해 닫으므로, 아래 값(35~50)에는 결코 도달하지 않는다(항상 cap 보다 큼).
-#   서킷브레이커 로직이 깨졌을 때만 작동하는 안전망으로만 남긴다. 두 값이
-#   어긋날 수 없도록 test_guard_ordering 이 cap < MAX_TURNS 를 회귀로 고정한다.
+# 챕터별 최대 턴 수 (user 메시지 기준) — 안전망.
+#   (2026-11-04 BEI) 챕터 종료는 라우트의 사례 단계(services/bei_engine, 리더 턴 예산 16~20)가 먼저 닫는다. 아래 값(35~50)은
+#   그 로직이 깨졌을 때만 작동한다. test_guard_ordering 이 예산 < MAX_TURNS 를 고정한다.
 MAX_TURNS: dict[str, int] = {
     "organization_management": 40,
     "performance_management": 40,
@@ -247,43 +182,6 @@ MAX_TURNS: dict[str, int] = {
     "self_management": 35,
     "supplementary": 15,
 }
-
-# 챕터별 '최소' BEI 턴 수 — 이 바닥을 채우기 전에는 종료 경계
-# (CHAPTER_READY_TO_END)로 진입하지 않는다. 사건 수·반례 조건이 일찍
-# 충족돼도 심층 질문 없이 성급하게 종료 배너가 뜨는 것을 방지.
-MIN_TURNS_BEFORE_END: dict[str, int] = {
-    "organization_management": 8,
-    "performance_management": 8,
-    "people_management": 10,
-    "work_management": 8,
-    "self_management": 8,
-}
-
-# N턴 무수확 방어: 한 챕터 BEI 질문을 이만큼 던졌는데도 강한 STAR(≥0.7)
-# 사건이 하나도 없으면 '무한 개념화 루프'로 간주 → 최후통첩 후 강제 전환.
-NO_YIELD_TURNS = 5
-
-
-def _chapter_can_close(state: dict) -> bool:
-    """T2 넓이 게이트(선결 필요조건): 챕터를 닫아도 되는가?
-
-    챕터 종료의 '필요조건' = 넓이 충족(asked ≥ MIN_EXPLORED) OR 서킷브레이커
-    (chapter_over_budget). no-yield·마무리 등 조기 종료 경로가 MIN_EXPLORED
-    미달 상태에서 챕터를 끝내는 것을 막는다. 스톤월러는 미탐색 하위역량으로
-    타겟을 계속 전진(measured=0=근거 미확보)하다가 챕터 상한에서만 종료 →
-    235턴 재발은 상한(min_explored*3+4)이 막는다.
-    """
-    from diag_project.services.traversal import (
-        breadth_satisfied, chapter_over_budget,
-    )
-    chapter = state.get("chapter")
-    if not chapter:
-        return True
-    min_explored = MIN_EXPLORED.get(chapter, 3)
-    asked_ct = len(state.get("asked_in_chapter") or [])
-    turn_count = state.get("turn_count", 0)
-    return (breadth_satisfied(asked_ct, min_explored)
-            or chapter_over_budget(turn_count, min_explored))
 
 
 def _force_rapport_category(rapport_turn_count: int) -> str:
@@ -553,24 +451,13 @@ def decide_instruction(state: dict) -> InstructionType:
                     state.get("turn_count", 0) >= 3
                     or state.get("events_collected", 0) >= 1
                 )
-                # 명시적 종료 = 사용자 자율성 우선(즉시 종료). soft/progressed
-                # 종료는 🧭 T2 넓이 게이트 통과(또는 서킷브레이커) 후에만 허용 —
-                # 마지막 챕터도 MIN_EXPLORED 미달로 조기 종료되지 않도록.
+                # 명시적 종료 = 사용자 자율성 우선(즉시 종료). soft(감사 인사)는 진행된 뒤, 사례 단계가 SWEEP 이후일 때만.
                 if _closing == "explicit":
                     return "CHAPTER_READY_TO_END"
-                if _progressed and _chapter_can_close(state):
+                if _progressed and state.get("bei_state") in ("sweep", "close"):
                     return "CHAPTER_READY_TO_END"
             elif _closing == "explicit":
-                # (2026-10-22 P2-0) 중간 챕터의 종료 요청: 넓이 하한 충족 → 요약 + 다음 챕터. 미충족 → '하나만 더' 1회,
-                #   그래도 거절이면 종료(해당 하위역량은 미탐색으로 남는다). 과거엔 일시중지(paused)로 보냈다.
-                if _chapter_can_close(state) or state.get("one_more_asked"):
-                    return "CHAPTER_READY_TO_END"
-                return "CHAPTER_ONE_MORE_ASK"
-        # (2026-10-22 P2-0) '하나만 더' 뒤 짧은 거절("아니요", "됐어요", "괜찮아요")도 종료로 — 서술이 있으면 답한 것(평소 흐름).
-        if state.get("last_instruction") == "CHAPTER_ONE_MORE_ASK":
-            _ans = (state.get("last_user_response") or "").strip()
-            from diag_project.services.avoidance_detector import has_narrative as _has_narr
-            if not _has_narr(_ans) and len(_ans.replace(" ", "")) < 30:
+                # (2026-11-04 BEI) 중간 챕터의 명시적 종료 요청: 바로 요약 + 다음 챕터('하나만 더' 폐지). 못 들은 하위역량은 미탐색으로 남는다.
                 return "CHAPTER_READY_TO_END"
 
     # === 7단계 코칭 프로세스: 한 턴에 한 스텝, 엄격한 순서 (압축·건너뛰기 금지) ===
@@ -663,11 +550,6 @@ def decide_instruction(state: dict) -> InstructionType:
         if not competency_aligned and state.get("definition_asked", False):
             return "COMPETENCY_ALIGN"
 
-        # 4-2: 챕터 오프닝 (첫 BEI 질문). #2: ALIGN 턴이 첫 앵커를 이미 품었으면
-        #   (opening_merged) 다시 던지지 않고 일반 BEI 흐름으로 내려간다.
-        if chapter_msg_count == 0 and not state.get("opening_merged", False):
-            return "CHAPTER_OPENING"
-
     last_response = state.get("last_user_response")
 
     # 2. 의미 없는 입력
@@ -682,158 +564,18 @@ def decide_instruction(state: dict) -> InstructionType:
     if detect_meta_question(last_response):
         return "META_QUESTION_FROM_USER"
 
-    # 4-0. 🧭 T-A 부재 진술 2단 폴백:
-    #   "그런 경험은 없다 / 직접 챙기는 편이다" 처럼 유창하지만 채점 가능한
-    #   행동 사건이 없는 응답. 곧바로 measured 로 통과시키지 말고, "직접
-    #   챙기셨던 최근 사례 하나"를 청해 구체 사건(→ Lv.1 정당 근거)을 끌어낸다.
-    #   2단 폴백이므로 '한 번만' 발동(직전 코치 턴이 ABSENCE_PROBE 면 재발동 금지).
-    if (state.get("chapter") and detect_absence_statement(last_response)
-            and state.get("last_instruction") != "ABSENCE_PROBE"):
-        return "ABSENCE_PROBE"
-
-    # 4-a. 🛡️ Fail-Fast: 회피/남탓/비아냥 3회 반복 → 즉시 강제 전환
-    #   유효 데이터(강한 STAR) 없이 회피성 응답이 한 챕터에서 3회 이상이면,
-    #   더 구슬리지 않고 "유의미한 진단 불가"를 선언하며 다음 역량으로
-    #   강제 전환한다. (극단 회피 페르소나가 한 챕터에서 수십 턴 헛도는 것
-    #   방지 — 최후통첩보다 먼저, 더 빠르게 손절한다.)
-    _bei_turns = state.get("chapter_message_count", 0)
-    _no_strong = state.get("events_with_star_70", 0) == 0
-    _avoid_count = state.get("avoidance_count_in_chapter", 0)
-    # 🧭 T2: no-yield 종료는 넓이(MIN_EXPLORED) 충족 또는 서킷브레이커
-    #   이후에만 허용. 미달 시엔 챕터를 끝내지 않고(아래 회피 프로브로
-    #   낙하) 미탐색 하위역량으로 타겟을 계속 전진시킨다.
-    # 1-c(2026-09-07): 무수확(no-yield)은 챕터를 '종료하지 못한다'.
-    #   events_with_star_70 은 LLM 사건 추적에 기대는 대화 흐름 제어용 신호이고,
-    #   실제 근거는 세션 후 deep_analysis 가 전체 대화를 다시 읽는다. 추적이
-    #   실패해도 데이터는 안 잃고 잘못 종료될 뿐이므로, 종료 권한을 뺀다.
-    #   종료 경로는 넓이 충족 / 예산 소진 / 이탈(abort) 셋만. 회피형은 이탈
-    #   로직(A 블록)이, 사례가 약한 성실 응답자는 넓이 순회(3턴 상한)가 처리한다.
-    #   (과거 4-a: avoid≥3 & no_strong → 종료 — 제거)
-    del _avoid_count  # 카운터는 로그·no_yield_forced 플래그용으로만 남는다
-
-    # 4-b. 무수확 최후통첩("딱 한 장면만")은 '탐침'으로 유지한다 — 이번 로그에서도
-    #   그 질문에 구체 답이 나왔다. 단 최근 답변 2개가 실질적(engaged·30자+)이면
-    #   발동하지 않는다(성실 응답자에게 추궁하지 않음). 종료로 이어지지 않는다.
-    if (_bei_turns >= NO_YIELD_TURNS and _no_strong
-            and not state.get("no_yield_ultimatum_given")
-            and state.get("recent_engaged_streak", 0) < 2):
-        return "CHAPTER_NO_YIELD_ULTIMATUM"      # 최후통첩 (1회, 탐침)
-
-    # 5. 첫 턴 회피 (라포 회복)
-    if state["turn_count"] <= 2 and state["contains_avoidance_keywords"]:
-        return "FIRST_TURN_AVOIDANCE"
-
-    # 6. 일반 회피 (단답/모르겠음)
-    if state["contains_avoidance_keywords"]:
-        return "AVOIDANCE_DETECTED"
-
-    # 6-b. 🛡️ 추상적 회피('그럴듯한 공허함') — 개념/이론만 늘어놓고 구체가 없음.
-    #   BEI 진입 후(최소 1회 질문)에만, 구체 장면을 정면으로 압박한다.
-    if _bei_turns >= 1 and detect_abstract_avoidance(last_response):
-        return "ABSTRACT_AVOIDANCE"
-
-    # 7. 중복 의심
-    if state.get("duplicate_suspected"):
-        return "DUPLICATE_SUSPECTED"
-
-    # 8. 최대 턴 초과
-    chapter_max = MAX_TURNS.get(state["chapter"], 40)
-    if state["turn_count"] >= chapter_max:
-        return "MAX_TURNS_REACHED"
-
-    # 9. 종료 가능 체크 — T2(재도입): 깊이·넓이 두 축 + 서킷브레이커.
-    #   asked 가 결정론적 원장(store)에서 오므로 넓이 게이트를 안전하게 재도입.
-    from diag_project.services.traversal import (
-        breadth_satisfied, chapter_over_budget,
-    )
-    min_events = MIN_EVENTS.get(state["chapter"], 3)
-    min_turns = MIN_TURNS_BEFORE_END.get(state["chapter"], 8)
-    min_explored = MIN_EXPLORED.get(state["chapter"], 3)
-    _asked_ct = len(state.get("asked_in_chapter") or [])
-    _depth_ok = (state["events_with_star_70"] >= min_events
-                 and state["has_contrary_probe"]
-                 and state["turn_count"] >= min_turns)
-    _breadth_ok = breadth_satisfied(_asked_ct, min_explored)
-    # #5: 마지막 타겟도 최소 1회 심화 — 현재 타겟에서 앵커(1턴) 뒤 후속 질문을
-    #   한 번은 던진 뒤(turns_on_current_target ≥ 2) 종료한다. 한 문장 답변만으로
-    #   챕터가 닫히던 것을 막는다. 서킷브레이커·무수확·명시적 종료는 예외(그대로).
-    #   (키가 없는 구형 state 는 통과 — 회귀 보존)
-    _followup_done = state.get("turns_on_current_target", 2) >= 2
-    # 1-c 제안2: 미탐색 하위역량이 남아 있으면 넓이·예산 종료 경로도 닫지 않는다
-    #   (앵커 4개가 전부 나가야 한다). 키가 없는 구형 state 는 통과(회귀 보존).
-    #   MAX_TURNS_REACHED(#8, 35~50턴)가 최종 backstop 으로 남는다.
-    _unexplored_remaining = bool(state.get("unexplored_subcompetencies"))
-    if (_depth_ok and _breadth_ok and _followup_done
-            and not _unexplored_remaining):
-        return "CHAPTER_READY_TO_END"
-    # 🛡️ 서킷브레이커: 챕터 턴 상한 초과 → 강제 종료(235턴 방지). 단 미탐색이
-    #   남아 있거나 마지막 타겟 심화 전이면 닫지 않고 순회를 계속한다(1-c).
-    if (chapter_over_budget(state["turn_count"], min_explored)
-            and not _unexplored_remaining and _followup_done):
+    # 5. 안전망: 챕터 user 턴이 MAX_TURNS(35~50)를 넘으면 닫는다 — 정상 흐름에선 사례 단계 예산(16~20)이 먼저 닫는다.
+    if state["turn_count"] >= MAX_TURNS.get(state["chapter"], 40):
+        state["route_reason"] = "max_turns"
         return "CHAPTER_READY_TO_END"
 
-    # 10. 반례 탐침 필요
-    if should_do_contrary(state):
-        return "CONTRARY_NEEDED"
-
-    # 11. 자기관리 크로스 챕터 (특수)
-    # (2026-10-29 P1-5) 자기관리 전용 CROSS_CHAPTER_OPPORTUNITY 분기 삭제 — 다른 4챕터와 같은 상태기계만 탄다(상수는 호환용으로 유지).
-
-    # 12. 사건 진행 상태에 따라
-    _all_subs = state.get("all_subcompetencies") or []
-    _all_explored = bool(_all_subs) and not state.get(
-        "unexplored_subcompetencies"
-    )
-    if state.get("current_event_id"):
-        coverage = state.get("current_event_star_coverage") or {}
-        if coverage and all(coverage.values()):
-            # 🛡️ 탈출구 A: 사건은 완결됐고 더 탐색할 하위역량이 없으면
-            # 새 사건을 청하지 말고 즉시 종료 경계로 전진.
-            # (마지막 챕터면 CHAPTER_READY_TO_END → Grand Finale →
-            #  DIAGNOSIS_COMPLETE 로 확실히 종결 — 제자리 루프 방지)
-            if _all_explored:
-                # #5: 마지막 타겟은 최소 1회 심화 후 종료(한 문장 근거 방지).
-                if not _followup_done:
-                    return "CONTINUE_NORMAL"
-                return "CHAPTER_READY_TO_END"
-            return "STAR_COMPLETE_NEW_EVENT"
-        else:
-            return "STAR_INCOMPLETE"
-
-    # 12-b. 🛡️ 탈출구 B: 활성 사건도 없고 모든 하위역량 탐색 완료.
-    #   #9(사건 수·반례·최소 턴) 카운터가 태깅 누락 등으로 뒤처져 있어도,
-    #   실질적으로 더 물을 것이 없는 상태 → 종료 경계로 강제 전진.
-    #   (이 탈출구가 없으면 CONTINUE_NORMAL 에 갇혀 같은 요약을 반복하는
-    #    앵무새 루프가 발생한다. 사용자 '네' 단답도 여기로 흡수돼 전진.)
-    if (_all_explored and state.get("events_collected", 0) >= 1
-            and _followup_done):
+    # 6. (2026-11-04 BEI) 사례 단계가 이미 '닫힘'이면 종료 턴
+    if state.get("bei_state") == "close":
         return "CHAPTER_READY_TO_END"
 
-    # 13. 기본 진행
-    return "CONTINUE_NORMAL"
-
-
-def should_do_contrary(state: dict) -> bool:
-    """반례 탐침을 지금 수행해야 하는지 판단."""
-    if state["has_contrary_probe"]:
-        return False  # 이미 했음
-
-    # 타이밍 1: 첫 사건 완료 직후
-    if (state["events_with_star_70"] >= 1
-            and state["events_collected"] == 1):
-        return True
-
-    # 타이밍 2: 사건 사이 (현재 활성 사건 없음)
-    if (state["events_with_star_70"] >= 1
-            and not state.get("current_event_id")):
-        return True
-
-    # 타이밍 3: 안전망 (챕터 후반부)
-    chapter_max = MAX_TURNS.get(state["chapter"], 40)
-    if state["turn_count"] >= chapter_max - 5:
-        return True
-
-    return False
+    # 7. 기본: 사례 탐침. 사례 열기(EPISODE_OPEN)·재질문(EPISODE_RETRY)·보완(SWEEP_ANCHOR/FOLLOWUP)·종료는 라우트의 BEI 단계가
+    #    슬롯 판정(Haiku) 뒤에 결정해 덮어쓴다 — 회피·단답은 instruction 이 아니라 사례 카드의 '신호' 한 줄로 LLM 에 전달된다.
+    return "EPISODE_PROBE"
 
 
 async def build_turn_state(
@@ -875,17 +617,6 @@ async def build_turn_state(
     user_messages = [m for m in _msgs if _is_user(m) and m.chapter == chapter]
     # 1-c: 최근 사용자 답변의 '실질 응답' 연속 수(engaged & 공백 제외 30자 이상).
     #   무수확 최후통첩은 이 값이 2 이상이면 발동하지 않는다(성실 응답자 추궁 금지).
-    from diag_project.services.avoidance_detector import (
-        classify_engagement as _cls_eng,
-    )
-    recent_engaged_streak = 0
-    for _m in reversed(list(user_messages)):
-        _c = (_m.content or "")
-        if (_cls_eng(_c)[0] == "engaged"
-                and len(_c.replace(" ", "")) >= 30):
-            recent_engaged_streak += 1
-        else:
-            break
     turn_count = len(user_messages)
 
     # 2-b. 🚨 3-Strike: 세션 '전체'(챕터 무관)의 비생산 응답 누적 카운트.
@@ -897,35 +628,8 @@ async def build_turn_state(
     # 3. 마지막 user 메시지
     last_response = user_messages[-1].content if user_messages else None
 
-    # 4. 활성 사건 (is_complete == False)
-    active_event = next((e for e in events if not e.is_complete), None)
-
-    # 5. STAR 커버리지
-    if active_event:
-        coverage = {
-            "S": bool(active_event.situation),
-            "T": bool(active_event.task),
-            "A": bool(active_event.action),
-            "R": bool(active_event.result),
-        }
-    else:
-        coverage = None
-
-    # 6. 이전 챕터 사건 (중복 검출용 메타데이터)
+    # 6. 이전 챕터 사건(지난 사례 참고용)
     prev_events = [e for e in events_all if e.chapter != chapter and e.is_complete]
-
-    existing_for_check = [
-        {
-            "event_id": str(e.id),
-            "chapter": e.chapter,
-            "summary": e.summary,
-            "key_person": e.key_person,
-            "time_context": e.time_context,
-            "core_action": e.core_action,
-            "tags": e.tags,
-        }
-        for e in prev_events
-    ]
 
     # 6-b. Global Memory: 전 챕터 + 현재 챕터의 '완료된' 모든 사건 요약.
     #   LLM 이 챕터 전환 후에도 과거 사례 전체를 기억해 '복붙 중복'을 캐치.
@@ -943,14 +647,6 @@ async def build_turn_state(
 
     # 7. 회피 감지
     contains_avoidance = check_avoidance(last_response)
-
-    # 8. 반례 수행 여부 (probe_type_used == "CONTRARY" 인 assistant 메시지)
-    has_contrary = any(m.probe_type_used == "CONTRARY" for m in _ch_model)
-
-    # 8-0. N턴 무수확 '최후통첩'을 이 챕터에서 이미 던졌는지 (probe 마커).
-    no_yield_ultimatum_given = any(m.probe_type_used == "NO_YIELD_ULTIMATUM" for m in _ch_model)
-    # (2026-10-22 P2-0) 종료 요청에 '하나만 더' 를 이미 물었는지 (챕터당 1회)
-    one_more_asked = any(m.probe_type_used == "ONE_MORE_ASK" for m in _ch_model)
 
     # 8-0b. 세션 강제 종료 '경고(Warning)'를 이미 1회 냈는지 (probe 마커).
     #   경고를 이미 줬다면 다음 회피 턴에서 곧바로 종료(재경고 루프 방지).
@@ -1024,21 +720,8 @@ async def build_turn_state(
         first_key = next(iter(indicators))
         first_subcompetency_name = indicators[first_key].get("name", "")
 
-    # 8-e2. 하위역량 탐색 상태 추적 (동적 태깅 — LLM 추론/환각 방지)
-    #   각 사건의 mapped_subcompetency(실제 스토리 기반 태깅)를 모아 탐색
-    #   세트 구성. 질문 순서가 아니라 '실제 답변 내용'으로 체크리스트 관리.
     all_subcompetencies = [
         v.get("name", "") for v in indicators.values() if v.get("name")
-    ]
-    _explored_set = set()
-    for _e in events:
-        _matched = _match_subcompetency(
-            getattr(_e, "mapped_subcompetency", None), all_subcompetencies
-        )
-        if _matched:
-            _explored_set.add(_matched)
-    explored_subcompetencies = [
-        n for n in all_subcompetencies if n in _explored_set
     ]
 
     # 🔒 T2(제어 역전): asked 는 '영속 원장'(session.self_assessment_data
@@ -1052,12 +735,9 @@ async def build_turn_state(
     _store = (getattr(_sess_asked, "self_assessment_data", None) or {}) \
         if _sess_asked else {}
     asked_in_chapter = asked_for_chapter(_store, chapter)
-    # #5: 현재 타겟 하위역량에서 소비한 프로브 턴 수(앵커 턴=1). 넓이 충족 직후
-    #   마지막 타겟이 한 문장 답변만으로 닫히지 않도록, 종료 전 최소 1회 심화
-    #   (>=2)를 요구하는 데 쓴다. (3턴 상한은 apply_probe_turn 이 그대로 유지)
-    turns_on_current_target = int(
-        (_store.get("turns_on_target") or {}).get(chapter, 0)
-    ) if chapter else 0
+    # (2026-11-04 BEI) 사례 단계 상태 — 결정기의 종료 분기와 라우트의 BEI 단계가 같은 원장을 본다
+    from diag_project.services import bei_engine as _bei
+    bei_state = _bei.chapter_state(_store, chapter) if chapter else None
     # 🚦 A: 참여 이탈 상태(diagnoses.py 가 매 턴 갱신·영속). 중단 확인 판정용.
     disengagement_streak = int(_store.get("disengagement_streak", 0))
     probe_cycles = int(_store.get("probe_cycles", 0))
@@ -1065,10 +745,6 @@ async def build_turn_state(
     awaiting_abort_decision = bool(_store.get("awaiting_abort_decision", False))
     abort_confirm_count = int(_store.get("abort_confirm_count", 0))
     pending_abort = bool(_store.get("pending_abort", False))
-    # 아직 타겟팅되지 않은(asked=False) 하위역량 — 순회 대상 큐
-    unexplored_subcompetencies = [
-        n for n in all_subcompetencies if n not in asked_in_chapter
-    ]
 
     # #6 문체 반복 추적: 최근 코치 발화 3개의 '시작 패턴'을 계산해 LLM 에 제약으로
     #   준다("네, ~하셨군요" 연속 2턴 금지 / 요약 되받기 3턴 1회 이하).
@@ -1137,30 +813,15 @@ async def build_turn_state(
         "chapter": chapter,
         "turn_count": turn_count,
         "events_collected": len(events),
-        "events_with_star_70": sum(
-            1 for e in events if e.star_coverage >= 0.7
-        ),
-        "current_event_id": str(active_event.id) if active_event else None,
-        "current_event_star_coverage": coverage,
-        "current_event_probe_count": (
-            active_event.probe_count if active_event else 0
-        ),
-        "has_contrary_probe": has_contrary,
-        "contrary_retry_count": 0,  # TODO: Phase 3-A 후속에서 정밀 추적
         # 회피 + 남탓/비아냥/도발을 합산 — Fail-Fast(비생산 응답 3회) 근거.
         # (단순 회피어만 세면 공격형의 남탓·비아냥이 안 잡혀 손절이 안 됨)
         "avoidance_count_in_chapter": sum(
             1 for m in user_messages if is_unproductive_response(m.content)
         ),
-        "last_avoidance_type": None,
-        "avoidance_retry_count": 0,
-        "existing_events": existing_for_check,
         "all_collected_events": all_collected_events,  # Global Memory
-        "cross_chapter_signals": None,  # 자기관리 챕터에서 별도 채움 (Step 5+)
         "last_user_response": last_response,
         "response_length": len(last_response) if last_response else 0,
         "contains_avoidance_keywords": contains_avoidance,
-        "duplicate_suspected": False,  # Step 5의 duplicate_detector 통합 후 채움
         "rapport_complete": rapport_complete,
         "intro_done": intro_done,
         "chapter_started": chapter_started,
@@ -1180,20 +841,12 @@ async def build_turn_state(
         "session_already_warned": session_already_warned,
         "name_extraction_failed": name_extraction_failed,
         "name_reconfirm_asked": name_reconfirm_asked,
-        "no_yield_ultimatum_given": no_yield_ultimatum_given,
-        "one_more_asked": one_more_asked,
         "first_subcompetency_name": first_subcompetency_name,
         "all_subcompetencies": all_subcompetencies,
-        "explored_subcompetencies": explored_subcompetencies,
-        "unexplored_subcompetencies": unexplored_subcompetencies,
-        "asked_in_chapter": asked_in_chapter,  # T2: 실시간 탐색(넓이) 지표
-        "turns_on_current_target": turns_on_current_target,  # #5 최소 1회 심화
-        # 🔁 중복 지적 대응·🎯 R 탐침 강제 블록용: 현재 타겟 하위역량 이름(원장)
-        "current_target_name": (
-            (_store.get("current_target") or {}).get(chapter) if chapter else None
-        ),
+        "asked_in_chapter": asked_in_chapter,  # 파생 원장(covered ∪ SWEEP) — 분석과 같은 소스
+        "bei_state": bei_state,  # (2026-11-04 BEI) confirm|align|episode|sweep|close
+        "bei_turns": _bei.bei_turns(_store, chapter) if chapter else 0,
         "style_constraints": style_constraints,  # #6 문체 반복 제약(시스템 계산)
-        "recent_engaged_streak": recent_engaged_streak,  # 1-c 최후통첩 발동 억제
         # #2: ALIGN 턴에 첫 앵커가 이미 붙었는가(원장 표식) → CHAPTER_OPENING 재발화 방지
         "opening_merged": bool(
             (_store.get("opening_merged") or {}).get(chapter)
@@ -1228,20 +881,6 @@ async def build_turn_state(
     #   라포 완료. 기대 답변 다음 턴은 바로 DIAGNOSIS_INTRO(사이의 진단_대화 턴 삭제). LLM 마커·동의 판정에 기대지 않는다.
     force_ready_for_intro = rapport_turn_count >= 3   # (2026-10-21) 기대 질문 턴은 rapport_turn_count==3
     state["force_ready_for_intro"] = force_ready_for_intro
-
-    # 9-g. 무수확 강제 전환 플래그 (READY_TO_END 가이드가 문구를 바꾸도록):
-    #   강한 STAR 가 0인 채로 종료가 결정되는 두 경로 모두에서 True:
-    #     ① 최후통첩까지 했는데도 무수확(기존 NO_YIELD 경로)
-    #     ② 회피/남탓/비아냥 3회 반복으로 Fail-Fast 강제 전환(4-a)
-    #   → 챕터 종료 멘트를 '강점 요약' 대신 '유의미한 진단 불가 → 전환'으로.
-    _avoid_ct = state.get("avoidance_count_in_chapter", 0)
-    state["no_yield_forced"] = (
-        state["events_with_star_70"] == 0
-        and (
-            (chapter_message_count >= NO_YIELD_TURNS and no_yield_ultimatum_given)
-            or (_avoid_ct >= 3 and chapter_message_count >= 3)
-        )
-    )
 
     # 10. instruction 결정
     state["instruction_for_this_turn"] = decide_instruction(state)

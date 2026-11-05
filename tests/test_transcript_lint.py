@@ -35,10 +35,10 @@ ALIGN_OK = ("조직관리를 '방향을 맞추는 일'이라고 하셨군요. �
 def test_lexicon_contains_example_internal_words(lex):
     kor = lex["korean"]
     # '가이드' 는 사다리 질문("가이드로 만드신 적")에 코치 발화로 쓰여 사전에서 빠진다(코치 어휘 우선, 2026-10-28)
-    for w in ("되받기", "다리", "탐침", "턴", "사건", "태그", "지시", "오버라이드"):   # (2026-10-29 P1) '반례'는 프롬프트에서 뺐다(예외 사례)
+    for w in ("되받기", "다리", "탐침", "턴", "사건", "태그", "지시", "슬롯"):   # (2026-11-04 BEI) 사다리·오버라이드는 프롬프트에서 사라졌다
         assert w in kor, f"누설 사전에 '{w}' 가 없다"
     eng = lex["english"]
-    for w in ("star", "instruction", "probe"):
+    for w in ("abort", "instruction", "probe"):
         assert w in eng, f"누설 사전에 '{w}' 가 없다"
     assert tl.lexicon_size(lex) >= 100
 
@@ -66,8 +66,8 @@ def test_lexicon_dump_and_sources(lex):
 
 # ── 1. 누설 탐지 ──────────────────────────────────────────────────────────────
 def test_find_lexicon_leaks_token_level(lex):
-    hits = tl.find_lexicon_leaks("이번 턴에는 탐침을 하나만 하겠습니다. STAR 기준으로 보면 사건이 하나 더 필요해요.", lex)
-    assert {"턴", "탐침", "STAR", "사건"} <= set(hits)
+    hits = tl.find_lexicon_leaks("이번 턴에는 탐침을 하나만 하겠습니다. 슬롯 기준으로 보면 사건이 하나 더 필요해요.", lex)
+    assert {"턴", "탐침", "슬롯", "사건"} <= set(hits)   # (2026-11-04 BEI) STAR → 슬롯
     # '리턴'·'패턴' 은 '턴' 으로 잡히지 않는다(어절 시작 기준)
     assert "턴" not in tl.find_lexicon_leaks("리턴이 빨랐고 패턴이 보였어요.", lex)
     # 리더가 먼저 쓴 말을 되받은 것은 누설이 아니다
@@ -150,18 +150,29 @@ def test_pasted_question_detection(lex):
 
 
 # ── 5. 탐침 집계 ──────────────────────────────────────────────────────────────
-def test_probe_aggregation(lex):
-    g_ladder = {"ladder_probe": "2_3", "ladder_level": 2}
-    g_gen = {"generalize_probe": 1}
-    rows = [_row(1, "user", "a"), _row(1, "model", "그때 리더님이 직접 하신 일은 무엇입니까?", guard=g_ladder),
-            _row(2, "user", "b"), _row(2, "model", "그 자리에서 직접 어떻게 하셨어요?", guard=g_gen),
-            _row(3, "user", "c"), _row(3, "model", "결과는요?", chapter="people_management", guard={"generalize_probe": 1, "ch": "people_management"})]
-    r = tl.analyze(_data(rows), lex)
-    assert r["ladder_turns"] == 1
-    assert r["generalize_turns"] == 2
-    assert r["generalize_by_chapter"] == {"organization_management": 1, "people_management": 1}
-    assert r["direct_q_by_target"] == {"organization_management": 2}
-    assert r["direct_excess"] == 1
+def test_bei_aggregation(lex):
+    """(2026-11-04 BEI) 사례당 리더 턴·6슬롯·챕터 리더 턴·커버리지·되받기·형식 미해결·고정 문장 반복 집계."""
+    def g(**kw):
+        return {"ch": "organization_management", **kw}
+    rows = [_row(7, "user", "정의", instr="COMPETENCY_ALIGN"), _row(7, "model", ALIGN_OK, instr="COMPETENCY_ALIGN", guard=g(bei="open1", target="비전 제시 및 공유")),
+            _row(8, "user", "작년 3월 개편 때 두 강사가 반대했어요."),
+            _row(8, "model", "두 강사가 반대하셨군요. 그때 처음 하신 일은 뭐였어요?", instr="EPISODE_PROBE", guard=g(episode=1, ep_kind="episode", ep_turn=1, slots_filled=1, slot_judge="stub")),
+            _row(9, "user", "제가 파일럿을 돌리자고 했어요."),
+            _row(9, "model", "그 뒤 반응은 어땠어요?", instr="EPISODE_PROBE", guard=g(episode=1, ep_kind="episode", ep_turn=2, slots_filled=2, format_regen=2, format_miss=["no_receive"], receive_miss=1)),
+            _row(10, "user", "김선임이 먼저 자료를 가져왔어요."),
+            _row(10, "model", "자료를 먼저 가져오셨군요. 다른 장면으로 가 볼게요. 내년을 보고 내리신 결정이 최근에 있으셨어요?", instr="EPISODE_OPEN",
+                 guard=g(bei="episode", episode=2, ep_kind="episode", ep_turn=0, closed="episode1:slots", slots_filled=6, mapped=["비전 제시 및 공유:s", "변화관리(변화지향):w"], anchor_attached=1, target="전략적 사고")),
+            _row(11, "user", "올해 초 AI 도입을 미뤘어요."),
+            _row(11, "model", "AI 도입을 미루셨군요. 그때 뭘 하셨어요?", instr="EPISODE_PROBE", guard=g(episode=2, ep_kind="episode", ep_turn=1, slots_filled=1, slot="Jessica"))]
+    r = tl.analyze(_data(rows, coach="2"), lex)
+    assert r["episodes"]["organization_management"][0] == {"idx": 1, "leader_turns": 2, "status": "slots", "slots_filled": 6}
+    assert r["episode_turns"] == [2] and r["episode_turns_out_of_range"] == 1 and r["episodes_six_slots"] == 1
+    assert r["chapter_leader_turns"] == {"organization_management": 4}     # ALIGN 답 + 사례 턴 3
+    assert r["coverage"]["organization_management"]["covered"] == 1 and r["coverage_ratio"] == 0.25
+    assert r["receive_turns"] == 4 and r["no_receive_turns"] == 1            # t9 는 질문만
+    assert r["format_regen_turns"] == 1 and r["receive_miss_turns"] == 1 and r["format_miss"] == {"no_receive": 1}
+    assert r["open_turns"] == 1 and r["slot_turns"] == 1 and r["slot_episodes"] == 1
+    assert [a["kind"] for a in r["anchors"]] == ["ALIGN", "앵커"]
 
 
 def test_probe_target_prefers_guard_target_over_probe_type():
@@ -205,7 +216,7 @@ def test_render_markdown_and_cli(tmp_path, capsys, lex):
     out_json = tmp_path / "out.json"
     assert tl.main([str(f1), str(f2), "--json", str(out_json)]) == 0
     out = capsys.readouterr().out
-    assert "| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN pass/total |" in out and "사다리 건너뜀/교체" in out   # (2026-10-29 P1)
+    assert "| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN | 잘림 |" in out and "사례당 리더 턴" in out   # (2026-11-04 BEI)
     assert "| Ella(1) |" in out and "| Jessica(2) |" in out
     assert "동일 앵커 문장 쌍 합계: **1**" in out
     assert "누설 사전 크기:" in out and "상위 50개" in out
@@ -228,40 +239,5 @@ def test_truncation_first_token_noun_ending_in_myeon_is_not_truncated():
     assert is_truncated_question("있었다면 그때 어떤 상황이었는지 편하게 들려주시면 됩니다.")
 
 
-def test_receive_metrics_and_michael_slot_kinds(lex):
-    """(2026-11-04 P3-1) 되받기 없는 턴·리더 명사구 미인용 턴을 센다(파이프라인 8-w 와 같은 판정)."""
-    u = "신입 교육을 온라인 사전학습으로 바꾸고 현업 활용 설문으로 효과를 확인했습니다."
-    rows = [_row(1, "user", u), _row(1, "model", "그 뒤에는 어떻게 됐어요?"),
-            _row(2, "user", u), _row(2, "model", "그러셨군요. 그 뒤에는요?"),
-            _row(3, "user", u), _row(3, "model", "온라인 사전학습으로 바꾸셨군요. 그 뒤에는요?"),
-            _row(4, "user", "네"), _row(4, "model", "그럼 여쭤볼게요. 최근 일은요?", instr="ANCHOR_REASK"),   # 대상 아님
-            _row(5, "user", u), _row(5, "model", "'현업 활용'까지 말씀해 주셨네요. 그 뒤에는요?",
-                                     guard={"t": 5, "ch": "organization_management", "instr": "CONTINUE_NORMAL", "receive_fix": 2, "receive_phrase": "현업 활용", "receive_src": "8-n"}),
-            _row(6, "user", u), _row(6, "model", "온라인 사전학습으로 바꾸셨군요. 그 뒤에는요?",
-                                     guard={"t": 6, "ch": "organization_management", "instr": "CONTINUE_NORMAL", "receive_fix": 1})]
-    r = tl.analyze(_data(rows, coach="5"), lex)
-    assert r["receive_turns"] == 5 and r["no_receive_turns"] == 1 and r["receive_no_quote_turns"] == 1
-    assert [x["kind"] for x in r["receive_issues"]] == ["none", "no_quote"]
-    # (2026-11-04 P3-1 2차) 폴백 발동 수·재생성 수·명사구 표본·소실 단계
-    assert r["receive_fallback_turns"] == 1 and r["receive_regen_turns"] == 1 and r["receive_src"] == {"8-n": 1}
-    assert r["receive_fallback_phrases"] == [{"t": 5, "phrase": "현업 활용", "user": u[:80], "src": "8-n"}]
-    md = tl.render_markdown([r], {"per_coach": {}, "pairs": 0, "duplicates": []}, lex)
-    assert "되받기 폴백 명사구 표본" in md and "| 5 | 현업 활용 |" in md
-    from diag_project.services.intro_messages import PERSONA_LINES
-    assert tl._slot_sentence_kept("Michael", f"정하셨군요. {PERSONA_LINES['Michael']['slot_lead']} 그 뒤에는요?", "Michael")
-    assert not tl._slot_sentence_kept("Michael", "정하셨군요. 그 뒤에는요?", "Michael")
-    assert tl._slot_sentence_kept("Michael", f"정하셨군요. {PERSONA_LINES['Michael']['slot_q']}", "Michael_q")
 
 
-def test_repeat_metrics_bridge_and_tail(lex):
-    """(2026-11-04 P3 3차) 같은 전환 다리 연속 2회 · 시스템 질문 꼬리 연속 2회를 센다."""
-    u = "신입 교육을 온라인 사전학습으로 바꾸고 현업 활용 설문으로 효과를 확인했습니다."
-    g = lambda t, **k: {"t": t, "ch": "organization_management", "instr": "STAR_COMPLETE_NEW_EVENT", "target_bridge": 1, "voiced": 1, **k}  # noqa: E731
-    rows = [_row(1, "user", u), _row(1, "model", "현업 활용까지 보셨군요. 자, 다음은 다른 쪽이에요. 최근에 뜻을 맞추셨던 일, 하나만 들려주세요.", instr="STAR_COMPLETE_NEW_EVENT", guard=g(1)),
-            _row(2, "user", u), _row(2, "model", "설문까지 하셨군요. 자, 다음은 다른 쪽이에요. 최근에 기준을 정하셨던 일, 하나만 들려주세요.", instr="STAR_COMPLETE_NEW_EVENT", guard=g(2)),
-            _row(3, "user", u), _row(3, "model", "효과를 확인하셨군요. 이번엔 방향을 바꿔볼게요. 최근에 배려하셨던 일, 떠오르는 게 있으세요?", instr="STAR_COMPLETE_NEW_EVENT", guard=g(3))]
-    r = tl.analyze(_data(rows, coach="5"), lex)
-    assert r["bridge_repeat"] == 1 and r["tail_repeat"] == 1
-    assert [x["kind"] for x in r["repeat_issues"]] == ["bridge", "tail"]
-    md = tl.render_markdown([r], {"per_coach": {}, "pairs": 0, "duplicates": []}, lex)
-    assert "연속반복 다리/꼬리" in md and "| 1/1 |" in md

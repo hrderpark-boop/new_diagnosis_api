@@ -82,23 +82,3 @@ def test_find_sub_key_by_name():
     assert find_sub_key_by_name("organization_management", "없는 이름") is None
 
 
-def test_llm_turn_guide_injects_target_questions_and_forbids_name():
-    state = {
-        "chapter": "organization_management",
-        "instruction_for_this_turn": "STAR_COMPLETE_NEW_EVENT",
-        "turn_count": 4, "events_collected": 1, "events_with_star_70": 1,
-        "current_event_id": None, "current_event_star_coverage": None,
-        "has_contrary_probe": False, "avoidance_count_in_chapter": 0,
-        "all_subcompetencies": ["비전 제시 및 공유", "전략적 사고",
-                                "변화관리(변화지향)", "혁신적 사고"],
-        "explored_subcompetencies": ["비전 제시 및 공유"],
-        "unexplored_subcompetencies": ["전략적 사고", "변화관리(변화지향)",
-                                       "혁신적 사고"],
-        "asked_in_chapter": ["비전 제시 및 공유", "전략적 사고"],
-        "current_target_sub": "전략적 사고",
-    }
-    guide = L3._get_instruction_guide("STAR_COMPLETE_NEW_EVENT", state)
-    for q in get_anchor_questions("strategic_thinking"):
-        assert q in guide
-    assert "이름 노출 금지" in guide
-    assert "한 번 언급" not in guide          # 과거 '이름 언급해도 좋다' 삭제

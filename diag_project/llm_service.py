@@ -2305,8 +2305,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 if max(levels) - min(levels) >= 2:  # 방향 엇갈림
                     subs = [f"{rows[k][1]}(Lv.{rows[k][2]})" for k in cluster]
                     logger.warning(
-                        "⚠️ 다중매핑 감사: 유사 사건이 %d개 하위역량에 매핑되고 "
-                        "레벨 방향이 엇갈림 → %s (레벨 인플레이션 의심, dedup 아님)",
+                        "ℹ️ 다중매핑 검토 권고: 유사 사례가 %d개 하위역량에 매핑되고 "
+                        "레벨 방향이 엇갈림 → %s (BEI 에서 사례 1개의 다중 배정은 정상 — 레벨 차만 검토, dedup 아님)",
                         len(cluster), ", ".join(subs),
                     )
 
@@ -2650,7 +2650,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         from diag_project.services.report_ledger import (
             mark_not_explored, neutralize_unmeasured,
         )
-        _ne = mark_not_explored(competency_results, history)
+        _ne = mark_not_explored(competency_results, history, store_meta)   # (2026-11-04 BEI) 커버리지 원장 우선, 구 세션은 앵커 전달 판정
         if _ne:
             logger.info("🧭 미탐색(앵커 미전달) 재분류: %s", _ne)
         _um = neutralize_unmeasured(competency_results)

@@ -80,43 +80,6 @@ def definition_question(chapter_name: str, persona_name: str | None = None) -> s
     return persona_line(persona_name, "definition", cn_eul=with_josa(chapter_name, '을/를', quote=True))
 
 
-# (2026-10-22 P2-3) 전환 턴 다리 문장 — 페르소나별 3개. 되받기 뒤, 앵커 앞. 단독 금지(되받기가 먼저).
-TRANSITION_BRIDGES = {
-    "Ella": ["여기까지 그 장면은 잘 그려졌어요. 결이 다른 장면도 하나 보고 싶어요.",
-             "그 이야기는 여기서 한 번 접어 둘게요. 조금 다른 자리의 이야기도 듣고 싶어요.",
-             "그 장면은 또렷하게 들어왔어요. 이번엔 다른 결의 장면으로 가 볼게요."],
-    # (2026-10-29) '정리됐습니다'·'충분히 들었습니다' 는 진행 상태 보고(누설) — 재생 s281 에서 그대로 노출돼 문구를 바꿨다
-    "Jessica": ["그 건은 여기까지 보겠습니다. 다른 축의 장면 하나 더 보겠습니다.",
-                "여기까지 확인했습니다. 각도를 바꿔 보겠습니다.",
-                "이 사례는 여기서 접고, 다른 장면으로 넘어가겠습니다."],
-    "Olivia": ["그 장면은 여기까지 두고, 반대편 각도의 이야기를 하나 꺼내 볼게요.",
-               "흥미로운 지점은 여기까지 두고, 이번엔 전혀 다른 결로 가 볼게요.",
-               "그 이야기는 잠시 접고, 다른 종류의 장면을 하나 열어 볼게요."],
-    "Daniel": ["그 장면은 여기까지 잘 들었습니다. 결이 다른 경험도 하나 여쭙겠습니다.",
-               "이 이야기는 여기서 매듭짓고, 다른 장면으로 옮겨 가겠습니다.",
-               "그 장면은 여기서 접겠습니다. 이번에는 다른 자리의 경험을 여쭙겠습니다."],
-    "Michael": ["그 장면은 여기까지. 이번엔 다른 현장으로 바로 가 보죠.",
-                "좋습니다, 그 이야기는 접어 두고 결이 다른 장면 하나 더 가 보겠습니다.",
-                "여기까지 잘 들었습니다. 다음 장면으로 넘어가 보죠."],
-    "Lucas": ["그 장면은 여기까지입니다. 다른 축 하나 보겠습니다.",
-              "여기까지입니다. 각도를 바꾸겠습니다.",
-              "이 사례는 여기서 접습니다. 다른 장면으로요."],
-}
-
-
-def transition_bridge(persona_name: str | None, pos: int = 0) -> str:
-    key = (persona_name or "").split(" ")[0]
-    pool = TRANSITION_BRIDGES.get(key) or TRANSITION_BRIDGES["Ella"]
-    return pool[pos % len(pool)]
-
-
-def align_topic_bridge(sub_key: str | None, sub_name: str | None = None, persona_name: str | None = None) -> str:
-    """(2026-10-22 P2-3) ALIGN 끝 고정 다리 — '먼저 ~쪽부터 볼게요'. 하위역량 이름은 노출하지 않고 설명어로. 문장은 페르소나."""
-    from diag_project.data.competencies import SUBCOMPETENCY_TOPIC_PHRASE
-    phrase = SUBCOMPETENCY_TOPIC_PHRASE.get(sub_key or "") or "실제로 겪으신 장면 쪽"
-    return persona_line(persona_name, "align_bridge", phrase=phrase)
-
-
 def pause_suggestion_text(elapsed_min: int, persona_name: str | None = None) -> str:
     """(2026-10-22 P1-1) 일시정지 제안 안내 — 질문 없음. 선택은 프론트 버튼('계속 진행하기'/'다음에 하기')이 받는다."""
     _lead = (persona_line(persona_name, "pause_lead", min=int(elapsed_min)) if int(elapsed_min) >= 5
@@ -127,35 +90,25 @@ def pause_suggestion_text(elapsed_min: int, persona_name: str | None = None) -> 
 # (2026-10-22) 고정 문장의 페르소나별 변형 — 구조는 하나(어느 자리에 무엇을 붙이는가), 문장은 페르소나. 없는 키·코치는 Ella 로.
 PERSONA_LINES: dict[str, dict[str, str]] = {
     "Ella": {
-        # (2026-10-29 P2-1) 챕터당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
+        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
         "slot_q": "",
         "slot_q2": "",
         "slot_lead": "",
-        "target_bridge": "이번엔 조금 다른 장면을 여쭤볼게요.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
-        "target_bridges": ['이번엔 조금 다른 장면을 여쭤볼게요.', '여기서 방향을 살짝 틀어 볼게요.', '다른 장면 하나로 넘어가 볼게요.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 것이 있으세요?",
         "smalltalk_q": "오늘 하루는 바쁜 쪽이었어요, 여유 있는 쪽이었어요?",
         "intro_bridge": "네, 그러면 제가 오늘 흐름부터 설명드릴게요.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 생각하시나요?",
-        "result_a": "그래서 그 뒤에는 어떻게 됐어요?",
-        "result_b": "결과는 어떻게 나왔어요?",
-        "quantify": "어느 정도였어요? 숫자나 기간으로 기억나시는 게 있으면 좋겠어요.",
-        "action": "그 자리에서 리더님 몫은 어디까지였어요?",
-        "one_more": "하나만 더 여쭤봐도 될까요?",
-        "generalize": "그중 가장 최근 일 하나만요, 어떤 일이었고 언제쯤이었어요?",
         "end_bridge": "이제 '{next}'로 이어가 보겠습니다.",
-        "align_bridge": "먼저 {phrase}부터요.",
         "pause_lead": "리더님, 한 자리에서 {min}분째 이어오고 있습니다.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길게 이어오고 있습니다.",
         "pause_body": "오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. 이어가실지, 다음에 하실지 아래에서 골라 주세요.",
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희는 {cn_eul} '{defn}'으로 봐요.",
-        "align_guide": "이 {n} 가지를 하나씩 여쭤볼 텐데, 항목마다 실제 있었던 일 하나씩 떠올려 주시면 됩니다.",
+        "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 들어볼게요.",
+        "align_open": "먼저 하나를 깊게 들어볼게요.",
         "align_receive_fallback": "네, 말씀 잘 들었어요.",
         "reask_anchor": "그럼 여쭤볼게요.",
-        "reask_anchor_2": "비슷한 다른 장면이라도 괜찮아요. 떠오르는 대로 들려주세요.",
-        "skip_item": "그럼 이 항목은 여기까지 듣고 넘어갈게요.",
         "same_input": "앞서 말씀하신 내용과 같네요.",
         "repeat_event": "앞서 들려주신 이야기와 같은 사례로 보여요. 그 사례는 잘 들었으니, 다른 장면 하나를 떠올려 주시면 좋겠어요.",
         "question_returned": "질문이 그대로 돌아왔네요. 편하게 답해 주시면 됩니다.",
@@ -164,35 +117,25 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "continue_ack": "네, 이어갈게요.",
     },
     "Jessica": {
-        # (2026-10-29 P2-1) 챕터당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
+        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
         "slot_q": "그 결정의 기준은 무엇이었습니까?",
         "slot_q2": "",
         "slot_lead": "",
-        "target_bridge": "이번에는 조금 다른 장면을 여쭙겠습니다.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
-        "target_bridges": ['이번에는 조금 다른 장면을 여쭙겠습니다.', '각도를 바꿔 한 가지 더 여쭙겠습니다.', '다른 장면으로 넘어가겠습니다.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "평소 어떤 일을 맡고 계신지 간단히 말씀해 주시겠습니까? 팀 규모와 주요 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 것이 있습니까?",
         "smalltalk_q": "오늘은 바쁜 쪽이었습니까, 여유 있는 쪽이었습니까?",
         "intro_bridge": "알겠습니다. 그러면 오늘 흐름부터 설명드리겠습니다.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 보십니까?",
-        "result_a": "그래서 그 뒤에는 어떻게 됐습니까?",
-        "result_b": "결과는 어떻게 나왔습니까?",
-        "quantify": "어느 정도였습니까? 숫자나 기간으로 기억나는 것이 있으면 말씀해 주십시오.",
-        "action": "리더님 손으로 직접 하신 부분은 어디까지였습니까?",
-        "one_more": "하나만 더 여쭤봐도 되겠습니까?",
-        "generalize": "그중 가장 최근 사례 하나만, 어떤 일이었고 언제였습니까?",
         "end_bridge": "이제 '{next}'로 넘어가겠습니다.",
-        "align_bridge": "먼저 {phrase}부터 보겠습니다.",
         "pause_lead": "리더님, 한 자리에서 {min}분째입니다.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길게 이어왔습니다.",
         "pause_body": "오늘은 여기서 잠시 쉬어가셔도 됩니다. 이어갈지, 다음에 할지 아래에서 선택해 주십시오.",
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희는 {cn_eul} '{defn}'으로 정의합니다.",
-        "align_guide": "이 {n} 가지를 하나씩 여쭙겠습니다. 항목마다 실제 있었던 일 하나씩 떠올려 주시면 됩니다.",
+        "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 듣겠습니다.",
+        "align_open": "먼저 하나를 깊게 듣겠습니다.",
         "align_receive_fallback": "알겠습니다.",
         "reask_anchor": "그러면 여쭙겠습니다.",
-        "reask_anchor_2": "비슷한 다른 장면이라도 괜찮습니다. 떠오르는 대로 말씀해 주십시오.",
-        "skip_item": "그러면 이 항목은 여기까지 듣고 넘어가겠습니다.",
         "same_input": "앞서 말씀하신 내용과 같습니다.",
         "repeat_event": "앞서 말씀하신 사례와 같은 건으로 보입니다. 그 건은 확인했으니, 다른 장면 하나를 말씀해 주십시오.",
         "question_returned": "질문이 그대로 돌아왔습니다. 편하게 답해 주시면 됩니다.",
@@ -201,35 +144,25 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "continue_ack": "알겠습니다, 이어가겠습니다.",
     },
     "Olivia": {
-        # (2026-10-29 P2-1) 챕터당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
+        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
         "slot_q": "반대로 하셨다면 어떻게 됐을까요?",
         "slot_q2": "그 팀원 입장에서는 어떤 장면이었을까요?",
         "slot_lead": "",
-        "target_bridge": "이번엔 조금 다른 장면으로 가 볼게요.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
-        "target_bridges": ['이번엔 조금 다른 장면으로 가 볼게요.', '여기서 결을 바꿔 볼게요.', '다른 쪽 이야기로 넘어가 볼게요.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "평소 어떤 일을 맡고 계세요? 팀 규모나 주로 하시는 업무 정도면 충분해요.",
         "expect_q": "이번 진단에서 기대하는 게 있다면 뭐예요?",
         "smalltalk_q": "오늘은 바쁜 쪽이었어요, 아니면 여유 있는 쪽이었어요?",
         "intro_bridge": "좋아요, 그럼 오늘 흐름부터 바로 설명드릴게요.",
         "definition": "리더님은 {cn_eul} 뭐라고 생각하세요?",
-        "result_a": "그래서 그 뒤에는 어떻게 흘러갔어요?",
-        "result_b": "결과는 어떻게 나왔어요?",
-        "quantify": "어느 정도였어요? 숫자나 기간으로 떠오르는 게 있으면 좋겠어요.",
-        "action": "그 순간 리더님 손에서 나온 움직임은 뭐였어요?",
-        "one_more": "하나만 더 물어봐도 될까요?",
-        "generalize": "평소 방식은 알겠어요, 그중 가장 최근에 실제로 있었던 일 하나는 어떤 일이었고 언제쯤이었어요?",
         "end_bridge": "이제 '{next}' 쪽으로 각도를 바꿔 볼게요.",
-        "align_bridge": "먼저 {phrase}부터 열어 볼게요.",
         "pause_lead": "리더님, 한 자리에서 {min}분째 달려오셨어요.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길게 달려오셨어요.",
         "pause_body": "오늘은 여기서 잠시 쉬어가도 괜찮아요. 이어갈지, 다음에 할지 아래에서 골라 주세요.",
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희는 {cn_eul} '{defn}'으로 봐요.",
-        "align_guide": "이 {n} 가지를 하나씩 물어볼 텐데, 항목마다 실제로 있었던 일 하나씩만 떠올려 주시면 돼요.",
+        "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 천천히 깊게 들어보려고 해요.",
+        "align_open": "먼저 하나부터 깊게 들어볼게요.",
         "align_receive_fallback": "네, 잘 들었어요.",
         "reask_anchor": "그럼 바로 물어볼게요.",
-        "reask_anchor_2": "비슷한 다른 장면이라도 괜찮아요. 떠오르는 대로 꺼내 주세요.",
-        "skip_item": "그럼 이 항목은 여기까지 듣고 넘어갈게요.",
         "same_input": "방금 말씀하신 내용과 같은 답이에요.",
         "repeat_event": "앞서 들려주신 장면과 같은 이야기로 보여요. 그건 잘 들었으니, 다른 장면 하나를 꺼내 주시면 좋겠어요.",
         "question_returned": "질문이 그대로 돌아왔네요. 편하게, 떠오르는 대로 답해 주시면 돼요.",
@@ -238,35 +171,25 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "continue_ack": "좋아요, 이어갈게요.",
     },
     "Daniel": {
-        # (2026-10-29 P2-1) 챕터당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
+        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
         "slot_q": "",
         "slot_q2": "",
         "slot_lead": "그 자리, 저도 압니다. 쉽지 않지요.",
-        "target_bridge": "이번에는 조금 다른 장면을 여쭤보겠습니다.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
-        "target_bridges": ['이번에는 조금 다른 장면을 여쭤보겠습니다.', '방향을 바꿔 한 가지 더 여쭤보겠습니다.', '다른 장면으로 옮겨 가겠습니다.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "평소 어떤 일을 맡고 계신지 간단히 들려주시겠습니까? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 바가 있으십니까?",
         "smalltalk_q": "오늘 하루는 바쁜 쪽이셨습니까, 여유 있는 쪽이셨습니까?",
         "intro_bridge": "네, 그러면 오늘 흐름부터 안내드리겠습니다.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 생각하십니까?",
-        "result_a": "그래서 그 뒤에는 어떻게 되었습니까?",
-        "result_b": "결과는 어떻게 나왔습니까?",
-        "quantify": "어느 정도였습니까? 숫자나 기간으로 기억나시는 것이 있으면 좋겠습니다.",
-        "action": "그 자리에서 리더님께서 맡으신 부분은 어디까지였는지요?",
-        "one_more": "하나만 더 여쭤봐도 되겠습니까?",
-        "generalize": "그중 가장 최근의 일 하나만, 어떤 일이었고 언제쯤이었는지 들려주시겠습니까?",
         "end_bridge": "이제 '{next}'로 이어가겠습니다.",
-        "align_bridge": "먼저 {phrase}부터 보겠습니다.",
         "pause_lead": "리더님, 한 자리에서 {min}분째 이어오고 계십니다.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길게 이어오고 계십니다.",
         "pause_body": "오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. 이어가실지, 다음에 하실지 아래에서 골라 주십시오.",
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희는 {cn_eul} '{defn}'으로 보고 있습니다.",
-        "align_guide": "이 {n} 가지를 하나씩 여쭤보겠습니다. 항목마다 실제 있었던 일 하나씩 떠올려 주시면 됩니다.",
+        "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 들어보겠습니다.",
+        "align_open": "먼저 하나를 깊게 들어보겠습니다.",
         "align_receive_fallback": "네, 말씀 잘 들었습니다.",
         "reask_anchor": "그러면 여쭤보겠습니다.",
-        "reask_anchor_2": "비슷한 다른 장면이라도 괜찮습니다. 떠오르시는 대로 들려주시겠습니까.",
-        "skip_item": "그러면 이 항목은 여기까지 듣고 넘어가겠습니다.",
         "same_input": "앞서 말씀하신 내용과 같습니다.",
         "repeat_event": "앞서 들려주신 이야기와 같은 사례로 보입니다. 그 사례는 잘 들었으니, 다른 장면 하나를 떠올려 주시겠습니까.",
         "question_returned": "질문이 그대로 돌아왔습니다. 편하게 답해 주시면 됩니다.",
@@ -275,35 +198,25 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "continue_ack": "네, 이어가겠습니다.",
     },
     "Michael": {
-        # (2026-10-29 P2-1) 챕터당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
+        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
         "slot_q": "다음에 비슷한 상황이 오면 어떻게 하실 생각이세요?",
         "slot_q2": "",
         "slot_lead": "그 선택, 응원합니다.",
-        "target_bridge": "자, 다음은 다른 쪽이에요.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
-        "target_bridges": ['자, 다음은 다른 쪽이에요.', '이번엔 방향을 바꿔볼게요.', '다른 장면으로 넘어가요.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "좋습니다, 평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 게 있으세요?",
         "smalltalk_q": "오늘은 바쁜 쪽이었어요, 여유 있는 쪽이었어요?",
         "intro_bridge": "좋습니다, 그러면 오늘 흐름부터 바로 설명드릴게요.",
         "definition": "리더님께서는 {cn_eul} 뭐라고 생각하세요?",
-        "result_a": "그래서 그 뒤에는 어떻게 됐어요?",
-        "result_b": "결과는 어떻게 나왔어요?",
-        "quantify": "어느 정도였어요? 숫자나 기간으로 기억나는 게 있으면 바로 말씀해 주세요.",
-        "action": "좋습니다, 그때 리더님 몫은 어디까지였어요?",
-        "one_more": "좋습니다, 하나만 더 여쭤봐도 될까요?",
-        "generalize": "좋습니다, 그중 가장 최근 일 하나만요, 어떤 일이었고 언제쯤이었어요?",
         "end_bridge": "좋습니다, 이제 '{next}'로 바로 가 보겠습니다.",
-        "align_bridge": "먼저 {phrase}부터 바로 가 볼게요.",
         "pause_lead": "리더님, 한 자리에서 {min}분째 달려오셨습니다.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길게 달려오셨습니다.",
         "pause_body": "오늘은 여기서 잠시 쉬어가셔도 좋습니다. 이어가실지, 다음에 하실지 아래에서 골라 주세요.",
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희는 {cn_eul} '{defn}'으로 봐요.",
-        "align_guide": "이 {n} 가지를 하나씩 여쭤볼 텐데, 항목마다 실제 있었던 일 하나씩 떠올려 주시면 됩니다.",
+        "align_guide": "이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 제대로 깊게 들어볼게요.",
+        "align_open": "먼저 하나, 깊게 들어볼게요.",
         "align_receive_fallback": "네, 잘 들었어요.",
         "reask_anchor": "그럼 바로 여쭤볼게요.",
-        "reask_anchor_2": "비슷한 다른 장면이라도 괜찮아요. 떠오르는 대로 말씀해 주시면 됩니다.",
-        "skip_item": "그럼 이 항목은 여기까지 듣고 넘어갈게요.",
         "same_input": "앞서 말씀하신 내용과 같네요.",
         "repeat_event": "앞서 들려주신 이야기와 같은 사례로 보여요. 그건 잘 들었으니, 다른 장면 하나를 떠올려 주시면 됩니다.",
         "question_returned": "질문이 그대로 돌아왔네요. 편하게 답해 주시면 됩니다.",
@@ -312,35 +225,25 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "continue_ack": "네, 바로 이어갈게요.",
     },
     "Lucas": {
-        # (2026-10-29 P2-1) 챕터당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
+        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
         "slot_q": "그 방법을 고른 이유, 한 줄로 하면요?",
         "slot_q2": "",
         "slot_lead": "",
-        "target_bridge": "다음은 다른 장면입니다.",   # (2026-11-04 P3-3) 하위역량 전환 턴: 되받기 뒤 고정 다리, 그 뒤 앵커
-        "target_bridges": ['다음은 다른 장면입니다.', '각도를 바꾸겠습니다.', '다른 쪽으로 가겠습니다.'],   # (3차) 3종 순환 — 세션 누적 인덱스(bridge_idx), 연속 같은 다리 0
         "role_q": "평소 맡고 계신 일은요? 팀 규모와 주요 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 건요?",
         "smalltalk_q": "오늘은 바쁜 쪽이었습니까, 여유 있는 쪽이었습니까?",
         "intro_bridge": "알겠습니다. 오늘 흐름부터 짚겠습니다.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 정의하십니까?",
-        "result_a": "그래서 그 뒤에는요?",
-        "result_b": "결과는요?",
-        "quantify": "어느 정도였습니까? 숫자나 기간으로요.",
-        "action": "리더님 손으로 하신 부분은요?",
-        "one_more": "하나만 더 여쭤도 되겠습니까?",
-        "generalize": "가장 최근 일 하나만요, 무슨 일이었고 언제였어요?",
         "end_bridge": "이제 '{next}'입니다.",
-        "align_bridge": "먼저 {phrase}부터요.",
         "pause_lead": "리더님, 한 자리에서 {min}분째입니다.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길어졌습니다.",
         "pause_body": "오늘은 여기서 쉬어가셔도 됩니다. 이어갈지, 다음에 할지 아래에서 고르십시오.",
         # (2026-10-28 P0-1·P0-4) ALIGN 고정 문장·입력 이상 응답
         "align_definition": "저희 정의는 {cn_eul} '{defn}'입니다.",
-        "align_guide": "이 {n} 가지를 하나씩 묻겠습니다. 항목마다 실제 있었던 일 하나씩이면 됩니다.",
+        "align_guide": "이 {n} 가지가 실제로 어떻게 드러나는지, 있었던 일 몇 가지를 깊게 묻겠습니다.",
+        "align_open": "먼저 하나를 깊게 묻겠습니다.",
         "align_receive_fallback": "알겠습니다.",
         "reask_anchor": "그럼 묻겠습니다.",
-        "reask_anchor_2": "비슷한 다른 장면이라도 됩니다. 떠오르는 대로요.",
-        "skip_item": "이 항목은 여기까지 듣고 넘어가겠습니다.",
         "same_input": "앞서 말씀하신 내용과 같습니다.",
         "repeat_event": "앞서 말씀하신 사례와 같은 건입니다. 그 건은 확인했으니 다른 장면 하나만요.",
         "question_returned": "질문이 그대로 돌아왔습니다. 편하게 답해 주시면 됩니다.",
@@ -365,16 +268,6 @@ def persona_line(persona_name: str | None, key: str, **fmt) -> str:
     """페르소나별 고정 문장. fmt 는 {cn_eul}·{next}·{phrase}·{min} 자리."""
     line = PERSONA_LINES[persona_key(persona_name)].get(key) or PERSONA_LINES["Ella"][key]
     return line.format(**fmt) if fmt else line
-
-
-def target_bridge_lines(persona_name: str | None) -> list[str]:
-    """(2026-11-04 P3 3차) 하위역량 전환 다리 3종(페르소나별)."""
-    return list(PERSONA_LINES[persona_key(persona_name)].get("target_bridges") or [persona_line(persona_name, "target_bridge")])
-
-
-def target_bridge_line(persona_name: str | None, idx: int = 0) -> str:
-    lines = target_bridge_lines(persona_name)
-    return lines[int(idx or 0) % len(lines)]
 
 
 def chapter_end_bridge(next_topic: str, persona_name: str | None = None) -> str:
@@ -558,25 +451,6 @@ def build_onboarding_launch(user_name: str) -> str:
 #   전환 턴은 예고에서 끝내고, 정의 질문은 다음 턴 COMPETENCY_ASK 가 던진다.
 
 
-# item4: 첫 BEI 앵커 질문 '문장 틀' 풀 — LLM 대신 백엔드 결정론 변주.
-#   챕터 순서로 프레임을 골라 5개 챕터가 모두 다른 틀을 쓴다(무반복). 모든 틀은
-#   'BEI 앵커 제약'을 구조적으로 보장한다: 시점(최근/근래) + 리더가 '직접 한 행동'
-#   + 구체 경험/사례/장면 요구, 은유·비유 없음. {sub}=첫 하위역량(백엔드 주입).
-# #2(2026-09-04): 앵커 질문에서 하위역량 '이름'을 노출하지 않는다. 본문은
-#   SUBCOMPETENCY_ANCHOR_QUESTIONS 의 대화체 질문({question})이 맡고, 프레임은
-#   도입 한 마디 또는 부담을 낮추는 평서문 한 줄만 담는다(이중 질문 금지).
-#   (로그 근거: "'전략적 사고'와 관련해서 경험이…" → "그게 뭔지 너무 어려워요",
-#    상황 묘사 앵커 → 바로 사례. AI 는 무엇을 재는지 알되 대상자에겐 안 보인다.)
-_ANCHOR_FRAMES = [
-    "먼저 하나 여쭤볼게요. {question}",
-    "가볍게 시작해 볼게요. {question}",
-    "{question} 떠오르는 장면 하나면 충분합니다.",
-    "실제 있었던 일로 시작해 볼게요. {question}",
-    "{question} 잘한 일이 아니어도 괜찮아요.",
-    "바로 여쭤볼게요. {question}",
-    "{question} 언제, 누구와 있었던 일인지부터 편하게요.",
-    "이 영역은 이 질문부터요. {question}",
-]
 # 브릿지(직전 답변 이어받기) 리드도 챕터 순서로 순환.
 _BRIDGE_LEADS = [
     "방금 '{ctx}' 이야기를 들으면서, 리더님이 그런 순간들을 어떻게 "
@@ -590,65 +464,6 @@ _BRIDGE_LEADS = [
 _OPEN_CHAPTER_ORDER = [
     k for k in COMPETENCY_FRAMEWORK.keys() if k != "supplementary"
 ]
-
-
-def build_chapter_opening_with_user_def(
-    chapter: str,
-    user_definition: str,
-    first_subcompetency_name: str,
-    bridge_context: str | None = None,
-    variant: int = 0,
-) -> str:
-    """CHAPTER_OPENING (Step 7) — 하위역량 타겟팅 기반 첫 BEI 질문.
-    variant(2026-10-29 P1-4): 같은 참가자의 n번째 완료 세션(n mod 2) — 앵커 문안(2개 중)과 프레임(8개)을 돌려 두 번째 세션의 첫 질문이 전부 달라진다.
-
-    대주제로 뭉뚱그린 질문('이 역량 관련 경험 있으세요?')은 답하기 어렵다.
-    Step 6 에서 소개한 하위 역량의 SUBCOMPETENCY_ANCHORS(현업 딜레마/갈등
-    상황)를 앵커로 녹여 시작한다.
-
-    bridge_context (직전 챕터에서 리더가 들려준 사건의 핵심 키워드/요약)가
-    있으면 '목차 노출형'(역량명/하위역량명 직접 호명)을 폐기하고, 그 키워드에서
-    파생되는 '대화형 브릿지 질문'으로 시작한다 → 대화가 이전 답변에서
-    자연스럽게 이어지는 느낌을 준다. (첫 챕터 등 브릿지가 없으면 기존 방식)
-
-    user_definition 은 호환을 위해 유지하나 본문에서는 사용하지 않음.
-    """
-    framework = COMPETENCY_FRAMEWORK.get(chapter, {})
-    chapter_name = framework.get("name", "이 역량")
-    indicators = framework.get("indicators", {})
-
-    # 첫 하위역량을 결정론적으로 타겟 (하위역량 릴레이 추적과 순서 일치).
-    # 첫 사건은 항상 sub[0] 을 다룬 것으로 간주됨.
-    keys = list(indicators.keys())
-    first_key = keys[0] if keys else None
-    first_name = (
-        indicators[first_key].get("name", "") if first_key else ""
-    ) or first_subcompetency_name or chapter_name
-
-    # item4: 문장 틀·질문을 챕터 순서로 결정론 선택 → 5개 챕터 모두 다르게
-    #   (무반복). 타겟(first_key)은 백엔드가 정하고 문장만 변주 = 제어 역전 유지.
-    _pos = (_OPEN_CHAPTER_ORDER.index(chapter)
-            if chapter in _OPEN_CHAPTER_ORDER else 0)
-    # #2: 첫 하위역량의 대화체 앵커 질문(이름 미노출) — 결정론(챕터 순서 기반).
-    questions = get_anchor_questions(first_key) if first_key else []
-    if questions:
-        question = questions[(_pos + int(variant or 0)) % len(questions)]
-    else:
-        # 질문 사전에 없는 키(방어) — 이름 대신 일반 상황 질문.
-        question = "최근에 리더님이 직접 나서서 풀어야 했던 일이 하나 있으셨어요?"
-    _frame = _ANCHOR_FRAMES[(_pos + int(variant or 0)) % len(_ANCHOR_FRAMES)].format(question=question)
-    del first_name  # 이름은 질문에 쓰지 않는다(호환 인자만 유지)
-
-    # 🌉 브릿지 모드: 직전 답변 키워드에서 파생되는 대화형 리드 + 앵커 질문.
-    #   리드가 이미 도입 역할을 하므로 프레임 도입은 빼고 질문 본문만 잇는다
-    #   ("…들어가 볼게요. 가볍게 시작해 볼게요." 이중 도입 방지).
-    if bridge_context:
-        _ctx = bridge_context.strip().rstrip(".!?~ ")
-        _lead = _BRIDGE_LEADS[_pos % len(_BRIDGE_LEADS)].format(ctx=_ctx)
-        return f"{_lead} {question}"
-
-    # (브릿지 없음 — 첫 챕터 등) 하위역량 타겟 앵커 질문.
-    return _frame
 
 
 def build_chapter_transition_question(chapter: str) -> str:

@@ -1,55 +1,39 @@
-"""사건(STAR) 추적·세션 제어 — 백엔드 결정론 (2026-09-22, LLM 자기보고 JSON 폐기).
+"""세션 제어 보조 — 순수 함수 (2026-09-22 결정론, 2026-11-04 BEI 축소).
 
-이전: LLM 이 매 턴 state JSON(current_event_id·star_coverage·turn_intent·probe_type_used·event_metadata)을
-자기보고하고 백엔드가 그대로 믿었다(코드 리뷰 2-d 🟥 #1~#6, 🟨 #8·#9). 오판 → "방금 말한 것을 또 묻는" A 탐침,
-출력 토큰 = JSON 필드 10개 + 답변 → 15초 지연.
-
-지금: LLM 출력은 답변 문장뿐. 아래 순수 함수가 (직전 코치 턴의 instruction·문장, 사용자 발화, 이번 턴 instruction)
-만으로 사건 생성·슬롯 채움·완결·탐침 종류·일시중지 제안을 결정한다. 근거 추출(레벨 판정)은 deep_analysis 가
-대화 원문으로 한다 — 여기의 사건 기록은 흐름 제어(깊이 게이트·반례·전진)와 관리자 표시용.
+(2026-11-04 BEI) STAR 슬롯 휴리스틱(plan_event_update)·탐침 종류(probe_type_for)·태도 진술 판정은 삭제됐다. 사례의 슬롯은
+services/slot_judge(Haiku) 가, 사례 행(Event)은 routes/diagnoses 가 사례 종료 시 1건씩 쓴다. 여기 남긴 것:
+  · is_substantive        리더 발화가 사례 서술로 볼 만한가(짧은 동의·입력 이상 턴 제외) — 린트·재개 판정 보조
+  · sitting_stats / should_suggest_pause  일시정지 제안(한 자리 45분 또는 코치 턴 30, 2회 상한, 12턴 쿨다운)
+  · 입력 이상 instruction 집합(INPUT_ANOMALY_INSTRUCTIONS) — build_turn_state 의 BEI 턴 집계 제외용
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from datetime import datetime
 
 from diag_project.services.avoidance_detector import detect_absence_statement
-from diag_project.services.traversal import is_result_probe_text
 
-# 사용자 발화가 '사건 서술'로 인정되는 최소 길이(공백 제외). 단답('네'·'별거 없어요')은 슬롯을 채우지 않는다.
 SUBSTANTIVE_MIN_CHARS = 12
 
-# 이번 턴 instruction 이 이 집합이면 직전 사용자 발화는 사건 서술이 아니다(회피·부재·메타·중복·이탈).
+# 이번 턴 instruction 이 이 집합이면 직전 사용자 발화는 사례 서술이 아니다.
 NON_SUBSTANTIVE_INSTRUCTIONS = frozenset({
-    "ABSENCE_PROBE", "AVOIDANCE_DETECTED", "META_QUESTION_FROM_USER", "DUPLICATE_CLAIM",
-    "CROSS_CHAPTER_REDIRECT", "INVALID_INPUT", "PROMPT_INJECTION_DETECTED", "USER_REQUESTS_PAUSE",
-    "AWAIT_NEXT_CHAPTER_CHOICE", "CHAPTER_CONTINUE_CONFIRMED", "NAME_RECONFIRM",
-    # 정의·안내·동의 턴의 답(역량 정의, "네, 다음으로 이어가 주세요")은 사건 서술이 아니다 (리플레이 H 에서 situation 오기록)
+    "META_QUESTION_FROM_USER", "INVALID_INPUT", "PROMPT_INJECTION_DETECTED", "USER_REQUESTS_PAUSE",
+    "AWAIT_NEXT_CHAPTER_CHOICE", "NAME_RECONFIRM",
     "COMPETENCY_ASK", "COMPETENCY_ALIGN", "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "RAPPORT_BUILDING",
-    "CHAPTER_READY_TO_END", "CHAPTER_OPENING",
-    # (2026-10-28 P0-4) 입력 이상 턴(반복·질문 되돌아옴·비실질 입력·정의 재요청): 사건 서술이 아니다
+    "CHAPTER_READY_TO_END",
     "INPUT_REPEATED", "INPUT_DUPLICATE", "QUESTION_RETURNED", "QUESTION_REASK", "CONFIRM_REASK",
     "DEFINITION_REASK", "ANCHOR_REASK",
 })
-# (2026-10-28 P0-4) 입력 이상 턴 instruction 이름 — 원장·사건·챕터 BEI 카운트 어디에도 전진을 남기지 않는다.
+# (2026-10-28 P0-4) 입력 이상 턴 instruction 이름 — 원장·사례·챕터 BEI 카운트 어디에도 전진을 남기지 않는다.
 INPUT_ANOMALY_INSTRUCTIONS = frozenset({
     "INPUT_REPEATED", "INPUT_DUPLICATE", "QUESTION_RETURNED", "QUESTION_REASK", "CONFIRM_REASK",
     "DEFINITION_REASK", "ANCHOR_REASK",
 })
 _CONSENT_RE = re.compile(r"^(네|넵|예|좋습니다|알겠습니다)[,.!\s]*(다음|이어|계속|시작|편하게|말씀)")
 
-# 직전 코치 턴이 이 instruction 이었으면 사용자의 다음 서술은 '새 사건'의 시작이다.
-NEW_EVENT_AFTER = frozenset({
-    "STAR_COMPLETE_NEW_EVENT", "COMPETENCY_ALIGN", "CHAPTER_OPENING", "ABSENCE_PROBE", "DIAGNOSIS_CONFIRM",
-})
-
-_ACTION_PROBE_RE = re.compile(r"(어떻게 하셨|무엇을 하셨|뭘 하셨|어떤 행동|어떤 조치|어떻게 대응|어떻게 접근|어떻게 이끄|어떻게 진행|어떤 방식으로)")
-_TASK_PROBE_RE = re.compile(r"(역할|맡으신 일|책임|과제|목표가 무엇|해야 했|해야 할 일)")
-
 
 def is_substantive(user_text: str | None, instruction_used: str | None) -> bool:
-    """사용자 발화가 STAR 슬롯을 채울 '사건 서술'인가."""
+    """사용자 발화가 사례 서술로 볼 만한가."""
     t = (user_text or "").strip()
     if instruction_used in NON_SUBSTANTIVE_INSTRUCTIONS:
         return False
@@ -62,77 +46,14 @@ def is_substantive(user_text: str | None, instruction_used: str | None) -> bool:
     return True
 
 
-@dataclass
-class EventPlan:
-    op: str                     # "none" | "new" | "fill"
-    slot: str | None = None     # fill 일 때 "situation"|"task"|"action"|"result"
-    complete_active: bool = False   # new 일 때 직전 활성 사건을 완결 처리
-    complete_after: bool = False    # fill 뒤 활성 사건을 완결 처리(타겟이 이 턴에 전진 — 답은 옛 타겟의 것)
-
-
-def plan_event_update(
-    *,
-    user_text: str | None,
-    instruction_used: str | None,
-    prev_instruction: str | None,
-    prev_coach_text: str | None,
-    active: dict | None,
-    target_changed: bool,
-) -> EventPlan:
-    """이번 턴의 사건 갱신 계획.
-
-    active: 활성 사건의 슬롯 상태 {"situation": bool, "task": bool, "action": bool, "result": bool} 또는 None.
-    target_changed: 이 턴의 원장 전진으로 타겟 하위역량이 바뀌었는가(앵커 턴).
-    """
-    if not is_substantive(user_text, instruction_used):
-        return EventPlan("none")
-    if active is None or prev_instruction in NEW_EVENT_AFTER:
-        return EventPlan("new", complete_active=active is not None)
-    pt = prev_coach_text or ""
-    slot = None
-    if is_result_probe_text(pt) and not active.get("result"):
-        slot = "result"
-    elif _TASK_PROBE_RE.search(pt) and not active.get("task"):
-        slot = "task"
-    elif not active.get("action"):
-        slot = "action"
-    elif not active.get("result"):
-        slot = "result"
-    elif not active.get("task"):
-        slot = "task"
-    if slot is None:
-        return EventPlan("none", complete_after=target_changed)
-    return EventPlan("fill", slot, complete_after=target_changed)
-
-
-def probe_type_for(instruction_used: str | None, coach_text: str | None) -> str | None:
-    """코치 턴의 탐침 종류 — instruction 과 문장 표지로 결정(LLM 자기보고 대체).
-    decider 의 has_contrary(=CONTRARY), result_probed(=MEASUREMENT) 판정이 이 값을 읽는다."""
-    if instruction_used == "CONTRARY_NEEDED":
-        return "CONTRARY"
-    if instruction_used in ("STAR_COMPLETE_NEW_EVENT", "CHAPTER_OPENING", "COMPETENCY_ALIGN", "ABSENCE_PROBE"):
-        return "INCIDENT"
-    if instruction_used in ("STAR_INCOMPLETE", "CONTINUE_NORMAL", "PROBE_ONLY"):
-        if is_result_probe_text(coach_text or ""):
-            return "MEASUREMENT"
-        if _ACTION_PROBE_RE.search(coach_text or ""):
-            return "SPECIFICATION"
-        return "CAUSAL"
-    if instruction_used == "AVOIDANCE_DETECTED":
-        return "AVOIDANCE"
-    if instruction_used == "DUPLICATE_CLAIM":
-        return "DUPLICATE"
-    if instruction_used == "META_QUESTION_FROM_USER":
-        return "META"
-    return None
-
-
 # ── 일시중지 제안(SUGGEST_PAUSE) — 백엔드 기준 (2026-09-22) ──
 SITTING_GAP_MIN = 30          # 이 시간 이상 비면 새 '앉은 자리'
 PAUSE_SUGGEST_AFTER_MIN = 45  # 한 자리에서 이만큼 지나면
 PAUSE_SUGGEST_AFTER_TURNS = 30  # 또는 코치 턴이 이만큼 쌓이면
 PAUSE_SUGGEST_COOLDOWN_TURNS = 12  # 한 번 제안한 뒤 이만큼은 다시 안 함
 PAUSE_SUGGEST_MAX = 2         # 2-Strike 유지
+# (2026-11-04 BEI) 제안은 사례 탐침 턴에서만 — 여는 턴·SWEEP 앵커 턴(시스템 질문이 붙는 턴)은 제외
+PAUSE_SUGGEST_INSTRUCTIONS = frozenset({"EPISODE_PROBE", "EPISODE_RETRY", "SWEEP_FOLLOWUP"})
 
 
 def sitting_stats(timestamps: list[datetime], now: datetime | None = None) -> tuple[float, int]:
@@ -157,8 +78,8 @@ def should_suggest_pause(
     turns_since_last_suggest: int | None,
     instruction_used: str | None,
 ) -> bool:
-    """프로브 턴에서, 한 자리가 길어졌고(시간 또는 턴), 아직 2회 미만 제안했고, 최근에 제안하지 않았을 때."""
-    if instruction_used not in ("STAR_INCOMPLETE", "STAR_COMPLETE_NEW_EVENT", "CONTINUE_NORMAL", "CONTRARY_NEEDED"):
+    """사례 탐침 턴에서, 한 자리가 길어졌고(시간 또는 턴), 아직 2회 미만 제안했고, 최근에 제안하지 않았을 때."""
+    if instruction_used not in PAUSE_SUGGEST_INSTRUCTIONS:
         return False
     if suggest_pause_count >= PAUSE_SUGGEST_MAX:
         return False
@@ -166,23 +87,3 @@ def should_suggest_pause(
         return False
     coach_turns = sitting_messages // 2
     return elapsed_min >= PAUSE_SUGGEST_AFTER_MIN or coach_turns >= PAUSE_SUGGEST_AFTER_TURNS
-
-
-# ── 태도 진술 (2026-09-29): 사건이 아니라 태도로 답함 — "뒷끝 없어요", "그러려니 해요" ──
-_ATT_TIME_RE = re.compile(r"(지난|작년|올해|어제|최근|당시|예전|처음|\d+\s*(월|주|년|일|번)|날|번째)")
-_ATT_PERSON_RE = re.compile(r"(팀원|직원|동료|상사|부하|고객|대리|과장|차장|부장|팀장|본부장|님|씨|누구|김\S|박\S)")
-_ATT_ACTION_RE = re.compile(r"(했|하셨|시켰|만들|정했|줬|주었|말했|얘기했|불러|모아|보냈|바꿨|옮겼|맡겼|물어|확인했|정리했|거절|취소|안\s*했)")
-ATTITUDE_MAX_CHARS = 30
-
-
-def is_attitude_statement(user_text: str | None) -> bool:
-    """30자 미만이고 시점·인물·행동이 없는 답 — STAR 탐침이 맞지 않는 '태도 진술'."""
-    t = (user_text or "").strip()
-    if not t or len(t.replace(" ", "")) >= ATTITUDE_MAX_CHARS:
-        return False
-    if _ATT_TIME_RE.search(t) or _ATT_PERSON_RE.search(t) or _ATT_ACTION_RE.search(t):
-        return False
-    return True
-
-
-ATTITUDE_TRIGGER_QUESTION = "그렇게 생각하시게 된 계기가 된 일이 하나 있으셨을까요?"

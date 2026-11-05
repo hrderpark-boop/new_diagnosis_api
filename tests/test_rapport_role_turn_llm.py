@@ -79,20 +79,6 @@ def test_echo_guard_wired_and_logged():
     assert '"echo": int(_tm.get("echo") or 0)' in src
 
 
-def test_ready_for_intro_forced_at_expectation_turn_and_next_is_intro():
-    """기대 질문 턴(rapport_turn_count>=2) 뒤 라포 완료 → 다음 턴 DIAGNOSIS_INTRO. 진단_대화 없음."""
-    base = {"chapter": "organization_management", "session_deflection_count": 0, "session_already_warned": False,
-            "disengagement_streak": 0, "probe_cycles": 0, "last_refusal": False, "awaiting_abort_decision": False,
-            "pending_abort": False, "intro_done": False, "chapter_started": False, "competency_aligned": False,
-            "definition_asked": False, "name_extraction_failed": False, "name_reconfirm_asked": False,
-            "turn_count": 1, "chapter_message_count": 0, "contains_avoidance_keywords": False,
-            "events_collected": 0, "events_with_star_70": 0, "has_contrary_probe": False}
-    # 기대 답변 '없어요' 가 도착한 턴: 라포 완료(READY_FOR_INTRO 백엔드 확정) → INTRO
-    s = dict(base, rapport_complete=True, rapport_turn_count=4, last_user_response="없어요")
-    assert decide_instruction(s) == "DIAGNOSIS_INTRO"
-    # 그 다음 '네' → CONFIRM (rapport_turn_count=5 < 캡 6)
-    s2 = dict(base, rapport_complete=True, intro_done=True, rapport_turn_count=5, last_user_response="네")
-    assert decide_instruction(s2) == "DIAGNOSIS_CONFIRM"
 
 
 def test_route_wiring():

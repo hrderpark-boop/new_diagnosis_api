@@ -1,0 +1,156 @@
+"""(2026-11-04 BEI) 사례 카드·BEI 턴 가이드 — system 프롬프트의 턴 동적 부분.
+
+Layer3 의 Turn State JSON·Global Memory·강제 블록을 대체한다(docs/design_bei_2026-11.md §8).
+  · chapter_context_bei : Layer2 축약 — 역량 정의 1문장 + 하위역량 이름·행동 단서(내부 참고, 노출 금지)
+  · build_episode_card  : 지금 듣는 사례(n번째/리더 턴 k/8), 채워진 슬롯(리더 말 인용), 미충족 슬롯(순서), 이번 턴 지시, 직전 답 신호
+  · bei_turn_text       : 카드 + instruction 가이드 + 턴 형식 + 금지 (format_turn_state_for_llm 이 BEI 턴에 이것을 반환)
+문장은 LLM 이 쓴다. 여기 적힌 예시는 '결'만 — CLAUDE.md 규칙대로 테스트 입력·실제 발화와 겹치지 않게 쓴다.
+"""
+from __future__ import annotations
+
+from diag_project.data.competencies import COMPETENCY_FRAMEWORK, SUBCOMPETENCY_ANCHORS, SUBCOMPETENCY_MUST_ASK
+from diag_project.services.bei_engine import (
+    BEI_INSTRUCTIONS, EPISODE_MAX_LEADER_TURNS, SLOT_HINTS, SLOT_KEYS, SLOT_LABELS, filled_slots, unfilled_slots,
+)
+
+
+def sub_brief(sub_key: str) -> str:
+    """하위역량 한 줄 단서(내부용): must_ask 의 '행동:' 항목, 없으면 첫 상황 서술 앞부분."""
+    cues = [c.split(":", 1)[1].strip() for c in (SUBCOMPETENCY_MUST_ASK.get(sub_key) or []) if c.startswith("행동")]
+    if cues:
+        return cues[0]
+    anchors = SUBCOMPETENCY_ANCHORS.get(sub_key) or []
+    return (anchors[0] if anchors else "")[:60]
+
+
+def chapter_context_bei(chapter: str | None) -> str:
+    fw = COMPETENCY_FRAMEWORK.get(chapter or "", {})
+    if not fw:
+        return ""
+    lines = [f"# 현재 챕터: {fw.get('name', '')}", "", "## 역량 정의", (fw.get("description") or "").strip(), "",
+             "## 이 챕터의 하위역량 (내부 참고 — 리더에게 이름·분류를 말하지 않는다)"]
+    for key, ind in (fw.get("indicators") or {}).items():
+        lines.append(f"- {ind.get('name', '')}: {sub_brief(key)}")
+    return "\n".join(lines)
+
+
+def _quote_line(ep: dict, key: str) -> str:
+    q = ((ep.get("slots") or {}).get(key) or {}).get("quote") or ""
+    return f"{SLOT_LABELS[key]} — \"{q}\"(리더 말)" if q else SLOT_LABELS[key]
+
+
+def build_episode_card(
+    *,
+    instruction: str,
+    chapter: str | None,
+    ep: dict | None,
+    bei_turns: int,
+    budget: int,
+    prev_episodes: list[dict] | None = None,
+    signal: str = "",
+    anchor_text: str | None = None,
+    sweep_sub: str | None = None,
+    weak_hint: str | None = None,
+) -> str:
+    """사례 카드 본문(300토큰 이내). prev_episodes = [{"idx", "summary"}] 이 챕터·이전 챕터에서 끝난 사례."""
+    L: list[str] = []
+    if instruction in ("EPISODE_PROBE", "EPISODE_RETRY") and ep:
+        n = ep.get("idx", 1)
+        k = int(ep.get("leader_turns") or 0)
+        L.append(f"# 지금 듣고 있는 사례 ({n}번째 / 이 사례 리더 턴 {k}/{EPISODE_MAX_LEADER_TURNS} / 이 영역 리더 턴 {bei_turns}/{budget})")
+        filled = filled_slots(ep)
+        partial = [x for x in SLOT_KEYS if ((ep.get("slots") or {}).get(x) or {}).get("status") == "partial"]
+        missing = unfilled_slots(ep)
+        if filled:
+            L.append("채워진 것: " + " / ".join(_quote_line(ep, x) for x in filled))
+        if partial:
+            L.append("반쯤 나온 것(한 번 더 구체화해도 좋다): " + " / ".join(_quote_line(ep, x) for x in partial))
+        if missing:
+            L.append("아직 없는 것(이 순서로 하나씩): " + " → ".join(SLOT_LABELS[x] for x in missing))
+            nxt = missing[0]
+            L.append(f"이번 턴: '{SLOT_LABELS[nxt]}' 하나를 묻는다 — {SLOT_HINTS[nxt]}. "
+                     "리더가 다른 데로 가면 한 번은 따라가되 질문은 이 사례로 돌아온다.")
+        else:
+            L.append("이번 턴: 여섯 가지가 다 나왔다. 들은 것 중 가장 또렷한 장면 하나를 짧게 받고, 그 장면에서 한 걸음 더 들어가는 질문 하나.")
+    elif instruction == "EPISODE_OPEN":
+        L.append("# 다음 사례로 넘어가는 턴")
+        L.append("직전 사례를 닫는 되받기 1문장(들은 핵심 사실 하나, 평가 없이) + 다음 질문으로 잇는 다리 1문장. 질문은 쓰지 않는다 — "
+                 "시스템이 아래 여는 질문을 그대로 붙인다.")
+        if anchor_text:
+            L.append(f"시스템이 붙일 여는 질문: \"{anchor_text}\"")
+        if weak_hint:
+            L.append(f"다리 힌트(선택): {weak_hint}")
+    elif instruction == "SWEEP_ANCHOR":
+        L.append("# 아직 듣지 못한 장면을 묻는 턴")
+        L.append("되받기 1~2문장(직전 답의 핵심 사실, 평가 없이) + 다리 1문장. 질문은 쓰지 않는다 — 시스템이 아래 질문을 그대로 붙인다.")
+        if anchor_text:
+            L.append(f"시스템이 붙일 질문: \"{anchor_text}\"")
+        if weak_hint:
+            L.append(f"다리 힌트(선택): {weak_hint}")
+    elif instruction == "SWEEP_FOLLOWUP" and ep:
+        missing = unfilled_slots(ep)
+        L.append("# 방금 꺼낸 장면에 질문 하나만 더하는 턴")
+        if missing:
+            nxt = "action" if "action" in missing else ("result" if "result" in missing else missing[0])
+            L.append(f"이번 턴: '{SLOT_LABELS[nxt]}' 하나 — {SLOT_HINTS[nxt]}. 이 장면은 이 질문으로 마무리한다(더 파지 않는다).")
+    if prev_episodes:
+        L.append("지난 사례(참고 — 리더가 다시 꺼내면 새 사례를 요구하지 말고 지금 묻는 슬롯의 관점으로 이어서 묻는다): "
+                 + " / ".join(f"[{p.get('idx')}] {p.get('summary', '')}" for p in prev_episodes[-5:]))
+    if signal:
+        L.append(f"신호: {signal}")
+    return "\n".join(L)
+
+
+BEI_GUIDES: dict[str, str] = {
+    "EPISODE_PROBE": (
+        "사례 하나를 끝까지 듣는 턴입니다. 되받기 1~3문장 + 질문 1개. 되받기는 리더가 방금 쓴 말(명사구)을 그대로 하나 넣어 "
+        "들은 사실을 받는 평서문이고, 질문은 카드의 '이번 턴' 슬롯 하나를 향합니다. 새 사례·다른 장면을 청하지 않습니다."
+    ),
+    "EPISODE_RETRY": (
+        "리더가 이 질문에 해당하는 일이 없다거나 짧게만 답했습니다. 되받기 1문장(압박 없이) + 더 작은 단위의 질문 1개 — "
+        "'그날 그 자리에서 처음 꺼낸 말', '가장 최근에 비슷한 일이 있었던 날' 처럼 장면 하나를 구체적으로 좁혀 묻습니다. "
+        "이번에도 없다고 하면 시스템이 다른 장면으로 넘어갑니다."
+    ),
+    "EPISODE_OPEN": (
+        "직전 사례를 닫고 다음 사례를 여는 턴입니다. [되받기 1문장] + [다리 1문장]만 쓰고 질문은 쓰지 않습니다(시스템이 붙입니다). "
+        "다리에 '다음 항목', '넘어가겠습니다' 같은 진행 상태 보고를 쓰지 말고, 직전 사례의 한 단어에서 다음 장면으로 자연스럽게 잇습니다."
+    ),
+    "SWEEP_ANCHOR": (
+        "아직 듣지 못한 장면을 하나 더 묻는 턴입니다. [되받기 1~2문장] + [다리 1문장]만 쓰고 질문은 쓰지 않습니다(시스템이 붙입니다). "
+        "다리 힌트가 있으면 '아까 그 이야기에서 살짝 나왔는데, 그쪽을 하나 더' 결로 잇습니다."
+    ),
+    "SWEEP_FOLLOWUP": (
+        "방금 꺼낸 장면에 질문 하나만 더합니다. 되받기 1~2문장 + 질문 1개. 카드의 슬롯 하나를 향하고, 그 뒤 시스템이 다음으로 넘어갑니다."
+    ),
+}
+
+TURN_FORMAT_RULES = (
+    "[턴 형식]\n"
+    "- 되받기 1~3문장 + 질문 1개. 되받기 없이 질문만 쓰지 않는다. 질문 두 개를 잇지 않는다.\n"
+    "- 되받기에는 리더가 방금 쓴 말을 그대로 하나 넣는다(뜻만 옮겨 쓰지 않는다). 리더가 말하지 않은 사정을 보태지 않는다.\n"
+    "- 질문은 리더가 쓴 말(명사구)로 대상을 분명히 한다. '그것·그럴 때·그렇게'만으로 가리키지 않는다.\n"
+    "[금지]\n"
+    "- 하위역량 이름·분류 설명('이건 변화관리에 해당'), 진행 상태 보고('이제 결과를 여쭙겠습니다', '다음 항목으로'), 칭찬·평가, 느낌표 남발, 회사명.\n"
+    "- 사례 요약을 길게 되풀이하기, 같은 질문 되묻기, 은유 질문.\n"
+)
+
+
+def bei_turn_text(state: dict) -> str:
+    """BEI 턴의 Layer3 본문: 페르소나 상기 + 사례 카드 + instruction 가이드 + 턴 형식·금지."""
+    instruction = state.get("instruction_for_this_turn") or ""
+    persona = state.get("coach_persona") or {}
+    persona_block = ""
+    if persona.get("name"):
+        from diag_project.services.persona_voice import persona_guide_block
+        persona_block = (
+            f"[🎭 페르소나 유지] 당신은 {persona['name']} — {persona.get('coaching_style', '')} ({persona.get('tags', '')}). "
+            "문장 길이·종결어미·호응 방식은 시스템 프롬프트의 【말투 프로필】대로. 어느 코치든 같은 톤이 나오면 실패입니다.\n"
+            + persona_guide_block(persona["name"])
+        )
+    card = state.get("bei_card") or ""
+    guide = BEI_GUIDES.get(instruction, "")
+    return f"{persona_block}{card}\n\n[Instruction for this turn]\n{instruction}\n\n{guide}\n\n{TURN_FORMAT_RULES}"
+
+
+def is_bei_instruction(instruction: str | None) -> bool:
+    return instruction in BEI_INSTRUCTIONS

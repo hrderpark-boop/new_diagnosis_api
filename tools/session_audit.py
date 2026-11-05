@@ -18,7 +18,6 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 from diag_project.services.output_guard import find_praise  # noqa: E402
-from diag_project.services.traversal import RESULT_PROBE_POOL  # noqa: E402
 
 _BRIDGE = re.compile(r"(방금|앞서|아까)?\s*말씀하신\s*['\"“‘][^'\"”’]{1,10}['\"”’]")
 
@@ -71,7 +70,6 @@ async def main():
             praise += len(find_praise(c)); excl += c.count("!")
             absence += 1 if m["instruction_used"] == "ABSENCE_PROBE" else 0
             bridge += 1 if _BRIDGE.search(c) else 0
-            pool += 1 if any(q in c for q in RESULT_PROBE_POOL) else 0
             dt = ""
             if g.get("llm") is not None:
                 dt = f"{g.get('llm'):5.1f} {g.get('total'):5.1f}"

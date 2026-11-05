@@ -717,35 +717,6 @@ SUBCOMPETENCY_MUST_ASK: dict[str, list[str]] = {
 }
 
 
-# (2026-10-22 P2-3) ALIGN 끝 다리용 설명어 — 하위역량 이름 대신 '~쪽' 으로. "먼저 {phrase}부터 볼게요."
-SUBCOMPETENCY_TOPIC_PHRASE: dict[str, str] = {
-    "vision_sharing": "방향을 세우고 사람을 모으는 쪽",
-    "strategic_thinking": "당장보다 멀리 보고 결정하는 쪽",
-    "change_management": "바꾸려다 부딪히는 쪽",
-    "innovative_thinking": "다른 방법을 써보는 쪽",
-    "goal_setting_sharing": "목표를 팀의 것으로 만드는 쪽",
-    "kpi_management": "무엇으로 잴지 정하는 쪽",
-    "performance_evaluation_feedback": "피드백을 건네는 쪽",
-    "problem_solving": "답이 안 보이는 문제를 푸는 쪽",
-    "execution_power": "끝까지 밀어붙이는 쪽",
-    "conflict_management": "갈등 사이에 서는 쪽",
-    "trust_building": "신뢰를 다시 쌓는 쪽",
-    "teamwork_promotion": "같이 일하게 만드는 쪽",
-    "coaching_feedback": "옆에서 키우는 쪽",
-    "delegation": "맡기는 쪽",
-    "motivation": "다시 움직이게 하는 쪽",
-    "empathy_emotional_intelligence": "사정을 헤아리는 쪽",
-    "communication": "어려운 말을 전하는 쪽",
-    "talent_development": "일부러 어려운 일을 맡기는 쪽",
-    "work_planning_organization": "순서를 다시 짜는 쪽",
-    "resource_time_management": "부족한 자원으로 결과를 내는 쪽",
-    "work_division": "일을 다시 나누는 쪽",
-    "work_improvement_standardization": "하던 절차를 바꾸는 쪽",
-    "digital_literacy": "새 도구를 쓰게 하는 쪽",
-    "self_awareness": "내 방식을 돌아보는 쪽",
-    "resilience": "실패 뒤 다시 서는 쪽",
-    "centrality": "위기에서 중심을 잡는 쪽",
-}
 
 
 def get_anchor_questions(sub_key: str) -> list[str]:

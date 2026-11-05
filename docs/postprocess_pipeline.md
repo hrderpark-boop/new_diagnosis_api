@@ -1,50 +1,55 @@
-# 코치 턴 후처리 파이프라인 — 단계표 (2026-09-21, 09-22 개정)
+# 코치 턴 후처리 파이프라인 — 단계표 (2026-09-21 도입 · 2026-11-04 BEI 개편)
 
-`_submit_message_phase3a` (routes/diagnoses.py) 가 LLM 응답을 받은 뒤 DB 에 저장하기까지 거치는 단계를 **실행 순서대로** 적는다.
-시스템 템플릿 턴(라포 1턴 역할 질문 ROLE_ASK, CHAPTER_OPENING, AWAIT_NEXT_CHAPTER_CHOICE, 전환 팝업 대기 안내)은
-`system_override_text` 가 있어 표의 ★ 표시 단계만 지난다.
+`_submit_message_phase3a` (routes/diagnoses.py) 가 리더 메시지를 받아 코치 메시지를 DB 에 저장하기까지 거치는 단계를 **실행 순서대로** 적는다.
+설계 원문: `docs/design_bei_2026-11.md`. 시스템 템플릿 턴(라포 1턴·안내·전환 팝업 대기·입력 이상 고정 응답)은 `system_override_text` 가 있어 ★ 표시 단계만 지난다.
 
 ## 절차 — 프롬프트 규칙을 추가할 때
-새 규칙(예: "연결 한 절로 시작", "정의 문장 3개")이 만들어 내는 **문장 형태**를 아래 표의 "무엇을 자를 수 있는가" 열과 대조한다.
-1. 그 형태를 자를 수 있는 단계가 있으면 그 단계에 **예외**를 넣고(예: `_strip_bridge`, ALIGN 제외), 예외의 테스트를 `tests/test_output_guard.py` 에 추가한다.
+새 규칙이 만들어 내는 **문장 형태**를 아래 표의 "무엇을 자를 수 있는가" 열과 대조한다.
+1. 그 형태를 자를 수 있는 단계가 있으면 그 단계에 **예외**를 넣고 테스트를 추가한다.
 2. 규칙이 만드는 문장이 **질문**이면 "질문 보존" 열이 '보장 안 함'인 단계를 지나는지 확인한다.
-3. 같은 fixture 리플레이(`tools/replay_session.py`)로 전·후를 비교하고 guard_log(`v`·`hard`·`regen`)에서 그 규칙의 문장이 교정 대상이 된 턴 수를 센다.
-사람관리 09-21 사고: "연결 한 절" 규칙(09-17)을 추가했을 때 되받기 리드 삭제(09-16)와 전환 문장 삭제(09-16)가 그 절과 질문을 잘라
-"네, 알겠습니다"·맨 질문·결과 질문 풀 반복이 나갔다. 이 표는 그 재발을 막기 위한 대조표다.
+3. 같은 입력으로 시뮬(`tools/sim_leader.py`)을 돌려 전·후를 비교하고 guard_log 에서 그 규칙의 문장이 교정 대상이 된 턴 수를 센다.
 
-## 단계표
+## LLM 호출 '이전' — 사례 단계 (BEI)
 
-| # | 단계명 (코드 표지) | 무엇을 하는가 | 추가 시점 | 무엇을 자를 수 있는가 | 질문 보존 |
-|---|---|---|---|---|---|
-| 1 | 마커 파싱·환각 차단 | `[DIAGNOSIS_COMPLETE]`·`[SESSION_END_EARLY]` 마커를 읽고, 남은 챕터가 있으면 전체 종료 차단. **09-22: READY_FOR_INTRO(라포 ≥3턴+동의/상한)·START_CHAPTER(DIAGNOSIS_CONFIRM 턴)·SUGGEST_PAUSE(`event_tracker.should_suggest_pause` — 한 자리 45분 또는 30턴, 2회 상한, 12턴 쿨다운)는 백엔드가 결정**, 2-Strike 3번째 제안을 강제 종료로 승격 | 04-28 · 07-01 · 07-06 · 09-22 백엔드 결정 | 문장은 안 자름(플래그만). SUGGEST_PAUSE 턴은 제안 문장을 **덧붙임** | 무관 |
-| 2 | 마커 제거·개행 정규화 (`_MARKER_RE.sub`) | `[대문자_언더바]` 패턴 전부 삭제, `\n`·`\"` 리터럴 복원 | 04-28 · 06-25 | 마커 토큰만 | 보장(문장 불변) |
-| 3 | 2-Strike 승격 마무리 문장 | 승격 턴에 시스템 마무리 문단을 **덧붙임** | 07-06 | 안 자름 | 무관(종료 턴) |
-| 4 | USER_REQUESTS_PAUSE 확정 | 마커 누락과 무관하게 일시중지 플래그 | 04-28 | 안 자름 | 무관 |
-| 5 | 8-a DIAGNOSIS_INTRO 하이브리드 | LLM 호응 + 시스템 진단 안내 본문(`build_intro_anchor_section`) 결합, 빈 호응이면 "말씀 감사합니다." | 05-20 | 안 자름(덧붙임) | 보장(안내 본문에 질문) |
-| 6 | 8-b COMPETENCY_ALIGN 앵커 병합 | LLM 의 **마지막 질문 문장 삭제**(`strip_trailing_question`) 후 현재 타겟 앵커 질문을 덧붙임. 정의·목록은 보존 | 09-16 | LLM 꼬리 질문 1문장 | 보장(템플릿 앵커) |
-| 7 | 8-d CHAPTER_READY_TO_END | LLM 출력을 **통째로** 시스템 마무리 템플릿("여기까지 충분히 들었습니다. 이제 '…'로 이어가 보겠습니다.")으로 교체 | 06-24 (템플릿 교체 09-16) | 전체 | 의도적으로 질문 없음(전환 팝업) |
-| 8 | 8-e CHAPTER_CONTINUE_CONFIRMED | 빈 출력이면 "좋습니다. 그럼 바로 이어가 볼게요." | 06-24 | 안 자름 | 보장 안 함(다음 턴이 ALIGN) |
-| 9 | 8-f 앵무새 방어 | 직전 코치 턴과 **동일** 문자열이면 재생성 1회 → 같으면 현재 타겟 질문(없으면 판단 기준 질문) | 07-02 (재생성형 09-16) | 전체 교체 | 보장(교체문이 질문) |
-| 10 | 8-g 마커 재제거 ★ | 하이브리드 조립 뒤 마커 한 번 더 삭제 | 07-02 | 마커 토큰만 | 보장 |
-| 11 | 8-i 통합 출력 가드 — 감지 | praise·names·off_target(앵커 턴)·names_mention(비앵커 프로브)·no_question(프로브 턴에 질문 없음)·same_question(직전 코치 턴과 같은 질문 — 연결 절·'혹시'·호칭을 뺀 뒤 비교). **관찰만(교정 없음)**: transition·recap_obs. ABSENCE_PROBE·ALIGN·OPENING 제외 | 09-16 도입 · 09-21 no_question·same_question·ABSENCE 제외 · **09-22 recap·ne_opening·lead_stack·transition 교정 폐지** | 감지만 | — |
-| 12 | 8-i — 재생성 1회 | names·off_target·no_question·same_question 만(`FM_REGEN_ALL=1` 이면 전부). 위반 수가 줄 때만 채택 | 09-16 · 09-18 C 모드 | 전체 교체(LLM) | 보장 안 함(다음 단계가 검사) |
-| 13 | 8-i — names/off_target 교정 | 현재 타겟 템플릿 앵커 + 연결 절(`template_anchor_bridged`)로 **전체 교체** | 09-16 · 09-17 연결 절 | 전체 | 보장 |
-| 13b | 8-i — same_question 교정 | 재생성 후에도 직전 턴과 같은 질문이면 결과 질문(풀, 연결 절 포함)으로 교체. 앵커 턴이고 타겟 앵커가 그 질문이 아니면 타겟 앵커 | 09-21 | 전체 교체 | 보장 |
-| 14 | 8-i — names_mention 교정 | "'변화관리'와 관련하여" 구절만 삭제(`strip_sub_name_mentions`). **질문이 사라지면 건너뜀** | 09-18 · 09-21 보장 | 인용 구절 | 보장(09-21) |
-| 15 | 8-i — praise 교정 | 칭찬 문장 삭제(`strip_praise`, 전부 칭찬이면 마지막 질문 문장은 구절만 걷어 보존). **질문이 사라지면 건너뜀** | 09-16 · 09-21 보장 | 칭찬이 든 문장 전체 | 보장(09-21) |
-| 16 | ~~8-i — transition 교정~~ | **09-22 폐지** — 자르지 않는다. 전환 선언은 guard_log `v` 에 transition 으로만 남는다 | 09-16 · 09-22 폐지 | 없음 | 보장(불변) |
-| 17 | ~~8-i — recap/ne/lead_stack 교정~~ | **09-22 폐지** — `trim_lead_sentences` 삭제. 되받기는 Layer1 대화 규칙 2 한 줄 + 꼬리 블록 한 줄(페르소나 반응 힌트)이 맡는다. 3턴 1회 제한(`forbid_recap`)도 폐지. 되받기 발생은 guard_log `recap_obs` 로 관찰 | 09-16 · 09-21 · 09-22 폐지 | 없음 | 보장(불변) |
-| 18 | 8-i — 최종 질문 보장 | 프로브 턴에 질문이 없으면 현재 타겟 템플릿 앵커(직전 2턴에 나갔으면 결과 질문). 연결 절 템플릿은 09-22 폐지 | 09-18 (풀) → 09-21 (앵커) → 09-22 연결 절 폐지 | 전체 교체 | 보장 |
-| 18b | 8-i — 리드 한 문장 상한 (`cap_lead_sentences`) | 프로브 턴에서 첫 질문 앞 리드가 2문장 이상이면 첫 문장만 남긴다. 매 턴 한 문장 되받기는 허용(3턴 1회 제한 없음). **첫 질문부터는 불변** | 09-22 | 리드 2번째 문장부터 | 보장 |
-| 19 | Result 탐침 반복 교체 | 상투형("그렇게 하니 어떻게 됐습니까") 또는 이 챕터에서 이미 쓴 결과 질문 문장 → 풀에서 안 쓴 문장(직전 2턴 제외)으로 **문장 교체** | 09-17 · 09-21 직전 2턴 제외 | 결과 질문 1문장(질문→질문) | 보장 |
-| 20 | 문법 치환 | "있으시겠습니까"→"있으셨습니까" 문자열 치환 | 09-21 | 안 자름 | 보장 |
-| 21 | 8-h 느낌표 상한 ★ | 페르소나 상한(Michael 1·안내턴 0, 나머지 0) 초과 → LLM 턴은 재생성 1회 → 그래도 초과면 '!'→'.' 치환. 템플릿 턴은 치환만 | 09-15 | 안 자름(부호 치환·재생성) | 보장(재생성 결과는 8-i 를 다시 안 지남 — 주의) |
-| 22 | 9 사건 생명주기·저장 ★ | **09-22: probe_type_used = `event_tracker.probe_type_for`(instruction·문장 표지), 사건 생성·STAR 슬롯·완결 = `event_tracker.plan_event_update`(직전 코치 질문·사용자 발화; LLM 자기보고 JSON 폐기)**, 원장 전진(`apply_probe_turn`/`bump_turns_only`), ChatMessage 저장, guard_log 기록. **09-22: 턴 끝 1회 커밋 — 사용자 메시지·코치 메시지·원장·사건·guard_log 가 한 트랜잭션, 실패 시 롤백+503(부분 저장 없음)** | 04-28 · guard_log 09-18 · route 09-21 · 09-22 결정론·1회 커밋 | 안 자름 | 무관 |
-| 8-i(칭찬) | 깨진 문장 복구 (`# 8-i` praise 분기, output_guard.is_broken_sentence) | 칭찬 구절 제거 뒤 서술어 없이 끝난 평서문('…점이 이에요.')이 있으면 되받기 재생성 1회(replace_broken_statements), 실패 시 그 문장 삭제. guard_log broken_fix 1/2 | 2026-11-04 P3 3차 | 깨진 문장만 교체 | 보장 |
-| 리드 상한 | 권유문 제거 (`strip_suggestion_statements`) | 프로브 턴에서 되받기 뒤 LLM 권유 평서문('…떠올려 주셔도 좋아요.')을 지운다(질문 보존). splice_receive 도 권유문을 되받기로 세지 않는다. guard_log suggestion_cut | 2026-11-04 P3 3차 | 평서문 삭제 | 보장 |
-| 8-j·어미 | 반복 분산 | 전환 다리 3종(intro_messages.target_bridges, 원장 bridge_idx 순환) · 앵커 꼬리 3종(persona_voice variant = voice_variant_count 세션 누적). 린트 '연속반복 다리/꼬리' 0 기준 | 2026-11-04 P3 3차 | — | — |
-| 8-w | 되받기 필수 (`# 8-w.`, services/receive_check) | 대화 턴(STAR_INCOMPLETE·CONTINUE_NORMAL·CONTRARY_NEEDED·STAR_COMPLETE_NEW_EVENT·ABSENCE_PROBE·NO_YIELD)은 [되받기 1~2문장(리더 직전 답 명사구 인용)] + [질문]. 되받기가 없거나 명사구를 인용하지 않으면 되받기만 재생성 1회(질문부·슬롯·다리 고정 문장은 splice 로 보존), 그래도면 폴백 `'[명사구]'까지 말씀해 주셨네요.` 되받기 상한은 리더 답 150자 미만 1문장 / 이상 2문장. guard_log receive_fix 1 재생성/2 폴백 · receive_src 되받기가 깨진 단계(llm/probe/8-n/8-o, 단계별 스냅숏 비교; 8-w 는 8-o 직후·8-p 앞에서 돈다) · receive_phrase 인용 명사구 | 2026-11-04 P3-1(2차: 소실 단계 기록) | 되받기 평서문만 교체 | 보장(질문부 불변) |
+| # | 단계 | 무엇을 하는가 | LLM 호출 |
+|---|---|---|---|
+| 4 | `build_turn_state` → `decide_instruction` | 라포·안내·정의·ALIGN·META·일시정지·이탈·주입은 결정기. 사례 단계면 `EPISODE_PROBE`(기본값)를 낸다. `bei_state == close` 또는 MAX_TURNS(35~50) 안전망이면 `CHAPTER_READY_TO_END` | 0 |
+| 4-b | 페르소나 | `state["coach_persona"]` — 고정 문장(여는 앵커·정의 질문·슬롯)의 어미 변환이 BEI 단계 앞에서 본다 | 0 |
+| 입력 이상 | `input_anomaly.detect` | 반복·붙여넣기·일시정지 오입력·안내 뒤 비실질·정의 10자 미만·질문 뒤 단답 → 고정 응답(LLM 없음). **같은 사례에서 2회째 단답·반복은 고정 응답 없이 BEI 단계로**(재질문 1회 → 사례 폐기) | 0 |
+| BEI | `services/bei_engine` + `services/slot_judge` | ① ALIGN 턴: 사례 1 열기(`pick_opener`, asked·anchored 기록). ② 사례 턴: 리더 턴 +1 → **슬롯 판정(Haiku 1콜)** → 병합(sticky·원문 검증) → 종료 판정(6/6 / 리더 턴 8 / 예산) → 종료면 **매핑(Haiku 1콜)** → `covered`(strong)·`weak`·`asked_subs` → 다음 상태(`plan_after_episode`: 사례 / SWEEP / 종료). 없다는 답은 재질문 1회(`EPISODE_RETRY`) 뒤 폐기(`no_case_subs`·SWEEP 은 `unconfirmed`). SWEEP: 앵커 1 + 후속 ≤1(행동+결과가 차면 생략). 결과 instruction: `EPISODE_OPEN / EPISODE_PROBE / EPISODE_RETRY / SWEEP_ANCHOR / SWEEP_FOLLOWUP / CHAPTER_READY_TO_END` | 1~2 |
+| 카드 | `episode_card.build_episode_card` | 지금 듣는 사례(n번째/리더 턴 k/8/예산)·채워진 슬롯(리더 말 인용)·미충족 슬롯 순서·이번 턴 슬롯·직전 답 신호·지난 사례·시스템이 붙일 앵커 | 0 |
+| 6 | 프롬프트 | system = Layer1(light/heavy) + 페르소나 + Layer2 축약(`chapter_context_bei`) + Layer3(`format_turn_state_for_llm`: BEI 턴은 카드+가이드+턴 형식·금지, 그 외는 가이드) ; user = 현 챕터 이력(완료 사례는 Event 요약 1줄) + 꼬리 블록 + 최신 발화 | 본 호출 1 |
 
-주의 두 가지
-- 8-h(21) 의 느낌표 재생성 결과는 8-i(11~18) 검사를 다시 받지 않는다. 느낌표 위반은 드물고(상한 0 코치 5명) 재생성 지시가 "느낌표만" 이라 감수한다. 재생성 결과가 질문을 잃으면 그대로 나간다 — 후속 과제.
-- META_QUESTION_FROM_USER 등 비프로브 턴은 18(최종 질문 보장) 대상이 아니다. 비프로브 턴이 질문 없이 끝나는 것은 정상일 수 있어 강제하지 않는다. 대신 09-21 부터 그 턴도 `turns_on_target` 에 +1 되어 타겟이 멈추지 않는다.
+## LLM 호출 '이후' — 단계표
+
+| # | 단계명 (코드 표지) | 무엇을 하는가 | 무엇을 자를 수 있는가 | 질문 보존 |
+|---|---|---|---|---|
+| 8 | 마커 파싱 ★ | `[SESSION_END_EARLY]`·`[DIAGNOSIS_COMPLETE]`(남은 챕터 있으면 차단)·일시정지 제안(`should_suggest_pause`, 사례 탐침 턴만) | 플래그만 | 무관 |
+| 8-0 | 라포 2·3·4턴 | LLM 되받기 + 백엔드 고정 질문(`persona_line`) | 되받기 외 전부 | 보장 |
+| 8-a | DIAGNOSIS_INTRO | LLM 되받기 1문장 + 안내 본문 | 안 자름 | 보장 |
+| 8-b | COMPETENCY_ALIGN | 인용 가드·누설 재생성(조립 전) → 재료 보관(`_align_ctx`: 사례 1 여는 앵커 = 사전 52문 + 페르소나 어미) | LLM 질문 | 보장(8-z 가 조립) |
+| 8-d | CHAPTER_READY_TO_END | LLM 요약 2문장(질문·칭찬·상태 누설·전환 문장 제거) + 고정 `chapter_end_bridge`; 마지막 챕터는 `final_closing_message` + 리포트 예상 시간 | 전체 교체 | 의도적으로 질문 없음 |
+| 8-f | 앵무새 | 직전 코치 턴과 동일하면 재생성 1회. 같으면 그대로 두고 guard_log `parrot=2`(폴백 문장 없음) | 전체 교체 | 보장 안 함 |
+| 8-i0 | '사건' 낱말 치환 | '이번 사건'→'그 일' 류 | 낱말 | 보장 |
+| 8-i | 통합 출력 가드 | 감지: praise·revisit·state_leak·leak·names_mention(사례 턴)·no_question·same_question·bare_ref(사례 탐침 턴). `names_mention/no_question/same_question/bare_ref/leak` 는 재생성 1회 → 남은 위반은 하드 교정(칭찬 제거 뒤 깨진 문장 재생성/삭제 포함). **앵커 폴백·off_target·transition 관찰 폐지** | 위반 문장만(질문 보존) | 보장(질문 없음은 8-w 가 다시 본다) |
+| 8-i 끝 | BEI 조립 | `EPISODE_OPEN`·`SWEEP_ANCHOR`: LLM 본문의 질문을 지우고 [되받기+다리 ≤3문장] + **시스템 앵커**(`anchor_attached`). 사례 탐침 턴: 시점 문형 교정·권유 평서문 제거 | LLM 질문(여는 턴) | 보장(앵커) |
+| — | 대명사 단독 질문·문법 | '그럴 때는 어떠셨습니까' 류 제거/교체 · '있으시겠습니까'→'있으셨습니까' | 질문 1문장(질문→질문) | 보장 |
+| 8-n | 입버릇 | 되받기 마무리 어구 세션 집계. 2회째 재생성(앵커·슬롯 턴은 `splice_receive` 로 되받기만 교체), 3회째 삭제. 고정 문장(슬롯·시스템 앵커)은 집계 제외. '리더님,' 문두 호칭 3턴 1회 | 되받기 문장 | 보장 |
+| 8-w | **턴 형식 검사** | 되받기 1~3문장(리더 명사구 인용) + 질문 1개. 위반(`no_receive/no_quote/long_receive/no_question/two_questions`)을 모아 **재생성 최대 2회**(앵커·슬롯 턴은 되받기만 교체). 폴백 문장 없음 — 2회 뒤에도면 그대로 내보내고 `format_miss`·`receive_miss`. 질문 2개가 남으면 마지막 질문만(`keep_last_question`, 결정 1) | 되받기 교체·앞선 질문 | 보장(질문부 불변) |
+| 8-s | 페르소나 슬롯 | **사례당 1회**, 사례 리더 턴 3~5, 되받기 뒤. Jessica·Lucas·Olivia 는 LLM 질문을 `slot_q` 로 대체 / Daniel 되받기+관찰+LLM 질문 / Michael 되받기+"그 선택, 응원합니다."+LLM 질문 → 다음 턴 `slot_q`. 되받기 없는 턴엔 넣지 않는다 | LLM 질문(3명) | 보장 |
+| 8-p | Michael '좋습니다' | 턴당 1회·연속 금지·챕터 3회 상한 | 리드 어구 | 보장 |
+| 8-k | 정의 턴 질문 고정 | LLM 질문 제거 후 `definition_question` | LLM 질문 | 보장 |
+| 8-h | 느낌표 ★ | 페르소나 상한(Michael 1·안내 0) + 챕터 누적 2 → 재생성 1회 → 치환 | 부호 | 보장(재생성 결과는 8-i 를 다시 안 지남) |
+| 일시정지 제안 | SUGGEST_PAUSE 턴 | 되받기 1문장 + `pause_suggestion_text`. **BEI 원장 되돌림**(`bei_engine.restore`) + `pending_instruction` 저장 — 재개 턴이 같은 답으로 다시 판정 | 질문 삼킴(pending) | 무관 |
+| 8-x2 | 슬롯 복원 | 뒤 단계가 슬롯 고정 문장을 지웠으면 복원 | — | 보장 |
+| 8-y | 최종 누설 소거 ★ | 재생성 출력에 남은 엄격 사전 어휘·상태 보고문 평서문 삭제 | 평서문 | 보장 |
+| 8-z | ALIGN 조립 | [되받기] + [정의] + [목록] + [안내 "이 N가지가 실제로 어떻게 나타나는지…"] + ["먼저 하나를 깊게 들어볼게요."] + [사례 1 앵커] | — | 보장 |
+| 9 | 저장 ★ | `probe_type_used`(INCIDENT/SPECIFICATION/META), **종료된 사례 → Event 행 1건**(situation/action/result = 슬롯 인용, mapped_subcompetency = strong 라벨, 그 사례 구간 메시지에 event_id 태깅), ChatMessage 저장 | — | 무관 |
+| 11~12 | 챕터 전진·guard_log·커밋 ★ | 턴 끝 1회 커밋. guard_log 에 BEI 키(`bei/episode/ep_turn/slots_filled/slot_judge/closed/mapped/target/anchor_attached/format_regen/format_miss/receive_miss`) | — | 무관 |
+
+## 폐지된 단계(2026-11-04) — 코드·테스트 함께 삭제
+하위역량 단위 앵커 루프(`apply_probe_turn`·3턴 상한·넓이 게이트·서킷브레이커·`STAR_*`·`CONTINUE_NORMAL`), 사다리 탐침(`ladder_questions`·8-x), 일반화 탐침, '직접 하신 일' 탐침·상한, 감정·대조 질문 챕터 상한, 결과 질문 강제·반복 교체·수치 질문, 고정 전환 다리(8-j·`target_bridges`·`bridge_idx`), 되받기 폴백 문장(`receive_fallback`), 9/22 리드 1문장 상한(`cap_lead_sentences`), `ANCHOR_REASK` 2·3회 변형(`reask_anchor_2`·`skip_item`), 반례 탐침(`CONTRARY_NEEDED`), 부재·회피·무수확 instruction(`ABSENCE_PROBE`·`AVOIDANCE_DETECTED`·`ABSTRACT_AVOIDANCE`·`CHAPTER_NO_YIELD_ULTIMATUM`·`CHAPTER_ONE_MORE_ASK`), STAR 휴리스틱 사건 추적(`plan_event_update`), `CHAPTER_OPENING` 템플릿·앵커 프레임 풀, Layer2 챕터 스크립트(`layer2_chapters.py`), Layer3 Turn State JSON·Global Memory·강제 블록.
+
+주의
+- 8-h 의 느낌표 재생성 결과는 8-i 검사를 다시 받지 않는다(위반이 드물어 감수).
+- 8-w 는 `RECEIVE_REQUIRED_INSTRUCTIONS`(사례 턴 5종)에만 돈다. META·라포·정의·ALIGN 은 각자 보장한다.

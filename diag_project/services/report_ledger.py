@@ -6,12 +6,12 @@ F. 측정 0 대역량의 평가 문장 금지
    UNMEASURED_COMMENT 로 바꾸고 나머지 평가 서술은 비운다. 종합 요약 프롬프트도
    이 값을 보게 되어 미측정 대역량을 칭찬하지 않는다.
 
-G. '미탐색'과 '근거 미확보' 구분
-   원장에 asked 로 기록됐지만(대화 제어가 타깃으로 잡음) 그 하위역량의 앵커 질문이
-   실제로 코치 메시지로 전달된 적이 없고 근거 후보도 0 이면, 대상자가 답을 못 한
-   '근거 미확보'가 아니라 묻지 않은 '미탐색'(status=not_explored)이다.
-   전달 판정: 그 챕터 코치 메시지(COMPETENCY_ALIGN 포함) 중 하나라도 앵커 질문과
-   내용 어절 2개 이상 겹침(output_guard.anchor_overlap).
+G. '미탐색'과 '사례 미확인' 구분 (2026-11-04 BEI 재정의 — docs/design_bei_2026-11.md §5)
+   · not_explored(미탐색)  커버리지 원장에 covered·sweep_asked·unconfirmed 어디에도 없음 = 예산 소진으로 묻지 못함.
+                          라벨 "시간 내 다루지 못한 항목", 점수 공란, measured False. 세션당 2개 이상이면 분석 린트 경고.
+   · no_case(사례 미확인) SWEEP(또는 여는 앵커)에서 1회 물었는데 그런 일이 없다고 답함 → 1.0.
+   · gate_dropped          사례는 있었으나 게이트가 행동 근거로 인정하지 않음 → 1.0, 문구만 다름.
+   구 세션(커버리지 원장 없음)은 앵커 전달 판정(output_guard.anchor_overlap)으로 미탐색을 가른다.
 
 모두 순수 함수(입력 dict 를 제자리 수정 + 요약 반환). LLM·DB 없음.
 """
@@ -63,16 +63,43 @@ def _had_candidate(row: Dict[str, Any]) -> bool:
 
 
 def mark_not_explored(competency_results: Dict[str, Dict[str, Any]],
-                      history: Iterable[Dict[str, Any]]) -> Dict[str, List[str]]:
-    """G: asked 이지만 앵커 미전달 + 근거 후보 0 → status=not_explored.
+                      history: Iterable[Dict[str, Any]],
+                      store_meta: Dict[str, Any] | None = None) -> Dict[str, List[str]]:
+    """G: 미탐색 재분류 → status=not_explored, asked False, 점수 공란. 반환: {대역량: [sub]}.
 
-    대역량 asked_count 에서도 뺀다(탐색률 = 실제로 물은 것). 반환: {대역량: [sub]}.
-    history 에 chapter 정보가 없으면 판정하지 않는다(과거 입력 호환).
+    (2026-11-04 BEI) store_meta["coverage"][대역량]["not_explored"] 가 있으면 그것이 기준(측정된 행은 건드리지 않는다).
+    없으면(구 세션) asked 이지만 앵커 미전달 + 근거 후보 0 인 행을 미탐색으로 본다(history 에 chapter 정보가 필요).
     """
+    from diag_project.services.scoring import NOT_EXPLORED_LABEL
+    coverage = ((store_meta or {}).get("coverage") or {})
+    changed: Dict[str, List[str]] = {}
+
+    def _mark(ck: str, comp: Dict[str, Any], sub: str, row: Dict[str, Any]) -> None:
+        row["status"] = "not_explored"
+        row["asked"] = False
+        row["measured"] = False
+        row["evidence_measured"] = False
+        row["score"] = None
+        row["level"] = None
+        row["level_label"] = NOT_EXPLORED_LABEL
+        row["unconfirmed"] = False
+        changed.setdefault(ck, []).append(sub)
+
+    if coverage:
+        for ck, comp in (competency_results or {}).items():
+            ledger = comp.get("sub_ledger") or {}
+            ne = set((coverage.get(ck) or {}).get("not_explored") or [])
+            for sub, row in ledger.items():
+                if sub in ne and isinstance(row, dict) and not row.get("measured"):
+                    _mark(ck, comp, sub, row)
+            if ck in changed:
+                comp["asked_count"] = sum(1 for r in ledger.values() if isinstance(r, dict) and r.get("asked"))
+                comp["not_explored_count"] = len(changed[ck])
+        return changed
+
     history = list(history or [])
     if not any(m.get("chapter") for m in history):
         return {}
-    changed: Dict[str, List[str]] = {}
     for ck, comp in (competency_results or {}).items():
         ledger = comp.get("sub_ledger") or {}
         texts = None
@@ -85,8 +112,7 @@ def mark_not_explored(competency_results: Dict[str, Dict[str, Any]],
                 row["anchor_delivered"] = True
                 continue
             row["anchor_delivered"] = False
-            row["status"] = "not_explored"
-            changed.setdefault(ck, []).append(sub)
+            _mark(ck, comp, sub, row)
         if ck in changed:
             comp["asked_count"] = sum(
                 1 for r in ledger.values()
@@ -130,45 +156,47 @@ def neutralize_unmeasured(competency_results: Dict[str, Dict[str, Any]]) -> List
     return keys
 
 
-# ── (2026-10-29 P2-3) 근거 미확보 → 1.0 정책 ─────────────────────────────────────────────────
-UNCONFIRMED_TEXT_GENERALIZED = "평소 방식은 말씀하셨으나 특정 장면이 확인되지 않아 최저 수준으로 기록했습니다"
-UNCONFIRMED_TEXT_NO_ANSWER = "이 항목은 대화에서 사례가 확인되지 않아 최저 수준으로 기록했습니다"
+# ── (2026-10-29 P2-3 → 2026-11-04 BEI) 사례 미확인 → 1.0 정책 ─────────────────────────────────────
+UNCONFIRMED_TEXT_NO_CASE = "이 항목은 대화에서 사례가 확인되지 않아 최저 수준으로 기록했습니다"
+UNCONFIRMED_TEXT_GATE_DROPPED = "사례는 말씀하셨으나 리더님이 직접 하신 행동이 확인되지 않아 최저 수준으로 기록했습니다"
+UNCONFIRMED_TEXT_NO_ANSWER = UNCONFIRMED_TEXT_NO_CASE   # 하위호환 이름
 UNCONFIRMED_BANNER_MIN = 6
+NOT_EXPLORED_WARN_MIN = 2   # (결정 9) 세션당 미탐색 2개 이상이면 분석 린트 경고
 
 
 def apply_unconfirmed_policy(competency_results: Dict[str, Dict[str, Any]],
                              store_meta: Dict[str, Any] | None) -> Dict[str, Any]:
-    """측정되지 않은 하위역량 칸을 1.0('사례 미확인')으로 채운다 — 빈칸 없음. 게이트 검증 미완료(pending)는 도구 상태라 건드리지 않는다.
+    """측정되지 않은 하위역량 칸을 1.0('사례 미확인')으로 채운다 — 미탐색(not_explored)·검증 미완료(pending)는 건드리지 않는다.
 
     행에 남기는 것: score 1.0 · measured True(정책상 측정에 포함) · evidence_measured False · unconfirmed True ·
-    unconfirmed_kind generalized|no_answer · unconfirmed_text(라벨 뒤 서술, generalized 면 그 답변 한 줄 인용) ·
-    probe_count(이 하위역량에 나간 코치 턴 수, 앵커 포함) · generalize_probed · probe_deficit(일반화 탐침 1회 + 구체화 요청 1회가
-    모두 나가지 않았는데 미확인이 된 칸 — 린트 '탐침 2회 미만 미확인'). 측정된 행에는 level_label 만 붙인다.
-    대역량: sub_scores·behavior_score·score 재계산(1.0 포함), measured_count(미확인 포함)·evidence_measured_count·
-    unconfirmed_count·level_label. 반환: 합계.
+    unconfirmed_kind no_case|gate_dropped · unconfirmed_text. 측정된 행에는 level_label 만 붙인다.
+      no_case      SWEEP·여는 앵커에서 물었는데 사례가 없음(store_meta.unconfirmed/no_case_subs) 또는 근거 후보 자체가 없음
+      gate_dropped 사례는 있었으나(근거 후보 있음) 게이트가 행동 근거로 인정하지 않음
+    probe_deficit 은 BEI 에서 항상 False(미탐색은 별도 상태). 대역량: sub_scores·behavior_score·score 재계산(미탐색 None 제외),
+    measured_count(미확인 포함)·evidence_measured_count·unconfirmed_count·not_explored_count·level_label. 반환: 합계.
     """
     from diag_project.services.scoring import (
         UNCONFIRMED_LABEL, UNCONFIRMED_SCORE, competency_behavior_score, competency_final_score,
         competency_is_reference, competency_level_label, level_label,
     )
     meta = store_meta or {}
-    gen_map = meta.get("generalized") or {}
-    gen_text = meta.get("generalized_text") or {}
-    gen_probed = meta.get("generalize_probed") or {}
-    probes = meta.get("probes_on_sub") or {}
-    totals = {"unconfirmed_total": 0, "probe_deficit_unconfirmed": 0, "evidence_measured_total": 0, "pending_total": 0}
+    unc_map = meta.get("unconfirmed") or {}
+    noc_map = meta.get("no_case_subs") or {}
+    totals = {"unconfirmed_total": 0, "probe_deficit_unconfirmed": 0, "evidence_measured_total": 0, "pending_total": 0,
+              "not_explored_total": 0, "gate_dropped_total": 0, "no_case_total": 0}
     for ck, comp in (competency_results or {}).items():
         if not isinstance(comp, dict) or comp.get("_error_fallback"):
             continue
         ledger = comp.get("sub_ledger") or {}
-        n_unc = n_ev = n_def = 0
+        n_unc = n_ev = n_ne = 0
+        asked_no_case = set(unc_map.get(ck) or []) | set(noc_map.get(ck) or [])
         for sub, row in ledger.items():
             if not isinstance(row, dict):
                 continue
-            p_cnt = int(((probes.get(ck) or {}).get(sub)) or 0)
-            g_probed = sub in (gen_probed.get(ck) or [])
-            row["probe_count"] = p_cnt
-            row["generalize_probed"] = g_probed
+            row["probe_deficit"] = False
+            if row.get("status") == "not_explored":
+                n_ne += 1
+                continue
             if row.get("measured"):
                 row["evidence_measured"] = True
                 row["unconfirmed"] = False
@@ -180,25 +208,20 @@ def apply_unconfirmed_policy(competency_results: Dict[str, Dict[str, Any]],
                 row["evidence_measured"] = False
                 row["unconfirmed"] = False
                 continue
-            kind = "generalized" if sub in (gen_map.get(ck) or []) else "no_answer"
-            quote = ((gen_text.get(ck) or {}).get(sub) or "").strip()
-            text = UNCONFIRMED_TEXT_GENERALIZED if kind == "generalized" else UNCONFIRMED_TEXT_NO_ANSWER
-            if kind == "generalized" and quote:
-                text = f"{text} — \"{quote[:120]}\""
+            kind = "gate_dropped" if (_had_candidate(row) and sub not in asked_no_case) else "no_case"
             row.update({
                 "score": UNCONFIRMED_SCORE, "measured": True, "evidence_measured": False, "level": None,
                 "level_label": UNCONFIRMED_LABEL, "unconfirmed": True, "unconfirmed_kind": kind,
-                "unconfirmed_text": text,
-                # 미확인 자격: 일반화 탐침 1회 + 구체화 요청(그 외 탐침) 1회가 모두 나갔을 때만. 아니면 탐침 부족(린트 0 목표)
-                "probe_deficit": not (g_probed and p_cnt >= 3),
+                "unconfirmed_text": UNCONFIRMED_TEXT_GATE_DROPPED if kind == "gate_dropped" else UNCONFIRMED_TEXT_NO_CASE,
             })
             n_unc += 1
-            n_def += int(row["probe_deficit"])
+            totals["gate_dropped_total" if kind == "gate_dropped" else "no_case_total"] += 1
         comp["sub_scores"] = {s: (r.get("score") if isinstance(r, dict) else None) for s, r in ledger.items()}
         comp["measured_count"] = sum(1 for r in ledger.values() if isinstance(r, dict) and r.get("measured"))
         comp["evidence_measured_count"] = n_ev
         comp["unconfirmed_count"] = n_unc
-        comp["probe_deficit_count"] = n_def
+        comp["not_explored_count"] = n_ne
+        comp["probe_deficit_count"] = 0
         comp["is_reference"] = competency_is_reference(n_ev, len(ledger))
         _behavior = competency_behavior_score(list(comp["sub_scores"].values()))
         _sb = comp.get("score_breakdown") or {}
@@ -209,7 +232,8 @@ def apply_unconfirmed_policy(competency_results: Dict[str, Dict[str, Any]],
         comp["score_breakdown"] = {**_sb, "rubric_base": _behavior, "final": _final}
         comp["level_label"] = competency_level_label(_behavior)
         totals["unconfirmed_total"] += n_unc
-        totals["probe_deficit_unconfirmed"] += n_def
         totals["evidence_measured_total"] += n_ev
+        totals["not_explored_total"] += n_ne
     totals["unconfirmed_banner"] = totals["unconfirmed_total"] >= UNCONFIRMED_BANNER_MIN
+    totals["not_explored_warn"] = totals["not_explored_total"] >= NOT_EXPLORED_WARN_MIN
     return totals

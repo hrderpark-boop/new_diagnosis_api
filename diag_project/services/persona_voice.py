@@ -39,29 +39,12 @@ PROBE_PREFERENCE: dict[str, str] = {
 # 대조 탐침 판정 — 도입구('거꾸로 보면요,')를 뗀 '질문 본문'에 반대 경우·안 했다면·다른 사람이라면이 있을 때만.
 _CONTRAST_RE = re.compile(r"(반대로 (했|하셨|갔|가셨|움직)|입장에서는 어떤|거꾸로 (했|하셨|갔|가셨)|안 했다면|않았다면|않으셨다면|하지 않으셨다면|달리 했다면|"
                           r"다른 (사람|분|팀원)이(라면|었다면| 맡았다면)|만약[^?]{0,24}(않|안 )|그러지 않았다면|그대로 두셨다면)")
-CONTRAST_LEADS = ["거꾸로 보면요,", "거꾸로 보면,", "다른 쪽에서 보면,", "조금 비켜서 보면,", "질문을 뒤집어 볼게요.", "한 발 물러서서요,", "반대로 보면,", "반대로 보면요,"]
-_LEAD_RE = re.compile(r"^(?:" + "|".join(re.escape(l) for l in CONTRAST_LEADS) + r")\s*")
 
-
-def strip_contrast_lead(text: str | None) -> tuple[str, int]:
-    """질문이 실제 대조가 아니면 문장 앞의 대조 도입구를 뗀다(문장 단위). (뗀 수)"""
-    from diag_project.services.output_guard import split_sentences
-    out, n = [], 0
-    for sent in split_sentences(text or ""):
-        sent = sent.strip()
-        if not sent:
-            continue
-        stripped = _LEAD_RE.sub("", sent)
-        if stripped != sent and not _CONTRAST_RE.search(stripped):
-            n += 1
-            sent = stripped
-        out.append(sent)
-    return " ".join(out), n
 
 
 def is_contrast_question(text: str | None) -> bool:
     """Olivia 대조 탐침('반대로 했다면?') 판정 — 챕터당 1회 집계용. 도입구만으로는 대조가 아니다."""
-    body = _LEAD_RE.sub("", (text or "").strip())
+    body = (text or "").strip()
     return bool(_CONTRAST_RE.search(body))
 
 

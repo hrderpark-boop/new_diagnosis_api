@@ -86,3 +86,6 @@ Layer2(챕터, ~1k 문자)·Layer3(턴 상태+가이드, ~1.8k)·히스토리 �
 | SQL/턴 중앙값 | (41, 리플레이 L) | **11 (최대 13)** |
 | 비LLM(total−llm) 중앙값 | — | 0.46s (로컬) |
 | LLM 중앙값 | 1.6s | 3.0s (API 변동) |
+
+
+> (2026-11-04 BEI) '리드 한 문장 상한'(cap_lead_sentences)은 폐지됐다 — 되받기는 1~3문장이며 초과는 8-w 턴 형식 검사의 재생성 사유로만 다룬다. docs/postprocess_pipeline.md 참조.

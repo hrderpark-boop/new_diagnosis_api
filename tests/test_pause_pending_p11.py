@@ -32,33 +32,14 @@ def test_pause_turn_text_has_receive_and_notice_but_no_question():
     assert "0분째" not in pause_suggestion_text(0) and "꽤 길게" in pause_suggestion_text(0)
 
 
-def test_resume_pending_only_after_suggest_or_pause_turn():
-    store = {"pending_instruction": PEND}
-    m_sp = SimpleNamespace(probe_type_used="SUGGEST_PAUSE", instruction_used="STAR_INCOMPLETE")
-    m_pause = SimpleNamespace(probe_type_used=None, instruction_used="USER_REQUESTS_PAUSE")
-    m_other = SimpleNamespace(probe_type_used="CAUSAL", instruction_used="CONTINUE_NORMAL")
-    assert resume_pending_for(store, m_sp, "organization_management") == PEND
-    assert resume_pending_for(store, m_pause, "organization_management") == PEND
-    assert resume_pending_for(store, m_other, "organization_management") is None
-    assert resume_pending_for(store, m_sp, "performance_management") is None     # 챕터 다르면 무시
-    assert resume_pending_for({}, m_sp, "organization_management") is None
 
 
-def test_decider_runs_pending_on_continue_and_pauses_on_later():
-    s = dict(_BASE, resume_pending=PEND, last_user_response="괜찮아요, 계속 진행할게요.")
-    assert decide_instruction(s) == "STAR_INCOMPLETE" and s.get("route_reason") == "resume_pending"
-    s2 = dict(_BASE, resume_pending=dict(PEND, instruction="STAR_COMPLETE_NEW_EVENT"), last_user_response="네, 계속 진행할게요.")
-    assert decide_instruction(s2) == "STAR_COMPLETE_NEW_EVENT"
-    s3 = dict(_BASE, resume_pending=PEND, last_user_response="잠시 쉬었다가 다시 할게요.")
-    assert decide_instruction(s3) == "USER_REQUESTS_PAUSE"
-    s4 = dict(_BASE, last_user_response="괜찮아요, 계속 진행할게요.")       # pending 없으면 평소 흐름
-    assert decide_instruction(s4) != "STAR_INCOMPLETE" or True
 
 
 def test_route_wiring():
     src = open(os.path.join(ROOT, "diag_project", "routes", "diagnoses.py"), encoding="utf-8").read()
     assert 'pause_suggestion_text(_sit_elapsed, ' in src and '_pst["pending_instruction"]' in src
-    assert "_restore_ledger(_pst, _ledger_snapshot)" in src                     # 제안 턴은 프로브 턴을 소비하지 않는다
+    assert "_bei.restore(_pst, _ledger_snapshot)" in src                        # 제안 턴은 사례 리더 턴을 소비하지 않는다
     assert "user_message=_llm_user_text" in src and "[시스템 — 재개]" in src
     assert '_gl_store.pop("pending_instruction", None)' in src
     assert 'not state.get("resume_pending") and _ssp(' in src                   # 재개 턴에 다시 제안하지 않는다

@@ -43,10 +43,6 @@ def test_align_after_asked():
         _chapter_entry_state(True)) == "COMPETENCY_ALIGN"
 
 
-def test_opening_after_aligned():
-    """정의 합의까지 끝 → CHAPTER_OPENING(첫 BEI)."""
-    assert decide_instruction(
-        _chapter_entry_state(True, competency_aligned=True)) == "CHAPTER_OPENING"
 
 
 def test_no_reask_gate_is_per_chapter():
@@ -67,7 +63,7 @@ def test_align_sublist_matches_competencies():
         subs = [v["name"] for v in cv.get("indicators", {}).values()
                 if v.get("name")]
         out = render_align(llm_text="말씀 잘 들었어요.", chapter=ck, sub_names=subs, persona_name="Ella",
-                           bridge_sub_key=None, bridge_sub_name=subs[0], anchor="그런 일이 최근에 있었어요?")
+                           anchor="그런 일이 최근에 있었어요?")
         ok, why = align_shape_ok(out, subs)
         assert ok, (ck, why)
         for s in subs:

@@ -6,8 +6,6 @@ build_turn_state() 가 반환한 dict 를 LLM 이 이해할 수 있는
 설계 출처: docs/phase3a/01_design.md (Section 7.3)
 """
 
-import json
-import random
 import re
 
 
@@ -63,82 +61,18 @@ def expectation_usable(text: str | None) -> bool:
 
 
 def format_turn_state_for_llm(state: dict) -> str:
-    """state dict 를 LLM 프롬프트 텍스트로 변환.
+    """state dict 를 LLM 프롬프트의 턴 동적 텍스트로 변환(system 에 들어간다).
 
-    Layer 1 (System Prompt) + Layer 2 (Chapter Context) 위에
-    매 턴마다 추가되는 동적 정보.
+    (2026-11-04 BEI) 사례 단계 턴(EPISODE_*/SWEEP_*)은 episode_card.bei_turn_text — 사례 카드 + 가이드 + 턴 형식·금지.
+    그 밖의 턴(라포·안내·정의·ALIGN·META·일시정지·종료)은 페르소나 상기 + instruction 가이드.
+    Turn State JSON·Global Memory·강제 블록(결과/행동/사다리/일반화/태도)·2-Strike 지시문은 폐지됐다(백엔드가 결정한다).
     """
     instruction = state["instruction_for_this_turn"]
-
-    # 핵심 정보만 LLM 에게 전달
-    core_state = {
-        "chapter": state["chapter"],
-        "turn_count": state["turn_count"],
-        "events_collected": state["events_collected"],
-        "events_with_star_70": state["events_with_star_70"],
-        "current_event_id": state["current_event_id"],
-        "current_event_star_coverage": state["current_event_star_coverage"],
-        "has_contrary_probe": state["has_contrary_probe"],
-        "avoidance_count": state["avoidance_count_in_chapter"],
-    }
-
-    # 중복 검출 시에만 existing_events 노출
-    if state.get("duplicate_suspected"):
-        core_state["existing_events"] = state["existing_events"]
-
-    # 크로스 챕터 시에만 노출
-    if state.get("cross_chapter_signals"):
-        core_state["cross_chapter_signals"] = state["cross_chapter_signals"]
-
-    # COMPETENCY_ALIGN: 정의 + 세부역량 노출 (LLM 이 정확히 인용해야 함)
-    if instruction == "COMPETENCY_ALIGN" and state.get("chapter_framework"):
-        core_state["chapter_framework"] = state["chapter_framework"]
-
-    # 조기 종료 제안 이력 (2-Strike 판단용 — Core Rule 7)
-    _suggest_count = state.get("suggest_pause_count", 0)
-    if _suggest_count > 0:
-        core_state["suggest_pause_count"] = _suggest_count
-
-    state_text = json.dumps(core_state, ensure_ascii=False, indent=2)
-
-    # 🚨 2-Strike 강제: 이미 2회 제안했으면 이번 턴엔 제안 금지, 강제 종료만.
-    if _suggest_count >= 2:
-        state_text += (
-            "\n\n🚨 [2-Strike 소진 — 시스템 강제 지시] 조기 종료 제안"
-            "([SUGGEST_PAUSE])을 이미 2회 사용했습니다. 이번 턴에는 더 이상"
-            " 제안하거나 묻지 마세요. 사용자가 여전히 진단을 거부하거나 감정"
-            " 토로만 반복한다면, 단호하고 따뜻하게 마무리를 '선언'하고 응답"
-            " 맨 끝에 [SESSION_END_EARLY] 를 붙이세요.\n"
-            "예: '오늘은 더 진행이 어려워 여기서 마무리하겠습니다. 마음이"
-            " 회복되면 그때 다시 뵙겠습니다. [SESSION_END_EARLY]'"
-        )
+    from diag_project.prompts.phase3a.episode_card import bei_turn_text, is_bei_instruction
+    if is_bei_instruction(instruction):
+        return bei_turn_text(state)
 
     instruction_guide = _get_instruction_guide(instruction, state)
-
-    # Global Memory: 지금까지 모든 챕터에서 수집된 과거 사례 요약.
-    # LLM 이 챕터가 바뀌어도 과거 사례를 기억해 '복붙 중복'을 캐치하게 함.
-    global_memory_block = ""
-    _collected = state.get("all_collected_events") or []
-    if _collected:
-        _lines = []
-        for ev in _collected:
-            _ch = ev.get("chapter", "")
-            _sm = ev.get("summary", "")
-            _sub = ev.get("mapped_subcompetency")
-            _suffix = f" (역량: {_sub})" if _sub else ""
-            _lines.append(f"- [{_ch}] {_sm}{_suffix}")
-        global_memory_block = (
-            "[🧠 Global Memory — 지금까지 리더님이 들려주신 모든 과거 사례]\n"
-            "아래는 이전(및 현재) 챕터에서 이미 수집된 경험입니다. 리더님이 이 중 "
-            "하나를 다시 꺼내는 것은 **허용**됩니다 — 한 사건은 여러 하위역량의 "
-            "근거가 될 수 있습니다(근거는 사건이 아니라 말 단위). 새 사례를 "
-            "요구하지 말고, **지금 겨냥한 하위역량의 관점으로 그 사건을 다시** "
-            "물으세요(예: 개편 사건 → 변화관리 렌즈 '그때 반발하거나 주저하는 "
-            "분은 없었나요? 어떻게 하셨어요?'). 단, 앞서 한 말을 거의 그대로 "
-            "복사해 붙인 경우에만 '앞서 말씀하신 내용이네요'라고 짚고 그 사건의 "
-            "다른 장면이나 다른 사례를 청하세요.\n"
-            f"{chr(10).join(_lines)}\n\n"
-        )
 
     # #6 페르소나 상기 + 문체 반복 제약(시스템 계산). 가이드 예시 문장의 균일한
     #   톤이 페르소나를 덮고, "네, ~하셨군요"+요약이 매 턴 반복되던 것을 막는다.
@@ -152,10 +86,7 @@ def format_turn_state_for_llm(state: dict) -> str:
             "아래 가이드의 예시 문장은 '내용의 결'만 참고하고, 문장 길이·종결어미·"
             "호응 방식은 시스템 프롬프트의 【말투 프로필】대로 바꿔 쓰세요.\n\n"
         )
-        # (2026-10-23 P4) 페르소나별 탐침 선호·마무리 어구 풀(측정 원칙은 그대로, 묻는 순서·하위역량은 백엔드)
-        from diag_project.services.persona_voice import persona_guide_block
-        persona_block += persona_guide_block(_persona["name"], contrast_used=bool(state.get("contrast_used")))
-    # (2026-09-18) 문체 제약은 프롬프트 맨 끝(사용자 메시지 직전)에 둔다 — 850줄 중간에 있으면 LLM 이 놓친다.
+    # (2026-09-18) 문체 제약은 프롬프트 맨 끝(사용자 메시지 직전)에 둔다 — 중간에 있으면 LLM 이 놓친다.
     #   style_at_tail=True 면 여기서는 비우고 build_style_tail() 이 꼬리 블록을 만든다.
     style_block = "" if state.get("style_at_tail") else format_style_constraints(
         state.get("style_constraints"), _persona.get("name"), instruction
@@ -163,93 +94,21 @@ def format_turn_state_for_llm(state: dict) -> str:
     if style_block:
         style_block += "\n\n"
 
-    # 🎯 결과(R) 탐침 강제(시스템 계산, 2026-09-14): 현재 하위역량의 마지막 프로브 턴인데
-    #   아직 결과를 묻지 않았다. 3턴 상한은 그대로 — 묻지도 않고 넘어가는 것만 막는다.
-    force_block = ""
-    if state.get("force_result_probe"):
-        _tgt = state.get("current_target_name") or "현재 하위역량"
-        force_block = (
-            "[🎯 결과 탐침 강제 — 시스템 계산, 반드시 준수]\n"
-            f"- '{_tgt}' 에서 지금까지 사건의 상황·행동만 들었고 **결과를 아직 묻지 않았습니다**. "
-            "이번 턴이 이 하위역량의 마지막 질문입니다.\n"
-            "- 이번 턴은 반드시 **현재 사건의 결과(R)** 를 묻습니다. "
-            + (f"직전에 리더님이 말한 **'{state.get('result_focus')}'** 에 대해, 그 뒤 무엇이 어떻게 됐는지를 "
-               "리더님의 말로 한 문장 질문으로 만드세요(문장은 당신이 만듭니다 — 정해진 문장을 쓰지 마세요). "
-               if state.get("result_focus") else
-               "리더님이 방금 말한 장면을 명사로 짚어, 그 뒤 무엇이 어떻게 됐는지 묻는 한 문장으로. ")
-            + ("📏 리더님 답변에 '획기적·대폭·비약적·크게·훨씬' 같은 정도 부사가 있고 숫자가 없습니다 — 이번 결과 질문은 "
-               "**'어느 정도였어요? 숫자나 기간으로 기억나시는 게 있으면 좋겠어요.'** 를 그대로 쓰세요(수치·기간을 묻는 질문 우선). "
-               if state.get("result_quantify") else "")
-            + "'그것·그럴 때·그렇게'만으로 가리키지 말고 대상을 문장에 넣으세요. "
-            + "구체화·예외 사례·새 사건 청하기·다른 하위역량 앵커는 이번 턴에 금지. "
-            "'그렇게 하니 어떻게 됐습니까' 상투형은 쓰지 않습니다.\n"
-            "- 결과가 좋지 않았어도 그대로 듣습니다. 답이 약해도 다음 턴에 시스템이 넘어갑니다.\n\n"
-        )
-
-    # (2026-10-22 P2-2) 행동(A) 탐침 강제: 상황은 들었는데 리더가 직접 한 행동이 비어 있다.
-    if state.get("force_action_probe") and not state.get("force_result_probe"):
-        force_block = (
-            "[🎯 행동 탐침 — 시스템 계산, 반드시 준수]\n"
-            "- 지금 사건은 상황은 들었지만 **리더님이 직접 한 행동**이 비어 있습니다. 이번 질문은 그때 리더님이 직접 무엇을 "
-            "하셨는지 하나만 — '어떻게 하셨어요 / 무엇을 하셨어요 / 먼저 하신 일은' 꼴.\n"
-            "- 결과·감정·표정·새 사건·다른 하위역량은 이번 턴에 묻지 않습니다. 리더님이 쓴 말을 문장에 넣으세요.\n\n"
-        )
-
-    # (2026-10-23 P3) 사다리 탐침: S-A-R 이 찼으니 남은 탐침 1턴은 다음 레벨 행동을 묻는 시스템 질문으로 교체된다.
-    if state.get("force_ladder_probe"):
-        force_block = (
-            "[🪜 사다리 탐침 — 시스템 계산, 반드시 준수]\n"
-            "- 리더님 답변에 상황·행동·결과가 다 담겼습니다. 이번 턴은 리더님 말을 받는 문장 하나만 씁니다(들은 핵심 사실 하나, 평가·칭찬 없이).\n"
-            "- 질문은 쓰지 마세요 — 시스템이 한 단계 위 행동을 묻는 질문을 붙입니다. 감정·표정·마음은 묻지 않습니다.\n\n"
-        )
-
-    # (2026-10-23, 4-1) 일반화 답변 → 구체 사례 탐침 1회: 질문은 시스템 고정 문장(페르소나별)이 붙는다.
-    if state.get("force_generalize_probe"):
-        force_block = (
-            "[🧭 일반화 답변 — 시스템 계산, 반드시 준수]\n"
-            "- 리더님이 특정 사건이 아니라 평소 방식('~일수록', '~때는', '~하는 편')으로 답했습니다.\n"
-            "- 이번 턴은 리더님 말을 받는 문장 하나만 씁니다(평가·요약·칭찬 없이, 리더님이 쓴 명사구 하나를 넣어서). "
-            "질문은 쓰지 마세요 — 시스템이 '그중 가장 최근 일 하나'를 묻는 문장을 붙입니다.\n\n"
-        )
-
-    # 🌱 태도 진술 2회 연속(2026-09-29): 사건이 아니라 태도로 답하고 있다 → STAR 를 밀어붙이지 않고 계기만 한 번.
-    if state.get("attitude_trigger"):
-        force_block = (
-            "[🌱 태도 진술 — 시스템 계산, 반드시 준수]\n"
-            "- 리더님이 두 번 연속 사건이 아니라 태도·생각으로 답했습니다. 상황·행동·결과를 더 캐묻지 마세요.\n"
-            "- 이번 턴은 이 질문 하나만, 페르소나 말투로 다듬어 묻습니다: "
-            "**'그렇게 생각하시게 된 계기가 된 일이 하나 있으셨을까요?'** (리더님이 방금 쓴 말 하나를 앞에 받아도 좋음)\n"
-            "- 답이 없거나 또 태도면 다음 턴에 시스템이 다음 주제로 넘어갑니다.\n\n"
-        )
-
     # 🔁 중복 지적 대응(시스템 계산, 2026-09-14): "이 질문은 아까 한 것 같은데요".
-    #   인정만 하고 옛 사건으로 되돌아가지 말고, 인정 + 이번엔 무엇을 다르게 보려는지
-    #   한 줄 + 현재 타겟 관점의 질문. 이 안내가 오히려 대상자를 편하게 한다.
+    #   인정만 하고 옛 사례로 되돌아가지 말고, 인정 + 이번엔 무엇을 다르게 보려는지 한 줄 + 질문.
     dup_block = ""
     if instruction == "META_QUESTION_FROM_USER":
         from diag_project.services.instruction_decider import detect_duplicate_claim
         if detect_duplicate_claim(state.get("last_user_response")):
-            _tgt = state.get("current_target_name")
-            _tgt_line = (
-                f"- 지금 보려는 관점은 '{_tgt}' 입니다. 앞선 사건으로 돌아가 같은 것을 다시 묻지 "
-                "말고, 이 관점에서 '이번엔 다른 장면·다른 행동'을 청하세요.\n"
-                if _tgt else
-                "- 앞선 사건으로 돌아가 같은 것을 다시 묻지 말고, 이번엔 다른 장면·다른 행동을 청하세요.\n"
-            )
             dup_block = (
                 "[🔁 중복 지적 대응 — 시스템 계산, 반드시 준수]\n"
                 "- 리더님이 '아까 한 질문 같다'고 지적했습니다. **인정 한 마디 + 이번엔 무엇을 "
                 "다르게 보려는지 한 줄 설명 + 질문** 세 요소를 한 응답에 모두 담으세요. 인정만 "
                 "하고 끝내는 것('네, 유사한 질문이었습니다.')은 금지.\n"
-                "- 예(결만 참고): '맞습니다. 앞서는 설득 과정을 여쭀고, 이번엔 그때 리더님이 직접 "
-                "하신 행동이 궁금해서 다시 여쭀습니다. 그 자리에서 리더님은 무엇을 하셨나요?'\n"
-                + _tgt_line + "\n"
+                "- 앞선 사례로 돌아가 같은 것을 다시 묻지 말고, 이번엔 다른 장면·다른 행동을 청하세요.\n\n"
             )
 
-    return f"""{global_memory_block}{persona_block}{style_block}{force_block}{dup_block}[Turn State]
-{state_text}
-
-[Instruction for this turn]
+    return f"""{persona_block}{style_block}{dup_block}[Instruction for this turn]
 {instruction}
 
 {instruction_guide}"""
@@ -423,45 +282,6 @@ def _build_rapport_guide(state: dict | None) -> str:
     )
 
 
-def _build_competency_intro_guide(state: dict | None) -> str:
-    """[DEPRECATED] 작업 24 이후 CONFIRM 단계에서 통합됨.
-
-    DIAGNOSIS_CONFIRM 가이드가 준비 인사 + 챕터 도입 + 정의 묻기까지 수행.
-    이 가이드는 fallback 용으로 보존.
-    """
-    chapter = (state or {}).get("chapter", "")
-    chapter_name_map = {
-        "organization_management": "조직관리",
-        "performance_management": "성과관리",
-        "people_management": "사람관리",
-        "work_management": "일관리",
-        "self_management": "자기관리",
-    }
-    chapter_name = chapter_name_map.get(chapter, "이 역량")
-
-    _cn_eul = with_josa(chapter_name, "을/를", quote=True)
-    _cn_ga = with_josa(chapter_name, "이/가", quote=True)
-    return (
-        f"역량 정의 소개 단계입니다. 챕터를 소개하고 리더님이 "
-        f"{_cn_eul} 어떻게 생각하는지 먼저 여쭤봅니다.\n\n"
-        f"**목적**: 리더님의 언어로 역량을 정의하도록 유도 → "
-        f"다음 턴에 시스템이 프레임워크 정의와 비교해 합의 도출\n\n"
-        f"**응답 예시**:\n"
-        f"  '그럼 '{chapter_name}' 영역부터 시작하겠습니다. "
-        f"본격적으로 들어가기 전에 한 가지 여쭤보고 싶어요. "
-        f"리더님은 {_cn_ga} 무엇이라고 생각하세요?'\n\n"
-        f"  또는 더 짧게:\n"
-        f"  '먼저 '{chapter_name}' 영역에 대해 이야기 나눠볼게요. "
-        f"시작 전에, 리더님은 {_cn_eul} 어떻게 정의하세요?'\n\n"
-        f"**규칙**:\n"
-        f"- 한 번에 한 질문만. 역량 정의 하나만 물어볼 것.\n"
-        f"- BEI 사건 질문 절대 금지. '경험이 있으신가요?' 금지.\n"
-        f"- 세부 지표를 미리 설명하지 마세요 (다음 턴 시스템이 제시).\n"
-        f"- 역량 정의 자체를 먼저 제시하지 마세요 (리더님 답변 먼저).\n"
-        f"- 짧고 자연스럽게. 딱딱한 설문식 금지.\n"
-        f"- 톤: 격식 있되 따뜻한 호기심"
-    )
-
 
 def _build_confirm_guide(state: dict | None) -> str:
     """DIAGNOSIS_CONFIRM 가이드 동적 생성 — 챕터별 이름·순서어 반영."""
@@ -551,52 +371,6 @@ def _build_confirm_guide(state: dict | None) -> str:
     )
 
 
-def _build_chapter_opening_guide(state: dict | None) -> str:
-    """CHAPTER_OPENING 가이드: BEI 질문 1-2문장만 생성 (하이브리드).
-
-    시스템이 세션 오프닝 스크립트(30분 안내, 파트너 약속, 첫 역량 소개)를
-    이미 앞에 붙였습니다. 당신은 BEI 질문만 출력하세요.
-    """
-    first_sub = (state or {}).get("first_subcompetency_name", "")
-    sub_hint = f"'{first_sub}'" if first_sub else "첫 번째 세부역량"
-
-    return (
-        f"이 응답은 하이브리드입니다:\n"
-        f"- 시스템 → 세션 오프닝 스크립트 (이미 출력됨)\n"
-        f"- LLM (당신) → {sub_hint} 관련 BEI 질문 1-2문장만\n\n"
-        f"**당신이 출력해야 할 것**: {sub_hint}의 '주제'에 닿는 BEI 경험 질문 "
-        f"하나 — 단, 대화형으로 자연스럽게.\n\n"
-        f"🗣️ **대화형 전환 원칙 (기계적 항목 나열 금지)**:\n"
-        f"- 직전까지 리더님과 나눈 이야기가 있다면, 그 결/실마리를 살짝 "
-        f"이어받아 '아까 ~라고 하셨는데' 처럼 자연스럽게 연결해 시작하세요.\n"
-        f"- 세부역량 이름을 교과서처럼 그대로 호명하지 말고, 그 '주제'가 "
-        f"리더님 경험 속에서 드러나도록 질문을 대화에 녹이세요.\n"
-        f"- 🚫 '다음으로 ~에 대해 여쭤볼게요' / '이번 역량은 ~입니다' 식의 "
-        f"딱딱한 전환 금지.\n\n"
-        f"**BEI 질문 예시 (형식 아닌 '결'만 참고)**:\n"
-        f"  비전 제시 및 공유: '최근에 조직이나 팀의 비전을 새로 세우거나 "
-        f"공유하셨던 경험이 있으세요?'\n"
-        f"  목표설정 및 공유: '최근에 팀의 목표를 설정하거나 구성원과 "
-        f"공유하셨던 경험이 있으세요?'\n"
-        f"  갈등관리: '최근에 팀 내에서 갈등 상황을 다루셨던 경험이 있으세요?'\n"
-        f"  업무계획 및 조직력: '최근에 업무 계획을 세우거나 팀 업무를 "
-        f"배분하셨던 경험이 있으세요?'\n"
-        f"  자기인식: '최근에 자신의 리더십 방식을 되돌아보신 경험이 있으세요?'\n\n"
-        f"🔒 **BEI 앵커 제약 (반드시 지킬 것 — 측정 품질의 핵심)**:\n"
-        f"- **구체 경험 1개를 청하는 질문**이어야 한다: '시점(최근/언제) + 인물/"
-        f"상황 + 리더가 실제로 한 행동'이 떠오르도록. (태도·의견·일반론을 묻지 말 것)\n"
-        f"- 🚫 **은유·비유 금지**('항해', '나침반', '무대' 같은 수사 금지). 담백하게.\n"
-        f"- 매번 **표현을 다르게**(위 예시를 그대로 복붙하지 말고 결만 참고). "
-        f"직전 챕터와 같은 문장을 반복하지 말 것.\n"
-        f"- 한 번에 **질문 하나만**.\n\n"
-        f"**⛔ 절대 금지**:\n"
-        f"- '리더님, 첫 번째 세션 시작해볼게요' / '30분 정도' 안내 / "
-        f"'파트너로 있겠습니다' 약속 / '첫 번째 세부 역량인 …' 소개\n"
-        f"- 역량 정의 재설명 (직전 턴에 합의 완료)\n"
-        f"- 한 번에 두 가지 이상 질문\n\n"
-        f"BEI 질문 1-2문장만 출력하고 끝내세요."
-    )
-
 
 def _get_instruction_guide(
     instruction: str,
@@ -626,95 +400,7 @@ def _get_instruction_guide(
     # 현재 챕터의 하위역량 목록 (BEI '하위역량 릴레이'용)
     _cur_fw = COMPETENCY_FRAMEWORK.get(_cur, {})
     _cur_chapter_name = _cur_fw.get("name", "이 영역")
-    # #6 챕터 마무리 멘트 변주: 챕터 순서로 '결' 힌트를 하나만 주입해 매 챕터 다른
-    #   마무리가 나오게 한다("들려주신 귀한 경험들은 충분히 깊이 있게 살펴보았습니다"
-    #   가 세션마다 반복되던 것 방지). 마무리는 1~2문장으로 짧게.
-    _WRAP_HINTS = [
-        "리더님 답변 속 '한 장면'을 딱 하나 집어 짧게 인상 남기기(요약 금지). "
-        "예: '팀원 의견을 받아 교육 체계를 새로 짜셨던 그 장면이 오래 남네요.'",
-        "리더님이 반복해서 쓴 '단어' 하나를 되돌려 주며 매듭. "
-        "예: '오늘 \"직접\"이라는 말을 여러 번 하셨어요. 그 결이 이 영역의 답이었습니다.'",
-        "질문 형태의 여운 없이, 감사 한 문장만 담백하게. "
-        "예: '솔직하게 들려주셔서 감사합니다.'",   # (2026-10-29) '여기서 정리하겠습니다' 는 상태 보고문 — 예시에서 뺐다
-        "리더님의 판단 기준 하나를 짚어 짧게. "
-        "예: '흔들릴 때 \"속도보다 합의\"를 고르시는 분이라는 걸 알게 됐어요.'",
-        "가장 짧게 — 한 문장 마무리. "
-        "예: '오늘 이 이야기는 오래 남을 것 같습니다.'",   # (2026-10-29) '충분히 들었습니다' 는 상태 보고문 — 예시에서 뺐다
-    ]
-    _ch_keys = [k for k in COMPETENCY_FRAMEWORK if k != "supplementary"]
-    _wrap_hint = _WRAP_HINTS[
-        (_ch_keys.index(_cur) if _cur in _ch_keys else 0) % len(_WRAP_HINTS)
-    ]
-    _sub_names = [
-        v.get("name", "") for v in _cur_fw.get("indicators", {}).values()
-        if v.get("name")
-    ]
-    _sub_list_str = ", ".join(f"'{n}'" for n in _sub_names) or "하위 역량들"
-    # item2: 하위역량 '목록 안내'용(competencies.py 동적). 대상자가 무엇을
-    #   측정하는지 인지하고 답하도록 정의 제시 시 함께 안내한다.
-    _sub_plain = ", ".join(_sub_names)
-    _sub_count = len(_sub_names)
-    _KO_NUM = {1: "한", 2: "두", 3: "세", 4: "네", 5: "다섯",
-               6: "여섯", 7: "일곱", 8: "여덟", 9: "아홉"}
-    _sub_count_ko = _KO_NUM.get(_sub_count, str(_sub_count))
-    # 대역량 정의(변수 주입용) — LLM 이 문맥에 맞게 자연스럽게 녹여 쓴다.
-    _cur_def = (_cur_fw.get("description", "") or "").rstrip(".")
-
-    # 명시적 상태 추적 (백엔드 계산) — LLM 추론/환각 방지
-    _unexplored = (state or {}).get("unexplored_subcompetencies") or []
-    _explored = (state or {}).get("explored_subcompetencies") or []
-    _unexplored_str = ", ".join(f"'{n}'" for n in _unexplored)
-    _explored_str = ", ".join(f"'{n}'" for n in _explored) or "(아직 없음)"
-    # 🔒 T2: 백엔드가 지정한 '현재 타겟'(current_target_sub)을 우선 겨냥한다.
-    #   (제어 역전 — 타겟은 코드가 정하고 LLM 은 표현만). 없으면 미탐색 첫 항목.
-    _target_sub = (state or {}).get("current_target_sub")
-    _first_unexplored = (
-        f"'{_target_sub}'" if _target_sub
-        else (f"'{_unexplored[0]}'" if _unexplored else "다른 하위 역량")
-    )
-    # #2: 현재 타겟(없으면 첫 미탐색)의 대화체 앵커 질문 2개 — LLM 턴 앵커의 본문.
-    from diag_project.data.competencies import (
-        find_sub_key_by_name, get_anchor_questions,
-    )
-    _tq_name = _target_sub or (_unexplored[0] if _unexplored else None)
-    _tq_key = find_sub_key_by_name(_cur, _tq_name) if _tq_name else None
-    _tq_list = get_anchor_questions(_tq_key) if _tq_key else []
-    _target_question_block = (
-        "\n".join(f"   ({i + 1}) {q}" for i, q in enumerate(_tq_list))
-        if _tq_list else
-        "   (질문 사전 없음 — '최근에 리더님이 직접 나서서 풀어야 했던 일'을 "
-        "상황 묘사로 물으세요. 이름은 여전히 말하지 않습니다.)"
-    )
-
-    _no_yield_forced = (state or {}).get("no_yield_forced", False)
-
-    if _next_name and _no_yield_forced:
-        # 1-b(2026-09-07): 종료 문구를 종료 사유와 분리한다. 무수확(내부 판정)이어도
-        #   리더에게 나가는 문구는 다른 종료와 같은 '중립 마무리'다. "유의미한
-        #   진단이 어렵다" 류 판정 문구는 abort 확인 단계에서만 쓴다(로그: 리더가
-        #   설득 사례를 구체적으로 말한 직후 그 문구가 나가 내용과 정반대였음 —
-        #   STAR 사건 추적이 0.5 에 머물러 무수확으로 오판된 사례). 내부 사유는
-        #   diagnoses 로그에만 남긴다. 강점을 지어내는 요약은 여전히 금지.
-        _ready_to_end_guide = (
-            "이 영역은 여기서 마무리합니다. 새 BEI 탐침은 던지지 마세요.\n\n"
-            "🛡️ 이것은 '한 영역'의 마무리일 뿐, 절대 '전체 진단의 종료'가 "
-            "아닙니다. 전체 종료·작별 인사·[DIAGNOSIS_COMPLETE] 태그를 **절대 "
-            "쓰지 마세요.**\n\n"
-            "**응답은 두 부분, 한 호흡으로:**\n\n"
-            "① **들은 것 요약(2문장, 사실만)**: 이 영역에서 리더님이 들려준 사건·행동을 두 문장으로 되짚습니다. "
-            "평가·칭찬·판정·'충분히 들었다' 류 진행 상태 언급 금지. 없는 내용을 지어내지 않습니다.\n"
-            f"   🚫 평가 어휘 금지 예({EXAMPLE_LABEL}): '고민과 노력을 엿볼 수 있었습니다', '리더십이 느껴졌습니다', '세심하게 조율해 오셨습니다' — "
-            "이런 문장은 시스템이 지웁니다. 사실 예: '플랫폼 도입 때 파일럿을 먼저 돌리셨고, 개편 때는 1:1 면담으로 설명하셨습니다.'\n"
-            "   🚫 **판정 문구 절대 금지**: '유의미한 진단이 어렵다', '진단을 "
-            "이어가기 어렵다', '사례가 부족하다', '파악하기 어렵다' 류. 리더님은 "
-            "종료 사유를 들을 필요가 없고, 그 문구는 내용과 어긋나 신뢰를 깎습니다. "
-            "없는 강점을 지어내는 요약·칭찬도 금지.\n\n"
-            f"② **전환 다리('이제 {with_josa(_next_name, '으로/로', quote=True)} 이어가 보겠습니다.')는 시스템이 붙입니다 — "
-            "쓰지 마세요.** 질문 금지: 다음 역량의 질문(정의·경험)도 던지지 않습니다 — 다음 턴 COMPETENCY_ASK 가 던집니다.\n\n"
-            "🚫 '계속할까요/쉴까요' 열린 질문 금지. "
-            "[CHAPTER_COMPLETE]/[START_CHAPTER] 태그는 시스템이 부착합니다."
-        )
-    elif _next_name:
+    if _next_name:
         # 🎯 강제 전환(Force Transition): 이 영역 데이터가 충분히 수집됐으므로
         #   사용자에게 '계속할지/쉴지' 선택권을 넘기지 않는다. 코치가 세션의
         #   주도권을 쥐고 단호하게 다음 역량으로 견인한다.
@@ -769,46 +455,16 @@ def _get_instruction_guide(
             "(종료 마커는 시스템이 부착합니다. 태그·전환 멘트 쓰지 마세요.)"
         )
 
-    # COMPETENCY_ALIGN 연결(공감) 멘트 다변화:
-    #   역량 정의와 사용자 답변 사이의 '연결고리' 멘트가 매번 고정돼 단조롭던 것을,
-    #   아래 풀(5+)에서 매 턴 무작위로 하나를 뽑아 참고 형식으로 주입한다.
-    #   '[핵심 요약]'은 LLM 이 리더님 실제 답변의 핵심으로 채우고, 문장 끝은
-    #   시스템 정의('저희 진단에서는 이를 포괄하여…')로 자연스럽게 이어지도록 한다.
-    _cn = _cur_chapter_name
-    # (표현 주의: Layer 1 Core Rule 3와 충돌하지 않도록 '철학/본질' 대신
-    #  '관점/생각의 결/핵심' 같은 실용적 표현 사용)
-    _align_connectors = [
-        f"네, 리더님께서 말씀하신 '[핵심 요약]'이라는 포인트가 "
-        f"{_cn}{get_josa(_cn, '을/를')} 관통하는 핵심을 정확히 짚으셨네요. "
-        "리더님의 그 관점과 같은 맥락으로,",
-        f"리더님의 '[핵심 요약]'이라는 생각의 결이 저희가 정의한 "
-        f"{_cn}{get_josa(_cn, '과/와')} 자연스럽게 맞닿아 있네요. 같은 결에서,",
-        f"말씀하신 '[핵심 요약]'이라는 관점이 "
-        f"{_cn}{get_josa(_cn, '이라는/라는')} 역량의 핵심을 정말 잘 "
-        "짚어주셨어요. 그 생각을 그대로 이어서,",
-        f"'[핵심 요약]'이라는 {_cn}에 대한 리더님만의 관점이 "
-        "저희 정의와 자연스럽게 어우러지네요. 그 흐름을 이어받아,",
-        f"리더님께서 짚어주신 '[핵심 요약]', 바로 그 지점이 "
-        f"{_cn}{get_josa(_cn, '이/가')} 지향하는 가장 중요한 축이에요. "
-        "그 맥락 그대로,",
-        f"'[핵심 요약]'이라는 말씀 안에 이미 {_cn}의 핵심이 "
-        "담겨 있네요. 리더님의 그 관점을 살려서,",
-    ]
-    _align_connector = random.choice(_align_connectors)
-
     # (2026-10-16) 조건부 조립 변수 — 인용 대상이 실제로 있을 때만 인용 지시를 넣는다.
     _last_raw = (state.get("last_user_response") or "").strip()
     _has_def = leader_definition_present(_last_raw)
     _last_short = _last_raw[:20].replace("'", "’") + ("…" if len(_last_raw) > 20 else "")
-    _first_topic = (state.get("current_target_sub") or state.get("current_target_name")
-                    or state.get("first_subcompetency_name") or "첫 하위역량")
     _exp_raw = (state.get("expectation_answer") or "").strip()
     _exp_ok = expectation_usable(_exp_raw)
     _exp_short = _exp_raw[:120].replace("'", "’")
     _exp_desc = f"'{_exp_short}'" if _exp_raw else "(기록 없음)"
 
     guides = {
-        "COMPETENCY_INTRO": _build_competency_intro_guide(state),
         "COMPETENCY_ASK": (
             f"역량 정의 질문(Step 5) — '{_cur_chapter_name}' 영역에 들어가기 전, "
             "리더님께서 이 역량을 '평소 무엇이라 생각하시는지' 먼저 여쭙는 "
@@ -859,7 +515,6 @@ def _get_instruction_guide(
             "⛔ 금지: 리더님에게 순서·항목 선택을 넘기는 문장('어느 쪽부터', '자주 쓰시는 쪽부터'), 선언형 정의('저희 진단에서는 "
             "~라고 정의합니다'), 리더님 답을 한 줄 요약만 하고 버리기, 없는 답변을 지어내 되짚는 거짓 공감, 확인 질문('크게 다르지 않죠?')."
         ),
-        "CHAPTER_OPENING": _build_chapter_opening_guide(state),
         "DIAGNOSIS_INTRO": (
             "진단 안내 — 하이브리드 턴입니다. 안내 본문(5개 영역·시간·'시작해볼까요?')은 시스템이 붙입니다.\n\n"
             + ((f"**리더님이 '기대하는 것' 질문에 실제로 하신 답**: '{_exp_short}'\n\n"
@@ -875,182 +530,7 @@ def _get_instruction_guide(
                (f"**리더님의 기대 답변**: {_exp_desc} — 기대라 할 내용이 없어 이 턴은 시스템 안내만 나갑니다. "
                 "(LLM 호출 없음. 이 가이드가 보인다면 아무 문장도 출력하지 마세요.)"))
         ),
-        "CONTINUE_NORMAL": (
-            "특이사항 없음. 현재 사건의 STAR를 보강하는 탐침을 던지세요.\n\n"
-            "**최고급 임원 코치의 태도 — 취조가 아니라 호기심**:\n\n"
-            "당신은 설문 항목을 채우는 조사관이 아니라, 리더의 경험에 "
-            "진심으로 빠져든 코치입니다. 사실을 캐묻기 전에 그 순간의 "
-            "긴장·고민·결단에 먼저 감응하세요.\n\n"
-            "BEI 탐침 질문 전에 반드시 공감/감탄/호기심 한 문장.\n\n"
-            "**호기심이 살아있는 코칭 질문 예시 (이 결을 따르세요)**:\n"
-            "- '와, 그 상황이면 반발이 만만치 않았을 텐데… 어떻게 "
-            "돌파하셨어요?'\n"
-            "- '여러 선택지가 있었을 텐데, 하필 그 방법을 고르신 "
-            "리더님만의 기준이 있었을까요?'\n"
-            "- '그 결정을 내리실 때, 가장 망설여졌던 지점은 어디였어요?'\n"
-            "- '말씀만 들어도 쉽지 않은 자리였겠어요. 그때 팀원들 반응은 "
-            "어땠나요?'\n"
-            "- '그 변화를 직접 보셨을 때 어떤 마음이 드셨어요?'\n\n"
-            "공감/감탄 한 문장 → 그 흐름에서 자연스럽게 솟아난 질문 하나.\n\n"
-            "⛔ 절대 금지:\n"
-            "- 취조형 나열 ('그때 어떤 회의였는지, 누구와, 어떤 분위기였는지')\n"
-            "- 사무적 paraphrase 후 건조한 질문 ('그 부분 중요하죠. 가장 "
-            "최근에…')\n"
-            "- '말씀해주실 수 있을까요?'만 기계적으로 반복\n"
-            "- 한 번에 두 개 이상 질문\n\n"
-            "**⛔ 호응 시 추가 주의 (맥락 오류·반복 방지)**:\n\n"
-            "1. 호응어 다양화: 매번 '아,'로 시작 금지. '네,', '음,', "
-            "'그렇군요,' 또는 바로 내용으로. 같은 시작어 2턴 연속 금지.\n\n"
-            "2. 과한 반영 금지: 사용자가 간단히 답했는데 없는 디테일로 "
-            "생생하게 묘사 X.\n"
-            "   나쁜 예: User '올해 운영 방향, 전략 이야기했어요' (간단)\n"
-            "           LLM '당시 회의 모습이 조금씩 그려지네요'"
-            " ← 없는 장면 상상\n"
-            "   좋은 예: LLM '팀 방향을 함께 정리하는 자리였군요. "
-            "특히 강조하신 부분이 있으세요?'\n\n"
-            "3. 호응 강도 비례: 짧고 추상적 답변 → 가볍게 받고 바로 "
-            "구체화 질문. 구체적 디테일이 있을 때만 생생한 반영 사용.\n\n"
-            "원칙: 공감/호기심 한 문장 + BEI 탐침 한 질문 = 한 응답."
-        ),
-        "STAR_INCOMPLETE": (
-            "현재 사건에서 아직 못 들은 결정적 장면을 호기심 어린 태도로 "
-            "물어보세요. 빈칸을 채우듯 캐묻지 말고, 그 대목이 정말 "
-            "궁금해서 묻는 코치의 결로.\n"
-            "특히 결과(R)가 비어있으면: '그래서 실제로 어떻게 달라졌어요? "
-            "리더님이 체감하신 변화가 궁금해요' 처럼 변화·임팩트를 "
-            "자연스럽게 끌어내세요.\n\n"
-            "🚨 **[Core Rule 2 — 정성적 성과 수용, 수치 압박 금지]**:\n"
-            "사용자가 이미 정성적 변화(주인의식 고취, 태도 변화, 인식의 "
-            "전환, 분위기 개선 등)를 충분히 설명했다면, 그것을 **그 자체로 "
-            "의미 있는 성과로 수용·인정**하고 다음으로 넘어가세요. "
-            "'구체적인 수치는요? 데이터로는 몇 %인가요?' 식으로 정량 수치만 "
-            "집요하게 캐는 취조 질문 금지. 수치가 자연스럽게 나오면 환영하되, "
-            "없다고 압박하지 않습니다."
-        ),
-        "ABSTRACT_AVOIDANCE": (
-            "🚨 **'그럴듯한 공허함' 감지 — 개념/이론만 있고 실제 장면이 없음** "
-            "(예: '전략적으로 데이터 기반 의사결정을 하여 시너지를…').\n\n"
-            "리더님은 지금 원론·용어로 답을 채우고 있습니다. 여기에 "
-            "끌려다니며 감탄하지 마세요. **정면으로, 그러나 따뜻하게 구체를 "
-            "요구**하세요:\n"
-            "1. 짧게 인정하되 곧바로 '그런데 원론적인 이야기 말고'로 전환.\n"
-            "2. **딱 하나의 실제 장면**을 콕 집어 요구 — 누가·언제·어떤 대화:\n"
-            "   예: '말씀은 잘 알겠는데요, 리더님. 원론적인 정리보다 실제 "
-            "겪으신 장면 하나가 궁금해요. 가장 최근에 그 판단을 실제로 "
-            "내리셨던 순간 하나만 꼭 집어주세요 — 그때 누구와, 어떤 말을 "
-            "주고받으셨어요?'\n"
-            "   예: '전략이라는 큰 말 말고, 지난달에 실제로 있었던 회의 "
-            "한 장면만 떠올려 주실래요? 그 자리에 누가 있었어요?'\n\n"
-            "🚫 추상어(전략·혁신·시너지·데이터 기반…)를 당신도 따라 쓰지 "
-            "말 것. 고유명사·직접 한 말·구체 행동이 나올 때까지 한 조각씩 "
-            "파고드세요. 한 턴에 질문 하나."
-        ),
-        "CHAPTER_ONE_MORE_ASK": (
-            "리더님이 이 영역은 충분히 말씀드렸다고 하셨습니다. 이번 턴 출력은 **그 뜻을 존중하는 리더님 말을 받는 문장 하나**뿐입니다 — "
-            "짧게, 들은 사실 하나로 받습니다(예시 없음 — 진행 상태를 알리는 말 금지). 질문은 쓰지 마세요: 시스템이 '하나만 더 여쭤봐도 될까요?' 와 "
-            "마지막 질문 하나를 붙입니다. 설득·사과·평가·'아직 부족하다' 류 금지. 한 문장. 끝."
-        ),
-        "CHAPTER_NO_YIELD_ULTIMATUM": (
-            "🎯 **초점 재조정 — 지금까지 흐름은 다소 개념·일반론 쪽에 머물러, "
-            "'하나의 구체적 장면'으로 좁혀볼 시점입니다.**\n\n"
-            "⚠️ **오판 주의**: 리더님이 성의 없이 회피 중이라고 단정하지 마세요. "
-            "성실히 답하고 계셔도 이야기가 여러 사례를 넘나들거나 개괄에 머무르면 "
-            "채점 가능한 STAR 가 안 잡힐 수 있습니다. 그러니 '추궁'이 아니라 "
-            "'함께 한 장면을 또렷이 떠올리는' 협력적 톤으로 요청하세요.\n\n"
-            "부드럽고 따뜻하게, 딱 하나의 실제 장면을 부탁하세요:\n"
-            "  '리더님 말씀 잘 듣고 있어요. 조금 더 또렷하게 남기고 싶어서 "
-            "그러는데, 방금 이야기 중 딱 한 장면만 골라 자세히 들려주시겠어요? "
-            "언제·어떤 상황에서 리더님이 구체적으로 무엇을 하셨는지, "
-            "그 한 장면이면 충분합니다.'\n\n"
-            "🚫 금지: '사례를 파악하기 어렵다', '미달로 기록된다', '마지막 "
-            "기회다' 같은 압박·경고·평가 위협 표현. 리더님을 탓하거나 조급하게 "
-            "몰지 마세요. 새 이론 질문도 금지. 담백하고 정중하게 한 번만 "
-            "요청하고 답을 기다리세요."
-        ),
-        "STAR_COMPLETE_NEW_EVENT": (
-            "한 경험을 충분히 들었고, 다음 주제로 넘어가는 전환 턴입니다. (2026-10-21) 이번 턴 출력은 **두 문장**뿐이며 "
-            "질문은 쓰지 않습니다 — 앵커 질문 하나는 시스템이 뒤에 붙입니다.\n\n"
-            "① **받는 문장(1문장, 필수)**: 방금 리더님 답변의 핵심을 **사실만** 한 문장으로. 평가·칭찬·해석 금지. "
-            "진행 상태를 알리는 문장 금지. 리더님이 쓴 말을 그대로 되풀이하지 말고 뜻으로 받습니다.\n"
-            f"   ({EXAMPLE_LABEL}) 리더가 '개편 때 반발한 팀원과 따로 만나 이유를 설명했다'고 했다면 → "
-            "'반발한 팀원을 따로 만나 이유부터 설명하신 거군요.'\n"
-            "② **다리(1문장, 필수)**: 직전 사건과 다음 주제가 **실제로 이어질 때만** 리더님 말 하나를 받아 한 절로 잇고, "
-            "주제가 다르면 전환 문장 하나('다른 이야기를 하나 여쭤볼게요.' / '이번엔 조금 다른 장면입니다.'). "
-            "🚫 전환 문장 **단독 출력 금지** — 받는 문장 없이 전환 문장만 내면 시스템이 재생성합니다.\n\n"
-            # (2026-11-02 p2f) 탐색/미탐색 하위역량 이름 목록(내부 나침반)은 뺐다 — 두 문장 전환 턴에 필요 없고, p2c Jessica 가 그 이름으로
-            #   리더 답을 분류해 설명했다("주 과제는 '일관리' 역량인데, … '시도와 실행' 쪽 이야기에 가깝네요").
-            f"🎯 **[시스템이 붙일 앵커 — 참고용, 당신이 쓰지 않는다 · 이름 노출 금지]**\n{_target_question_block}\n"
-            "   다리는 이 앵커로 자연스럽게 이어지는 문장이어야 합니다(앵커 본문·하위역량 이름을 말하지 마세요).\n\n"
-            "🚨 금지: 질문(물음표 문장), 하위 역량 이름, 리더님 답이 어느 역량·주제에 속하는지 가르는 설명('…역량인데', "
-            "'…쪽 이야기에 가깝다'), 목차식 전환('다음으로 ~에 대해'), 대주제 뭉뚱그림, 칭찬·총평, "
-            "진행 상태를 알리는 문장, 세 문장 이상.\n"
-            "🔁 리더님이 앞서 말한 사건을 다시 꺼내면 '다른 사례를' 요구하지 않습니다 — 받는 문장 뒤 다리로 넘어가면 "
-            "시스템 앵커가 새 각도를 묻습니다.\n"
-            "출력: 리더님 말을 받는 문장 하나 + 다리 한 문장. 끝."
-        ),
-        "ABSENCE_PROBE": (
-            "🧭 **부재 진술 감지 — '그런 경험은 없다 / 직접 챙기는 편이다'.**\n\n"
-            "리더님은 지금 '해당 경험이 없다'거나 '(위임 등을) 하지 않고 직접 "
-            "처리한다'고 답하셨습니다. 이건 채점 가능한 사건이 아니라, 오히려 "
-            "'직접 떠안는' 실제 장면을 캐물어야 할 신호입니다. 그 자체를 결론으로 "
-            "받지 말고, **딱 하나의 구체 사례**를 부드럽게 청하세요:\n"
-            f"  예({EXAMPLE_LABEL}): '아, 위임보다는 직접 챙기시는 편이시군요. 그럼 가장 최근에 "
-            "리더님이 직접 그 일을 챙기셨던 상황 하나만 들려주시겠어요? 언제, "
-            "어떤 상황이었고, 리더님이 구체적으로 무엇을 하셨는지가 궁금해요.'\n\n"
-            "🎯 목적: 여기서 나온 '실제로 직접 처리한 장면'이 이 하위역량의 "
-            "정당한 (낮은 수준일지라도) 근거가 됩니다. 없다고 단정하거나 다음 "
-            "주제로 넘기지 말고, 한 턴에 사례 요청 하나만. 그래도 사례가 없으면 "
-            "그때는 자연스럽게 다음으로 넘어갑니다."
-        ),
-        "CONTRARY_NEEDED": (
-            "예상과 달리 흘러간 경우를 묻는 질문을 지금 하세요. 세 가지 변형 중 "
-            "자연스러운 것 선택. 자기관리 챕터면 '흔들림' 변형 사용."
-        ),
-        "AVOIDANCE_DETECTED": (
-            "단답/회피 응답입니다 ('네', '기억 안 남', '글쎄요' 등).\n\n"
-            "🔬 **마이크로 코칭 (Core Rule 8) — 질문을 잘게 쪼개라**:\n"
-            "🚫 다음 역량/챕터로 넘어가기 금지. 같은 큰 질문 반복 금지.\n"
-            "✅ 직전 질문을 아주 작은 조각 하나로 좁혀 다시 물어라:\n"
-            "  - 기간 좁히기: '최근 한 달만 떠올려 볼까요?'\n"
-            "  - 한 요소만: '그때 상대가 누구였는지만 먼저요.'\n"
-            "  - 부담 낮추기: '잘한 경험 아니어도 돼요. 있었던 일 하나면 "
-            "충분해요.'\n"
-            "모인 짧은 답들은 당신이 STAR 로 조립한다 — 사용자에게 유창한 "
-            "설명을 요구하지 마라. 한 턴에 조각 질문 하나만.\n\n"
-            "여러 턴 반복해도 안 풀리면 건너뛰기를 명시적으로 제안하고, "
-            "거부감이 깊다고 판단되면 Core Rule 7 의 세션 조절 권한을 "
-            "사용하라."
-        ),
-        "DUPLICATE_SUSPECTED": (
-            "사용자가 이전 챕터의 사건을 다시 말하려고 합니다. "
-            "existing_events 를 확인하고 Module 4의 부드러운 거절 패턴 사용."
-        ),
-        "CROSS_CHAPTER_OPPORTUNITY": (
-            "자기관리 챕터입니다. "
-            + ("cross_chapter_signals 에 적힌 리더님의 **실제 말**를 인용해 '아까 X 말씀하셨는데, 그때 "
-               "내면에서는...' 식으로 깊이 파고드세요. 거기 없는 말은 인용하지 마세요."
-               if state.get("cross_chapter_signals") else
-               "앞 챕터 말 인용 자료가 없습니다 — '아까 ~라고 하셨는데' 식 인용 없이, 방금 답변에서 "
-               "내면(감정·판단 기준)으로 한 겹 들어가는 질문 하나.")
-        ),
         "CHAPTER_READY_TO_END": _ready_to_end_guide,
-        "CHAPTER_CONTINUE_CONFIRMED": (
-            "리더님이 방금 '계속 진행'에 동의하셨습니다.\n"
-            "짧고 따뜻한 한 문장 브릿지만 작성하세요 (매번 다른 톤).\n\n"
-            "🌉 **대화형 브릿지 (목차 노출 금지)**: '다음은 ~ 역량입니다' 처럼 "
-            "역량 이름을 목차처럼 호명하지 마세요. 대신 리더님이 앞서 들려주신 "
-            "이야기의 결/키워드를 살짝 이어받아 '그 이야기에서 자연스럽게 "
-            "이어가 볼게요' 같은 결로, 대화가 이전 답변에서 파생되는 느낌을 "
-            "주세요.\n\n"
-            "🚫 **금지**: 다음 역량의 내용(BEI) 질문·정의·요약 반복 금지. "
-            "다음 주제에 대한 '생각을 여는 질문'은 시스템이 당신의 문장 뒤에 "
-            "자동으로 붙입니다 — 당신은 '이어가자'는 가벼운 연결 한 문장만, "
-            "물음표 없이 끝내세요.\n"
-            "예: '말씀 속에 담긴 그 고민의 결, 자연스럽게 이어서 더 들여다볼게요.'"
-        ),
-        "MAX_TURNS_REACHED": (
-            "최대 턴 도달. 강제 종료. 짧게 정리 멘트 + [CHAPTER_COMPLETE]."
-        ),
         "USER_REQUESTS_PAUSE": (
             "리더님이 '잠시 쉬겠다/나중에 이어가겠다'는 의사를 밝히셨습니다.\n"
             "진단을 여기서 '일시중지'합니다. 절대 다음 역량으로 넘어가지 마세요.\n\n"
@@ -1092,9 +572,6 @@ def _get_instruction_guide(
             "3. 그 관점의 질문을 바로 던진다. 인정만 하고 끝내거나('네, 유사한 질문이었습니다.') "
             "앞선 사건으로 되돌아가 같은 것을 다시 묻지 않는다.\n\n"
             "원칙: 사과 먼저, 강행 금지, 리더님 주도로 재정렬."
-        ),
-        "FIRST_TURN_AVOIDANCE": (
-            "첫 턴부터 회피. 라포 회복 우선. Layer 2의 backup 질문 사용."
         ),
         "INVALID_INPUT": (
             "의미 없는 입력. '답변이 잘 들어왔는지 확인이 안 됐어요' "

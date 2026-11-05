@@ -1,31 +1,41 @@
-"""(2026-10-29 P2-3) 분석 결과 린트 — 리포트 scores JSON(파일 또는 sqlite 리포트)에서 '사례 미확인' 칸 수·탐침 횟수·탐침 2회 미만 미확인을 집계한다.
+"""(2026-10-29 P2-3 → 2026-11-04 BEI) 분석 결과 린트 — 리포트 scores JSON(파일 또는 sqlite 리포트)에서
+'사례 미확인'(no_case / gate_dropped)·'미탐색'(not_explored) 칸 수를 집계한다.
 
 용법: python tools/analysis_lint.py scores1.json [scores2.json …]
       python tools/analysis_lint.py --db replay_x.db        (diagnosis_reports 전부)
-통과 기준: '탐침 2회 미만 미확인' 0.
+통과 기준(3단계): measured ≥ 22/26, 사례 미확인 ≤ 4, 미탐색 세션당 ≤ 1 (2 이상이면 경고, 종료 코드 1).
 """
 import json
 import sqlite3
 import sys
+
+NOT_EXPLORED_WARN_MIN = 2
 
 
 def summarize(label: str, scores: dict) -> dict:
     det = scores.get("details") or scores.get("competencies") or {}
     cov = scores.get("coverage") or {}
     rows = []
-    unc = deficit = ev = 0
+    unc = ne = ev = gate = noc = 0
     for ck, comp in det.items():
         led = (comp or {}).get("sub_ledger") or {}
         for sub, r in led.items():
             if not isinstance(r, dict):
                 continue
-            if r.get("unconfirmed"):
+            if r.get("status") == "not_explored":
+                ne += 1
+                rows.append((ck, sub, "not_explored"))
+            elif r.get("unconfirmed"):
                 unc += 1
-                deficit += int(bool(r.get("probe_deficit")))
-                rows.append((ck, sub, r.get("unconfirmed_kind"), r.get("probe_count"), r.get("generalize_probed"), r.get("probe_deficit")))
+                kind = r.get("unconfirmed_kind") or "no_case"
+                if kind == "gate_dropped":
+                    gate += 1
+                else:
+                    noc += 1
+                rows.append((ck, sub, kind))
             elif r.get("measured"):
                 ev += 1
-    return {"label": label, "unconfirmed": unc, "probe_deficit": deficit, "evidence_measured": ev,
+    return {"label": label, "unconfirmed": unc, "no_case": noc, "gate_dropped": gate, "not_explored": ne, "evidence_measured": ev,
             "banner": bool(cov.get("unconfirmed_banner")), "rows": rows,
             "comp_labels": {ck: (comp or {}).get("level_label") for ck, comp in det.items()}}
 
@@ -39,19 +49,20 @@ def main(argv):
     else:
         for p in argv:
             items.append((p.split("/")[-1], json.load(open(p, encoding="utf-8"))))
-    print("| 리포트 | 사례 미확인 | 탐침 2회 미만 미확인 | 근거 측정 | 배너(≥6) | 대역량 라벨 |")
+    print("| 리포트 | 근거 측정 | 사례 미확인(없음/게이트 탈락) | 미탐색 | 배너(≥6) | 대역량 라벨 |")
     print("|---|---:|---:|---:|---|---|")
-    total_def = 0
+    warn = 0
     for label, sc in items:
         s = summarize(label, sc)
-        total_def += s["probe_deficit"]
-        print(f"| {s['label']} | {s['unconfirmed']} | {s['probe_deficit']} | {s['evidence_measured']} | {'예' if s['banner'] else '-'} | "
-              + ", ".join(f"{k[:4]}:{v or '-'}" for k, v in s["comp_labels"].items()) + " |")
-        for ck, sub, kind, pc, gp, pd in s["rows"]:
-            if pd:
-                print(f"    ⚠ 탐침 부족: {ck}/{sub} kind={kind} probes={pc} generalize_probed={gp}")
-    print(f"\n탐침 2회 미만 미확인 합계: {total_def} (0 이어야 함)")
-    return 0 if total_def == 0 else 1
+        flag = " ⚠" if s["not_explored"] >= NOT_EXPLORED_WARN_MIN else ""
+        warn += int(s["not_explored"] >= NOT_EXPLORED_WARN_MIN)
+        print(f"| {s['label']} | {s['evidence_measured']} | {s['unconfirmed']}({s['no_case']}/{s['gate_dropped']}) | {s['not_explored']}{flag} | "
+              f"{'예' if s['banner'] else '-'} | " + ", ".join(f"{k[:4]}:{v or '-'}" for k, v in s["comp_labels"].items()) + " |")
+        for ck, sub, kind in s["rows"]:
+            if kind == "not_explored":
+                print(f"    · 미탐색: {ck}/{sub}")
+    print(f"\n미탐색 2개 이상 세션: {warn} (0 이어야 함)")
+    return 0 if warn == 0 else 1
 
 
 if __name__ == "__main__":

@@ -25,13 +25,6 @@ def test_align_trailing_questions_removed_so_only_anchor_question_remains():
 
 
 # ── 2) 전환 환각 + 대기 중 텍스트 ──
-def test_transition_claim_detected_and_stripped():
-    t = ("네, 잘 들었습니다. 이로써 조직관리 영역에 대한 경험을 충분히 들었습니다. "
-         "다음 챕터로 넘어가겠습니다.")
-    assert G.has_transition_claim(t)
-    out, n = G.strip_transition_sentences("팀원들의 반발이 있었군요. 다음 챕터로 넘어가겠습니다. 그때 무엇을 먼저 하셨습니까?")
-    assert n == 1 and "다음 챕터" not in out and out.endswith("하셨습니까?")
-    assert "CHAPTER_READY_TO_END" in G.TRANSITION_ALLOWED_INSTRUCTIONS
 
 
 def _wait_state(text: str) -> dict:
@@ -71,13 +64,6 @@ def test_sub_names_and_paren_variants_detected():
     assert G.find_sub_names("새 방식에 반신반의하는 팀원을 설득하셨던 일이 있으셨어요?", NAMES) == []
 
 
-def test_off_target_by_noun_overlap():
-    asked_q = ["최근에 정보가 충분치 않은 상황에서도 중요한 결정을 내려야 했던 때가 있으셨습니까? 그때 어떤 기준으로 결정하셨는지 궁금합니다."]
-    off, q = G.off_target_overlap("정보가 충분치 않은 상황에서 중요한 결정을 내리셨을 때 어떤 기준으로 결정하셨습니까?", asked_q)
-    assert off and q == asked_q[0]
-    off2, _ = G.off_target_overlap("늘 하던 방식이 답답해서 다른 방법을 시도하신 일이 있으실까요?", asked_q)
-    assert not off2
-    assert G.template_anchor("질문?").endswith("질문?")
 
 
 # ── 4-b) 평가적 칭찬 금지 ──
@@ -96,16 +82,6 @@ def test_praise_detected_and_stripped_keeping_question():
     assert "훌륭한" not in out2 and out2.endswith("하셨습니까?")
 
 
-def test_praise_ban_and_lead_rule_in_style_block_for_every_persona():
-    for n in ("Ella (엘라)", "Jessica (제시카)", "Olivia (올리비아)", "Daniel (다니엘)", "Michael (마이클)", "Lucas (루카스)"):
-        t = format_style_constraints({}, n, "CONTINUE_NORMAL")
-        assert "평가적 칭찬 금지" in t and "한 문장" in t, n
-    # 프로필에서 칭찬 예시 제거(코치 소개문의 '공감 능력이 뛰어난' 같은 자기 묘사는 대상 아님)
-    from diag_project.data.coaches_persona import COACHES_PERSONA
-    prompts = " ".join(v["system_prompt"] for v in COACHES_PERSONA.values())
-    for gone in ("꽤 과감했네요", "본질을 정확히 짚", "잘 버티셨습니다", "해야 할 몫"):
-        assert gone not in prompts, gone
-    assert sum(1 for v in COACHES_PERSONA.values() if "칭찬" in v["system_prompt"]) == 6   # 6명 전원 금지 명시
 
 
 # ── 4-a/4-c) 되받기 판정 확장 + 리드 한 줄 ──
@@ -116,14 +92,6 @@ def test_recap_markers_extended_and_lead_trimmed():
 
 
 # ── 5) 넓이 하한 ──
-def test_breadth_floor_all_when_four_or_fewer():
-    assert T.min_explored_for(4) == 4 and T.min_explored_for(3) == 3
-    assert T.min_explored_for(5) == 3 and T.min_explored_for(9) == 6
-    assert ID.MIN_EXPLORED == {"organization_management": 4, "performance_management": 3,
-                               "people_management": 6, "work_management": 3, "self_management": 3}
-    assert T.chapter_turn_cap(ID.MIN_EXPLORED["organization_management"]) == 16
-    for ch, m in ID.MIN_EXPLORED.items():
-        assert T.chapter_turn_cap(m) < ID.MAX_TURNS[ch]
 
 
 # ── 2026-09-17 Daniel 성과관리 재주행 6건 ──
@@ -139,25 +107,8 @@ def test_echo_requires_two_chunks_single_quote_allowed():
 
 
 
-def test_result_probe_pool_rotates_without_repeat():
-    st = {}
-    seen = []
-    for _ in range(len(T.RESULT_PROBE_POOL)):
-        q, st = T.pick_result_probe(st, CH)
-        seen.append(q)
-    assert len(set(seen)) == len(T.RESULT_PROBE_POOL)            # 챕터 안 무반복
-    assert T.used_result_probes(st, CH) == seen
-    q2, st = T.pick_result_probe(st, CH)                           # 다 쓰면 처음부터
-    assert q2 == T.RESULT_PROBE_POOL[0]
-    assert all("그렇게 하니" not in q for q in T.RESULT_PROBE_POOL)
 
 
-def test_repeated_result_probe_detected():
-    used = ["그 뒤로 달라진 게 있었습니까?"]
-    assert G.find_repeated_result_probe("그렇게 하니까 어떻게 됐습니까?", []) is not None   # 상투형
-    assert G.find_repeated_result_probe("그때 그 뒤로 달라진 게 있었습니까?", used) is None  # 다른 문장
-    assert G.find_repeated_result_probe("그 뒤로 달라진 게 있었습니까?", used) is not None  # 같은 문장 반복
-    assert G.find_repeated_result_probe("결과를 어떻게 확인하셨습니까?", used) is None
 
 
 def test_absence_keywords_extended():
@@ -175,15 +126,6 @@ def test_rapport_role_turn_and_context_state():
     assert "ROLE_ASK" in src and "participant_context" in src and "RAPPORT_ROLE_QUESTION" in src
 
 
-def test_praise_list_covers_wrapup_phrases_and_wrapup_is_template():
-    for p in ("인상적입니다", "매우 인상 깊습니다", "리더님의 면모", "기준이 선명하게 그려지는 듯합니다", "돋보이는 결정"):
-        assert G.find_praise(p), p
-    import inspect
-    from diag_project.routes import diagnoses as D
-    src = inspect.getsource(D)
-    assert "chapter_end_bridge(chapter_to_topic(_next_ch)" in src   # (2026-10-21) 요약 2문장 + 고정 다리(페르소나 인자 추가)
-    # ALIGN 은 리드 교정 대상에서 제외(정의·목록이 지워지던 버그)
-    assert 'instruction_used not in ("COMPETENCY_ALIGN", "CHAPTER_OPENING")' in src
 
 
 def test_bridge_rule_in_style_hints_and_analysis_flag():
@@ -208,22 +150,6 @@ def test_bridge_clause_is_not_recap():
     assert sc["forbid_recap"] is False
 
 
-def test_style_tail_block_placed_before_latest_user_message():
-    from diag_project.prompts.phase3a.layer3_state import build_style_tail, format_turn_state_for_llm
-    st = {"chapter": CH, "turn_count": 5, "events_collected": 1, "events_with_star_70": 0,
-          "current_event_id": None, "current_event_star_coverage": None, "has_contrary_probe": False,
-          "avoidance_count_in_chapter": 0, "all_subcompetencies": [], "explored_subcompetencies": [],
-          "unexplored_subcompetencies": [], "asked_in_chapter": [], "instruction_for_this_turn": "STAR_INCOMPLETE",
-          "coach_persona": {"name": "Daniel (다니엘)"}, "style_constraints": {"forbid_ne_opening": True, "forbid_recap": True},
-          "style_at_tail": True}
-    mid = format_turn_state_for_llm(st)
-    tail = build_style_tail(st)
-    assert "이번 턴 문체 제약" not in mid and "마지막 확인" in tail
-    assert "되풀이하지" in tail and "요약 되받기 금지" not in tail   # (2026-09-22) 자르지 않고 한 줄 지시만
-    import inspect
-    from diag_project.llm_service import GeminiService
-    src = inspect.getsource(GeminiService.generate_phase3a_interaction)
-    assert src.index('f"{_tail}"') < src.index('[Latest User Message]')
 
 
 def test_sub_name_mention_stripped_in_non_anchor_turn():
@@ -245,21 +171,6 @@ def test_strip_transition_keeps_text_when_only_transition_remains():
     assert not has_question(out)
 
 
-def test_guard_block_source_contract_2026_09_21():
-    """8-i 소스 계약: 재생성 키 = names/off_target/no_question, 결과 질문 풀 폴백 없음, ABSENCE_PROBE 제외."""
-    import inspect
-    from diag_project.routes import diagnoses as d
-    src = inspect.getsource(d._submit_message_phase3a)
-    i = src.index("# 8-i.")
-    j = src.index("# 8-h.")
-    blk = src[i:j]
-    # (2026-10-28 P0-2) 내부 어휘 누설(leak)도 재생성 1회 대상
-    assert '_REGEN_KEYS = {"names", "off_target", "no_question", "same_question", "bare_ref", "anchor_missing", "leak"}' in blk
-    assert 'instruction_used != "ABSENCE_PROBE"' in blk
-    assert "질문 없는 출력 → 결과 질문 대체" not in blk           # 질문 없는 출력 → 풀 대체 폐기
-    assert "template_anchor(_tgt_q)" in blk
-    assert "trim_lead_sentences(" not in blk          # (2026-09-22) 되받기 리드 삭제 폐지
-    assert "strip_transition_sentences(" not in blk   # 전환 문장 삭제 폐지 — 관찰만
 
 
 
@@ -299,25 +210,9 @@ def test_strip_sub_name_mentions_replaces_quoted_name_with_josa_fix():
     assert "그 부분을" in out2, out2
 
 
-def test_guard_fallback_avoids_repeating_anchor_source_contract():
-    import inspect
-    from diag_project.routes import diagnoses as d
-    src = inspect.getsource(d._submit_message_phase3a)
-    blk = src[src.index("# 8-i."):src.index("# 8-h.")]
-    assert "def _anchor_fallback()" in blk and "_recent_coach_texts" in blk
-    # 교정 폴백은 전부 _anchor_fallback 을 지난다(직전 2턴에 나간 앵커 반복 방지)
-    assert blk.count("template_anchor(_tgt_q)") == 2  # _anchor_fallback 내부 2곳뿐
 
 
 # ── 2026-09-22 결정: 리드 한 문장 상한, 연결 절 템플릿 폐지 ──
-def test_cap_lead_sentences_keeps_first_lead_and_never_touches_question():
-    from diag_project.services.output_guard import cap_lead_sentences
-    t = "네, 주간 싱크 미팅을 신설하셨군요. 쉽지 않은 결정이었을 텐데요. 그 뒤로 달라진 게 있었습니까? 팀원들은 어떻게 받아들였습니까?"
-    out, n = cap_lead_sentences(t)
-    assert n == 1 and out == "네, 주간 싱크 미팅을 신설하셨군요. 그 뒤로 달라진 게 있었습니까? 팀원들은 어떻게 받아들였습니까?"
-    assert cap_lead_sentences("그러셨군요. 그때 어떻게 하셨습니까?") == ("그러셨군요. 그때 어떻게 하셨습니까?", 0)
-    assert cap_lead_sentences("그때 어떻게 하셨습니까?")[1] == 0
-    assert cap_lead_sentences("여기까지 충분히 들었습니다. 이제 이어가 보겠습니다.")[1] == 0   # 질문 없음 → 불변
 
 
 def test_bridge_template_removed():

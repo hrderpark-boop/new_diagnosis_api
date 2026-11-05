@@ -5,9 +5,9 @@
   [LLM 공감 되받기 2~3문장]
   [고정 정의 1문장]
   [목록 — 하위역량 전부, '· ' 줄]
-  [고정 안내] 이 N가지를 하나씩 여쭤볼 텐데, 항목마다 실제 있었던 일 하나씩 떠올려 주시면 됩니다.
-  [고정 다리] 먼저 ~쪽부터요.
-  [앵커 1개]
+  [고정 안내] 이 N가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 들어보겠습니다. (2026-11-04 BEI 결정 6)
+  [고정 다리] 먼저 하나를 깊게 들어볼게요.
+  [사례 1 여는 앵커 1개]
 
 LLM 출력에서 질문 문장·목록 줄·다른 챕터 가이드 문구·리더에게 선택을 넘기는 문장은 전부 제거한다.
 고정 문장은 전부 페르소나 어미(intro_messages.PERSONA_LINES)로 나간다.
@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
-from diag_project.services.intro_messages import align_topic_bridge, persona_line
+from diag_project.services.intro_messages import persona_line
 from diag_project.services.korean import with_josa
 from diag_project.services.output_guard import is_question, split_sentences, count_questions
 
@@ -102,8 +102,6 @@ def render_align(
     chapter: str,
     sub_names: list[str],
     persona_name: str | None,
-    bridge_sub_key: str | None,
-    bridge_sub_name: str | None,
     anchor: str,
     user_text: str | None = None,
 ) -> str:
@@ -114,7 +112,7 @@ def render_align(
     parts = [
         " ".join(recv),
         definition_sentence(chapter, persona_name) + "\n" + "\n".join(f"· {n}" for n in sub_names),
-        guide_sentence(len(sub_names), persona_name) + " " + align_topic_bridge(bridge_sub_key, bridge_sub_name, persona_name),
+        guide_sentence(len(sub_names), persona_name) + " " + persona_line(persona_name, "align_open"),
         (anchor or "").strip(),
     ]
     return "\n\n".join(p for p in parts if p.strip())
