@@ -210,11 +210,13 @@ def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
         confidence_adj=_sb.get("confidence_adj", 0.0))
     base["behavior_score"] = _behavior
     base["score"] = _final
+    from diag_project.services.scoring import confidence_display as _cdisp
     base["score_breakdown"] = {
         "rubric_base": _behavior,
         "star_depth_bonus": _sb.get("star_depth_bonus", 0.0),
-        "confidence_adj": _sb.get("confidence_adj", 0.0),
+        "confidence_adj": _sb.get("confidence_adj", 0.0),   # (P4-7) 표시(★)용 — 점수 미반영
         "final": _final,
+        **_cdisp(_sb.get("confidence_adj", 0.0)),
     }
     base.pop("_eval_subs", None)
     # I-4: 3회 중 1회라도 error-fallback 이면 이 대역량은 오염 → 표기 전파.

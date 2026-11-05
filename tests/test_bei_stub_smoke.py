@@ -93,6 +93,20 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
             return (await db.execute(select(Event).where(Event.session_id == uuid.UUID(sid)))).scalars().all()
     evs = client.portal.call(_events)
     assert len(evs) == 4 and all(e.situation and e.mapped_subcompetency for e in evs)   # 사례 2 + SWEEP 보완 2
-    # 페르소나 슬롯은 사례당 1회(Ella 없음)
+    # (2026-11-05 P4-1) 페르소나 슬롯은 챕터당 1회(Ella 없음) — 세션 원장 slot_chapters·slot_used_idx 에 기록, 문구 인덱스 = 챕터 순서(조직관리 0)
     slot_turns = [g for g in store.get("guard_log", []) if g.get("slot") and g.get("slot") != "Michael_q"]
-    assert len(slot_turns) == (0 if coach_key == "1" else 2), [(g.get("episode"), g.get("slot")) for g in slot_turns]
+    assert len(slot_turns) == (0 if coach_key == "1" else 1), [(g.get("episode"), g.get("slot")) for g in slot_turns]
+    if coach_key != "1":
+        assert store.get("slot_chapters") == {CH: 1} and store.get("slot_used_idx") == [0] and slot_turns[0].get("slot_idx") == 0
+    # (P4-2) '좋습니다' 리드 0 · (P4-3) 흉터 0 · 여는 문장은 스텁 모드에서 사전 앵커(opener=stub)
+    coach_texts = [c for role, ins, ch, c in rows if role == "model"]
+    assert not any(c.lstrip().startswith("좋습니다") for c in coach_texts)
+    from diag_project.services.output_guard import broken_statements
+    from diag_project.services.intro_messages import all_fixed_sentences
+    _fixed = {x.replace(" ", "") for x in all_fixed_sentences()}
+    for c in coach_texts:
+        assert not [b for b in broken_statements("\n".join(l for l in c.split("\n") if not l.strip().startswith("·"))) if b.replace(" ", "") not in _fixed], c
+    assert {g.get("opener") for g in store["guard_log"] if g.get("instr") in ("COMPETENCY_ALIGN", "EPISODE_OPEN")} == {"stub"}
+    # Michael 실행 의지 질문은 세션 누적(michael_q_count ≤ 3)
+    if coach_key == "5":
+        assert 0 <= int(store.get("michael_q_count") or 0) <= 3

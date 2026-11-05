@@ -19,6 +19,8 @@ def test_rows_interpretation_and_summary():
     by = {r["key"]: r for r in sv["rows"]}
     assert sv["submitted"] and len(sv["rows"]) == 5
     assert by["organization_management"]["interpretation"] == MSG_MATCH and by["organization_management"]["diff"] == 0.0
+    assert by["people_management"]["diff"] == -0.5 and by["people_management"]["kind"] == "self_lower_slight"   # (P4-9) ±0.5 는 '다소 차이'
+    assert by["people_management"]["interpretation"].startswith("다소 차이")
     assert by["self_management"]["diff"] == 3.0 and by["self_management"]["interpretation"] == MSG_HIGH
     assert by["performance_management"]["diff"] == -1.5 and by["performance_management"]["interpretation"] == MSG_LOW
     assert by["work_management"]["measured"] is None and by["work_management"]["interpretation"] == MSG_UNMEASURED
@@ -76,3 +78,22 @@ def test_reference_chapter_is_not_judged_and_excluded_from_summary():
     assert by["self_management"]["kind"] == "reference" and by["self_management"]["interpretation"] == MSG_REFERENCE
     assert by["self_management"]["diff"] == 2.0            # 수치는 그대로 보여주되 단정하지 않는다
     assert "자기관리" not in sv["summary"] and "사람관리" in sv["summary"]
+
+
+def test_slight_gap_is_not_reported_as_match():
+    """(2026-11-05 P4-9) 운영 Michael 세션: 성과관리 자기 3.0 / 대화 2.5(+0.5)가 '일치'로 나갔다 → '다소 차이', ±1.0 이상은 '차이 큼'."""
+    from diag_project.services.self_view import MSG_HIGH_SLIGHT, MSG_LOW_SLIGHT
+    d = _details(organization_management=2.9, performance_management=2.3, people_management=2.7, work_management=2.9, self_management=2.6)
+    sv = build_self_view({"organization_management": 3.0, "performance_management": 3.0, "people_management": 2.5, "work_management": 3.0, "self_management": 4.0},
+                         d, NAMES, ORDER)
+    by = {r["key"]: r for r in sv["rows"]}
+    assert by["organization_management"]["kind"] == "match"                                   # +0.1
+    assert by["performance_management"]["kind"] == "self_higher_slight" and by["performance_management"]["interpretation"] == MSG_HIGH_SLIGHT   # +0.7
+    assert by["people_management"]["kind"] == "match"                                         # -0.2
+    assert by["self_management"]["kind"] == "self_higher" and by["self_management"]["interpretation"] == MSG_HIGH                           # +1.4
+    assert "자기관리를 스스로는 4.0점" in sv["summary"]
+    # 큰 차이가 없고 다소 차이만 있으면 요약이 그 영역을 든다
+    sv2 = build_self_view({"organization_management": 3.0, "performance_management": 3.0}, d, NAMES, ORDER)
+    assert "성과관리" in sv2["summary"] and "다소" in sv2["summary"]
+    assert MSG_LOW_SLIGHT.startswith("다소 차이")
+

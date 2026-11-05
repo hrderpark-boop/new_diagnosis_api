@@ -127,7 +127,7 @@ def test_high_profile_recommendation_and_clamp():
     rec2 = _run(build_course_recommendation(HIGH, llm=MockLLM(match=True)))
     assert rec2.get("strength") is not None, "D트랙이 게이트를 통과해 생성돼야 한다"
     # 상한 클램프: Lv4 하위(4.0)+가점이 5.0 넘지 않음
-    assert competency_final_score(4.0, 0.9, 0.9) == 5.0
+    assert competency_final_score(4.0, 0.9, 0.9) == 4.5   # (2026-11-05 P4-7) 확신도 가점 제거 — STAR 0.5 만
 
 
 def test_low_coverage_shutdown_and_zero_division_guard():

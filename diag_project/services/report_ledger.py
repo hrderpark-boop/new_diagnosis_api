@@ -229,7 +229,8 @@ def apply_unconfirmed_policy(competency_results: Dict[str, Dict[str, Any]],
                                         confidence_adj=_sb.get("confidence_adj", 0.0))
         comp["behavior_score"] = _behavior
         comp["score"] = _final
-        comp["score_breakdown"] = {**_sb, "rubric_base": _behavior, "final": _final}
+        from diag_project.services.scoring import confidence_display as _cdisp
+        comp["score_breakdown"] = {**_sb, "rubric_base": _behavior, "final": _final, **_cdisp(_sb.get("confidence_adj", 0.0))}
         comp["level_label"] = competency_level_label(_behavior)
         totals["unconfirmed_total"] += n_unc
         totals["evidence_measured_total"] += n_ev
@@ -237,3 +238,31 @@ def apply_unconfirmed_policy(competency_results: Dict[str, Dict[str, Any]],
     totals["unconfirmed_banner"] = totals["unconfirmed_total"] >= UNCONFIRMED_BANNER_MIN
     totals["not_explored_warn"] = totals["not_explored_total"] >= NOT_EXPLORED_WARN_MIN
     return totals
+
+
+def rescore_without_confidence(details: dict) -> dict:
+    """(2026-11-05 P4-7) 저장된 리포트의 대역량 점수를 확신도 가점 없이 다시 계산한다(제자리 수정, 표시 전용).
+
+    저장 원장: details[ch].score_breakdown = {rubric_base, star_depth_bonus, confidence_adj, final}. rubric_base 가 없으면 behavior_score.
+    반환 {"changed": bool, "total_score": 평균(측정 대역량), "radar": {ch: score}}. 확신도 표시(★) 필드도 채운다.
+    """
+    from diag_project.services.scoring import competency_final_score, confidence_display, overall_score
+    changed = False
+    radar: dict = {}
+    for ch, comp in (details or {}).items():
+        if not isinstance(comp, dict):
+            continue
+        sb = comp.get("score_breakdown") or {}
+        base = sb.get("rubric_base", comp.get("behavior_score"))
+        if base is None:
+            radar[ch] = comp.get("score")
+            continue
+        new_final = competency_final_score(float(base), star_bonus=sb.get("star_depth_bonus", 0.0))
+        disp = confidence_display(sb.get("confidence_adj", 0.0))
+        if comp.get("score") != new_final or "confidence_stars" not in sb:
+            changed = True
+        comp["score"] = new_final
+        comp["score_breakdown"] = {**sb, "rubric_base": base, "final": new_final, **disp}
+        radar[ch] = new_final
+    return {"changed": changed, "total_score": overall_score(list(radar.values())), "radar": radar}
+

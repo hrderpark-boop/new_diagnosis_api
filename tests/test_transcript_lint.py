@@ -241,3 +241,32 @@ def test_truncation_first_token_noun_ending_in_myeon_is_not_truncated():
 
 
 
+
+
+# ── (2026-11-05 P4) 린트 P4 열: 슬롯/챕터 최대 · 평가 말투 · 흉터 · 같은 고정 문장 ≥3회 ───────────────────────────
+def test_p4_lint_columns_slot_praise_scar_repeat3(lex):
+    cheer = "그 선택, 응원합니다."
+    rows = [
+        _row(1, "user", "작년에 개편을 맡았어요."),
+        _row(2, "model", f"개편을 맡으셨군요. {cheer} 그때 처음 하신 일이 뭐였어요?", instr="EPISODE_PROBE",
+             guard={"t": 2, "ch": "organization_management", "instr": "EPISODE_PROBE", "slot": "Michael", "slot_idx": 0, "episode": 1, "ep_turn": 3}),
+        _row(3, "user", "두 사람을 따로 불렀어요."),
+        _row(4, "model", "좋습니다, 두 사람을 따로 부르셨군요. 좋은 방향이에요. 그다음에는요?", instr="EPISODE_PROBE",
+             guard={"t": 4, "ch": "organization_management", "instr": "EPISODE_PROBE", "slot": "Michael", "slot_idx": 1, "episode": 1, "ep_turn": 4}),
+        _row(5, "user", "이유를 들었어요."),
+        _row(6, "model", "이유부터 들으셨다는 게 인데요. 리더님. 그 뒤에는요?", instr="EPISODE_PROBE",
+             guard={"t": 6, "ch": "organization_management", "instr": "EPISODE_PROBE", "episode": 1, "ep_turn": 5, "broken_cut": 0}),
+        _row(7, "user", "네."),
+        _row(8, "model", f"파일럿을 먼저 돌리셨군요. {cheer} 그 결과는요?", instr="EPISODE_PROBE", chapter="performance_management",
+             guard={"t": 8, "ch": "performance_management", "instr": "EPISODE_PROBE", "slot": "Michael", "slot_idx": 0, "episode": 1, "ep_turn": 3}),
+        _row(9, "user", "좋았어요."),
+        _row(10, "model", f"만족도가 올랐군요. {cheer} 다음에는요?", instr="EPISODE_PROBE", chapter="people_management",
+             guard={"t": 10, "ch": "people_management", "instr": "EPISODE_PROBE", "slot": "Michael", "slot_idx": 0, "episode": 1, "ep_turn": 3}),
+    ]
+    r = tl.analyze(_data(rows, coach="5"), lex)
+    assert r["slot_by_chapter"]["organization_management"] == 2 and r["slot_per_chapter_max"] == 2        # 챕터당 1회 위반이 잡힌다
+    assert r["praise_turns"] == 1 and r["praise_issues"][0]["t"] == 4                                      # '좋습니다(문두)'·'좋은 방향' — 응원 고정 문장은 제외
+    assert r["broken_turns"] == 1 and r["broken_issues"][0]["t"] == 6                                      # '…게 인데요'·'리더님.'
+    assert [x["sentence"] for x in r["repeat3"]] == ["그선택응원합니다"] and r["repeat3"][0]["n"] == 3    # 같은 고정 문장 3회(정규화 문장)
+    md = tl.render_markdown([r], tl.cross_anchor_pairs([r]), lex)
+    assert "| 슬롯/챕터 최대 | 평가 말투 | 흉터 | 고정문장≥3회 |" in md and "**P4**" in md and "- 흉터 t6" in md and "- 고정문장 3회" in md

@@ -36,7 +36,7 @@ BEST_MODEL = ANALYSIS_MODEL
 # §3 캐시 무효화용 프롬프트 버전 — 심층분석/evidence 추출 프롬프트를 바꾸면
 #   이 값을 올려 캐시를 자동 무효화한다(버전 미변경 호출만 캐시 반환).
 _ANALYSIS_PROMPT_VERSION = "2026-08-20.v2-e2a"  # E-2a: asked_subs 탐색집중 주입 (gemini 캐시 키 보존 — claude 는 아래 _DEEP_PROMPT_VERSION_CLAUDE 로 가른다)
-_DEEP_PROMPT_VERSION_CLAUDE = "2026-10-29.v3-cache"  # (P2-4) 심층 프롬프트를 system/로그/역량 블록으로 재배치(prompt caching)
+_DEEP_PROMPT_VERSION_CLAUDE = "2026-11-05.v4-lv3design"   # (P4-8) 루브릭 블록에 Lv.3 설계 규칙 — 캐시 무효화  # (P2-4) 심층 프롬프트를 system/로그/역량 블록으로 재배치(prompt caching)
 
 # T-1: 판정 호출(deep_analysis·level_gate·summary·dtrack_gate)의 temperature.
 #   기본 0(결정론). T-3 비교용으로 ANALYSIS_TEMPERATURE=0.7 오버라이드 가능.
@@ -126,6 +126,16 @@ _DEEP_INFLIGHT: dict = {}
 DEEP_TRANSCRIPT_CAP = 16000  # 심층분석 프롬프트의 '전체 대화 로그' 상한(앞부분)
 
 
+# (2026-11-05 P4-8) Lv.3 = 설계. 리더가 기준·틀·지표를 '직접 제안해 팀이 채택'한 행동은 Lv.3 으로 본다 — 운영 Michael 세션(11/5)에서
+#   참여율을 핵심 목표로, 만족도를 보완 지표로 제안해 팀이 받아들인 사례가 목표설정·KPI 모두 Lv.2 로 매겨졌다. 분석 프롬프트와 게이트에 같은 문장.
+LV3_DESIGN_RULE = (
+    "★ Lv.3 판정 규칙(설계): 리더가 기준·틀·지표·절차를 '직접 제안해 팀이 채택'한 행동은 Lv.3 이다 — 기존 기준을 따라 점검·공유만 하면 Lv.2, "
+    "제안한 기준이 팀의 합의·운영 방식이 되면 Lv.3. 예: 성과관리 '목표설정 및 공유'에서 서로 다른 의견을 핵심 목표 하나와 보완 목표로 정리해 "
+    "제안하고 팀이 그 틀로 목표를 세움 → Lv.3. '성과지표 관리(KPI)'에서 무엇을 어떻게 잴지(지표·측정 방식·점검 주기)를 제안해 팀이 채택 → Lv.3. "
+    "목표치·점검 시점 같은 세부가 비어 있어도 '틀을 제안해 채택됐다'는 사실이 발화에 있으면 Lv.3 을 유지한다(세부 결락은 Lv.4 를 주지 않는 이유일 뿐)."
+)
+
+
 def _build_rubric_block(competency_key: str, sub_indicators: list) -> str:
     """(2026-10-23) 심층분석 프롬프트용 하위역량 루브릭 블록. 게이트와 같은 원문(level_reference)."""
     from diag_project.services.level_gate import level_reference
@@ -146,6 +156,7 @@ def _build_rubric_block(competency_key: str, sub_indicators: list) -> str:
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "각 하위역량의 level 은 아래 서술·예시 중 근거 발화의 행동이 실제로 도달한 가장 높은 Lv 로 정한다.\n"
         "상위 Lv 의 예시 행동이 발화에 없으면 그 Lv 를 주지 않는다. 태도·일반화·부재 진술은 어느 Lv 의 근거도 아니다.\n"
+        + LV3_DESIGN_RULE + "\n"
         + "\n".join(lines) + "\n\n"
     )
 
@@ -2008,11 +2019,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         )
         result["behavior_score"] = _behavior
         result["score"] = _final  # None 이면 대역량 미측정
+        from diag_project.services.scoring import confidence_display as _cdisp
         result["score_breakdown"] = {
             "rubric_base": _behavior,
             "star_depth_bonus": _sb.get("star_depth_bonus", 0.0),
-            "confidence_adj": _sb.get("confidence_adj", 0.0),
+            "confidence_adj": _sb.get("confidence_adj", 0.0),   # (P4-7) 점수에 들어가지 않는다 — 표시(★)용
             "final": _final,
+            **_cdisp(_sb.get("confidence_adj", 0.0)),
         }
 
     async def _run_level_gate(

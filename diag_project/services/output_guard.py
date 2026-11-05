@@ -128,12 +128,38 @@ BANNED_PRAISE = [
     # 2026-09-17 보강(마무리 총평에서 재발): 인상적·돋보·선명하게 그려지는 등 평가적 총평
     "돋보", "인상적", "선명하게 그려", "그려지는 듯", "기준이 선명", "면모", "리더십이 느껴", "역량이 느껴",
     "저력", "내공", "진정한 리더", "리더로서의 자질",
+    # (2026-11-05 P4-2) 운영 Michael 세션: '좋은 방향/좋은 흐름/잘하셨/인상적' 류 평가 리드·평서문 — 상한이 아니라 전면 제거(재생성)
+    "좋은 방향", "좋은 흐름", "좋은 선택", "좋은 판단", "좋은 결정", "좋은 접근", "좋은 시도", "좋은 출발", "좋은 포인트", "좋은 기준",
+    "잘하셨", "잘 하셨", "잘해 오셨", "잘 해오셨", "잘 해 오셨", "잘 잡으셨", "잘 짚으셨", "잘 풀어", "좋네요", "좋았네요", "좋은데요",
+    "현명한", "현명하", "지혜로운", "바람직", "적절한 판단", "탁월", "칭찬", "박수",
 ]
 _PRAISE_RE = re.compile("|".join(re.escape(p) for p in sorted(set(BANNED_PRAISE), key=len, reverse=True)))
+# (P4-2) 문두 평가 리드 — '좋습니다, …' / '좋아요, …' (문장 가운데의 '쉬어가셔도 좋습니다' 같은 허용 표현과 구분한다)
+_PRAISE_LEAD_RE = re.compile(r"^\s*(?:네[,.]?\s*)?(좋습니다|좋아요|좋네요|훌륭합니다|좋은데요|좋군요)(?=[,.!~\s]|$)")
+
+
+def _praise_hits(sentence: str) -> list[str]:
+    hits = [m.group(0) for m in _PRAISE_RE.finditer(sentence or "")]
+    m = _PRAISE_LEAD_RE.match(sentence or "")
+    if m:
+        hits.append(m.group(1) + "(문두)")
+    return hits
+
+
+def _has_praise(sentence: str) -> bool:
+    return bool(_PRAISE_RE.search(sentence or "") or _PRAISE_LEAD_RE.match(sentence or ""))
 
 
 def find_praise(text: str) -> list[str]:
-    return sorted(set(m.group(0) for m in _PRAISE_RE.finditer(text or "")))
+    out: set[str] = set()
+    for s in split_sentences(text or ""):
+        out.update(_praise_hits(s))
+    return sorted(out)
+
+
+def strip_praise_lead(sentence: str) -> str:
+    """문두 평가 리드('좋습니다, ')만 뗀다 — 나머지 문장은 그대로."""
+    return _PRAISE_LEAD_RE.sub("", sentence or "", count=1).lstrip(" ,.!~")
 
 
 def strip_praise(text: str) -> tuple[str, int]:
@@ -143,23 +169,28 @@ def strip_praise(text: str) -> tuple[str, int]:
         return text, 0
     # (2026-10-29 P1 p13) 질문 문장은 지우지 않고 칭찬 구절만 걷어낸다 — Michael '…인상적이네요, 반발은 없었나요? 있었다면 …?' 에서 앞 질문이
     #   통째로 지워져 '있었다면 …' 이 홀로 남았다(잘림 1건).
+    # (2026-11-05 P4-2) 문두 리드('좋습니다, 참여율을…')만 있는 문장은 리드만 떼고 문장은 살린다 — 통째로 지우면 되받기가 사라진다
+    lead_only = [s for s in sents if _PRAISE_LEAD_RE.match(s) and not _PRAISE_RE.search(s)]
     kept = [s for s in sents if not _PRAISE_RE.search(s) or is_question(s)]
     removed = len(sents) - len(kept)
-    if removed == 0 and not any(_PRAISE_RE.search(s) for s in sents):
+    if removed == 0 and not any(_has_praise(s) for s in sents):
         return text, 0
     if not kept:
         # 전부 칭찬이면 질문 문장만이라도 칭찬 구절을 걷어내 남긴다
         qs = [s for s in sents if is_question(s)]
         base = qs[-1] if qs else sents[-1]
-        base = _PRAISE_RE.sub("", base)
+        base = strip_praise_lead(_PRAISE_RE.sub("", base))
         base = re.sub(r"[ \t]{2,}", " ", base).strip(" ,")
         return base, removed
     # (2026-09-29) 문장을 제자리에서 지운다 — 다시 이어 붙이면 문단·목록 줄바꿈이 사라진다(ALIGN 서식 파손)
     out = text
     for x in sents:
-        if _PRAISE_RE.search(x):
+        if x in lead_only:
+            out = out.replace(x, strip_praise_lead(x), 1)
+            removed += 1
+        elif _PRAISE_RE.search(x):
             if is_question(x):
-                _cx = re.sub(r"[ \t]{2,}", " ", _PRAISE_RE.sub("", x)).strip(" ,")
+                _cx = re.sub(r"[ \t]{2,}", " ", strip_praise_lead(_PRAISE_RE.sub("", x))).strip(" ,")
                 out = out.replace(x, _cx, 1)
             else:
                 out = out.replace(x, "", 1)
@@ -307,7 +338,7 @@ def count_question_markers(text: str) -> int:
 
 # (2026-11-05 3단계 전 3) 유도형 이지선다·가정형: '직접 밀어붙이셨나요, 아니면 한 발 물러서셨나요?' / '반대하셨다면 어떻게' — 답을 고르게 하는 질문
 _LEADING_CHOICE_RE = re.compile(
-    r"(나요|까요|어요|아요|였어요|셨죠|죠|습니까|ㅂ니까|는지|은지|인지)\s*[,，]?\s*아니면\s|(?:하셨|했|였|었|있었|없었|이었)다면\s*(어떻게|어땠|무엇|뭘|어느|누구)")
+    r"(나요|까요|어요|아요|였어요|셨죠|죠|습니까|ㅂ니까|는지|은지|인지)\s*[,，]?\s*(아니면|혹은|또는)\s|(?:하셨|했|였|었|있었|없었|이었)다면\s*(어떻게|어땠|무엇|뭘|어느|누구)")   # (P4) '혹은·또는' 도 선택지
 
 
 def is_leading_choice_question(text: str) -> bool:
@@ -343,21 +374,48 @@ _SUGGESTION_RE = re.compile(r"((주|보|하|해\s*보|떠올려\s*보|생각해\
                             r"(떠올려|생각해|돌아봐|짚어)\s*보(세요|셔요|시죠|시지요)|주셔도\s*(좋|괜찮)[가-힣]*)[.!…]?$")
 
 
+# (2026-11-05 P4-3) 흉터 규칙 — 가드가 구절을 떼고 남긴 문장: (a) 서술어 없음('…게 인데요', '그 결정의 기준.') (b) 호칭만('리더님.')
+#   (c) 조사로 끝남('그 방향을 팀에.'). 셋 중 하나면 그 문장을 삭제한다(교체 아님). 되받기가 0이 되면 8-w 가 재생성한다.
+_HONORIFIC_ONLY_RE = re.compile(r"^(?:네[,.]?\s*)?(?:[가-힣]{2,4}\s+)?(?:리더님|팀장님|대표님)[,.!…]*$")
+_NOUN_TAIL_RE = re.compile(r"(점|것|거|게|쪽|부분|말씀|팀원|이유|기준|방식|과정|결과|상황|자리|순간|장면|선택|결정|판단|시점|때|일|분|곳|데)$")
+_PREDICATE_TAIL_RE = re.compile(r"(다|요|죠|네|까|오|지|며|고|게요|세요|습니다|니다|군요|는데요|거든요|라고요|니까요|잖아요|던데요|구요|고요|시죠|시지요|겠죠|겠네요)$")
+
+
 def is_broken_sentence(sentence: str) -> bool:
     s = (sentence or "").strip()
     if not s or is_question(s):
         return False
+    if _HONORIFIC_ONLY_RE.match(s):
+        return True                                      # (b) 호칭만
     toks = s.rstrip(".!…").split()
     if not toks:
         return False
     last = toks[-1]
     if last in _COPULA_ALONE:
-        return True
-    return bool(_PARTICLE_END_RE.fullmatch(last)) and not re.search(r"(다|요|죠|네|까|오|게|지|며|고)$", last)
+        return True                                      # (a) 계사 어절만 남음('…게 인데요')
+    if _PARTICLE_END_RE.fullmatch(last) and not re.search(r"(다|요|죠|네|까|오|게|지|며|고)$", last):
+        return True                                      # (c) 조사로 끝남
+    if len(toks) >= 2 and _NOUN_TAIL_RE.search(last) and not _PREDICATE_TAIL_RE.search(last) and last not in ("때", "일"):
+        return True                                      # (a) 서술어 없이 명사로 끝남('그 결정의 기준.')
+    return False
 
 
 def broken_statements(text: str) -> list[str]:
     return [s for s in split_sentences(text or "") if is_broken_sentence(s)]
+
+
+def delete_broken_statements(text: str, keep: list[str] | None = None) -> tuple[str, int]:
+    """(P4-3) 흉터 평서문을 삭제한다(교체 없음). keep 의 고정 문장은 건드리지 않는다. (결과, 지운 수)"""
+    keep_c = {_compact(k) for k in (keep or []) if k}
+    bad = [b for b in broken_statements(text) if _compact(b) not in keep_c]
+    if not bad:
+        return text, 0
+    out = text or ""
+    for b in bad:
+        out = out.replace(b, "", 1)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    return re.sub(r"\n{3,}", "\n\n", out).strip(), len(bad)
 
 
 def replace_broken_statements(text: str, new_text: str | None) -> str:
@@ -884,3 +942,31 @@ def drop_question_sentences(text: str) -> tuple[str, int]:
     out = "\n".join(lines)
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
     return out, n
+
+
+# ── (2026-11-05 P4-6) 인용 시작 접속사 제거 — 종료 요약 재료의 리더 인용이 '그래서 …'로 시작하면 코치 문장도 접속사로 시작한다 ──
+_LEAD_CONJ_RE = re.compile(r"^(?:(?:그래서|그리고|그런데|그래도|그다음(?:에|엔)?|그 다음(?:에|엔)?|그러니까|그러면|그럼|근데|그치만|하지만|그래서요|그러다|그러다가|그 뒤로|그 뒤에|그후|그 후|그래가지고|일단|우선|사실|그냥|막|뭐|아|음|네)[,，]?\s+)+")
+
+
+def strip_leading_conjunction(text: str | None) -> str:
+    return _LEAD_CONJ_RE.sub("", (text or "").strip(), count=1).strip()
+
+
+# ── (2026-11-05 P4-5) SWEEP 다리 — 앵커 앞 평서문이 앞 사례에 거는가 ──
+_SWEEP_BRIDGE_RE = re.compile(r"(아까|앞서|조금 전|좀 전|방금|말씀하신|이야기에서|얘기에서|이야기 중에|얘기 중에|나왔는데|나왔던|스쳤|스친|짚었|"
+                              r"그 일에서|그때 그|하나 더|이번엔|이번에는|다른 쪽|다른 장면|이어서|연결해|거기서 하나|그 이야기)")
+
+
+def has_sweep_bridge(statements_text: str | None) -> bool:
+    """SWEEP 앵커 앞 평서문(되받기+다리)에 앞 사례를 짚어 잇는 표지가 있는가."""
+    return bool(_SWEEP_BRIDGE_RE.search(statements_text or ""))
+
+
+# ── (2026-11-05 P4-6) 종료 요약의 번호 매기기 제거 — '사례 1에서는 …', '첫 사례에서는 …', '다음 사례에서는 …' 는 나열 틀이다 ──
+_CASE_NUMBERING_RE = re.compile(r"^(?:(?:첫|두|세|네)\s*(?:번째)?\s*사례(?:에서는|에서|는|의 경우)|사례\s*\d+(?:에서는|에서|는|의 경우)|다음 사례(?:에서는|에서|는)|마지막 사례(?:에서는|에서|는)|"
+                                 r"첫째로|둘째로|셋째로|먼저|다음으로|그리고 이어서)[,，]?\s*")
+
+
+def strip_case_numbering(sentence: str) -> str:
+    return _CASE_NUMBERING_RE.sub("", (sentence or "").strip(), count=1)
+

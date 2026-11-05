@@ -3,7 +3,7 @@
 챕터 = DIAGNOSIS_CONFIRM → ALIGN → EPISODE(×2~3) → SWEEP → CLOSE.
   · EPISODE: 사례 하나를 6슬롯(상황·시점 / 리더 행동 / 상대 반응 / 결과 / 판단 기준 / 다시 한다면·배운 것)이 찰 때까지 듣는다.
     종료 = 6/6 또는 사례 리더 턴 8 또는 챕터 예산 도달. 종료 시 Haiku 다중 라벨(services/slot_judge.map_episode)로 하위역량에 배정.
-  · SWEEP: covered(strong) 가 없는 하위역량만 앵커 1 + 후속 ≤1.
+  · SWEEP: covered(strong) 가 없는 하위역량만 앵커 1 + 후속 ≤1. (P4-5) 챕터당 3개 상한, 나머지는 not_explored.
   · 예산 B(챕터 리더 턴): 조직 16 / 성과 18 / 사람 20 / 일 18 / 자기 16. 3번째 사례는 미커버 ≥2 이고 남은 턴 − 미커버 수 ≥ 5 일 때만.
 
 상태는 전부 session.self_assessment_data(JSON) 안의 키에 둔다(호출자가 영속화):
@@ -45,6 +45,7 @@ EPISODE_MIN = 2
 EPISODE_MAX = 3
 EPISODE_OPEN_MIN_REMAINING = 5        # 사례 하나 더 열려면 최소 이만큼 남아야 한다(SWEEP 예비는 별도)
 EPISODE_RETRY_MAX = 1                 # 사례가 없다(no_case)·단답이면 더 작은 단위로 1회만 재질문
+SWEEP_MAX_PER_CHAPTER = 3             # (2026-11-05 P4-5) SWEEP 항목은 챕터당 3개까지 — 나머지는 not_explored(세션 ≤2 는 린트 기준)
 CHAPTER_BUDGET: dict[str, int] = {
     "organization_management": 16, "performance_management": 18, "people_management": 20,
     "work_management": 18, "self_management": 16,
@@ -322,9 +323,27 @@ def pick_opener(store: dict | None, chapter: str | None, all_subs: list[str], pr
     return (fresh or cands or [None])[0]
 
 
+def sweep_count(store: dict | None, chapter: str | None) -> int:
+    return sum(1 for e in episodes(store, chapter) if e.get("kind") == "sweep")
+
+
 def sweep_target(store: dict | None, chapter: str | None, all_subs: list[str], priority: list[str] | None = None) -> str | None:
+    """다음 SWEEP 하위역량 — 미커버 중 아직 안 물은 첫 항목. (P4-5) 이 챕터의 SWEEP 항목이 SWEEP_MAX_PER_CHAPTER 에 닿았으면 None."""
+    if sweep_count(store, chapter) >= SWEEP_MAX_PER_CHAPTER:
+        return None
     asked = set(_list(store, "sweep_asked", chapter))
     return next((s for s in uncovered(store, chapter, all_subs, priority) if s not in asked), None)
+
+
+def consecutive_sweeps(store: dict | None, chapter: str | None) -> int:
+    """지금 열린(또는 마지막) 항목까지 이어진 연속 SWEEP 수 — 2개째부터 앵커 앞 다리 문장이 필수(P4-5)."""
+    n = 0
+    for e in reversed(episodes(store, chapter)):
+        if e.get("kind") == "sweep":
+            n += 1
+        else:
+            break
+    return n
 
 
 def plan_after_episode(store: dict | None, chapter: str | None, all_subs: list[str]) -> str:

@@ -121,7 +121,10 @@ GATE_SYSTEM = (
         "사유에 결락을 적었으면 레벨은 n-1 이어야 한다.\n"
         "4. 단 n-1 이 Lv.1 이면: Lv.1 서술(역할 인식 부재·단기 수습 같은 부정형)이 발화에 실제로 맞을 때만 1, "
         "아니면 2 다.\n"
-        "5. 주장 레벨보다 높게 올리지 말 것(게이트는 강등 또는 유지만 한다). 구체 행동 사례가 아니면(태도·일반화·부재) 0."
+        "5. 주장 레벨보다 높게 올리지 말 것(게이트는 강등 또는 유지만 한다). 구체 행동 사례가 아니면(태도·일반화·부재) 0.\n"
+        "6. (설계 = Lv.3) 리더가 기준·틀·지표·절차를 직접 제안해 팀이 채택했다는 행동이 근거 문장에 있으면 Lv.3 을 유지한다 — "
+        "기존 기준을 따라 점검·공유만 한 것은 Lv.2, 제안한 틀이 팀의 합의·운영 방식이 된 것은 Lv.3. 목표치·점검 주기 같은 세부가 "
+        "비어 있다는 이유로 Lv.3 → Lv.2 로 강등하지 말 것(그 결락은 Lv.4 를 주지 않는 이유다)."
 )
 
 
@@ -147,7 +150,7 @@ def vote_agrees(a: Dict[str, Any] | None, b: Dict[str, Any] | None) -> bool:
     if not a or not b or a.get("pending") or b.get("pending"):
         return False
     return bool(a.get("dropped")) == bool(b.get("dropped")) and a.get("verified_level") == b.get("verified_level")
-GATE_PROMPT_VERSION = "2026-08-17.v1"
+GATE_PROMPT_VERSION = "2026-11-05.v2-lv3design"   # (P4-8) 규칙 6(설계 = Lv.3) 추가 — 게이트 캐시 무효화
 # (2026-10-23 E) claude 경로의 게이트 캐시만 새 판정 규칙 버전으로 가른다 — gemini 키(420f1341 캐시)는 그대로 둔다(사용자 결정).
 GATE_PROMPT_VERSION_CLAUDE = "2026-10-23.v3"   # E-2: 결락 → n-1, Lv.1 은 부정형 서술이 맞을 때만
 

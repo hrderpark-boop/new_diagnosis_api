@@ -63,16 +63,47 @@ def test_competency_behavior_mean_and_zero_div():
 
 
 def test_competency_final_gates_and_clamp():
+    """(2026-11-05 P4-7) 최종점수 = 행동지표 + STAR 가점. 확신도 인자는 받되 점수에 넣지 않는다."""
     # 미측정 → None
     assert competency_final_score(None, 0.5, 0.5) is None
-    # 가점 최대치 반영
-    assert competency_final_score(4.0, 0.5, 0.5) == 5.0
-    # 상한 5.0 클램프 (가점이 넘쳐도)
-    assert competency_final_score(4.0, 0.9, 0.9) == 5.0
-    # 하한 1.0 클램프
+    # STAR 가점 최대치 반영 — 확신도는 더하지 않는다(4.0 + 0.5)
+    assert competency_final_score(4.0, 0.5, 0.5) == 4.5
+    # STAR 가점은 0.5 로 클램프, 확신도 무시
+    assert competency_final_score(4.0, 0.9, 0.9) == 4.5
+    # 하한 1.0 — 음의 확신도가 점수를 깎지 않는다
     assert competency_final_score(1.0, 0.0, -0.9) == 1.0
-    # 가점 없는 정상 계산
-    assert competency_final_score(2.5, 0.2, 0.1) == 2.8
+    # 운영 Michael 세션(11/5) 성과관리: 2.0 + 0.3 (+0.2 확신도 제거) = 2.3
+    assert competency_final_score(2.0, 0.3, 0.2) == 2.3
+    assert competency_final_score(2.5, 0.2, 0.1) == 2.7
+
+
+def test_confidence_display_is_stars_only():
+    from diag_project.services.scoring import confidence_display, confidence_stars
+    assert confidence_stars(0.3) == 3 and confidence_stars(0.2) == 2 and confidence_stars(0.0) == 2 and confidence_stars(-0.1) == 1
+    d = confidence_display(0.4)
+    assert d == {"confidence_stars": 3, "confidence_label": "AI 판정 확신도 ★★★"}
+    assert confidence_display(None)["confidence_label"] == "AI 판정 확신도 ★★☆"
+
+
+def test_rescore_without_confidence_recomputes_saved_report():
+    """저장된 리포트(확신도 포함 점수)를 읽을 때 행동지표+STAR 로 다시 계산한다 — 운영 Michael 세션 5대역량 전후."""
+    from diag_project.services.report_ledger import rescore_without_confidence
+    saved = {
+        "organization_management": {"score": 2.9, "measured_count": 4, "score_breakdown": {"rubric_base": 2.5, "star_depth_bonus": 0.4, "confidence_adj": 0.0, "final": 2.9}},
+        "performance_management": {"score": 2.5, "measured_count": 5, "score_breakdown": {"rubric_base": 2.0, "star_depth_bonus": 0.3, "confidence_adj": 0.2, "final": 2.5}},
+        "people_management": {"score": 2.9, "measured_count": 9, "score_breakdown": {"rubric_base": 2.3, "star_depth_bonus": 0.4, "confidence_adj": 0.2, "final": 2.9}},
+        "work_management": {"score": 3.1, "measured_count": 5, "score_breakdown": {"rubric_base": 2.6, "star_depth_bonus": 0.3, "confidence_adj": 0.2, "final": 3.1}},
+        "self_management": {"score": 2.7, "measured_count": 3, "score_breakdown": {"rubric_base": 2.3, "star_depth_bonus": 0.3, "confidence_adj": 0.1, "final": 2.7}},
+    }
+    rs = rescore_without_confidence(saved)
+    assert rs["changed"] and rs["radar"] == {"organization_management": 2.9, "performance_management": 2.3, "people_management": 2.7,
+                                              "work_management": 2.9, "self_management": 2.6}
+    assert rs["total_score"] == 2.7                                   # 2.8 → 2.7
+    assert saved["work_management"]["score"] == 2.9 and saved["work_management"]["score_breakdown"]["final"] == 2.9
+    assert saved["work_management"]["score_breakdown"]["confidence_stars"] == 2
+    # 미측정 대역량(rubric_base 없음)은 건너뛴다
+    rs2 = rescore_without_confidence({"x": {"score": None, "score_breakdown": {"rubric_base": None}}})
+    assert rs2["changed"] is False and rs2["total_score"] is None
 
 
 def test_overall_score():

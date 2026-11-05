@@ -75,9 +75,47 @@ RAPPORT_INTRO_BRIDGE_NO_EXPECTATION = "네, 그러면 제가 오늘 흐름부터
 RAPPORT_SMALLTALK_FALLBACK_QUESTION = "오늘 하루는 바쁜 쪽이었어요, 여유 있는 쪽이었어요?"
 
 
-def definition_question(chapter_name: str, persona_name: str | None = None) -> str:
+def definition_question(chapter_name: str, persona_name: str | None = None, variant: int = 0) -> str:
+    """정의 질문 — (2026-11-05 P4-1) 5종 순환. variant 는 챕터 순서 인덱스(0~4) → 한 세션에서 같은 문장이 두 번 나가지 않는다."""
     from diag_project.services.korean import with_josa
-    return persona_line(persona_name, "definition", cn_eul=with_josa(chapter_name, '을/를', quote=True))
+    pool = DEFINITION_VARIANTS.get(persona_key(persona_name)) or DEFINITION_VARIANTS["Ella"]
+    return pool[int(variant) % len(pool)].format(cn_eul=with_josa(chapter_name, '을/를', quote=True))
+
+
+def definition_question_variants(chapter_name: str, persona_name: str | None = None) -> list[str]:
+    """이 코치의 정의 질문 5종 전부(8-k 가 '이미 들어 있는가' 를 볼 때 쓴다)."""
+    return [definition_question(chapter_name, persona_name, i) for i in range(len(DEFINITION_VARIANTS["Ella"]))]
+
+
+# (2026-11-05 P4-1) 정의 질문 5종 — 문형은 공통(①무엇이라 생각 ②리더님 말로 하면 ③팀에서 챙긴다는 건 ④한 문장으로 ⑤평소 어떤 일로),
+#   어미·호칭은 페르소나. {cn_eul} = "'조직관리'를".
+DEFINITION_VARIANTS: dict[str, list[str]] = {
+    "Ella": ["리더님께서는 {cn_eul} 무엇이라고 생각하시나요?", "{cn_eul} 리더님 말로 하면 어떤 일인가요?",
+             "리더님 팀에서 {cn_eul} 챙긴다는 건 어떤 뜻이에요?", "{cn_eul} 한 문장으로 말씀하신다면요?", "평소 {cn_eul} 어떤 일이라고 보고 계세요?"],
+    "Jessica": ["리더님께서는 {cn_eul} 무엇이라고 보십니까?", "{cn_eul} 리더님 말로 하면 무엇입니까?",
+                "리더님 팀에서 {cn_eul} 챙긴다는 것은 무엇을 뜻합니까?", "{cn_eul} 한 문장으로 정의하면 무엇입니까?", "평소 {cn_eul} 어떤 일로 보고 계십니까?"],
+    "Olivia": ["리더님은 {cn_eul} 뭐라고 생각하세요?", "{cn_eul} 리더님 말로 풀면 어떤 거예요?",
+               "리더님 팀에서 {cn_eul} 챙긴다는 건 어떤 모습이에요?", "{cn_eul} 한 문장으로 하면요?", "평소 {cn_eul} 어떤 일로 보고 계세요?"],
+    "Daniel": ["리더님께서는 {cn_eul} 무엇이라고 생각하십니까?", "{cn_eul} 리더님 말씀으로 하면 어떤 일입니까?",
+               "리더님 팀에서 {cn_eul} 챙긴다는 것은 어떤 일입니까?", "{cn_eul} 한 문장으로 말씀해 주시겠습니까?", "평소 {cn_eul} 어떤 일로 보고 계십니까?"],
+    "Michael": ["리더님께서는 {cn_eul} 뭐라고 생각하세요?", "{cn_eul} 리더님 말로 하면 뭐예요?",
+                "리더님 팀에서 {cn_eul} 챙긴다는 건 뭘 하는 거예요?", "{cn_eul} 한 문장으로 딱 말하면요?", "평소 {cn_eul} 어떤 일로 보세요?"],
+    "Lucas": ["리더님께서는 {cn_eul} 무엇이라고 정의하십니까?", "{cn_eul} 리더님 말로 하면 무엇입니까?",
+              "리더님 팀에서 {cn_eul} 챙긴다는 건 무엇입니까?", "{cn_eul} 한 문장으로 하면요?", "{cn_eul} 평소 어떤 일로 보십니까?"],
+}
+
+# (2026-11-05 P4-1) 정의 질문 앞에 LLM 이 쓰는 '이 영역에서 무엇을 볼지' 1문장의 재료 — LLM 출력에 평서문이 없을 때의 결정론 폴백.
+CHAPTER_SCOPE_LINES: dict[str, str] = {
+    "organization_management": "팀이 갈 방향을 어떻게 세우고 바꾸셨는지, 그 과정에서 팀을 어떻게 움직이셨는지 함께 짚어볼 거예요.",
+    "performance_management": "목표를 어떻게 정하고 중간에 어떻게 점검하셨는지, 결과를 두고 팀원과 어떻게 이야기하셨는지 함께 짚어볼 거예요.",
+    "people_management": "팀원 한 사람 한 사람과 어떻게 신뢰를 쌓고, 갈등이나 성장의 순간에 어떻게 대하셨는지 함께 짚어볼 거예요.",
+    "work_management": "일을 계획하고 시간과 자원을 어떻게 나눠 쓰셨는지, 일하는 방식을 어떻게 다듬으셨는지 함께 짚어볼 거예요.",
+    "self_management": "리더님 자신의 상태를 어떻게 알아차리고 흔들릴 때 어떻게 중심을 잡으셨는지 함께 짚어볼 거예요.",
+}
+
+
+def chapter_scope_line(chapter: str | None) -> str:
+    return CHAPTER_SCOPE_LINES.get(chapter or "", "")
 
 
 def pause_suggestion_text(elapsed_min: int, persona_name: str | None = None) -> str:
@@ -202,12 +240,12 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "slot_q": "다음에 비슷한 상황이 오면 어떻게 하실 생각이세요?",
         "slot_q2": "",
         "slot_lead": "그 선택, 응원합니다.",
-        "role_q": "좋습니다, 평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
+        "role_q": "평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 게 있으세요?",
         "smalltalk_q": "오늘은 바쁜 쪽이었어요, 여유 있는 쪽이었어요?",
-        "intro_bridge": "좋습니다, 그러면 오늘 흐름부터 바로 설명드릴게요.",
+        "intro_bridge": "그러면 오늘 흐름부터 바로 설명드릴게요.",
         "definition": "리더님께서는 {cn_eul} 뭐라고 생각하세요?",
-        "end_bridge": "좋습니다, 이제 '{next}'로 바로 가 보겠습니다.",
+        "end_bridge": "이제 '{next}'로 바로 가 보겠습니다.",
         "pause_lead": "리더님, 한 자리에서 {min}분째 달려오셨습니다.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길게 달려오셨습니다.",
         "pause_body": "오늘은 여기서 잠시 쉬어가셔도 좋습니다. 이어가실지, 다음에 하실지 아래에서 골라 주세요.",
@@ -506,6 +544,97 @@ FINAL_CLOSINGS = {
 }
 _FINAL_DEFAULT = ("긴 시간 함께해 주셔서 감사합니다. 오늘 나눈 이야기는 결과 리포트로 정리해 드리겠습니다. "
                   "'진단 완료 및 결과 보기'를 누르시면 확인하실 수 있습니다. 오늘 떠올리신 장면들이 다음 걸음에 작은 기준이 되기를 바랍니다.")
+
+
+# (2026-11-05 P4-1) 페르소나 슬롯 — 챕터당 1회·세션 5회, 문구 5종 순환(챕터 순서 인덱스에서 시작, 세션에서 쓴 것은 건너뜀).
+#   Jessica 기준 / Lucas 한 줄 / Olivia 대조 / Michael 응원 / Daniel 관찰(DANIEL_OBSERVATIONS). Ella 는 슬롯 없음.
+PERSONA_SLOT_VARIANTS: dict[str, list[str]] = {
+    "Jessica": ["그 결정의 기준은 무엇이었습니까?", "그때 무엇을 기준으로 판단하셨습니까?", "그 선택을 가른 기준 하나를 꼽으면 무엇입니까?",
+                "판단의 근거는 무엇이었습니까?", "그렇게 정하신 기준은 어디에 두셨습니까?"],
+    "Lucas": ["그 방법을 고른 이유, 한 줄로 하면요?", "그 결정의 이유, 한 줄로요?", "왜 그쪽이었는지 한 줄로 하면요?",
+              "그 선택의 근거를 한 줄로 하면요?", "그렇게 정한 이유를 한마디로 하면요?"],
+    "Olivia": ["반대로 하셨다면 어떻게 됐을까요?", "그 팀원 입장에서는 어떤 장면이었을까요?", "그때 손을 대지 않으셨다면 무엇이 달라졌을까요?",
+               "다른 쪽을 고르셨다면 어디서 막혔을까요?", "그 자리를 상대 쪽에서 보면 어떤 모습이었을까요?"],
+    "Michael": ["그 선택, 응원합니다.", "거기서 그렇게 가신 게 좋았어요.", "그 판단, 저라도 그랬을 거예요.",
+                "그 결정은 리더님다웠네요.", "그 자리에서 그 선택을 하신 게 보여요."],
+}
+# Olivia 변형이 겨냥하는 슬롯(이미 찼으면 넣지 않는다): 입장·상대 쪽 = reaction, 나머지 = criterion
+OLIVIA_SLOT_TARGETS = ["criterion", "reaction", "criterion", "criterion", "reaction"]
+# Michael 실행 의지 질문(응원 다음 턴) — 세션 3회 상한, 문구 3종
+MICHAEL_WILL_QUESTIONS = ["다음에 비슷한 상황이 오면 어떻게 하실 생각이세요?", "같은 일이 또 생기면 이번엔 뭘 먼저 하시겠어요?",
+                          "지금 다시 그 자리라면 어디서부터 손대시겠어요?"]
+MICHAEL_WILL_SESSION_CAP = 3
+SLOT_SESSION_CAP = 5
+
+
+def slot_variants_for(persona_name: str | None) -> list[str]:
+    k = persona_key(persona_name)
+    if k == "Daniel":
+        return list(DANIEL_OBSERVATIONS)
+    return list(PERSONA_SLOT_VARIANTS.get(k) or [])
+
+
+def next_slot_sentence(persona_name: str | None, chapter_index: int, used: list[int] | None) -> tuple[int | None, str]:
+    """이 세션에서 아직 안 쓴 슬롯 문장의 (인덱스, 문장). 시작은 챕터 순서 인덱스. 전부 썼으면 시작 문장. 슬롯 없는 코치는 (None, "")."""
+    pool = slot_variants_for(persona_name)
+    if not pool:
+        return None, ""
+    n = len(pool)
+    order = [(int(chapter_index) + k) % n for k in range(n)]
+    used_set = set(used or [])
+    idx = next((i for i in order if i not in used_set), order[0])
+    return idx, pool[idx]
+
+
+def michael_will_question(count_so_far: int) -> str:
+    return MICHAEL_WILL_QUESTIONS[int(count_so_far) % len(MICHAEL_WILL_QUESTIONS)]
+
+
+def all_fixed_sentences() -> list[str]:
+    """린트·가드가 '고정 문장'으로 제외할 문장 전부(슬롯 5종×코치·관찰·실행 의지)."""
+    out: list[str] = []
+    for v in PERSONA_SLOT_VARIANTS.values():
+        out.extend(v)
+    out.extend(DANIEL_OBSERVATIONS)
+    out.extend(MICHAEL_WILL_QUESTIONS)
+    for v in ALIGN_OPEN_VARIANTS.values():
+        out.extend(v)                      # '먼저 하나부터.'(Lucas) 같은 서술어 없는 고정 다리는 흉터가 아니다
+    return out
+
+
+# (2026-11-05 P4-1) ALIGN 고정 안내·다리 — 3종 순환(세션 5챕터에서 같은 문장 ≤2회). {n} = 한/두/…/아홉
+ALIGN_GUIDE_VARIANTS: dict[str, list[str]] = {
+    "Ella": ["이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 들어볼게요.", "{n} 가지 모두 실제로 있었던 일로 들어보고 싶어요.",
+             "이 {n} 가지가 리더님 팀에서 어떤 장면으로 나왔는지 하나씩 확인해 볼게요."],
+    "Jessica": ["이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 듣겠습니다.", "{n} 가지 모두 실제 있었던 일로 확인하겠습니다.",
+                "이 {n} 가지가 리더님 팀에서 어떤 장면으로 나왔는지 하나씩 듣겠습니다."],
+    "Olivia": ["이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 천천히 깊게 들어보려고 해요.", "{n} 가지 모두 실제로 있었던 장면으로 들어볼게요.",
+               "이 {n} 가지가 리더님 팀에서는 어떤 모습이었는지 하나씩 볼게요."],
+    "Daniel": ["이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 깊게 들어보겠습니다.", "{n} 가지 모두 실제로 있었던 일로 여쭙겠습니다.",
+               "이 {n} 가지가 리더님 팀에서 어떤 장면으로 나왔는지 하나씩 듣겠습니다."],
+    "Michael": ["이 {n} 가지가 실제로 어떻게 나타나는지, 있었던 일 몇 가지를 제대로 깊게 들어볼게요.", "{n} 가지 전부 실제로 있었던 일로 들어볼게요.",
+                "이 {n} 가지가 리더님 팀에서 어떤 장면으로 나왔는지 하나씩 가 볼게요."],
+    "Lucas": ["이 {n} 가지가 실제로 어떻게 드러나는지, 있었던 일 몇 가지를 깊게 묻겠습니다.", "{n} 가지 전부 실제 있었던 일로 묻겠습니다.",
+              "이 {n} 가지가 리더님 팀에서 어떤 장면이었는지 하나씩 묻겠습니다."],
+}
+ALIGN_OPEN_VARIANTS: dict[str, list[str]] = {
+    "Ella": ["먼저 하나부터요.", "하나씩 가 볼게요.", "첫 장면부터 들어볼게요."],
+    "Jessica": ["먼저 하나부터 듣겠습니다.", "하나씩 가겠습니다.", "첫 장면부터 듣겠습니다."],
+    "Olivia": ["먼저 하나부터 볼게요.", "하나씩 들여다볼게요.", "첫 장면부터 볼게요."],
+    "Daniel": ["먼저 하나부터 여쭙겠습니다.", "하나씩 여쭙겠습니다.", "첫 장면부터 듣겠습니다."],
+    "Michael": ["먼저 하나부터 가 볼게요.", "하나씩 바로 가 볼게요.", "첫 장면부터 가 볼게요."],
+    "Lucas": ["먼저 하나부터.", "하나씩 갑니다.", "첫 장면부터."],
+}
+
+
+def align_guide_line(n_word: str, persona_name: str | None, variant: int = 0) -> str:
+    pool = ALIGN_GUIDE_VARIANTS.get(persona_key(persona_name)) or ALIGN_GUIDE_VARIANTS["Ella"]
+    return pool[int(variant) % len(pool)].format(n=n_word)
+
+
+def align_open_line(persona_name: str | None, variant: int = 0) -> str:
+    pool = ALIGN_OPEN_VARIANTS.get(persona_key(persona_name)) or ALIGN_OPEN_VARIANTS["Ella"]
+    return pool[int(variant) % len(pool)]
 
 
 def final_closing_message(persona_name: str | None) -> str:

@@ -381,10 +381,19 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db), caller
     coverage = saved_scores.get("coverage")
     # F: 과거에 저장된 리포트도 읽을 때 측정 0 대역량 서술을 중립화한다(DB 는 그대로).
     #   관리자 교정본은 사람이 확정한 문구라 건드리지 않는다.
+    _total_score = report.total_score
+    _radar_override = None
     if not report.is_human_edited and isinstance(details, dict):
         from diag_project.services.report_ledger import neutralize_unmeasured
         details = copy.deepcopy(details)
         neutralize_unmeasured(details)
+        # (2026-11-05 P4-7) 확신도 가점 제거 — 저장된 리포트는 재분석 없이 읽을 때 저장 원장(행동 지표·STAR)으로 다시 계산한다.
+        #   DB 는 그대로(재분석 전까지 산출 근거 보존), 종합 점수·레이더도 같은 값으로 맞춘다. 교정본은 건드리지 않는다.
+        from diag_project.services.report_ledger import rescore_without_confidence
+        _rs = rescore_without_confidence(details)
+        if _rs["changed"]:
+            _total_score = _rs["total_score"] if _rs["total_score"] is not None else _total_score
+            _radar_override = _rs["radar"]
     # B: 과거 리포트엔 composite_mode 가 없다 → measured_total 로 채운다(표시 전용).
     if isinstance(coverage, dict) and "composite_mode" not in coverage:
         from diag_project.services.scoring import composite_mode
@@ -443,9 +452,9 @@ async def get_report(session_id: str, db: AsyncSession = Depends(get_db), caller
         "user_name": user_name,
         "coach_name": coach_name,
         "participant": participant_info,
-        "total_score": report.total_score,
+        "total_score": _total_score,
         "summary": report.summary,
-        "radar_chart": saved_scores.get("radar_chart", saved_scores),
+        "radar_chart": (_radar_override if _radar_override is not None else saved_scores.get("radar_chart", saved_scores)),
         "details": details,
         "top_keywords": saved_scores.get("top_keywords", []),
         # 🎯 맞춤형 교육과정 추천(성장 처방전) — 프론트 최하단 섹션 렌더용.

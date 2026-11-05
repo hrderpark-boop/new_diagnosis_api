@@ -44,10 +44,10 @@ def test_episode_card_probe_lists_filled_missing_and_next_slot():
 
 def test_episode_card_open_and_sweep_carry_system_anchor():
     card = EC.build_episode_card(instruction="EPISODE_OPEN", chapter=CH, ep=None, bei_turns=8, budget=16, anchor_text="그런 일, 최근에 있으셨어요?")
-    assert "시스템이 붙일 여는 질문: \"그런 일, 최근에 있으셨어요?\"" in card and "질문은 쓰지 않는다" in card
+    assert "시스템이 붙일 여는 문장: \"그런 일, 최근에 있으셨어요?\"" in card and "질문" in card and "쓰지 않는다" in card   # (P4-4) 여는 문장 = 왜 묻는지 + 있었는지 질문
     card2 = EC.build_episode_card(instruction="SWEEP_ANCHOR", chapter=CH, ep=None, bei_turns=12, budget=16, anchor_text="Q?",
                                   weak_hint="아까 1번째 사례에서 이쪽 이야기가 살짝 나왔다")
-    assert "다리 힌트(선택): 아까 1번째 사례" in card2
+    assert "다리 힌트: 아까 1번째 사례" in card2
     ep = _ep(kind="sweep", leader_turns=1)
     card3 = EC.build_episode_card(instruction="SWEEP_FOLLOWUP", chapter=CH, ep=ep, bei_turns=13, budget=16)
     assert "이번 턴: '리더 행동' 하나" in card3 and "마무리한다" in card3
@@ -163,3 +163,188 @@ def test_cross_chapter_evidence_tagged_with_source_chapter():
     assert out[0].startswith("(조직관리 대화에서) ") and out[1].startswith("열두 건")
     assert svc._tag_cross_chapter_evidence("work_management", out) == out   # 두 번 붙이지 않는다
     assert svc._tag_cross_chapter_evidence("work_management", ["원문에 없는 인용"]) == ["원문에 없는 인용"]
+
+
+# ── (2026-11-05 P4) 운영 Michael 완주 세션 검토 반영 ───────────────────────────────────────────────────
+
+
+def test_p4_1_slot_variants_rotate_per_session_and_caps():
+    """슬롯 문구 5종이 세션 단위로 순환(챕터 순서 인덱스에서 시작, 쓴 것은 건너뜀) · Michael 실행 의지 3종 · 정의 질문 5종 · ALIGN 안내·다리 3종."""
+    from diag_project.services.intro_messages import (
+        ALIGN_GUIDE_VARIANTS, ALIGN_OPEN_VARIANTS, DEFINITION_VARIANTS, MICHAEL_WILL_QUESTIONS, MICHAEL_WILL_SESSION_CAP, PERSONA_SLOT_VARIANTS,
+        SLOT_SESSION_CAP, align_guide_line, align_open_line, definition_question, definition_question_variants, michael_will_question, next_slot_sentence,
+    )
+    assert SLOT_SESSION_CAP == 5 and MICHAEL_WILL_SESSION_CAP == 3 and len(MICHAEL_WILL_QUESTIONS) == 3
+    assert PERSONA_SLOT_VARIANTS["Michael"][0] == "그 선택, 응원합니다." and len(PERSONA_SLOT_VARIANTS["Michael"]) == 5
+    for k in ("Jessica", "Lucas", "Olivia", "Michael", "Daniel"):
+        used: list[int] = []
+        seen = []
+        for ch_i in range(5):                       # 5챕터 — 같은 문장 0
+            i, txt = next_slot_sentence(k, ch_i, used)
+            assert i is not None and txt and i not in used
+            used.append(i); seen.append(txt)
+        assert len(set(seen)) == 5, (k, seen)
+    assert next_slot_sentence("Ella", 0, []) == (None, "")
+    # 사람관리(인덱스 2)에서 처음 쓰면 2번 문구, 이미 2를 썼으면 3번
+    assert next_slot_sentence("Michael", 2, [])[0] == 2 and next_slot_sentence("Michael", 2, [2])[0] == 3
+    assert michael_will_question(0) != michael_will_question(1) != michael_will_question(2) and michael_will_question(3) == michael_will_question(0)
+    # 정의 질문 5종 — 코치마다 5개 서로 다르고 {cn_eul} 자리 포함
+    for k, pool in DEFINITION_VARIANTS.items():
+        assert len(pool) == 5 == len(set(pool)) and all("{cn_eul}" in v for v in pool), k
+    vs = definition_question_variants("일관리", "Michael (마이클)")
+    assert len(set(vs)) == 5 and definition_question("일관리", "Michael (마이클)", 3) == vs[3] and "'일관리'를" in vs[3]
+    assert definition_question("조직관리", "Ella (엘라)", 0) == "리더님께서는 '조직관리'를 무엇이라고 생각하시나요?"   # 변형 0 = 기존 문장
+    for k in ALIGN_GUIDE_VARIANTS:
+        assert len(ALIGN_GUIDE_VARIANTS[k]) == 3 and len(ALIGN_OPEN_VARIANTS[k]) == 3
+        assert len({align_guide_line("네", k, i) for i in range(3)}) == 3 and len({align_open_line(k, i) for i in range(3)}) == 3
+    assert "네 가지" in align_guide_line("네", "Jessica", 1)
+
+
+def test_p4_2_praise_lead_detected_and_regenerated_not_capped():
+    """'좋습니다/좋은 방향/좋은 흐름/잘하셨/인상적' 류는 상한이 아니라 전면 제거 — find_praise 가 잡고 8-i 재생성 키에 들어 있다. 문두 리드만 있는 문장은 리드만 뗀다."""
+    import inspect
+    from diag_project.services.output_guard import find_praise, strip_praise
+    from diag_project.services.persona_voice import PERSONA_TAILS, PROBE_PREFERENCE, michael_lead_guard
+    from diag_project.services.intro_messages import PERSONA_LINES
+    from diag_project.routes import diagnoses as d
+    assert find_praise("좋습니다, 참여율을 핵심으로 보셨군요.") == ["좋습니다(문두)"]
+    assert find_praise("그 방향이 좋은 흐름이네요. 정말 잘하셨어요.") == ["잘하셨", "좋은 흐름"]
+    assert find_praise("오늘은 여기서 잠시 쉬어가셔도 좋습니다.") == []          # 문장 가운데의 허용 표현
+    assert strip_praise("좋습니다, 참여율을 핵심으로 보셨군요. 좋은 방향이에요. 그 뒤에는요?") == ("참여율을 핵심으로 보셨군요. 그 뒤에는요?", 2)
+    assert '"praise"}' in inspect.getsource(d._submit_message_phase3a)
+    # Michael '좋습니다' — 꼬리 풀·선호·고정 문장에서 삭제, 가드는 떼기만
+    assert "좋습니다." not in PERSONA_TAILS["Michael"] and "질문 앞에 '좋습니다,'" not in PROBE_PREFERENCE["Michael"]
+    assert not any(v.startswith("좋습니다") for v in PERSONA_LINES["Michael"].values())
+    assert michael_lead_guard("좋습니다, 그 뒤에는요?", False, add=False) == ("그 뒤에는요?", False)
+
+
+def test_p4_3_scar_sentences_are_deleted_not_replaced():
+    """운영 Michael 세션(11/5)의 흉터 2건 꼴 — '…게 인데요'(서술어 없음)·'리더님.'(호칭만) — 고정. 삭제 뒤 되받기가 0이면 8-w 가 재생성(no_receive)."""
+    from diag_project.services.output_guard import delete_broken_statements, is_broken_sentence
+    from diag_project.services.receive_check import check_receive
+    scar1 = "두 분을 따로 불러 이유부터 들으셨다는 게 인데요."
+    scar2 = "리더님."
+    assert is_broken_sentence(scar1) and is_broken_sentence(scar2) and is_broken_sentence("박기진 리더님.") and is_broken_sentence("그 결정의 기준.")
+    for ok in ("그 선택, 응원합니다.", "먼저 하나부터.", "그때가 3월이었고요.", "그 부분은 분명합니다.", "그 뒤에는 어떻게 됐어요?"):
+        assert not is_broken_sentence(ok) or ok == "먼저 하나부터.", ok      # '먼저 하나부터.'(Lucas 고정 다리)는 keep 으로 보호
+    out, n = delete_broken_statements(f"{scar1} {scar2} 그 자리에서 처음 꺼내신 말이 뭐였어요?")
+    assert n == 2 and out == "그 자리에서 처음 꺼내신 말이 뭐였어요?"
+    assert check_receive(out, "두 사람을 따로 불러서 이유를 들었어요") == (False, False)     # 되받기 0 → 8-w no_receive 재생성
+    out2, n2 = delete_broken_statements("먼저 하나부터. 그 자리에서요?", keep=["먼저 하나부터."])
+    assert n2 == 0 and out2.startswith("먼저 하나부터.")
+    out3, n3 = delete_broken_statements(f"참여율을 핵심으로 보셨군요. {scar2} 그 뒤에는요?")
+    assert n3 == 1 and out3 == "참여율을 핵심으로 보셨군요. 그 뒤에는요?"
+
+
+def test_p4_4_opener_shape_why_plus_existence_question():
+    """사례 여는 문장 = [왜 묻는지 1문장] + [있었는지 질문]. 전제형('~받으셨을 때 어떻게')·선택지·이름 노출·질문 2개는 불합격 → 사전 앵커 폴백."""
+    from diag_project.services.anchor_render import opener_shape_ok
+    ok, _ = opener_shape_ok("맡길 일과 직접 할 일을 어떻게 가르시는지 보는 쪽인데요. 최근에 '이건 맡겨 보자' 하신 일이 있으셨어요? 작은 일이어도요.")
+    assert ok
+    ok, _ = opener_shape_ok("팀의 방향을 어떻게 다시 세우셨는지 보려고요, 근래에 방향을 바꿔 잡으셨던 일이 있으셨어요?")   # 쉼표 결합형
+    assert ok
+    assert opener_shape_ok("최근에 팀원 피드백을 받으셨을 때 어떻게 하셨어요?") == (False, "no_why")
+    assert opener_shape_ok("남의 평가를 어떻게 받아들이는지 보는 쪽이에요. 피드백을 받으셨을 때 어떻게 하셨어요?") == (False, "presupposes")
+    assert opener_shape_ok("맡기는 쪽을 볼게요. 어떤 일이었나요? 결과는요?")[1] == "questions=2"
+    assert opener_shape_ok("권한위임을 보는 쪽인데요. 최근에 맡겨 보신 일이 있으셨어요?")[1] == "name_or_metaphor"
+    assert opener_shape_ok("맡기는 쪽을 볼게요. 그 일을 어떻게 나누셨어요?")[1] == "not_existence_question"
+
+
+def test_p4_5_sweep_cap_three_per_chapter_and_bridge_rule():
+    """SWEEP 은 챕터당 3개 상한(나머지 not_explored) · 연속 SWEEP 순번 · 다리 표지 판정 · 카드가 2개째부터 다리 필수를 지시."""
+    from diag_project.services import bei_engine as B
+    from diag_project.services.output_guard import has_sweep_bridge
+    from diag_project.prompts.phase3a.episode_card import build_episode_card
+    CH = "people_management"
+    subs = [f"s{i}" for i in range(9)]
+    st: dict = {"bei_turns": {CH: 10}, "covered": {CH: {"s0": [{"episode": 1}]}}}
+    opened = []
+    for _ in range(5):
+        t = B.sweep_target(st, CH, subs)
+        if t is None:
+            break
+        st, _ep = B.new_episode(st, CH, t, t, kind="sweep")
+        opened.append(t)
+    assert opened == ["s1", "s2", "s3"] and B.sweep_count(st, CH) == 3 and B.sweep_target(st, CH, subs) is None
+    assert B.consecutive_sweeps(st, CH) == 3
+    cov = B.coverage_summary(st, CH, subs)
+    assert cov["not_explored"] == ["s4", "s5", "s6", "s7", "s8"]
+    assert has_sweep_bridge("아까 공통 양식 얘기에서 살짝 나왔는데, 그쪽을 하나 더 여쭙고 싶어요.") and not has_sweep_bridge("교안을 먼저 확보하는 쪽이 과정을 살린다고 보셨군요.")
+    card = build_episode_card(instruction="SWEEP_ANCHOR", chapter=CH, ep=None, bei_turns=10, budget=20, anchor_text="그런 일, 최근에 있으셨어요?",
+                              sweep_seq=2, bridge_material="'하루를 비워서 두 분을 한자리에 앉혔어요'")
+    assert "연속 2번째" in card and "다리 1문장이 필수" in card and "하루를 비워서" in card
+    card1 = build_episode_card(instruction="SWEEP_ANCHOR", chapter=CH, ep=None, bei_turns=10, budget=20, anchor_text="그런 일, 최근에 있으셨어요?", sweep_seq=1)
+    assert "필수" not in card1
+
+
+def test_p4_6_close_summary_material_strips_leading_conjunction_and_template_gone():
+    """종료 요약 재료의 인용은 접속사 없이 — '그래서 …' 로 시작한 인용이 코치 문장을 접속사로 시작하게 했다. 템플릿('첫 사례에서는 … 하셨고')은 폐지."""
+    import inspect
+    from diag_project.services.output_guard import strip_leading_conjunction
+    from diag_project.prompts.phase3a.layer3_state import _get_instruction_guide
+    from diag_project.routes import diagnoses as d
+    assert strip_leading_conjunction("그래서 그다음에 두 명만 먼저 쓰자고 했어요") == "두 명만 먼저 쓰자고 했어요"
+    assert strip_leading_conjunction("근데, 파일럿을 먼저 돌렸어요") == "파일럿을 먼저 돌렸어요"
+    assert strip_leading_conjunction("그날 저녁에 원인부터 쪼개 봤어요") == "그날 저녁에 원인부터 쪼개 봤어요"
+    g = _get_instruction_guide("CHAPTER_READY_TO_END", {"chapter": "organization_management",
+                                                       "bei_close_episodes": [{"idx": 1, "action": "그래서 두 사람을 따로 불렀어요", "context": "", "result": ""},
+                                                                              {"idx": 2, "action": "그리고 파일럿을 먼저 돌렸어요", "context": "", "result": ""}]})
+    assert "사례마다 한 문장씩" in g and "사례 2개" in g and "'두 사람을 따로 불렀어요'" in g and "'그래서 두 사람" not in g
+    src = inspect.getsource(d._submit_message_phase3a)
+    assert "첫 사례에서는 '" not in src and "close_summary_mode" in src
+
+
+def test_p4_7_score_breakdown_carries_confidence_stars_everywhere():
+    """score_breakdown 조립 3곳(분석·병합·원장 확정) 모두 확신도를 점수에 넣지 않고 ★ 표시 필드를 싣는다."""
+    import inspect
+    from diag_project import llm_service as L
+    from diag_project.services import outer_merge as OM, report_ledger as RL
+    for mod in (L, OM, RL):
+        assert "confidence_display" in inspect.getsource(mod), mod.__name__
+    from diag_project.services.scoring import competency_final_score
+    assert competency_final_score(2.6, 0.3, 0.2) == 2.9        # 운영 일관리 3.1 → 2.9
+
+
+def test_p4_8_lv3_design_rule_in_rubric_and_gate():
+    from diag_project.llm_service import LV3_DESIGN_RULE, _build_rubric_block, _DEEP_PROMPT_VERSION_CLAUDE
+    from diag_project.services.level_gate import GATE_SYSTEM, GATE_PROMPT_VERSION
+    blk = _build_rubric_block("performance_management", ["목표설정 및 공유", "성과지표 관리(KPI)"])
+    assert LV3_DESIGN_RULE in blk and "직접 제안해 팀이 채택" in LV3_DESIGN_RULE and "성과지표 관리(KPI)" in LV3_DESIGN_RULE
+    assert "6. (설계 = Lv.3)" in GATE_SYSTEM and "강등하지 말 것" in GATE_SYSTEM
+    assert GATE_PROMPT_VERSION.startswith("2026-11-05") and _DEEP_PROMPT_VERSION_CLAUDE.startswith("2026-11-05")
+
+
+def test_p4_1_definition_turn_scope_line_fallback_per_chapter():
+    from diag_project.services.intro_messages import CHAPTER_SCOPE_LINES, chapter_scope_line
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK
+    for ch in (k for k in COMPETENCY_FRAMEWORK if k != "supplementary"):
+        assert chapter_scope_line(ch).endswith("함께 짚어볼 거예요.") and len(CHAPTER_SCOPE_LINES[ch]) > 20
+    assert "시간과 자원" in chapter_scope_line("work_management")
+
+
+def test_p4_6_close_render_pure_checks_and_numbering_strip():
+    """종료 요약: 번호 매기기('사례 1에서는') 제거 · 사례별 겹침 수 · 질문·예고 문장 제거. 운영 전문의 요약 꼴로 검사한다."""
+    from diag_project.services.close_render import clean_close_summary, episodes_matched
+    from diag_project.services.output_guard import strip_case_numbering
+    eps = [{"idx": 1, "action": "두 사람을 따로 불러서 먼저 이유부터 들었어요", "context": "", "result": "두 분이 개편 TF에 자원했습니다"},
+           {"idx": 2, "action": "대표님께 운영팀 2명만 먼저 쓰자는 안을 숫자와 함께 가져갔어요", "context": "", "result": "운영 공수가 30% 줄었어요"}]
+    llm = "사례 1에서는 두 강사를 따로 불러 먼저 이유를 들으셨고 두 분이 TF에 자원하셨습니다. 사례 2에서는 운영팀 2명 먼저 쓰는 안을 숫자와 함께 내셨고 운영 공수가 30% 줄었습니다. 이제 성과관리로 넘어가 보겠습니다."
+    out = clean_close_summary(llm, 2)
+    assert out.startswith("두 강사를") and "사례 1" not in out and "사례 2" not in out and "넘어가" not in out
+    assert episodes_matched(out, eps) == 2
+    # 질문만 이어 쓴 본 호출 출력(p4a Michael)은 0 — 집중 렌더로 넘어간다
+    assert clean_close_summary("네, 그럼 파일럿 얘기를 조금 더 이어가 볼게요. 두 달 파일럿 과정을 고르실 때, 어떤 기준으로 그 과정을 택하셨어요?", 2) == ""
+    assert episodes_matched("운영팀 2명만 먼저 쓰자는 안을 숫자와 함께 가져가셨습니다.", eps) == 1      # 사례 2만 되짚음
+    assert strip_case_numbering("첫 번째 사례에서는 파일럿을 돌리셨습니다.") == "파일럿을 돌리셨습니다."
+    assert strip_case_numbering("마지막 사례에서 교안을 먼저 받으셨습니다.") == "교안을 먼저 받으셨습니다."
+
+
+def test_p4_leading_choice_includes_hogeun_and_lint_align_allows_tail():
+    from diag_project.services.output_guard import is_leading_choice_question
+    from tools import transcript_lint as tl
+    assert is_leading_choice_question("대표님께 되물으셨는지, 팀원을 먼저 모으셨는지, 혹은 혼자 정리하셨는지요?")
+    assert is_leading_choice_question("직접 하셨나요, 또는 맡기셨나요?") and not is_leading_choice_question("그때 무엇을 먼저 하셨어요?")
+    org = "조직관리를 '방향'이라고 하셨군요.\n\n저희는 조직관리를 '…'으로 봐요.\n· 비전 제시 및 공유\n· 전략적 사고\n· 변화관리(변화지향)\n· 혁신적 사고\n\n네 가지를 들어볼게요. 먼저 하나부터요.\n\n팀이 갈 방향을 어떻게 세우셨는지 보는 쪽인데요. 최근에 방향을 다시 잡으셨던 일이 있으셨어요? 작은 일이어도요."
+    ok, reasons = tl.check_align_turn(org, "organization_management")
+    assert ok, reasons
+

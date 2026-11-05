@@ -81,3 +81,96 @@ async def render_anchor(
         logger.info("앵커 렌더링 must_ask 판정 %s → 사전 폴백: %r", ok, q[:80])
         return base, "fallback"
     return q, "llm"
+
+
+# ── (2026-11-05 P4-4) 사례 여는 질문 = [왜 묻는지 1문장] + [있었는지 질문] ────────────────────────────────
+#   LLM 이 하위역량 정의를 리더 말로 풀어 쓴다. '~받으셨을 때 어떻게' 처럼 있었음을 전제하는 문형 금지. 검사 불합격·실패는 사전 앵커 폴백.
+_PRESUPPOSE_RE = re.compile(r"(하셨을 때|받으셨을 때|했을 때|겪으셨을 때|들으셨을 때|생겼을 때|때 어떻게|때는 어떻게|때 무엇을|때 뭘|때 어떤 식)")
+_EXIST_RE = re.compile(r"(있으셨|있었|있으세요|있나요|있을까요|있으신가요|있습니까|있으십니까|떠오르|기억(나|에 남)|겪으신 적|하신 적|해 ?보신 적|"
+                       r"들려주(세요|시겠|실래|시지요|시죠)|말씀해 주|얘기해 주|꼽으신다면|하나만)")
+_WHY_CLAUSE_RE = re.compile(r"^(.{8,}?(인데요|거든요|보려고요|보려고 해요|궁금해서요|보는 쪽이에요))[,，]\s*(.{6,}\?)$")
+_OPENER_WHY_MAX = 2       # 질문 앞 평서문 최대 2문장
+_OPENER_TAIL_MAX = 1      # 질문 뒤 짧은 덧붙임('작은 일이어도요.') 최대 1문장
+
+
+def opener_shape_ok(text: str) -> tuple[bool, str]:
+    """여는 문장 형식 검사 — (통과, 사유). 질문 1개 · 질문 앞 평서문 1~2 · 있었는지 묻는 문형 · 전제형 아님 · 이름·은유 없음 · 길이."""
+    sents = [x.strip() for x in split_sentences((text or "").strip()) if x.strip()]
+    if not sents:
+        return False, "empty"
+    qs = [i for i, x in enumerate(sents) if is_question(x)]
+    if len(qs) != 1:
+        return False, f"questions={len(qs)}"
+    qi = qs[0]
+    if qi == 0:
+        # '…보는 쪽인데요, 최근에 …있으셨어요?' — 왜 묻는지 절이 쉼표로 질문에 붙은 한 문장도 허용
+        m = _WHY_CLAUSE_RE.match(sents[0])
+        if not m:
+            return False, "no_why"
+        sents = [m.group(1).strip(), m.group(3).strip()] + sents[1:]
+        qi = 1
+    if qi > _OPENER_WHY_MAX or len(sents) - qi - 1 > _OPENER_TAIL_MAX:
+        return False, "too_long"
+    q = sents[qi]
+    if _PRESUPPOSE_RE.search(q):
+        return False, "presupposes"
+    if not _EXIST_RE.search(q):
+        return False, "not_existence_question"
+    if find_sub_names(text, _ALL_SUB_NAMES) or _METAPHOR_RE.search(text):
+        return False, "name_or_metaphor"
+    if len(text) > 240 or len(q) > 130:
+        return False, "length"
+    return True, ""
+
+
+def _sub_material(chapter: str | None, sub_key: str | None) -> dict:
+    ind = ((COMPETENCY_FRAMEWORK.get(chapter or "", {}) or {}).get("indicators") or {}).get(sub_key or "", {}) or {}
+    cues = [c.split(":", 1)[1].strip() for c in (SUBCOMPETENCY_MUST_ASK.get(sub_key or "") or []) if c.startswith("행동")]
+    ex2 = str((ind.get("examples") or {}).get(2) or "")
+    lv2 = next((ln.strip().lstrip("・•·-").strip() for ln in ex2.split("\n") if ln.strip()), "")
+    return {"name": ind.get("name", ""), "lv2": str((ind.get("levels") or {}).get(2) or ""), "lv3": str((ind.get("levels") or {}).get(3) or ""),
+            "example": lv2, "cue": cues[0] if cues else ""}
+
+
+async def render_opener(
+    llm, *, chapter: str | None, sub_key: str | None, persona_name: str | None, leader_text: str | None, fallback_question: str,
+    register_hint: str = "",
+) -> tuple[str, str]:
+    """(여는 문장 전체, 모드). 모드 'llm' | 'llm_regen' | 'fallback'. 폴백은 fallback_question(사전 앵커, 이미 페르소나 어미) 그대로."""
+    mat = _sub_material(chapter, sub_key)
+    if os.getenv("FM_LLM_STUB"):
+        return fallback_question, "stub"          # 스텁 스모크·pytest: LLM 0콜, 사전 앵커 그대로
+    if llm is None or not sub_key or not mat.get("name"):
+        return fallback_question, "fallback"
+    lead = re.sub(r"\s+", " ", (leader_text or "").strip())[-200:]
+    base = (
+        "당신은 리더십 BEI 코치입니다. 리더에게 새 사례 하나를 청하는 '여는 문장'을 만드세요. 출력은 정확히 두 문장입니다.\n\n"
+        "① 왜 묻는지 1문장 — 아래 [무엇을 보는지]를 리더가 쓰는 일상어로 풀어 씁니다. 역량·하위역량 이름, '역량'·'항목'·'지표' 같은 말은 쓰지 않습니다.\n"
+        "② 있었는지 묻는 질문 1문장 — '최근에 ~한 일이 있으셨어요?' 처럼 그런 일이 있었는지 여는 질문. "
+        "있었음을 전제하는 문형('~받으셨을 때 어떻게', '~하셨을 때 무엇을')은 금지합니다. 선택지·가정형 금지. 은유 금지. 평가·칭찬 금지.\n"
+        "질문 뒤에 범위를 넓히는 짧은 덧붙임 1문장(예: 작은 일이어도요.)은 허용.\n\n"
+        f"[무엇을 보는지 — {mat['name']}(이름은 쓰지 말 것)]\n- 정의: {mat['lv2']}\n- 한 단계 위: {mat['lv3']}\n"
+        + (f"- 행동 예: {mat['example']}\n" if mat.get("example") else "") + (f"- 행동 단서: {mat['cue']}\n" if mat.get("cue") else "")
+        + (f"\n[리더가 방금 한 말(결만 참고, 되받지 않는다)] {lead}\n" if lead else "")
+        + f"\n[코치 말투] {persona_name or 'Ella'} — {register_hint or '존댓말, 부드럽게'}\n"
+        "\n[결 참고 — 다른 영역의 예, 그대로 쓰지 말 것] 맡길 일과 직접 할 일을 어떻게 가르시는지 보는 쪽인데요, "
+        "최근에 '이건 내가 안 하고 맡겨 보자' 하신 일이 있으셨어요? 작은 일이어도요.\n"
+        "\n출력: 문장만. 따옴표·머리말·설명 없이."
+    )
+    mode = "llm"
+    prompt = base
+    for attempt in range(2):
+        try:
+            out = await llm._generate_with_retry(prompt=prompt, max_tokens=200, thinking_budget=0, call_type="opener_render", temperature=0.5)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("여는 문장 렌더링 실패 → 사전 폴백: %s", e)
+            return fallback_question, "fallback"
+        text = re.sub(r"\s*\n+\s*", " ", (out or "").strip().strip('"“”'))
+        ok, why = opener_shape_ok(text)
+        if ok:
+            return text, mode
+        logger.info("여는 문장 형식 불합격(%s) → %s: %r", why, "재생성" if attempt == 0 else "사전 폴백", text[:90])
+        mode = "llm_regen"
+        prompt = base + f"\n\n🚨 방금 출력은 형식이 어긋났습니다({why}). 평서문 1문장 + 있었는지 묻는 질문 1문장으로 다시 쓰세요."
+    return fallback_question, "fallback"
+

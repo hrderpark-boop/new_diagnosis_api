@@ -44,9 +44,9 @@ def test_gate_prompt_level_rule():
 
 
 def test_cache_keys_gemini_unchanged_claude_versioned():
-    assert LG.GATE_PROMPT_VERSION == "2026-08-17.v1"
+    assert LG.GATE_PROMPT_VERSION == "2026-11-05.v2-lv3design"   # (P4-8) 규칙 6(설계 = Lv.3) — 캐시 무효화
     assert LG._persist_key("organization_management", "전략적 사고", ["발화 A"], 3, "gemini") == \
-        "2c4b011d4b87f1cbb569569f329459c2b0f3dc753a51206d0b34cbfffc5bf66c"       # 변경 전과 바이트 동일
+        "6a1aa42f14886f4a8579951ed8ac80ddabe73fb30e1d57a99ac9e510e6da4a0b"       # (2026-11-05 P4-8) 게이트 규칙 6(설계=Lv.3)은 두 공급자 공통 → gemini 키도 새 값(의도된 무효화; 이전 2c4b011d…)
     assert LG._persist_key("organization_management", "전략적 사고", ["발화 A"], 3, "claude") != \
         LG._persist_key("organization_management", "전략적 사고", ["발화 A"], 3, "gemini")
     assert LG.GATE_PROMPT_VERSION_CLAUDE in LG._cache_key("o", "s", ["e"], 2, "claude")

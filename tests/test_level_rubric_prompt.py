@@ -31,16 +31,16 @@ def test_prompt_uses_rubric_not_step_a_for_levels():
 
 def test_cache_keys_unchanged_bytes():
     """변경 전(커밋 5cfed1c) 같은 입력으로 산출한 키. 프롬프트 버전·키 성분을 바꾸면 여기서 깨진다."""
-    assert L._ANALYSIS_PROMPT_VERSION == "2026-08-20.v2-e2a" and GATE_PROMPT_VERSION == "2026-08-17.v1"
+    assert L._ANALYSIS_PROMPT_VERSION == "2026-08-20.v2-e2a" and GATE_PROMPT_VERSION == "2026-11-05.v2-lv3design"
     ks = L._deep_cache_keys("organization_management", "리더: 테스트 발언", "코치: 안녕\n리더: 테스트 발언",
                             {"전략적 사고", "비전 제시 및 공유"}, 1, provider="gemini")
-    assert ks == ["32d6ed9afbc2fc0853093deac6cda2928baf89b738b4de117f9e85b34bb81fa7"]
+    assert ks == ["32d6ed9afbc2fc0853093deac6cda2928baf89b738b4de117f9e85b34bb81fa7"]   # (2026-11-05 P4-8) 게이트 버전 성분이 바뀌어 새 키(이전 32d6ed9a…) — 의도된 무효화
     kc = L._deep_cache_keys("organization_management", "리더: 테스트 발언", "코치: 안녕\n리더: 테스트 발언",
                             {"전략적 사고", "비전 제시 및 공유"}, 1, provider="claude")
     # (2026-10-29 P2-4) claude 키는 _DEEP_PROMPT_VERSION_CLAUDE 성분이 더해져 바뀌었다(의도된 변경: 재배치된 프롬프트의 결과는 새 키). gemini 키는 그대로.
-    assert kc == ["48359f77c659708821e462d8729be3520a76024860dcbf2e81adbc8248eb4894"]
+    assert kc == ["87446ad6a99fe73dbab283b5bb5557d3d09e4dee33fbd3b3fda98bf635464190"]   # (2026-11-05 P4-8) _DEEP_PROMPT_VERSION_CLAUDE v4-lv3design → 새 키(이전 48359f77…)
     assert _persist_key("organization_management", "전략적 사고", ["발화 A"], 3, "gemini") == \
-        "2c4b011d4b87f1cbb569569f329459c2b0f3dc753a51206d0b34cbfffc5bf66c"
+        "6a1aa42f14886f4a8579951ed8ac80ddabe73fb30e1d57a99ac9e510e6da4a0b"   # (2026-11-05 P4-8) 게이트 규칙 6 → 새 키(이전 2c4b011d…)
 
 
 def test_split_deep_prompt_is_text_preserving():

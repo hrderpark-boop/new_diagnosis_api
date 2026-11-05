@@ -8,11 +8,14 @@ from __future__ import annotations
 
 from typing import Any
 
-DIFF_THRESHOLD = 1.0
+DIFF_THRESHOLD = 1.0          # |차이| ≥ 1.0 → '차이 큼'
+DIFF_THRESHOLD_SLIGHT = 0.5   # (2026-11-05 P4-9) 0.5 ≤ |차이| < 1.0 → '다소 차이' (운영 세션 +0.5 가 '일치'로 표기되던 것을 교정)
 GROUP_MIN_N = 3
 
-MSG_HIGH = "스스로 높게 보는 영역 — 대화에서는 그만큼 드러나지 않았습니다"
-MSG_LOW = "스스로 낮게 보는 영역 — 대화에서는 더 분명하게 드러났습니다"
+MSG_HIGH = "차이 큼 — 스스로 높게 보는 영역, 대화에서는 그만큼 드러나지 않았습니다"
+MSG_LOW = "차이 큼 — 스스로 낮게 보는 영역, 대화에서는 더 분명하게 드러났습니다"
+MSG_HIGH_SLIGHT = "다소 차이 — 스스로 조금 높게 보는 영역입니다"
+MSG_LOW_SLIGHT = "다소 차이 — 스스로 조금 낮게 보는 영역입니다"
 MSG_MATCH = "인식과 드러남이 일치하는 영역"
 MSG_UNMEASURED = "이번 세션에서 확인되지 않아 비교할 수 없습니다"
 MSG_REFERENCE = "참고치 — 근거가 적어 차이를 단정하지 않습니다"
@@ -62,18 +65,29 @@ def build_self_view(self_scores: dict | None, details: dict | None, names: dict[
             rows.append({"key": k, "name": names.get(k, k), "self": round(s, 1), "measured": round(m, 1), "diff": diff,
                          "kind": "reference", "interpretation": MSG_REFERENCE})
             continue
-        kind = "self_higher" if diff >= DIFF_THRESHOLD else "self_lower" if diff <= -DIFF_THRESHOLD else "match"
+        if diff >= DIFF_THRESHOLD:
+            kind, msg = "self_higher", MSG_HIGH
+        elif diff <= -DIFF_THRESHOLD:
+            kind, msg = "self_lower", MSG_LOW
+        elif diff >= DIFF_THRESHOLD_SLIGHT:
+            kind, msg = "self_higher_slight", MSG_HIGH_SLIGHT
+        elif diff <= -DIFF_THRESHOLD_SLIGHT:
+            kind, msg = "self_lower_slight", MSG_LOW_SLIGHT
+        else:
+            kind, msg = "match", MSG_MATCH
         rows.append({"key": k, "name": names.get(k, k), "self": round(s, 1), "measured": round(m, 1), "diff": diff,
-                     "kind": kind,
-                     "interpretation": MSG_HIGH if kind == "self_higher" else MSG_LOW if kind == "self_lower" else MSG_MATCH})
+                     "kind": kind, "interpretation": msg})
     comparable = [r for r in rows if r["diff"] is not None and r["kind"] != "reference"]
     top = sorted([r for r in comparable if abs(r["diff"]) >= DIFF_THRESHOLD], key=lambda r: -abs(r["diff"]))[:2]
     if top:
         parts = [f"{r['name']}{_josa(r['name'], '을', '를')} 스스로는 {r['self']:.1f}점으로 보셨지만 대화에서는 {r['measured']:.1f}점이 확인되었습니다"
                  for r in top]
         summary = ". ".join(parts) + "."
+    elif any(abs(r["diff"]) >= DIFF_THRESHOLD_SLIGHT for r in comparable):
+        _sl = sorted([r for r in comparable if abs(r["diff"]) >= DIFF_THRESHOLD_SLIGHT], key=lambda r: -abs(r["diff"]))[:2]
+        summary = ", ".join(r["name"] for r in _sl) + "에서 스스로 보는 수준과 대화에 드러난 수준이 다소(0.5점 이상) 다릅니다."
     elif comparable:
-        summary = "비교할 수 있었던 영역에서는 스스로 보는 수준과 대화에 드러난 수준이 1점 이내로 가깝습니다."
+        summary = "비교할 수 있었던 영역에서는 스스로 보는 수준과 대화에 드러난 수준이 0.5점 이내로 가깝습니다."
     else:
         summary = "이번 세션에서 확인된 영역이 없어 자가진단과 비교할 수 없습니다."
     vals = [r["self"] for r in rows]

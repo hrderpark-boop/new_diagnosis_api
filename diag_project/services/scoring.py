@@ -6,7 +6,7 @@
 산식 (P0-3):
   · 하위역량 점수 = clamp(level, 1.0, 4.0)   — 가점 없음. measured 아니면 None
   · 대역량 행동지표평가 = mean(measured 하위역량 점수)  — 독립 산출 금지
-  · 대역량 최종점수 = clamp(행동지표평가 + STAR가점 + 확신도가점, 1.0, 5.0)
+  · 대역량 최종점수 = clamp(행동지표평가 + STAR가점, 1.0, 5.0)   — (2026-11-05 P4-7) 확신도는 점수에서 제거, 표시(★)만
   · 종합 리더십 점수 = mean(measured 대역량 최종점수)
 
 measured (P0-1): asked == True AND len(evidence_utterances) >= 1
@@ -77,16 +77,31 @@ def competency_final_score(
     star_bonus: float = 0.0,
     confidence_adj: float = 0.0,
 ) -> float | None:
-    """대역량 최종점수 = clamp(행동지표평가 + STAR가점 + 확신도가점, 1.0, 5.0).
+    """대역량 최종점수 = clamp(행동지표평가 + STAR가점, 1.0, 5.0).
 
-    behavior_score 가 None(미측정)이면 None 을 그대로 반환.
-    가점은 유효 범위로 먼저 클램프해 상한 붕괴를 막는다.
+    (2026-11-05 P4-7) 확신도 가점(confidence_adj)은 점수에 넣지 않는다 — 인자는 호환을 위해 받되 무시하고,
+    표시는 confidence_display(★)로만 한다. 운영 Michael 세션(11/5)에서 성과 2.5→2.3·일 3.1→2.9 처럼 0.1~0.2 가
+    'AI 확신'으로 흔들리던 것을 제거. behavior_score 가 None(미측정)이면 None.
     """
     if behavior_score is None:
         return None
     sb = clamp(float(star_bonus or 0.0), 0.0, STAR_BONUS_MAX)
-    ca = clamp(float(confidence_adj or 0.0), CONFIDENCE_ADJ_MIN, CONFIDENCE_ADJ_MAX)
-    return round(clamp(behavior_score + sb + ca, COMP_SCORE_MIN, COMP_SCORE_MAX), 1)
+    return round(clamp(behavior_score + sb, COMP_SCORE_MIN, COMP_SCORE_MAX), 1)
+
+
+def confidence_stars(confidence_adj) -> int:
+    """(P4-7) 확신도 표시 — 분석 LLM 의 confidence_adj(-0.5~0.5)를 별 1~3개로. ≥0.3 ★★★ / ≥0.0 ★★ / <0 ★."""
+    try:
+        ca = float(confidence_adj or 0.0)
+    except (TypeError, ValueError):
+        ca = 0.0
+    return 3 if ca >= 0.3 else (2 if ca >= 0.0 else 1)
+
+
+def confidence_display(confidence_adj) -> dict:
+    """score_breakdown 에 싣는 표시 전용 필드 — {"confidence_stars": n, "confidence_label": "AI 판정 확신도 ★★★"}."""
+    n = confidence_stars(confidence_adj)
+    return {"confidence_stars": n, "confidence_label": "AI 판정 확신도 " + "★" * n + "☆" * (3 - n)}
 
 
 def overall_score(competency_finals: list[float | None]) -> float | None:

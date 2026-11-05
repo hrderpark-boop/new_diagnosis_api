@@ -100,11 +100,16 @@ def test_pipeline_wiring_rotation_broken_suggestion():
     assert "_judge_slots(llm, transcript=" in src and "_map_episode(llm, transcript=" in src and 'state["bei_card"] = _bec(' in src
     assert "_bei.restore(_pst, _ledger_snapshot)" in src
     # (s2a 교정) 사례 경계에서 Michael 실행 의지 대기 해제 · 슬롯이 겨냥하는 슬롯이 찼으면 슬롯 생략 · SWEEP 앵커는 여는 질문과 다른 문안
-    assert '_mqp_o.pop(chapter, None)' in src and '_slot_target.get(_pn_s) not in _filled_s' in src and 'alt=(instruction_used == "SWEEP_ANCHOR"' in src
+    assert '_mqp_o.pop(chapter, None)' in src and '_slot_target_now not in _filled_s' in src and 'alt=(instruction_used == "SWEEP_ANCHOR"' in src
     for gone in ("target_bridge_line", "force_ladder_probe", "result_fallback_question", "receive_fallback(", "cap_leads_persona"):
         assert gone not in src, gone
-    # 깨진 문장 재생성(8-i 칭찬 분기)·권유문 제거는 유지
-    assert "replace_broken_statements" in src and "strip_suggestion_statements" in src
-    # 순서: 8-i → 8-n → 8-w(턴 형식) → 8-s(슬롯) → 8-p → 8-h → 8-x2 → 8-y → 8-z → 9
-    assert (src.index("# 8-i.") < src.index("# 8-n.") < src.index("# 8-w.") < src.index("# 8-s.") < src.index("# 8-p.")
+    # (2026-11-05 P4-3) 흉터 문장은 8-v 에서 삭제(교체·재생성 없음)·권유문 제거는 유지
+    assert "delete_broken_statements" in src and "replace_broken_statements" not in src and "strip_suggestion_statements" in src
+    # (P4-2) 평가 말투는 재생성 키 · (P4-4) 여는 문장 렌더 · (P4-5) SWEEP 다리 · (P4-1) 정의 질문 5종·슬롯 세션 상한 · (P4-6) 종료 요약 템플릿 폐지
+    assert '"praise"}' in src and "_opener_for(current_target_sub" in src and "has_sweep_bridge" in src
+    assert "definition_question_variants" in src and "next_slot_sentence" in src and "michael_will_question" in src
+    assert "close_summary_from_quotes" not in src and "_eps_matched(" in src
+    assert "MICHAEL_GOOD_LEAD_CAP" not in src      # '좋습니다' 상한 폐지 — 전면 제거
+    # 순서: 8-i → 8-n → 8-v(흉터) → 8-w(턴 형식) → 8-s(슬롯) → 8-p → 8-h → 8-x2 → 8-y → 8-z → 9
+    assert (src.index("# 8-i.") < src.index("# 8-n.") < src.index("# 8-v.") < src.index("# 8-w.") < src.index("# 8-s.") < src.index("# 8-p.")
             < src.index("# 8-h.") < src.index("# 8-x2.") < src.index("# 8-y.") < src.index("# 8-z.") < src.index("# 9. 사례 행"))

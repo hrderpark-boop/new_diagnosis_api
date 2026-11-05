@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
-from diag_project.services.intro_messages import persona_line
+from diag_project.services.intro_messages import align_guide_line, align_open_line, persona_line
 from diag_project.services.korean import with_josa
 from diag_project.services.output_guard import is_question, key_noun_phrase, split_sentences, count_questions
 from diag_project.services.receive_check import quote_phrase
@@ -93,8 +93,9 @@ def definition_sentence(chapter: str, persona_name: str | None) -> str:
     return persona_line(persona_name, "align_definition", cn_eul=with_josa(name, "을/를"), defn=desc)
 
 
-def guide_sentence(n: int, persona_name: str | None) -> str:
-    return persona_line(persona_name, "align_guide", n=_KO_NUM.get(n, str(n)))
+def guide_sentence(n: int, persona_name: str | None, variant: int = 0) -> str:
+    """(2026-11-05 P4-1) 안내 문장 3종 순환 — variant 는 챕터 순서 인덱스(세션 5챕터에서 같은 문장 ≤2회)."""
+    return align_guide_line(_KO_NUM.get(n, str(n)), persona_name, variant)
 
 
 def leader_definition_body(chapter: str, user_text: str | None) -> str:
@@ -114,8 +115,10 @@ def render_align(
     persona_name: str | None,
     anchor: str,
     user_text: str | None = None,
+    variant: int = 0,
 ) -> str:
-    """ALIGN 최종 출력. anchor 는 이미 페르소나 어미가 적용된 앵커 질문 한 문장. user_text 는 리더의 이번 답(복사 문장 제거용)."""
+    """ALIGN 최종 출력. anchor 는 사례 1 여는 문장(P4-4: 왜 묻는지 1문장 + 있었는지 질문, 또는 사전 앵커 한 문장). user_text 는 리더의 이번 답(복사 문장 제거용).
+    variant 는 챕터 순서 인덱스 — 안내·다리 고정 문장 3종 순환(P4-1)."""
     recv = receive_sentences(llm_text, chapter=chapter, sub_names=sub_names, user_text=user_text)
     if not recv:
         # (2026-11-05 P3-1) 일반 폴백('네, 잘 들었어요') 금지 — 리더 정의의 명사구를 인용한 한 문장. 명사구가 없으면 되받기 생략.
@@ -125,7 +128,7 @@ def render_align(
     parts = [
         " ".join(recv),
         definition_sentence(chapter, persona_name) + "\n" + "\n".join(f"· {n}" for n in sub_names),
-        guide_sentence(len(sub_names), persona_name) + " " + persona_line(persona_name, "align_open"),
+        guide_sentence(len(sub_names), persona_name, variant) + " " + align_open_line(persona_name, variant),
         (anchor or "").strip(),
     ]
     return "\n\n".join(p for p in parts if p.strip())
@@ -145,7 +148,8 @@ def align_shape_ok(text: str, sub_names: list[str]) -> tuple[bool, list[str]]:
         reasons.append(f"질문 문장 {_nq}개")
     last = split_sentences(lines[-1] if lines else "")
     last_s = last[-1] if last else ""
-    if not is_question(last_s):
+    # (P4-4) 여는 문장은 질문 뒤에 짧은 덧붙임 1문장('작은 일이어도요.')이 올 수 있다 — 마지막 줄의 질문이 끝이거나 끝에서 두 번째(덧붙임 ≤ 25자)면 통과
+    if not is_question(last_s) and not (len(last) >= 2 and is_question(last[-2]) and len(last_s) <= 25):
         reasons.append("끝이 질문이 아님")
     if re.search(r"(않죠|않지요|다르지 않|맞죠|맞지요|그렇죠)\s*\?$", last_s):
         reasons.append("확인 질문으로 끝남")
