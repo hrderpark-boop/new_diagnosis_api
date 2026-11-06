@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from diag_project.services.output_guard import is_question, split_sentences
 
 _HANGUL_RE = re.compile(r"[가-힣]")
+_VAGUE_RE = re.compile(r"(모르겠|글쎄|기억(이|은)?\s*(잘\s*)?(안\s*나|않|나지\s*않)|그\s*정도였|딱히|특별히\s*(그런|기억))")   # (2026-11-06 P7) 모호 답 — 중복 입력 검사에서 제외
 _ACK_RE = re.compile(
     r"^((네|넵|넹|예|응|음|어|그래요?|좋아요|좋습니다|알겠(어요|습니다)|괜찮아요|오케이|ok|okay|yes|y)[\s.,!?~^]*)+$",
     re.IGNORECASE)
@@ -179,7 +180,7 @@ def detect(
 
     # (2026-11-06 P7-1) '없어요·글쎄요·딱히' 류 짧은 답은 되풀이돼도 중복 입력이 아니다 — 사례 단계가 incident=no 로 받아 다음 하위역량으로 간다
     from diag_project.services.bei_engine import is_no_case_text as _is_no_case
-    _no_case_like = _is_no_case(t)
+    _no_case_like = _is_no_case(t) or bool(_VAGUE_RE.search(t))   # (2026-11-06 P7 p7c) '글쎄요, 그건 잘 모르겠어요' 가 같은 문장으로 반복돼도 '같은 사례' 안내는 틀린 말
     # 2) 직전 사용자 메시지와 동일
     if repeats_previous(t, prev_user_text) and q and not _no_case_like:
         return Anomaly("repeat_prev", q, "직전 사용자 메시지와 90% 이상 동일")

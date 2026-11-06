@@ -192,3 +192,14 @@ def test_p7_close_no_case_fixed_line_per_persona_and_wiring():
         assert "'성과관리'" in wrap
     src = pathlib.Path("diag_project/routes/diagnoses.py").read_text()
     assert "close_no_case_line" in src and '"no_case_fixed"' in src
+
+
+def test_p7_vague_repeat_is_not_duplicate_and_leak_stem():
+    """(P7 p7c) '글쎄요, 그건 잘 모르겠어요' 반복은 '같은 사례' 중복이 아니다 / '마음에 걸리는 건' 도 추궁 문장."""
+    from diag_project.services import input_anomaly as IA
+    from diag_project.services.output_guard import find_state_leak
+    v = "글쎄요, 그건 잘 모르겠어요. 그냥 평소대로 했던 것 같아요."
+    a = IA.detect(user_text=v, prev_user_text=v, earlier_user_texts=[v, "네."], prev_coach_text="맡을 일을 정하는 기준은 무엇이었는지 궁금해요.",
+                  prev_instruction="SWEEP_FOLLOWUP", event_texts=[], pause_pending=False, awaiting_choice=False, definition_reasked=False)
+    assert a is None or a.kind not in ("repeat_prev", "repeat_any"), a
+    assert find_state_leak("목표를 대충 맞추셨다는 말씀이 마음에 걸리는 건, 합의가 잘 보이지 않아서예요.")
