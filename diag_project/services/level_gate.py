@@ -71,28 +71,45 @@ def _build_gate_prompt(items: list) -> str:
     return GATE_SYSTEM + "\n\n" + _build_gate_body(items)
 
 
-async def _call_gate_llm(llm, prompt: str):
-    """(2026-10-29 P2-4) llm(prompt, system) 을 지원하면 정적 지시를 system 으로 넘기고, 1인자 콜러블(테스트·구형)은 전문을 넘긴다."""
+async def _call_gate_llm(llm, prompt: str, episodes_text: str = ""):
+    """(2026-10-29 P2-4) llm(prompt, system) 을 지원하면 정적 지시를 system 으로 넘기고, 1인자 콜러블(테스트·구형)은 전문을 넘긴다.
+    (2026-11-06 P6) 사례 전문 블록은 세 번째 인자(별도 캐시 블록) — 2인자 콜러블이면 본문 앞에 이어 붙인다."""
     import inspect
     try:
         n_params = len(inspect.signature(llm).parameters)
     except (TypeError, ValueError):
         n_params = 1
+    if n_params >= 3:
+        return await llm(prompt, GATE_SYSTEM, episodes_text or None)
+    body = (episodes_text + "\n\n" + prompt) if episodes_text else prompt
     if n_params >= 2:
-        return await llm(prompt, GATE_SYSTEM)
-    return await llm(GATE_SYSTEM + "\n\n" + prompt)
+        return await llm(body, GATE_SYSTEM)
+    return await llm(GATE_SYSTEM + "\n\n" + body)
+
+
+def _episodes_block_for(items: list) -> str:
+    """(P6) 배치의 사례 전문 블록(사례 하나는 한 번만, [사례 A]…). 항목에 사례가 없으면 빈 문자열."""
+    from diag_project.services.episode_context import assign_letters, episodes_block
+    letters = assign_letters(items)
+    for it in items:
+        it["_letters"] = [letters[e["id"]] for e in (it.get("episodes") or [])]
+    return episodes_block(items, letters)
 
 
 def _build_gate_body(items: list) -> str:
-    """배치 게이트 본문. items: [{sub_name, evidence, claimed_level, ref}]."""
+    """배치 게이트 본문. items: [{sub_name, evidence, claimed_level, ref, episodes?}].
+    (P6) 항목에 사례가 있으면 '[사례 참조] 사례 A 의 일부 — 레벨은 사례 A 전체의 행동으로' 한 줄을 붙인다(사례 전문은 _episodes_block_for)."""
     blocks = []
     for i, it in enumerate(items, 1):
         ref = it["ref"]
         ref_txt = "\n".join(f"  · Lv.{lv}: {ref.get(lv, '')}" for lv in (1, 2, 3, 4))
         ev_txt = "\n".join(f"  - {e}" for e in it["evidence"])
+        letters = it.get("_letters") or []
+        ep_line = (f"\n[사례 참조] 위 인용은 사례 {', '.join(letters)} 의 일부다 — 어디를 보라는 표시일 뿐이며, 레벨은 그 사례 전체에서 리더가 실제로 한 행동으로 판정한다."
+                   if letters else "")
         blocks.append(
             f"[{i}] 하위역량: {it['sub_name']} (판정기 주장 레벨: Lv.{it['claimed_level']})\n"
-            f"[레벨 기준 서술]\n{ref_txt}\n[리더 발화(근거)]\n{ev_txt}"
+            f"[레벨 기준 서술]\n{ref_txt}\n[리더 발화(근거)]\n{ev_txt}{ep_line}"
         )
     body = "\n\n".join(blocks)
     return (
@@ -124,7 +141,10 @@ GATE_SYSTEM = (
         "5. 주장 레벨보다 높게 올리지 말 것(게이트는 강등 또는 유지만 한다). 구체 행동 사례가 아니면(태도·일반화·부재) 0.\n"
         "6. (설계 = Lv.3) 리더가 기준·틀·지표·절차를 직접 제안해 팀이 채택했다는 행동이 근거 문장에 있으면 Lv.3 을 유지한다 — "
         "기존 기준을 따라 점검·공유만 한 것은 Lv.2, 제안한 틀이 팀의 합의·운영 방식이 된 것은 Lv.3. 목표치·점검 주기 같은 세부가 "
-        "비어 있다는 이유로 Lv.3 → Lv.2 로 강등하지 말 것(그 결락은 Lv.4 를 주지 않는 이유다)."
+        "비어 있다는 이유로 Lv.3 → Lv.2 로 강등하지 말 것(그 결락은 Lv.4 를 주지 않는 이유다).\n"
+        "7. (사례 단위 판정) '[사례 전문]' 블록이 주어지면 인용은 어디를 보라는 표시일 뿐이다 — 레벨은 그 사례 전체에서 리더가 실제로 한 "
+        "행동으로 판정한다. 같은 사례를 여러 하위역량이 가리키면 각 하위역량의 기준 서술에 해당하는 행동이 그 사례에 '실제로' 있는지 "
+        "따로 본다(한 사례가 모든 칸을 자동으로 올리지 않는다). 사례에 없는 행동은 상상하지 않는다. 사례 블록이 없는 항목은 인용만으로 판정한다."
 )
 
 
@@ -150,17 +170,17 @@ def vote_agrees(a: Dict[str, Any] | None, b: Dict[str, Any] | None) -> bool:
     if not a or not b or a.get("pending") or b.get("pending"):
         return False
     return bool(a.get("dropped")) == bool(b.get("dropped")) and a.get("verified_level") == b.get("verified_level")
-GATE_PROMPT_VERSION = "2026-11-05.v2-lv3design"   # (P4-8) 규칙 6(설계 = Lv.3) 추가 — 게이트 캐시 무효화
+GATE_PROMPT_VERSION = "2026-11-06.v3-episode"     # (P6) 규칙 7(사례 단위 판정) + 사례 블록 — 게이트 캐시 무효화
 # (2026-10-23 E) claude 경로의 게이트 캐시만 새 판정 규칙 버전으로 가른다 — gemini 키(420f1341 캐시)는 그대로 둔다(사용자 결정).
 GATE_PROMPT_VERSION_CLAUDE = "2026-10-23.v3"   # E-2: 결락 → n-1, Lv.1 은 부정형 서술이 맞을 때만
 
 
 def _cache_key(competency_key: str, sub: str, evidence, claimed: int,
-               provider: str | None = None) -> tuple:
+               provider: str | None = None, ep_hash: str = "") -> tuple:
     # (2026-10-15) provider 성분: gemini 는 빈 튜플(기존 키 보존), claude 는 별도 키.
     from diag_project import llm_provider as _lp
     return (competency_key, sub, "|".join(evidence or []), int(claimed or 1),
-            *_lp.cache_key_parts(provider), *_claude_version_parts(provider))
+            *_lp.cache_key_parts(provider), *_claude_version_parts(provider), ep_hash or "")
 
 
 def _claude_version_parts(provider: str | None) -> tuple:
@@ -169,7 +189,7 @@ def _claude_version_parts(provider: str | None) -> tuple:
 
 
 def _persist_key(competency_key: str, sub: str, evidence, claimed: int,
-                 provider: str | None = None) -> str:
+                 provider: str | None = None, ep_hash: str = "") -> str:
     from diag_project.services import analysis_cache as _ac
     from diag_project import llm_provider as _lp
     # T-1: temperature·thinkingBudget 을 키에 포함(파라미터 다르면 캐시 갈림).
@@ -179,7 +199,7 @@ def _persist_key(competency_key: str, sub: str, evidence, claimed: int,
                         "|".join(evidence or []), int(claimed or 1),
                         os.getenv("ANALYSIS_TEMPERATURE", "temp0"),
                         f"tb{os.getenv('GATE_TB', 'dyn')}",
-                        *_lp.cache_key_parts(provider), *_claude_version_parts(provider))
+                        *_lp.cache_key_parts(provider), *_claude_version_parts(provider), ep_hash or "")
 
 
 # (2026-10-23 E-2) 사유 검증 — "~는 없지만/부족하나 … Lv.n" 처럼 결락 요건을 적고도 n 을 줬으면 n-1 로 내린다.
@@ -265,15 +285,18 @@ async def gate_verify_levels(
     out: Dict[str, Dict[str, Any]] = {}
     items = []
     shared = []  # 다른 코루틴이 이미 판정 중인 후보 → 그 결과를 기다린다
+    from diag_project.services.episode_context import episode_hash as _eph
     for sub, info in measured.items():
         ref = level_reference(competency_key, sub)
         claimed = info.get("claimed_level") or 1
-        ck = _cache_key(competency_key, sub, info.get("evidence"), claimed, provider)
+        _eps = list(info.get("episodes") or [])          # (P6) 이 근거가 속한 사례들 — 호출자가 붙인다
+        _h = _eph(_eps)
+        ck = _cache_key(competency_key, sub, info.get("evidence"), claimed, provider, _h)
         if ck in _GATE_CACHE:                       # in-mem 적중
             out[sub] = dict(_GATE_CACHE[ck])
             continue
         from diag_project.services import analysis_cache as _ac
-        _pk = _persist_key(competency_key, sub, info.get("evidence"), claimed, provider)
+        _pk = _persist_key(competency_key, sub, info.get("evidence"), claimed, provider, _h)
         _persisted = _ac.get("level_gate", _pk)
         if _persisted is not None:                  # 파일 캐시 적중
             _GATE_CACHE[ck] = dict(_persisted)
@@ -284,7 +307,7 @@ async def gate_verify_levels(
             out[sub] = _pending("레벨 기준 서술 없음")
             continue
         it = {"sub_name": sub, "evidence": info["evidence"],
-              "claimed_level": claimed, "ref": ref, "ck": ck}
+              "claimed_level": claimed, "ref": ref, "ck": ck, "episodes": _eps, "ep_hash": _h}
         if llm is not None and ck in _INFLIGHT:
             shared.append((it, _INFLIGHT[ck]))
             continue
@@ -411,6 +434,7 @@ async def _judge_batch(competency_key: str, items: list, llm,
                        out: Dict[str, Dict[str, Any]],
                        provider: str | None = None, *, cache: bool = True, release: bool = True) -> None:
     """items 를 한 번의 LLM 호출로 판정해 out 에 기록(+캐시). 실패는 pending. cache/release=False 는 투표용(병합 결과만 캐시·공유)."""
+    _ep_block = _episodes_block_for(items)          # (P6) 사례 전문은 배치당 한 번, 별도 캐시 블록
     prompt = _build_gate_body(items)
 
     async def _call_gate():
@@ -419,7 +443,7 @@ async def _judge_batch(competency_key: str, items: list, llm,
             last = None
             for attempt in range(GATE_MAX_RETRIES):
                 try:
-                    raw = await _call_gate_llm(llm, prompt)
+                    raw = await _call_gate_llm(llm, prompt, _ep_block)
                     if raw and raw.strip():
                         return raw
                     last = "빈 응답"
@@ -470,7 +494,7 @@ async def _judge_batch(competency_key: str, items: list, llm,
                 from diag_project.services import analysis_cache as _ac
                 _ac.set("level_gate", _persist_key(
                     competency_key, it["sub_name"], it["evidence"],
-                    it["claimed_level"], provider), dict(verdict))  # 파일 영속
+                    it["claimed_level"], provider, it.get("ep_hash", "")), dict(verdict))  # 파일 영속
             if verified is None:
                 logger.info("🚧 레벨게이트 탈락 [%s/%s] claimed=Lv.%s → 근거미달(%s)",
                             competency_key, it["sub_name"], claimed,

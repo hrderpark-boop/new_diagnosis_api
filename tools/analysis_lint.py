@@ -40,7 +40,10 @@ def summarize(label: str, scores: dict) -> dict:
                 levels[str(lv)] = levels.get(str(lv), 0) + 1
     return {"label": label, "unconfirmed": unc, "no_case": noc, "gate_dropped": gate, "not_explored": ne, "evidence_measured": ev,
             "banner": bool(cov.get("unconfirmed_banner")), "rows": rows, "levels": dict(sorted(levels.items())),
-            "comp_labels": {ck: (comp or {}).get("level_label") for ck, comp in det.items()}}
+            "comp_labels": {ck: (comp or {}).get("level_label") for ck, comp in det.items()},
+            # (2026-11-06 P6) 한 사례가 Lv.3 이상으로 올린 칸(≥3 경고) · '(위 사례와 동일)' 표시 수
+            "episode_lift": cov.get("episode_lift") or {}, "lift_warnings": cov.get("episode_lift_warnings") or [],
+            "dup_quotes": cov.get("duplicate_quotes_display")}
 
 
 def main(argv):
@@ -63,6 +66,10 @@ def main(argv):
               + " ".join(f"Lv{k}:{v}" for k, v in s["levels"].items()) + f" | {'예' if s['banner'] else '-'} | " + ", ".join(f"{k[:4]}:{v or '-'}" for k, v in s["comp_labels"].items()) + " |")
         for ck, sub, kind in s["rows"]:
             print(f"    · {kind}: {ck}/{sub}")
+        for w in s["lift_warnings"]:
+            print(f"    ⚠ 한 사례가 Lv.3 이상 ≥3칸: {w}")
+        if s["episode_lift"]:
+            print("    사례별 Lv.3+ 칸: " + " / ".join(f"{k} {len(v)}" for k, v in s["episode_lift"].items()) + (f" · 중복 인용 표시 {s['dup_quotes']}" if s["dup_quotes"] is not None else ""))
     print(f"\n미탐색 2개 이상 세션: {warn} (0 이어야 함)")
     return 0 if warn == 0 else 1
 

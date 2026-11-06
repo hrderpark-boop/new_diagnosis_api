@@ -36,7 +36,7 @@ BEST_MODEL = ANALYSIS_MODEL
 # §3 캐시 무효화용 프롬프트 버전 — 심층분석/evidence 추출 프롬프트를 바꾸면
 #   이 값을 올려 캐시를 자동 무효화한다(버전 미변경 호출만 캐시 반환).
 _ANALYSIS_PROMPT_VERSION = "2026-08-20.v2-e2a"  # E-2a: asked_subs 탐색집중 주입 (gemini 캐시 키 보존 — claude 는 아래 _DEEP_PROMPT_VERSION_CLAUDE 로 가른다)
-_DEEP_PROMPT_VERSION_CLAUDE = "2026-11-05.v4-lv3design"   # (P4-8) 루브릭 블록에 Lv.3 설계 규칙 — 캐시 무효화  # (P2-4) 심층 프롬프트를 system/로그/역량 블록으로 재배치(prompt caching)
+_DEEP_PROMPT_VERSION_CLAUDE = "2026-11-06.v5-evidence-priority"   # (P6-2) 근거 출처 우선순위·KPI 양쪽 근거 규칙 — 캐시 무효화  # (P2-4) 심층 프롬프트를 system/로그/역량 블록으로 재배치(prompt caching)
 
 # T-1: 판정 호출(deep_analysis·level_gate·summary·dtrack_gate)의 temperature.
 #   기본 0(결정론). T-3 비교용으로 ANALYSIS_TEMPERATURE=0.7 오버라이드 가능.
@@ -1690,6 +1690,10 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         🚨 서술의 유창함이 아니라 '행동이 실제로 도달한 수준'으로 레벨을 매긴다.
         예: "제가 직접 떠안아 처리했다"는 위임·팀워크에서는 낮은 수준(Lv.1~2)
         신호다 — 문장이 구체적이라고 레벨을 올리지 말 것.
+규칙 3-B. 🚨 [근거 출처 우선순위 — 2026-11-06 P6] 근거는 '이 대역량 챕터의 대화'에서 먼저 고른다. 이 챕터에 쓸 만한 행동 문장이
+        하나라도 있으면 다른 챕터의 문장은 쓰지 않는다. 이 챕터에 없을 때만 다른 챕터 대화의 문장을 쓴다(코드가 출처 챕터를 표기한다).
+        한 문장이 두 하위역량의 행동을 모두 담고 있으면 두 칸에 모두 넣어도 된다 — 특히 '무엇을 어떻게 잴지(지표·측정 방식·점검 주기)를
+        제안해 팀이 채택'한 문장은 목표설정에 썼더라도 '성과지표 관리(KPI)' 칸의 근거로도 넣는다.
 규칙 4. evidence 는 그 판정의 근거가 된 '원문 그대로(verbatim)' 발췌만.
         요약·창작 금지. 최소 1건. (measured=false 면 빈 배열)
         🚨 행동 문장 우선: 리더가 실제로 한 결정·실행·대화 문장을 먼저 고른다. 이유·판단·신념 문장
@@ -2040,15 +2044,17 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         """
         from diag_project.services.level_gate import gate_verify_levels
 
-        async def _gate_llm(_p, _sys=None):
+        async def _gate_llm(_p, _sys=None, _ep=None):
             # gemini-2.5-pro 는 thinking 모델 — 토큰 예산이 작으면 사고 토큰이
             # 이를 소진해 출력이 비어(→ pending) 버린다. 넉넉히 8192.
+            # (2026-11-06 P6) _ep = 사례 전문 블록 — 같은 챕터의 투표·outer run 이 공유하는 두 번째 캐시 블록
+            _blocks = [b for b in (_sys, _ep) if b]
             async with _analysis_semaphore():
                 _t_gate = time.monotonic()
                 try:
                     return await self._generate_with_retry(
                         _p, max_tokens=8192, json_mode=True,
-                        prefix_blocks=([_sys] if _sys else None),   # (2026-11-02) 원문처럼 user 메시지 안에, 캐시 경계만
+                        prefix_blocks=(_blocks or None),   # (2026-11-02) 원문처럼 user 메시지 안에, 캐시 경계만
                         model=ANALYSIS_MODEL,
                         temperature=_JUDGMENT_TEMPERATURE,
                         thinking_budget=_GATE_TB, call_type="level_gate",
@@ -2063,12 +2069,28 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             if not parsed:
                 continue  # error fallback 등 — 게이트 대상 아님
             asked_set = set(result.get("_asked_list") or [])
+            # (2026-11-06 P6-2) 근거 선택 우선순위 — 자기 챕터 인용이 있으면 교차 챕터 인용은 뺀다(출처 불명은 그대로)
+            from diag_project.services.episode_context import episodes_for_evidence as _efe, prioritize_own_chapter as _poc
+            _turns_g = getattr(self, "_analysis_user_turns", None) or []
+            for _s, _p in parsed.items():
+                if _p.get("evidence"):
+                    _kept, _cross = _poc(list(_p["evidence"]), ckey, _turns_g)
+                    if _cross:
+                        _p["evidence"] = _kept
+                        _p["evidence_cross_dropped"] = len(_cross)
+                        logger.info("🧭 교차 챕터 근거 제외 [%s/%s] %d건(자기 챕터 근거 있음)", ckey, _s, len(_cross))
+            _eps_g = getattr(self, "_episode_index", None) or []
             candidates = {
                 s: {"evidence": p.get("evidence") or [],
-                    "claimed_level": (p.get("level") or 1)}
+                    "claimed_level": (p.get("level") or 1),
+                    # (P6-1) 이 근거가 속한 사례들 — 게이트는 사례 전체를 보고 판정한다
+                    "episodes": _efe(p.get("evidence") or [], _eps_g, prefer_chapter=ckey)}
                 for s, p in parsed.items()
                 if s in asked_set and p.get("evidence")
             }
+            _n_with_ep = sum(1 for c in candidates.values() if c["episodes"])
+            if candidates:
+                logger.info("🧭 게이트 사례 문맥 [%s]: 후보 %d칸 중 사례 매핑 %d칸", ckey, len(candidates), _n_with_ep)
             # (2026-10-23 E-3) 일반화 결정론 전처리: 시점 없음+습관 표지 문장은 근거에서 빼고, 전부 그렇면 게이트 없이 '일반화' 탈락.
             from diag_project.services.level_gate import deterministic_generalization_verdict, split_generalized
             _det_gate: Dict[str, Dict] = {}
@@ -2612,9 +2634,11 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         role_summary: str | None = None,
         progress=None,
         store_meta: Dict[str, Any] | None = None,
+        episodes: List[Dict[str, Any]] | None = None,
     ) -> Dict[str, Any]:
         """
         progress: analysis_progress.AnalysisProgress | None — 단계별 진행 기록.
+        episodes(2026-11-06 P6): episode_context.build_episode_index — 게이트가 인용이 속한 사례 전체를 보고 판정하고, 한 사례가 올린 칸 수를 집계한다.
         store_meta(2026-10-29 P2-3): 대화 원장 메타(generalized·generalized_text·generalize_probed·probes_on_sub) — 근거 미확보 1.0 정책의 서술·탐침 자격.
 
         Map-Reduce 채점:
@@ -2628,7 +2652,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         """
         # (2026-11-05 3단계 결정 1) 근거 인용의 출처 챕터 표기용 — 리더 발화(챕터 태그)만 보관. _finalize_ledger 가 쓴다.
         self._analysis_user_turns = [(h.get("chapter"), str(h.get("parts") or "")) for h in (history or []) if h.get("role") == "user"]
-        logger.info(f"🧠 [{user_name}] Map-Reduce 분석 시작")
+        self._episode_index = list(episodes or [])    # (P6) 사례 색인(없으면 빈 목록 → 인용만으로 판정, 이전 동작)
+        logger.info(f"🧠 [{user_name}] Map-Reduce 분석 시작 (사례 {len(self._episode_index)}건)")
         # §8 계측: 이 분석(재분석 1회)의 호출·토큰·비용을 스냅샷한다.
         #   (단일 세션 분석 기준. 동시 분석 시엔 합산되므로 fixture 재분석은
         #    순차로 측정한다.)
@@ -2704,6 +2729,13 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         _unc = apply_unconfirmed_policy(competency_results, store_meta)
         logger.info("🧭 사례 미확인 %d칸(탐침 부족 %d) · 근거 측정 %d · 검증 미완료 %d",
                     _unc["unconfirmed_total"], _unc["probe_deficit_unconfirmed"], _unc["evidence_measured_total"], _unc["pending_total"])
+        # (2026-11-06 P6-2) 한 사례가 Lv.3 이상으로 올린 칸 수 — 리포트 메타(coverage.episode_lift) + 경고(≥3칸). (P6-3) 같은 인용 반복 표시.
+        from diag_project.services.episode_context import annotate_episode_lift, dedupe_quotes_display, lift_warnings
+        _lift = annotate_episode_lift(competency_results, getattr(self, "_episode_index", None) or [], self._analysis_user_turns)
+        _lift_warn = lift_warnings(_lift)
+        if _lift_warn:
+            logger.warning("🧭 한 사례가 여러 칸을 올림: %s", " | ".join(_lift_warn))
+        _dedup_n = dedupe_quotes_display(competency_results)
 
         # 🎯 Level-Up 교육 추천(D게이트 포함)은 종합 요약과 서로 독립(둘 다
         #   competency_results 를 읽기만 한다) → item6: 요약과 동시에 돌린다.
@@ -2794,6 +2826,9 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
         # qualifying 은 정보용으로만 남긴다(발행 게이트 아님 — V-6 로 물러남).
         _cov["qualifying_competencies"] = sum(1 for c in _comp_stable if c >= 2)
         _cov["none_competencies"] = _none_comps
+        _cov["episode_lift"] = _lift                 # (P6-2) {사례 라벨: [대역량/하위역량…]} — Lv.3 이상 칸의 출처 사례
+        _cov["episode_lift_warnings"] = _lift_warn   # 한 사례 ≥3칸
+        _cov["duplicate_quotes_display"] = _dedup_n  # (P6-3) '(위 사례와 동일)' 표시로 바뀐 인용 수
         # 🚧 T-A fail-closed: 게이트 검증 미완료(pending) 집계 — 1건이라도 있으면
         #   리포트 상단 경고 + 로그. 조용한 fail-open 을 막는 도구 상태 신호.
         _gate_pending = sum(

@@ -313,7 +313,7 @@ def test_p4_8_lv3_design_rule_in_rubric_and_gate():
     blk = _build_rubric_block("performance_management", ["목표설정 및 공유", "성과지표 관리(KPI)"])
     assert LV3_DESIGN_RULE in blk and "직접 제안해 팀이 채택" in LV3_DESIGN_RULE and "성과지표 관리(KPI)" in LV3_DESIGN_RULE
     assert "6. (설계 = Lv.3)" in GATE_SYSTEM and "강등하지 말 것" in GATE_SYSTEM
-    assert GATE_PROMPT_VERSION.startswith("2026-11-05") and _DEEP_PROMPT_VERSION_CLAUDE.startswith("2026-11-05")
+    assert GATE_PROMPT_VERSION >= "2026-11-05" and _DEEP_PROMPT_VERSION_CLAUDE >= "2026-11-05"   # P4-8 이후 버전(P6 에서 다시 올림)
 
 
 def test_p4_1_definition_turn_scope_line_fallback_per_chapter():

@@ -4,6 +4,7 @@ import uuid
 import json
 import logging
 from diag_project.services.participant_auth import Caller, get_caller, assert_can_access_participant, assert_can_access_session  # (2026-10-29 보안) 참여자 API 소유자 확인
+from diag_project.services.episode_context import build_episode_index   # (2026-11-06 P6) 사례 단위 게이트 입력
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -145,6 +146,8 @@ async def load_analysis_inputs(db: AsyncSession, session) -> Dict[str, Any]:
         # (2026-11-04 BEI) 대화 원장 메타 — 사례 미확인 세 갈래(no_case / not_explored / gate_dropped)의 근거.
         #   coverage[챕터] = bei_engine.coverage_summary(covered·sweep_asked·unconfirmed·not_explored·사례 수·리더 턴·예산)
         "store_meta": _build_store_meta(store),
+        # (2026-11-06 P6) 사례 색인 — Event 1건 = 사례 1건, 그 구간의 리더 발화(event_id 태깅). 게이트가 인용 대신 사례 전체를 본다.
+        "episodes": build_episode_index(messages, events, store),
     }
 
 
@@ -755,6 +758,7 @@ async def _analyze_session(session_id, session_uuid, db, llm, progress,
         role_summary=_inp["role_summary"],
         progress=progress,
         store_meta=_inp.get("store_meta"),
+        episodes=_inp.get("episodes"),     # (P6) 사례 색인
     )
     progress.stage("saving")
     if not analysis_result:

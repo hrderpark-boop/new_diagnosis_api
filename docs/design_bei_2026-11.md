@@ -344,3 +344,18 @@ Layer3 instruction 가이드(L3:810~1104, 33종)는 유지 11종(라포·INTRO·
 코드: `services/report_view_token.py`, `participant_auth.get_caller`(Caller.view_*), `routes/admin.py`·`routes/reports.py`; 프론트 `lib/api.ts`(열람 토큰 인터셉터·교환), `lib/adminApi.issueReportViewToken`, `app/admin/reports/[id]`, `app/report`.
 테스트: `tests/test_report_view_token.py`(마스터/HR/대리, 1회성, 만료, 세션 한정, POST 금지). 토큰 값은 서버 로그에 남기지 않는다(발급·교환 로그는 세션 id 만).
 
+## §17. P6 — 사례 단위 게이트·근거 선택 우선순위·반복 인용 표시 (2026-11-06 착수)
+
+원인(운영 Michael 재분석 11/6): 게이트가 칸별 인용 조각만 보고 판정 → 같은 사례가 문제해결·실행력·갈등관리 세 칸을 Lv.3 으로, KPI 는 채택 문장이
+목표설정 칸에 가 있어 Lv.3 결락, 회차마다 조각이 달라 2↔3 교차.
+1. **게이트 입력 = 선택 인용 + 그 인용이 속한 사례 전체**(`services/episode_context`): Event 1건 = 사례 1건, 그 구간의 리더 발화(ChatMessage.event_id 태깅,
+   없으면 S/A/R 슬롯 인용 폴백, 상한 1,800자). 인용 → 사례는 느슨 비교(공백·따옴표 제거 앞 40자, 자기 챕터 우선). 배치 앞에 "[사례 A] … 리더 발화 전체"
+   블록을 **한 번씩만**(별도 프롬프트 캐시 블록 — 같은 챕터의 투표·outer run 이 공유), 칸마다 "[사례 참조] 사례 A 의 일부 — 레벨은 사례 전체의 행동으로".
+   GATE_SYSTEM 규칙 7, 캐시 키에 사례 해시, `GATE_PROMPT_VERSION=2026-11-06.v3-episode`. 사례 색인이 없는 옛 세션은 인용만으로(이전 동작).
+2. **근거 선택 우선순위**: 자기 챕터 인용이 있으면 교차 챕터 인용 제외(`prioritize_own_chapter`, 출처 불명은 유지) + 심층 프롬프트 규칙 3-B(자기 챕터 먼저,
+   한 문장이 두 칸 근거 가능 — 특히 지표·측정 방식 채택 문장은 KPI 칸에도). `_DEEP_PROMPT_VERSION_CLAUDE=2026-11-06.v5-evidence-priority`.
+   한 사례가 Lv.3 이상으로 올린 칸 수 `coverage.episode_lift`·`episode_lift_warnings`(≥3칸), sub_ledger 행 `episode` 라벨, analysis_lint 경고.
+3. **표시**: 같은 인용이 여러 칸(하위역량 근거·S/A/R)에 반복되면 두 번째부터 "(위 사례와 동일) 앞 18자…" — `evidence_display`/`quotes_display`(원본 보존), 프론트는 표시 필드 우선.
+검증: Michael s3b 세션 분석 2회(캐시 디렉터리 분리, ≈ $3) — 갈등관리·동기부여·KPI·실행력의 레벨·안정성·근거 사례를 이전 분석과 대조. 투표 3→2 축소는 안정성이
+좋아지면 그때 결정(게이트 비용 상쇄).
+

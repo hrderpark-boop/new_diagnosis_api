@@ -34,7 +34,7 @@ def test_gate_prompt_e2_rules():
     p = LG._build_gate_prompt([{"sub_name": "문제해결", "evidence": ["e"], "claimed_level": 3, "ref": LG.level_reference("performance_management", "문제해결")}])
     assert "Lv.n 요건이 일부라도" in p and "결락이면 Lv.n-1" in p and "사유에 결락을 적었으면 레벨은 n-1" in p
     assert "n-1 이 Lv.1 이면" in p and "아니면 2 다" in p
-    assert LG.GATE_PROMPT_VERSION_CLAUDE == "2026-10-23.v3" and LG.GATE_PROMPT_VERSION == "2026-11-05.v2-lv3design"
+    assert LG.GATE_PROMPT_VERSION_CLAUDE == "2026-10-23.v3" and LG.GATE_PROMPT_VERSION == "2026-11-06.v3-episode"
 
 
 def test_split_generalized_matches_probe_dictionary():
