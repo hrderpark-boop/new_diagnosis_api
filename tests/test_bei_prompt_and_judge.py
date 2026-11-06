@@ -210,6 +210,8 @@ def test_p4_2_praise_lead_detected_and_regenerated_not_capped():
     assert find_praise("좋습니다, 참여율을 핵심으로 보셨군요.") == ["좋습니다(문두)"]
     assert find_praise("그 방향이 좋은 흐름이네요. 정말 잘하셨어요.") == ["잘하셨", "좋은 흐름"]
     assert find_praise("오늘은 여기서 잠시 쉬어가셔도 좋습니다.") == []          # 문장 가운데의 허용 표현
+    assert find_praise("운영 공수 30% 감소까지 확인하셨다는 건 정량적으로도 분명한 성과입니다.") == ["분명한 성과"]   # (11/06 덧붙임) p4b Michael
+    assert find_praise("숫자로 설득이 확실한 결과로 이어졌네요.") == ["확실한 결과"]
     assert strip_praise("좋습니다, 참여율을 핵심으로 보셨군요. 좋은 방향이에요. 그 뒤에는요?") == ("참여율을 핵심으로 보셨군요. 그 뒤에는요?", 2)
     assert '"praise"}' in inspect.getsource(d._submit_message_phase3a)
     # Michael '좋습니다' — 꼬리 풀·선호·고정 문장에서 삭제, 가드는 떼기만
