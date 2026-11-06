@@ -125,3 +125,32 @@ def test_p7_3_finish_choice_line_and_route_wiring():
     assert "_user_pause_resume" in src and "continue_ack" in src
     g = _get_instruction_guide("USER_REQUESTS_PAUSE", {"chapter": CH})
     assert "받아들이는 평서문 1문장" in g and "[SESSION_PAUSE]" not in g
+
+
+def test_p7_sweep_cap_ignores_no_case_and_repeat_no_case_not_duplicate():
+    from diag_project.services import input_anomaly as IA
+    st: dict = {"bei_turns": {"people_management": 10}, "covered": {"people_management": {"갈등관리": [{"episode": 1}]}}}
+    subs = ["갈등관리", "신뢰형성", "팀워크 촉진(협업)", "코칭 및 피드백", "권한위임", "동기부여", "공감(감성지능)", "의사소통", "인재육성"]
+    opened = []
+    for i in range(8):
+        t = B.sweep_target(st, "people_management", subs)
+        if t is None:
+            break
+        st, ep = B.new_episode(st, "people_management", t, t, kind="sweep")
+        st = B.close_episode(st, "people_management", ep, "no_case" if i < 6 else "sweep_done", [], subs)
+        if i < 6:
+            st = B.mark_unconfirmed(st, "people_management", t)
+        opened.append(t)
+    assert len(opened) == 8                                   # no_case 1턴짜리는 상한에 안 센다 → 8개 전부 물었다
+    assert B.sweep_count(st, "people_management") == 2        # 사례를 찾은 보완만 센다
+    # '없어요' 반복은 중복 입력이 아니다(사례 단계로)
+    a = IA.detect(user_text="딱히 그런 일은 없었던 것 같아요.", prev_user_text="딱히 그런 일은 없었던 것 같아요.", earlier_user_texts=["딱히 그런 일은 없었던 것 같아요."],
+                  prev_coach_text="최근에 그런 일이 있으셨어요?", prev_instruction="EPISODE_OPEN", event_texts=[], pause_pending=False, awaiting_choice=False, definition_reasked=False)
+    assert a is None
+    b = IA.detect(user_text="두 사람을 따로 불러서 이유를 들었어요.", prev_user_text="두 사람을 따로 불러서 이유를 들었어요.", earlier_user_texts=[],
+                  prev_coach_text="그 뒤에는요?", prev_instruction="EPISODE_PROBE", event_texts=[], pause_pending=False, awaiting_choice=False, definition_reasked=False)
+    assert b is not None and b.kind == "repeat_prev"
+    import inspect
+    from diag_project.routes import diagnoses as d
+    assert "_quote_required = not (_bei.is_no_case_text(_llm_user_text)" in inspect.getsource(d._submit_message_phase3a)
+

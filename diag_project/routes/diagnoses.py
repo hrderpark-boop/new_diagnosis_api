@@ -2359,12 +2359,15 @@ async def _submit_message_phase3a(
         _fixed_w = [x for x in ([_tm.get("slot_text")] + split_sentences(_bei_anchor_text or "")) if x]   # (P4-4) 여는 문장은 2~3문장
         _fixed_wc = {_cpt_w(x) for x in _fixed_w}
 
+        # (2026-11-06 P7) 리더 답이 '없어요·글쎄요' 류(사례 아님, incident=false)면 인용할 명사구가 없다 — 되받기만 요구하고 인용은 면제
+        _quote_required = not (_bei.is_no_case_text(_llm_user_text) or _tm.get("incident") is False)
+
         def _format_issues(txt: str) -> list[str]:
             issues: list[str] = []
             _has_r, _quoted_r = _chk_r(txt, _llm_user_text)
             if not _has_r:
                 issues.append("no_receive")
-            elif not _quoted_r:
+            elif not _quoted_r and _quote_required:
                 issues.append("no_quote")
             _n_st = sum(1 for x in split_sentences(txt) if x.strip() and not is_question_sentence(x) and _cpt_w(x) not in _fixed_wc)
             if _n_st > 3:

@@ -334,7 +334,8 @@ def pick_opener(store: dict | None, chapter: str | None, all_subs: list[str], pr
 
 
 def sweep_count(store: dict | None, chapter: str | None) -> int:
-    return sum(1 for e in episodes(store, chapter) if e.get("kind") == "sweep")
+    """(P4-5 → 2026-11-06 P7) 챕터당 SWEEP 상한에 세는 항목 — 사례를 찾아 들은 것(sweep_done 등)만. '없음'(no_case) 1턴짜리는 세지 않는다(전수 탐색 보장)."""
+    return sum(1 for e in episodes(store, chapter) if e.get("kind") == "sweep" and e.get("status") not in ("no_case",))
 
 
 def sweep_target(store: dict | None, chapter: str | None, all_subs: list[str], priority: list[str] | None = None) -> str | None:

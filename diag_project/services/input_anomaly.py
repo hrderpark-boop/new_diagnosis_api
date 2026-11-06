@@ -177,8 +177,11 @@ def detect(
     if is_pause_continue_phrase(t) and not pause_pending and q:
         return Anomaly("pause_phrase", q, "일시정지 문구(계속 진행)가 일반 턴에 입력")
 
+    # (2026-11-06 P7-1) '없어요·글쎄요·딱히' 류 짧은 답은 되풀이돼도 중복 입력이 아니다 — 사례 단계가 incident=no 로 받아 다음 하위역량으로 간다
+    from diag_project.services.bei_engine import is_no_case_text as _is_no_case
+    _no_case_like = _is_no_case(t)
     # 2) 직전 사용자 메시지와 동일
-    if repeats_previous(t, prev_user_text) and q:
+    if repeats_previous(t, prev_user_text) and q and not _no_case_like:
         return Anomaly("repeat_prev", q, "직전 사용자 메시지와 90% 이상 동일")
 
     # 3) 코치 질문 되돌아옴
@@ -201,7 +204,7 @@ def detect(
         return Anomaly("ack_reask", q, "질문 뒤 비실질 입력")
 
     # 7) 세션 안 더 앞 답변과 동일(같은 답 두 번 복사) / 기존 사건과 중복
-    if q and prev_instr not in ("COMPETENCY_ASK", "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "RAPPORT_BUILDING"):
+    if q and prev_instr not in ("COMPETENCY_ASK", "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "RAPPORT_BUILDING") and not _no_case_like:
         dup = repeats_any(t, earlier_user_texts)
         if dup is not None:
             return Anomaly("repeat_any", q, "세션 앞 답변과 90% 이상 동일")
