@@ -136,6 +136,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "intro_bridge": "네, 그러면 제가 오늘 흐름부터 설명드릴게요.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 생각하시나요?",
         "end_bridge": "이제 '{next}'로 이어가 보겠습니다.",
+        "close_no_case": "이 영역은 오늘 떠오르는 장면이 많지 않으셨네요. 그것도 그대로 기록할게요.",   # (2026-11-06 P7) 사례 0 챕터 종료 고정 1문장(다리 앞)
         "pause_lead": "리더님, 한 자리에서 {min}분째 이어오고 있습니다.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길게 이어오고 있습니다.",
         "pause_body": "오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. 이어가실지, 다음에 하실지 아래에서 골라 주세요.",
@@ -163,6 +164,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "intro_bridge": "알겠습니다. 그러면 오늘 흐름부터 설명드리겠습니다.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 보십니까?",
         "end_bridge": "이제 '{next}'로 넘어가겠습니다.",
+        "close_no_case": "이 영역은 오늘 떠오르는 장면이 많지 않으셨습니다. 그것도 그대로 기록하겠습니다.",   # (2026-11-06 P7) 사례 0 챕터 종료 고정 1문장(다리 앞)
         "pause_lead": "리더님, 한 자리에서 {min}분째입니다.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길게 이어왔습니다.",
         "pause_body": "오늘은 여기서 잠시 쉬어가셔도 됩니다. 이어갈지, 다음에 할지 아래에서 선택해 주십시오.",
@@ -190,6 +192,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "intro_bridge": "좋아요, 그럼 오늘 흐름부터 바로 설명드릴게요.",
         "definition": "리더님은 {cn_eul} 뭐라고 생각하세요?",
         "end_bridge": "이제 '{next}' 쪽으로 각도를 바꿔 볼게요.",
+        "close_no_case": "이 영역은 오늘 떠오르는 장면이 많지 않으셨네요. 그 모습 그대로 적어 둘게요.",   # (2026-11-06 P7) 사례 0 챕터 종료 고정 1문장(다리 앞)
         "pause_lead": "리더님, 한 자리에서 {min}분째 달려오셨어요.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길게 달려오셨어요.",
         "pause_body": "오늘은 여기서 잠시 쉬어가도 괜찮아요. 이어갈지, 다음에 할지 아래에서 골라 주세요.",
@@ -217,6 +220,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "intro_bridge": "네, 그러면 오늘 흐름부터 안내드리겠습니다.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 생각하십니까?",
         "end_bridge": "이제 '{next}'로 이어가겠습니다.",
+        "close_no_case": "이 영역은 오늘 떠오르는 장면이 많지 않으셨습니다. 그 점도 그대로 기록해 두겠습니다.",   # (2026-11-06 P7) 사례 0 챕터 종료 고정 1문장(다리 앞)
         "pause_lead": "리더님, 한 자리에서 {min}분째 이어오고 계십니다.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길게 이어오고 계십니다.",
         "pause_body": "오늘은 여기서 잠시 쉬어가셔도 괜찮습니다. 이어가실지, 다음에 하실지 아래에서 골라 주십시오.",
@@ -244,6 +248,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "intro_bridge": "그러면 오늘 흐름부터 바로 설명드릴게요.",
         "definition": "리더님께서는 {cn_eul} 뭐라고 생각하세요?",
         "end_bridge": "이제 '{next}'로 바로 가 보겠습니다.",
+        "close_no_case": "이 영역은 오늘 떠오르는 장면이 많지 않으셨네요. 그대로 기록하겠습니다.",   # (2026-11-06 P7) 사례 0 챕터 종료 고정 1문장(다리 앞)
         "pause_lead": "리더님, 한 자리에서 {min}분째 달려오셨습니다.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길게 달려오셨습니다.",
         "pause_body": "오늘은 여기서 잠시 쉬어가셔도 좋습니다. 이어가실지, 다음에 하실지 아래에서 골라 주세요.",
@@ -271,6 +276,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "intro_bridge": "알겠습니다. 오늘 흐름부터 짚겠습니다.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 정의하십니까?",
         "end_bridge": "이제 '{next}'입니다.",
+        "close_no_case": "이 영역은 오늘 떠오르는 장면이 많지 않으셨습니다. 그대로 기록합니다.",   # (2026-11-06 P7) 사례 0 챕터 종료 고정 1문장(다리 앞)
         "pause_lead": "리더님, 한 자리에서 {min}분째입니다.",
         "pause_lead_short": "리더님, 한 자리에서 꽤 길어졌습니다.",
         "pause_body": "오늘은 여기서 쉬어가셔도 됩니다. 이어갈지, 다음에 할지 아래에서 고르십시오.",
@@ -317,6 +323,11 @@ def finish_choice_line(persona_name: str | None = None) -> str:
 def chapter_end_bridge(next_topic: str, persona_name: str | None = None) -> str:
     """(2026-10-21) 챕터 종료: 들은 것 요약(LLM, 사실만) 뒤에 붙는 고정 다리."""
     return persona_line(persona_name, "end_bridge", next=next_topic)
+
+
+def close_no_case_line(persona_name: str | None = None) -> str:
+    """(2026-11-06 P7) 사례가 하나도 성립하지 않은 챕터의 종료 턴: 다리만 남기지 않고 고정 1문장(페르소나별) + 다리. LLM 문장 없음."""
+    return persona_line(persona_name, "close_no_case")
 
 
 def build_diagnosis_intro_message(user_name: str = "리더님") -> str:

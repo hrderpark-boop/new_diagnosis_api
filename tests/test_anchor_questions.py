@@ -64,8 +64,12 @@ def test_ending_mix_and_no_three_in_a_row():
         bc_total += sum(1 for e in seq if e != "A")
         # (2026-10-29 P1-4 승인 문안) '~하신 적, 최근에 있으셨어요?' 형식 통일 지시로 연속 규칙은 폐지 — 챕터 안에 두 종류 이상만 요구.
         #   문장 어미의 실제 변주는 페르소나 어미 계층(persona_voice)이 맡는다(52×6 동일 쌍 0 테스트).
-        assert len(set(seq)) >= 2, (ck, seq)
-    assert 52 * 0.25 <= bc_total <= 52 * 0.45, bc_total   # 약 1/3
+        # (2026-11-06 P7) 챕터 안 두 종류 조건도 폐지 — 성과관리는 전부 A. 변주는 페르소나 어미 계층이 맡는다.
+    # (2026-11-06 P7 승인 조건 3) 전제형 '~했을 때 어떻게 하셨어요?' 10문장을 P4-4 규칙('있었는지 질문')으로 '~하신 적 있으셨어요?' 교체 —
+    #   B·C 어미 약 1/3 조건은 폐지(B 1·C 5 남음). 전제형(했을 때·셨을 때·셔야 했을)은 0 이어야 한다.
+    assert bc_total >= 1, bc_total
+    _PRESUP = re.compile(r"(했을 때|셨을 때|셔야 했을|하셨다면|했다면)")
+    assert [q for qs in SUBCOMPETENCY_ANCHOR_QUESTIONS.values() for q in qs if _PRESUP.search(q)] == []
 
 
 def test_situation_dictionary_unchanged_shape():

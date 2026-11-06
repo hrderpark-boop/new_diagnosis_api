@@ -175,3 +175,20 @@ def test_p7_5_false_attribution_clause_removed_but_real_quote_kept():
     import pathlib
     src = pathlib.Path("diag_project/routes/diagnoses.py").read_text()
     assert "strip_false_attribution" in src and src.index("strip_false_attribution") < src.index("# 8-y.")
+
+
+def test_p7_close_no_case_fixed_line_per_persona_and_wiring():
+    """(P7 승인 조건 2) 사례 0 챕터 종료: 다리만 남기지 않고 페르소나별 고정 1문장 + 다리."""
+    import pathlib
+    from diag_project.services.intro_messages import PERSONA_LINES, close_no_case_line, chapter_end_bridge
+    from diag_project.services.leak_lexicon import find_leaks, find_state_report
+    from diag_project.services.output_guard import find_state_leak, find_praise, has_question
+    assert close_no_case_line("Ella") == "이 영역은 오늘 떠오르는 장면이 많지 않으셨네요. 그것도 그대로 기록할게요."
+    for pk in PERSONA_LINES:
+        line = close_no_case_line(pk)
+        assert line and not has_question(line) and not find_praise(line), pk
+        assert not find_leaks(line) and not find_state_report(line) and not find_state_leak(line), pk
+        wrap = f"{line} {chapter_end_bridge('성과관리', pk)}"
+        assert "'성과관리'" in wrap
+    src = pathlib.Path("diag_project/routes/diagnoses.py").read_text()
+    assert "close_no_case_line" in src and '"no_case_fixed"' in src

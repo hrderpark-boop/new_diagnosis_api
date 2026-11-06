@@ -2004,6 +2004,10 @@ async def _submit_message_phase3a(
                     logger.error("종료 요약 집중 렌더 실패: %s", _e_cs)
             if _eps_c and _best_n == 0:
                 _sum = ""
+            if not _eps_c:
+                # (2026-11-06 P7 승인 조건 2) 사례 0 챕터: 다리만 남기지 않고 고정 1문장(페르소나별). LLM 요약은 쓰지 않는다(지어낼 재료가 없다).
+                from diag_project.services.intro_messages import close_no_case_line as _cncl
+                _sum, _close_mode = _cncl((state.get("coach_persona") or {}).get("name")), "no_case_fixed"
             _tm["close_summary_mode"] = _close_mode if _sum else "bridge_only"
             _tm["close_summary_eps"] = f"{_best_n}/{_n_eps_c}"
             wrap_up = f"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch), (state.get('coach_persona') or {}).get('name'))}".strip()
