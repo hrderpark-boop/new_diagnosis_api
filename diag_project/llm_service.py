@@ -2070,7 +2070,7 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
                 continue  # error fallback 등 — 게이트 대상 아님
             asked_set = set(result.get("_asked_list") or [])
             # (2026-11-06 P6-2) 근거 선택 우선순위 — 자기 챕터 인용이 있으면 교차 챕터 인용은 뺀다(출처 불명은 그대로)
-            from diag_project.services.episode_context import episodes_for_evidence as _efe, prioritize_own_chapter as _poc
+            from diag_project.services.episode_context import episodes_for_cell as _efe, prioritize_own_chapter as _poc
             _turns_g = getattr(self, "_analysis_user_turns", None) or []
             for _s, _p in parsed.items():
                 if _p.get("evidence"):
@@ -2083,8 +2083,8 @@ STEP C — 확신도·어조 조정 (-0.5 ~ +0.5)
             candidates = {
                 s: {"evidence": p.get("evidence") or [],
                     "claimed_level": (p.get("level") or 1),
-                    # (P6-1) 이 근거가 속한 사례들 — 게이트는 사례 전체를 보고 판정한다
-                    "episodes": _efe(p.get("evidence") or [], _eps_g, prefer_chapter=ckey)}
+                    # (P6-1) 이 근거가 속한 사례들 — 게이트는 사례 전체를 보고 판정한다. (가) 자기 챕터 사례만 묶고, 교차 사례는 단독 1건
+                    "episodes": _efe(p.get("evidence") or [], _eps_g, ckey)}
                 for s, p in parsed.items()
                 if s in asked_set and p.get("evidence")
             }

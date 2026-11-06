@@ -96,6 +96,16 @@ def episodes_for_evidence(evidence: list[str], episodes: list[dict], prefer_chap
     return out
 
 
+def episodes_for_cell(evidence: list[str], episodes: list[dict], chapter: str) -> list[dict]:
+    """(P6 승인 반영 가) 한 칸이 게이트에 들고 가는 사례: 자기 챕터 사례는 여럿 묶어도 되고, 자기 챕터 사례가 없으면 교차 챕터 사례 1건만(단독 근거)."""
+    eps = episodes_for_evidence(evidence, episodes, prefer_chapter=chapter)
+    own = [e for e in eps if e.get("chapter") == chapter]
+    if own:
+        return own
+    cross = [e for e in eps if e.get("chapter") != chapter]
+    return cross[:1]
+
+
 def episode_hash(episodes: list[dict] | None) -> str:
     """게이트 캐시 키 성분 — 사례 텍스트가 바뀌면 다른 키."""
     if not episodes:

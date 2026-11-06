@@ -58,7 +58,7 @@ def test_gate_body_has_episode_block_once_and_reference_lines():
     assert block.count("[사례 A]") == 1 and "조직관리 사례 1" in block and "[사례 B]" not in block      # 같은 사례는 한 번
     assert body.count("[사례 참조] 위 인용은 사례 A 의 일부다") == 2 and "[3] 하위역량: 전략적 사고" in body
     assert "[사례 참조]" not in body.split("[3] 하위역량")[1]                                      # 사례 없는 항목엔 참조 줄 없음
-    assert "7. (사례 단위 판정)" in LG.GATE_SYSTEM and LG.GATE_PROMPT_VERSION == "2026-11-06.v3-episode"
+    assert "7. (사례 단위 판정)" in LG.GATE_SYSTEM and LG.GATE_PROMPT_VERSION == "2026-11-06.v4-scope"
     # 캐시 키: 사례 해시가 성분
     h = EC.episode_hash([idx[0]])
     assert LG._cache_key(CH_O, "s", ["e"], 2, "claude", h) != LG._cache_key(CH_O, "s", ["e"], 2, "claude", "")
@@ -137,3 +137,52 @@ def test_pipeline_wiring_p6():
     assert "build_episode_index(messages, events, store)" in inspect.getsource(R.load_analysis_inputs)
     assert "규칙 3-B" in inspect.getsource(L.GeminiService._analyze_single_competency) and "'성과지표 관리(KPI)' 칸의 근거로도" in inspect.getsource(L.GeminiService._analyze_single_competency)
     assert L._DEEP_PROMPT_VERSION_CLAUDE.startswith("2026-11-06")
+
+
+# ── P6 승인 반영(2026-11-06): (가) 같은 챕터 사례만 묶기 · Lv.4 범위 조건 ──────────────────────────────────
+def test_episodes_for_cell_combines_only_same_chapter_and_single_cross():
+    msgs, events = _episodes()
+    idx = EC.build_episode_index(msgs, events)
+    own_q = ["두 사람을 따로 불러서 먼저 이유를 들었고", "한 과정만 두 달 파일럿으로 돌리자고 제안했습니다"]
+    cross_q = "참여율을 핵심 목표로 잡고 만족도도 함께 관리하자고 제안했습니다"
+    # 자기 챕터 사례 + 교차 사례가 섞이면 자기 챕터 사례만 남는다
+    eps = EC.episodes_for_cell(own_q + [cross_q], idx, CH_O)
+    assert [e["label"] for e in eps] == ["조직관리 사례 1"]
+    # 자기 챕터 사례가 없으면 교차 사례 1건만(단독 근거)
+    eps2 = EC.episodes_for_cell([cross_q, "아까 그 일에서 표로 정리"], idx, CH_O)
+    assert len(eps2) == 1 and eps2[0]["chapter"] == CH_P
+    import inspect
+    from diag_project import llm_service as L
+    assert "episodes_for_cell as _efe" in inspect.getsource(L.GeminiService._run_level_gate)
+    assert "8. (사례 묶기)" in LG.GATE_SYSTEM and "다른 사례와 합쳐 요건을 채우지 않는다" in LG.GATE_SYSTEM
+
+
+def test_scope_fix_caps_team_internal_lv4_to_lv3_p6b_teamwork_reasons():
+    """p6b 2회차 팀워크 촉진(협업) 3→4 의 게이트 사유 2건을 고정 — 강사·운영·기획 합동 리뷰는 팀 안 장치라 Lv.3 상한."""
+    r1 = "강사·운영·기획 사이의 탓하기를 풀려고 격주 합동 리뷰라는 협업 구조를 만들었고 상호 칭찬 규칙을 넣었다. 자료 지연이 사라지고 강사가 개선안을 먼저 가져오는 등 협업 문화로 정착해 Lv.4 협의체 주도에 부합한다."
+    r2 = "강사·운영·기획이 함께하는 격주 합동 리뷰를 직접 만들어 운영했고, 그 결과 자료 지연이 사라지고 강사가 먼저 개선안을 가져왔다. 부서·직군 간 협의체를 주도한 Lv.4 행동에 부합한다."
+    for r in (r1, r2):
+        v, fixed, note = LG.scope_fix(4, r)
+        assert (v, fixed) == (3, True) and "팀 안 장치" in note
+    # 표 병합: 두 표 모두 3 → 3
+    m = LG.merge_votes([{"verified_level": 3, "category": "구체행동", "reason": r1, "downgraded": True, "dropped": False, "pending": False},
+                        {"verified_level": 3, "category": "구체행동", "reason": r2, "downgraded": True, "dropped": False, "pending": False}], 4)
+    assert m["verified_level"] == 3
+    # 팀 밖 범위가 사유에 있으면 Lv.4 유지
+    assert LG.scope_fix(4, "타 부서 세 곳과 월례 합의체를 만들어 운영 기준을 통일했다.") == (4, False, "")
+    assert LG.scope_fix(4, "전사 교육 체계를 설계해 본부별로 전파했다.")[0] == 4
+    # Lv.3 이하는 손대지 않는다
+    assert LG.scope_fix(3, r1) == (3, False, "") and LG.scope_fix(None, r1) == (None, False, "")
+    assert "9. (Lv.4 범위)" in LG.GATE_SYSTEM and "Lv.3 이 상한" in LG.GATE_SYSTEM and LG.GATE_PROMPT_VERSION == "2026-11-06.v4-scope"
+
+
+def test_scope_fix_applied_in_judge_batch(monkeypatch):
+    monkeypatch.setenv("GATE_VOTES", "1")
+    LG._GATE_CACHE.clear()
+    ref = LG.level_reference("people_management", "팀워크 촉진(협업)")
+
+    async def llm(body, system):
+        return '{"results": [{"idx": 1, "supported_level": 4, "category": "구체행동", "reason": "강사·운영·기획이 함께하는 격주 합동 리뷰를 만들어 협업 문화로 정착시켰다."}]}'
+    out = asyncio.run(LG.gate_verify_levels("people_management", {"팀워크 촉진(협업)": {"evidence": ["격주 합동 리뷰를 만들었어요"], "claimed_level": 4}}, llm, provider="claude"))
+    v = out["팀워크 촉진(협업)"]
+    assert v["verified_level"] == 3 and v.get("scope_fix") is True and v["downgraded"] is True

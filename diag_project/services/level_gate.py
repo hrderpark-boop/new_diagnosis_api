@@ -144,7 +144,11 @@ GATE_SYSTEM = (
         "비어 있다는 이유로 Lv.3 → Lv.2 로 강등하지 말 것(그 결락은 Lv.4 를 주지 않는 이유다).\n"
         "7. (사례 단위 판정) '[사례 전문]' 블록이 주어지면 인용은 어디를 보라는 표시일 뿐이다 — 레벨은 그 사례 전체에서 리더가 실제로 한 "
         "행동으로 판정한다. 같은 사례를 여러 하위역량이 가리키면 각 하위역량의 기준 서술에 해당하는 행동이 그 사례에 '실제로' 있는지 "
-        "따로 본다(한 사례가 모든 칸을 자동으로 올리지 않는다). 사례에 없는 행동은 상상하지 않는다. 사례 블록이 없는 항목은 인용만으로 판정한다."
+        "따로 본다(한 사례가 모든 칸을 자동으로 올리지 않는다). 사례에 없는 행동은 상상하지 않는다. 사례 블록이 없는 항목은 인용만으로 판정한다.\n"
+        "8. (사례 묶기) 한 항목이 사례를 여럿 가리키면, 같은 대역량 챕터의 사례끼리만 합쳐 요건을 볼 수 있다. 다른 챕터에서 온 사례는 "
+        "단독 근거로만 쓰고, 다른 사례와 합쳐 요건을 채우지 않는다.\n"
+        "9. (Lv.4 범위) Lv.4 는 행동의 범위가 팀 밖(타 부서·다른 팀·전사·조직 단위·외부 기관)일 때만 준다. 팀 안의 구성원·직군끼리 만든 "
+        "장치(합동 리뷰·규칙·도구·교육)는 아무리 정착했어도 Lv.3 이 상한이다. 사유에 팀 밖 대상이 없으면 Lv.4 를 쓰지 않는다."
 )
 
 
@@ -170,7 +174,7 @@ def vote_agrees(a: Dict[str, Any] | None, b: Dict[str, Any] | None) -> bool:
     if not a or not b or a.get("pending") or b.get("pending"):
         return False
     return bool(a.get("dropped")) == bool(b.get("dropped")) and a.get("verified_level") == b.get("verified_level")
-GATE_PROMPT_VERSION = "2026-11-06.v3-episode"     # (P6) 규칙 7(사례 단위 판정) + 사례 블록 — 게이트 캐시 무효화
+GATE_PROMPT_VERSION = "2026-11-06.v4-scope"       # (P6 승인 반영) 규칙 8(같은 챕터 사례만 묶기)·9(Lv.4 는 팀 밖 범위) — 게이트 캐시 무효화
 # (2026-10-23 E) claude 경로의 게이트 캐시만 새 판정 규칙 버전으로 가른다 — gemini 키(420f1341 캐시)는 그대로 둔다(사용자 결정).
 GATE_PROMPT_VERSION_CLAUDE = "2026-10-23.v3"   # E-2: 결락 → n-1, Lv.1 은 부정형 서술이 맞을 때만
 
@@ -214,6 +218,20 @@ _CONCESSION_RE = re.compile(
 # 문장 경계를 넘는 꼴: "… 근거는 없음. 그래도 Lv.3 …"
 _CONCESSION_CROSS_RE = re.compile(r"(없음|없다|없었다|않음|않는다|부족하다|부족함)\.\s*(그래도|그러나|하지만|그렇지만|다만)[^.]{0,80}Lv\.?\s?(\d)")
 _LV_RE = re.compile(r"Lv\.?\s?(\d)")
+
+
+# (2026-11-06 P6 승인 반영) Lv.4 범위 검증 — 사유에 '팀 밖' 대상이 없으면 Lv.4 → Lv.3. p6b 팀워크(강사·운영·기획 합동 리뷰 = 팀 안 장치)가 4 로 갔다.
+_OUTSIDE_TEAM_RE = re.compile(r"(타\s*부서|다른\s*부서|부서\s*간|타\s*팀|다른\s*팀|여러\s*팀|팀\s*밖|전사|회사\s*(전체|차원)|조직\s*(전체|단위|차원)|본부|사업부|"
+                              r"외부\s*(기관|업체|파트너|강사진|조직)|협력사|고객사|계열사|경영진|임원진|유관\s*부서|현업\s*부서|사내\s*전체)")
+
+
+def scope_fix(verified: int | None, reason: str) -> tuple:
+    """(verified_level, fixed:bool, note). Lv.4 인데 사유에 팀 밖 범위 표지가 없으면 Lv.3."""
+    if verified != 4:
+        return verified, False, ""
+    if _OUTSIDE_TEAM_RE.search(reason or ""):
+        return verified, False, ""
+    return 3, True, "Lv.4 범위 미충족(팀 안 장치) → Lv.3"
 
 
 def concession_fix(verified: int | None, reason: str) -> tuple:
@@ -479,6 +497,9 @@ async def _judge_batch(competency_key: str, items: list, llm,
             verified, _cfix, _cnote = concession_fix(verified, _reason_full)      # (E-2) 결락 서술 검증
             if _cfix:
                 logger.info("🔧 레벨게이트 사유 검증 [%s/%s] %s", competency_key, it["sub_name"], _cnote)
+            verified, _sfix, _snote = scope_fix(verified, _reason_full)           # (P6) Lv.4 범위 검증
+            if _sfix:
+                logger.info("🔧 레벨게이트 범위 검증 [%s/%s] %s", competency_key, it["sub_name"], _snote)
             verdict = {
                 "verified_level": verified,
                 "category": r.get("category", "구체행동"),
@@ -487,6 +508,7 @@ async def _judge_batch(competency_key: str, items: list, llm,
                 "dropped": verified is None,
                 "pending": False,
                 **({"concession_fix": True} if _cfix else {}),
+                **({"scope_fix": True} if _sfix else {}),
             }
             out[it["sub_name"]] = verdict
             if cache:
