@@ -154,3 +154,24 @@ def test_p7_sweep_cap_ignores_no_case_and_repeat_no_case_not_duplicate():
     from diag_project.routes import diagnoses as d
     assert "_quote_required = not (_bei.is_no_case_text(_llm_user_text)" in inspect.getsource(d._submit_message_phase3a)
 
+
+def test_p7_5_false_attribution_clause_removed_but_real_quote_kept():
+    """(P7-5) '방금 말씀하신 '피드백'과도 닿아 있는데요,' — 리더가 '피드백'을 말하지 않았으면 절 삭제, 실제 말('평소대로')은 보존."""
+    from diag_project.services.output_guard import strip_false_attribution
+    user = "그쪽은 기억이 잘 안 나요."
+    txt = ("그렇게 기억이 흐릿한 쪽도 있으시죠, 리더님. 방금 말씀하신 '피드백'과도 닿아 있는데요, 그래도 최근에 팀원과 짧게라도 나눈 대화 중에 "
+           "무언가 하나 떠오르는 장면이 있으실까요?")
+    out, removed = strip_false_attribution(txt, user)
+    assert removed == ["피드백"]
+    assert "말씀하신" not in out and "'피드백'" not in out
+    assert out.startswith("그렇게 기억이 흐릿한 쪽도 있으시죠, 리더님. 그래도 최근에")
+    assert out.endswith("있으실까요?")
+    # 리더가 실제로 한 말은 그대로
+    user2 = "보통은 그냥 평소대로 하는 편이라서요. 딱히 떠오르는 일은 없네요."
+    txt2 = "방금 말씀하신 '평소대로'와도 이어지는데요, 그 평소의 방식은 어떤 모습이었을까요?"
+    out2, removed2 = strip_false_attribution(txt2, user2)
+    assert removed2 == [] and out2 == txt2
+    # 라우트 배선: 사례 턴(_is_probe)에서 8-y 앞에 적용
+    import pathlib
+    src = pathlib.Path("diag_project/routes/diagnoses.py").read_text()
+    assert "strip_false_attribution" in src and src.index("strip_false_attribution") < src.index("# 8-y.")

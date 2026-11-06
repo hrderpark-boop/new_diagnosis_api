@@ -2645,6 +2645,15 @@ async def _submit_message_phase3a(
             _tm["meta_echo"] = _n_me
             logger.info("🧹 출력 규칙 되읊기 %d건 제거", _n_me)
 
+    # 8-x2. (2026-11-06 P7) 허위 귀속 절 삭제 — 사례 턴(LLM 질문 턴)에서 "방금 말씀하신 '피드백'과도 닿아 있는데요," 처럼 리더가 하지 않은 말
+    #   (하위역량 이름)을 리더 말로 돌리는 연결 절을 지운다(p7b Ella NO_CASE_REFRAME 7회). 실제 리더 발화에 있는 인용은 보존. 결정론, 재생성 없음.
+    if system_override_text is None and not _llm_error and (clean_reply or "").strip() and _is_probe:
+        from diag_project.services.output_guard import strip_false_attribution as _sfa_x
+        clean_reply, _fa_removed = _sfa_x(clean_reply, _llm_user_text)
+        if _fa_removed:
+            _tm["false_attr"] = len(_fa_removed)
+            logger.info("🔒 허위 귀속 절 삭제 %s", _fa_removed)
+
     # 8-y. (2026-10-29) 최종 누설 소거 — 8-i 뒤의 재생성(8-j 전환·8-n 입버릇·8-h 느낌표)이 만든 새 LLM 출력은 8-i 의 누설 검사를
     #   거치지 않았다(s291 Jessica t10: 8-n 재생성 출력이 '되받기 한 문장 + 다리 한 문장으로 답하겠습니다.'로 시작). 엄격 사전 어휘·
     #   상태 보고문이 든 평서문만 지운다(질문 보존). ALIGN 은 조립(8-z) 전의 되받기에 걸리므로 고정 문장은 건드리지 않는다.

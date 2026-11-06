@@ -510,6 +510,31 @@ def _quote_from_user(c: str, u: str) -> bool:
     return best >= max(4, int(len(c) * 0.6))
 
 
+_FALSE_ATTR_RE = re.compile(
+    r"(?:방금|앞서|아까|조금 전|지금)?\s*(?:말씀하신|말씀해\s*주신|언급하신|말씀한)\s*['‘’\"“”]([^'‘’\"“”\n]{1,20})['‘’\"“”]"
+    r"\s*(?:과도|와도|과|와|이랑|하고|도)?\s*(?:닿아\s*있(?:는데요|습니다만|어요)|이어지(?:는데요|는 부분인데요|네요)|연결되(?:는데요|네요)|관련(?:이)?\s*있는데요|맞닿아\s*있는데요)[,，]?\s*")
+
+
+def strip_false_attribution(text: str, user_text: str | None) -> tuple[str, list[str]]:
+    """(2026-11-06 P7) '방금 말씀하신 '피드백'과도 닿아 있는데요,' — 리더가 하지 않은 말(하위역량 이름)을 리더 말로 돌리는 연결 절을 지운다.
+    p7b Ella 재시뮬에서 NO_CASE_REFRAME 턴 7회('피드백'·'맡김'·'동기' — 리더 답은 '기억이 잘 안 나요'). 인용구가 실제 리더 발화에
+    있으면('평소대로') 그대로 둔다. 절만 지우고 뒤 문장은 보존(결정론, 재생성 없음)."""
+    u = _compact(user_text or "")
+    removed: list[str] = []
+    def _sub(m):
+        span = m.group(1).strip()
+        if _quote_from_user(_compact(span), u):
+            return m.group(0)
+        removed.append(span)
+        return ""
+    out = _FALSE_ATTR_RE.sub(_sub, text or "")
+    if removed:
+        out = re.sub(r"[ \t]{2,}", " ", out).strip()
+        # 절을 뗀 자리에서 문장이 소문자 접속부사로 시작해도 그대로 둔다('그래도 최근에 …'). 빈 문장만 정리.
+        out = re.sub(r"(^|[.?!]\s+)[,，]\s*", r"\1", out)
+    return out, removed
+
+
 def strip_quote_marks(text: str, spans: list[str]) -> str:
     """해당 인용구의 따옴표만 뗀다(본문은 유지)."""
     out = text or ""

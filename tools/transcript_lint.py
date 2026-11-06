@@ -37,7 +37,7 @@ if str(ROOT) not in sys.path:
 
 from diag_project.data.coaches_persona import COACHES_PERSONA  # noqa: E402
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK  # noqa: E402
-from diag_project.services.bei_engine import BEI_INSTRUCTIONS, SLOT_KEYS, coverage_summary  # noqa: E402
+from diag_project.services.bei_engine import BEI_INSTRUCTIONS, SLOT_KEYS, coverage_summary, is_no_case_text as _is_no_case_text  # noqa: E402
 from diag_project.services.leak_lexicon import (  # noqa: E402
     _HANGUL_RE, _raw_tokens, build_lexicon, find_lexicon_leaks, find_state_report, guard_lexicon, lexicon_size,
 )
@@ -326,7 +326,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
             if not _has_r:
                 res["no_receive_turns"] += 1
                 res["receive_issues"].append({"t": t, "kind": "none", "instr": instr, "coach": content[:90], "user": (prev_user or "")[:60]})
-            elif not _quoted_r:
+            elif not _quoted_r and not _is_no_case_text(prev_user):   # (2026-11-06 P7) 사례 아님 답에는 인용 요구 없음(8-w 와 같은 기준)
                 res["receive_no_quote_turns"] += 1
                 res["receive_issues"].append({"t": t, "kind": "no_quote", "instr": instr, "coach": content[:90], "user": (prev_user or "")[:60]})
         if g.get("format_regen"):
