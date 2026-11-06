@@ -333,3 +333,14 @@ Layer3 instruction 가이드(L3:810~1104, 33종)는 유지 11종(라포·INTRO·
 검증: 시뮬 Michael·Jessica 1챕터(Haiku ≈ $0.1) → 린트(슬롯 ≤1/챕터·평가 말투 0·흉터 0·고정문장 ≥3회 0) + 전문 → 검토자 읽기 → push.
 프론트: `score_breakdown.confidence_stars/confidence_label` 을 '확신도 +0.2' 막대 대신 표시해야 한다(리포트 프론트 작업, 별도).
 
+## §16. P5 — '고객 화면 보기' 열람 토큰 (2026-11-06)
+
+배경: 관리자 도메인(fm-hr·fm-ops)에서 상대 경로 /report 가 콘솔 홈으로 튕기던 버그를 고치며 관리자 쿠키를 Domain=.connectn.co.kr 로 넓혔다가,
+형제 앱(recruit 등) XSS 로 마스터 토큰이 샐 수 있어 같은 날 되돌렸다. 대신 쿠키 없이 여는 방식:
+1. `POST /api/v1/admin/sessions/{sid}/view-token` (관리자 인증; 마스터 전부·대리 중이면 그 고객사, HR 은 자사 참여자만 — 타사 403) → 1회용 서명 토큰(typ=report_view, 60초, sid·pid 한정, jti)
+2. 프론트가 `https://fm.connectn.co.kr/report?session_id=…#vt=<토큰>` 새 탭 — URL 조각은 서버·로그·리퍼러로 가지 않는다. fm 은 조각을 읽자마자 주소창에서 지운다.
+3. `POST /api/v1/reports/{sid}/view-session` (Authorization: Bearer vt) → 세션 전용 열람 토큰(typ=report_viewer, 30분, sessionStorage). jti 는 소진(두 번째 401), 다른 세션은 403.
+4. 열람 토큰은 그 세션의 GET 만(리포트·진행 상태·예상 시간). POST(재분석·대화)는 403. 만료되면 리포트 페이지가 첫 화면으로 튕기지 않고 "다시 [고객 화면 보기]" 안내.
+코드: `services/report_view_token.py`, `participant_auth.get_caller`(Caller.view_*), `routes/admin.py`·`routes/reports.py`; 프론트 `lib/api.ts`(열람 토큰 인터셉터·교환), `lib/adminApi.issueReportViewToken`, `app/admin/reports/[id]`, `app/report`.
+테스트: `tests/test_report_view_token.py`(마스터/HR/대리, 1회성, 만료, 세션 한정, POST 금지). 토큰 값은 서버 로그에 남기지 않는다(발급·교환 로그는 세션 id 만).
+

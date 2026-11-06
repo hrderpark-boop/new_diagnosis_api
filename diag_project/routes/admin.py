@@ -669,6 +669,27 @@ async def _run_admin_reanalyze(session_id: str, caller) -> None:
         logger.exception("🔁 관리자 재분석 예외(session=%s): %s", session_id, e)
 
 
+@router.post("/sessions/{session_id}/view-token")
+async def issue_report_view_token(
+    session_id: UUID,
+    ctx: AdminContext = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """(2026-11-06 P5) '고객 화면 보기' 1회용 토큰(60초, 이 세션 한정). 마스터는 전부(대리 중이면 그 고객사), HR 은 자사 참여자만(타사 403).
+    프론트는 이 값을 fm 새 탭의 URL 조각(#vt=)에 실어 보내고, fm 이 /reports/{sid}/view-session 으로 교환한다. 토큰 값은 로그에 남기지 않는다."""
+    from diag_project.services.report_view_token import create_view_token
+    session = await db.get(DiagnosisSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="진단 세션을 찾을 수 없습니다.")
+    participant = await db.get(Participant, session.user_id)
+    ctx.assert_can_access_company(participant.company_id if participant else None)
+    if ctx.is_acting and (participant is None or participant.company_id != ctx.company_id):
+        raise HTTPException(status_code=403, detail="해당 고객사의 데이터에 접근할 권한이 없습니다.")
+    token, ttl = create_view_token(session.id, session.user_id, ctx.admin.id)
+    logger.info("👁 열람 토큰 발급: admin=%s session=%s", ctx.admin.email, session_id)
+    return {"view_token": token, "expires_in": ttl, "session_id": str(session.id)}
+
+
 @router.post("/sessions/{session_id}/reanalyze")
 async def admin_reanalyze_session(
     session_id: UUID,

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,10 +48,18 @@ def create_participant_token(participant_id: uuid.UUID | str) -> str:
 class Caller:
     participant_id: Optional[uuid.UUID] = None
     admin: Optional[object] = None          # AdminContext
+    # (2026-11-06 P5) 열람 토큰 호출자 — 그 세션·그 참여자의 GET 만. view_kind = report_view(1회용, 교환 전용) | report_viewer(30분)
+    view_session_id: Optional[uuid.UUID] = None
+    view_participant_id: Optional[uuid.UUID] = None
+    view_kind: Optional[str] = None
 
     @property
     def is_admin(self) -> bool:
         return self.admin is not None
+
+    @property
+    def is_viewer(self) -> bool:
+        return self.view_session_id is not None
 
 
 def _unauth(detail: str = "로그인이 필요합니다. 처음 화면에서 다시 접속해 주세요.") -> HTTPException:
@@ -60,6 +68,7 @@ def _unauth(detail: str = "로그인이 필요합니다. 처음 화면에서 다
 
 
 async def get_caller(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
     db: AsyncSession = Depends(get_db),
     x_act_as_company: Optional[str] = Header(None, alias="X-Act-As-Company"),
@@ -87,6 +96,21 @@ async def get_caller(
     if typ == "admin":
         ctx = await get_current_admin(credentials=credentials, db=db, x_act_as_company=x_act_as_company)
         return Caller(admin=ctx)
+    if typ in ("report_view", "report_viewer"):
+        # (2026-11-06 P5) '고객 화면 보기' 열람 토큰: 1회용(report_view)은 교환 경로(POST …/view-session)에서만, 열람(report_viewer)은 GET 만.
+        from diag_project.services.report_view_token import TYP_VIEW, consume_view_token
+        try:
+            sid = uuid.UUID(str(payload.get("sid"))); pid = uuid.UUID(str(payload.get("pid")))
+        except ValueError:
+            raise _unauth()
+        path = request.url.path
+        if typ == TYP_VIEW:
+            if not (request.method == "POST" and path.endswith(f"/reports/{sid}/view-session")):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="열람 링크는 리포트 열기에만 쓸 수 있습니다.")
+            consume_view_token(payload)
+        elif request.method != "GET":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="열람 전용 접속입니다. 이 동작은 할 수 없습니다.")
+        return Caller(view_session_id=sid, view_participant_id=pid, view_kind=typ)
     raise _unauth()
 
 
@@ -96,6 +120,10 @@ async def assert_can_access_participant(caller: Caller, participant_id: uuid.UUI
     if participant_id is None:
         raise HTTPException(status_code=403, detail="이 진단에 접근할 권한이 없습니다.")
     pid = participant_id if isinstance(participant_id, uuid.UUID) else uuid.UUID(str(participant_id))
+    if caller.view_participant_id is not None:
+        if caller.view_participant_id != pid:
+            raise HTTPException(status_code=403, detail="이 진단에 접근할 권한이 없습니다.")
+        return
     if caller.participant_id is not None:
         if caller.participant_id != pid:
             raise HTTPException(status_code=403, detail="이 진단에 접근할 권한이 없습니다.")
@@ -122,5 +150,7 @@ async def assert_can_access_session(caller: Caller, session_id: uuid.UUID | str,
     session = await db.get(DiagnosisSession, sid)
     if session is None:
         raise HTTPException(status_code=404, detail="진단 세션을 찾을 수 없습니다.")
+    if caller.view_session_id is not None and caller.view_session_id != sid:
+        raise HTTPException(status_code=403, detail="이 진단에 접근할 권한이 없습니다.")   # (P5) 열람 토큰은 발급된 세션 하나만
     await assert_can_access_participant(caller, session.user_id, db)
     return session

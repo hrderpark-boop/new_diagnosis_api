@@ -314,6 +314,19 @@ async def get_analysis_estimate(session_id: str,
 # --------------------------------------------------------------------------
 # [1] 개별 결과 조회 (GET /{session_id}) - 프론트엔드 호출용
 # --------------------------------------------------------------------------
+@router.post("/{session_id}/view-session")
+async def exchange_view_token(session_id: str, db: AsyncSession = Depends(get_db), caller: Caller = Depends(get_caller)):
+    """(2026-11-06 P5) '고객 화면 보기' 1회용 토큰(Authorization: Bearer <vt>) → 세션 전용 열람 토큰(30분).
+    1회용 토큰은 get_caller 가 jti 를 소진했으므로 두 번째 호출은 401. 다른 세션으로는 403. 토큰 값은 로그에 남기지 않는다."""
+    from diag_project.services.report_view_token import TYP_VIEW, create_viewer_token
+    if caller.view_kind != TYP_VIEW:
+        raise HTTPException(status_code=403, detail="열람 링크로만 열 수 있습니다.")
+    session = await assert_can_access_session(caller, session_id, db)
+    token, ttl = create_viewer_token(session.id, session.user_id, "view")
+    logger.info("👁 열람 토큰 교환: session=%s", session_id)
+    return {"viewer_token": token, "expires_in": ttl, "session_id": str(session.id)}
+
+
 @router.get("/{session_id}")
 async def get_report(session_id: str, db: AsyncSession = Depends(get_db), caller: Caller = Depends(get_caller)):
     await assert_can_access_session(caller, session_id, db)
@@ -650,6 +663,8 @@ async def analyze_session(
     session_id: str,
     db: AsyncSession = Depends(get_db),
     llm: GeminiService = Depends(GeminiService), caller: Caller = Depends(get_caller)):
+    if caller.is_viewer:
+        raise HTTPException(status_code=403, detail="열람 전용 접속에서는 재분석할 수 없습니다.")   # (P5) LLM 비용이 드는 동작은 열람자 금지
     await assert_can_access_session(caller, session_id, db)
     logger.info(f"🧠 리포트 분석 요청: {session_id}")
     try:
