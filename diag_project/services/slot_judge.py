@@ -61,7 +61,7 @@ def _stub_slots(transcript: list[tuple[str, str]], prev_slots: dict | None) -> d
     for i, k in enumerate(SLOT_KEYS):
         st = "filled" if i < len(substantive) else "empty"
         slots[k] = {"status": st, "quote": substantive[i][:30] if st == "filled" else ""}
-    return {"slots": slots, "no_case": no_case, "switched_case": False, "stub": True}
+    return {"slots": slots, "no_case": no_case, "switched_case": False, "incident": not no_case, "stub": True}
 
 
 async def judge_slots(llm, *, transcript: list[tuple[str, str]], prev_slots: dict | None) -> dict:
@@ -77,10 +77,12 @@ async def judge_slots(llm, *, transcript: list[tuple[str, str]], prev_slots: dic
         f"[슬롯 기준]\n{_SLOT_RULES}\n"
         "quote 는 그 슬롯을 채운 리더의 말을 원문 그대로(공백·조사까지 그대로, 40자 이내) 옮기세요. 없으면 빈 문자열.\n"
         "no_case: 리더가 이 질문에 해당하는 일이 없다·기억이 안 난다고 답했으면 true.\n"
+        "incident: 리더의 답(지금까지 전체)에 시점·인물·리더가 한 구체 행동 중 하나라도 있으면 true. 하나도 없고 '없어요·글쎄요·특별히·그 정도·"
+        "보통은·대체로' 류의 일반론·회피만이면 false.\n"
         "switched_case: 리더의 마지막 답이 지금 듣던 사례가 아니라 전혀 다른 사례로 넘어갔으면 true(같은 사례의 다른 장면은 false).\n\n"
         f"[직전 판정]\n{prev_lines}\n\n[대화]\n{_transcript_text(transcript)}\n\n"
         "JSON 으로만 답하세요: {\"slots\": {\"context\": {\"status\": \"filled|partial|empty\", \"quote\": \"\"}, ... 6개}, "
-        "\"no_case\": false, \"switched_case\": false}"
+        "\"no_case\": false, \"switched_case\": false, \"incident\": true}"
     )
     try:
         raw = await llm._generate_with_retry(
@@ -89,11 +91,13 @@ async def judge_slots(llm, *, transcript: list[tuple[str, str]], prev_slots: dic
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("슬롯 판정 호출 실패(직전 상태 유지): %s", e)
-        return {"slots": {}, "no_case": False, "switched_case": False, "error": True}
+        return {"slots": {}, "no_case": False, "switched_case": False, "incident": None, "error": True}
     out = _parse(raw)
     slots = out.get("slots") if isinstance(out.get("slots"), dict) else {}
+    _inc = out.get("incident")
     return {"slots": {k: (slots.get(k) or {}) for k in SLOT_KEYS},
-            "no_case": bool(out.get("no_case")), "switched_case": bool(out.get("switched_case")), "error": not bool(slots)}
+            "no_case": bool(out.get("no_case")), "switched_case": bool(out.get("switched_case")),
+            "incident": (bool(_inc) if isinstance(_inc, bool) else None), "error": not bool(slots)}
 
 
 MAP_STRONG_MIN_CONFIDENCE = 0.8

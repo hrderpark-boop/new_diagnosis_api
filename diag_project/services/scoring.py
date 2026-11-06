@@ -203,7 +203,7 @@ def composite_mode(measured_total: int,
 LEVEL_LABELS = {1: "Lv.1 인식", 2: "Lv.2 수행", 3: "Lv.3 관리·설계", 4: "Lv.4 조직 확산"}
 UNCONFIRMED_LABEL = "사례 미확인"
 UNCONFIRMED_SCORE = 1.0   # 측정 불가 칸은 척도 바닥(빈칸 없음, 재응시 없음)
-NOT_EXPLORED_LABEL = "시간 내 다루지 못한 항목"   # (2026-11-04 BEI 결정 9) 예산 소진으로 묻지 못한 칸 — 점수 공란
+NOT_EXPLORED_LABEL = "시간 내 다루지 못한 항목"   # (2026-11-04 BEI 결정 9 → 2026-11-06 P7-2) 관리자·린트 구분용. 리더 리포트에서는 '사례 미확인' 1.0 과 같은 라벨·점수
 
 
 def level_label(level) -> str | None:

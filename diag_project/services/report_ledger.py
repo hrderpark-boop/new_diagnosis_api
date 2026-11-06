@@ -158,6 +158,7 @@ def neutralize_unmeasured(competency_results: Dict[str, Dict[str, Any]]) -> List
 
 # ── (2026-10-29 P2-3 → 2026-11-04 BEI) 사례 미확인 → 1.0 정책 ─────────────────────────────────────
 UNCONFIRMED_TEXT_NO_CASE = "이 항목은 대화에서 사례가 확인되지 않아 최저 수준으로 기록했습니다"
+UNCONFIRMED_TEXT_NOT_EXPLORED = "이번 진단에서 이 항목까지 다루지 못해 최저 수준(1.0)으로 기록했습니다. 이어서 진행하면 채워집니다."   # (2026-11-06 P7-2)
 UNCONFIRMED_TEXT_GATE_DROPPED = "사례는 말씀하셨으나 리더님이 직접 하신 행동이 확인되지 않아 최저 수준으로 기록했습니다"
 UNCONFIRMED_TEXT_NO_ANSWER = UNCONFIRMED_TEXT_NO_CASE   # 하위호환 이름
 UNCONFIRMED_BANNER_MIN = 6
@@ -195,7 +196,14 @@ def apply_unconfirmed_policy(competency_results: Dict[str, Dict[str, Any]],
                 continue
             row["probe_deficit"] = False
             if row.get("status") == "not_explored":
+                # (2026-11-06 P7-2) 묻지 못한 칸도 1.0 '사례 미확인' — 같은 라벨·같은 점수. status/unconfirmed_kind 로 관리자·린트만 구분한다.
                 n_ne += 1
+                row.update({
+                    "score": UNCONFIRMED_SCORE, "measured": True, "evidence_measured": False, "level": None,
+                    "level_label": UNCONFIRMED_LABEL, "unconfirmed": True, "unconfirmed_kind": "not_explored",
+                    "unconfirmed_text": UNCONFIRMED_TEXT_NOT_EXPLORED,
+                })
+                n_unc += 1
                 continue
             if row.get("measured"):
                 row["evidence_measured"] = True
@@ -217,7 +225,7 @@ def apply_unconfirmed_policy(competency_results: Dict[str, Dict[str, Any]],
             n_unc += 1
             totals["gate_dropped_total" if kind == "gate_dropped" else "no_case_total"] += 1
         comp["sub_scores"] = {s: (r.get("score") if isinstance(r, dict) else None) for s, r in ledger.items()}
-        comp["measured_count"] = sum(1 for r in ledger.values() if isinstance(r, dict) and r.get("measured"))
+        comp["measured_count"] = sum(1 for r in ledger.values() if isinstance(r, dict) and r.get("measured"))   # (P7-2) 미확인·미탐색 포함 = 26 전부
         comp["evidence_measured_count"] = n_ev
         comp["unconfirmed_count"] = n_unc
         comp["not_explored_count"] = n_ne
@@ -235,7 +243,7 @@ def apply_unconfirmed_policy(competency_results: Dict[str, Dict[str, Any]],
         totals["unconfirmed_total"] += n_unc
         totals["evidence_measured_total"] += n_ev
         totals["not_explored_total"] += n_ne
-    totals["unconfirmed_banner"] = totals["unconfirmed_total"] >= UNCONFIRMED_BANNER_MIN
+    totals["unconfirmed_banner"] = totals["unconfirmed_total"] >= UNCONFIRMED_BANNER_MIN   # (P7-2) 미탐색 1.0 도 미확인 수에 포함
     totals["not_explored_warn"] = totals["not_explored_total"] >= NOT_EXPLORED_WARN_MIN
     return totals
 

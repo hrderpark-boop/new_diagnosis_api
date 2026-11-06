@@ -125,6 +125,10 @@ class Leader:
             return await self._say("context", coach_text, opening=True)
         if self.short_every and self.n_answers % self.short_every == 0:
             return self.rng.choice(self.short_answers)
+        # (2026-11-06 P7 검증) 사례 없는 리더 — 사례 안에서도 vague_rate 확률로 모호한 2문장('글쎄요…')을 낸다(슬롯 진전 0 → 조기 종료 검증)
+        _vr = float(self.p.get("vague_rate") or 0)
+        if _vr and self.current is not None and instr in ("EPISODE_PROBE", "SWEEP_FOLLOWUP") and self.rng.random() < _vr:
+            return self.rng.choice(self.p.get("vague_replies") or ["글쎄요, 잘 모르겠어요."])
         if self.current is None:
             ep = self.pick_episode(chapter or "", target_sub)
             self.start_episode(ep)
@@ -133,7 +137,8 @@ class Leader:
         slot = self._slot_for(coach_text)
         return await self._say(slot, coach_text)
 
-    _NO_CASE_REPLIES = ["딱히 그런 일은 없었던 것 같아요.", "음, 그건 바로 떠오르는 게 없네요.", "그쪽은 기억이 잘 안 나요.", "그런 적은 없었어요."]
+    _NO_CASE_REPLIES = ["딱히 그런 일은 없었던 것 같아요.", "음, 그건 바로 떠오르는 게 없네요.", "그쪽은 기억이 잘 안 나요.", "그런 적은 없었어요.",
+                        "글쎄요, 특별히 그런 건 없었어요.", "보통은 그냥 평소대로 하는 편이라서요. 딱히 떠오르는 일은 없네요."]
 
     def _no_case_reply(self) -> str:
         self.n_no_case = getattr(self, "n_no_case", 0) + 1
@@ -166,7 +171,9 @@ class Leader:
         system = (
             f"당신은 리더십 진단에 참여한 리더입니다. {persona['role']} 팀원: {', '.join(persona['members'])}.\n"
             f"말하는 방식: {persona['style']}\n"
-            "규칙: 아래 [이번에 말할 사실]만 자기 말로 답한다. 사실에 있는 내용은 한 가지도 빠뜨리지 않는다(문장 수는 사실의 길이에 맞춘다, 2~5문장). 사실에 없는 내용을 지어내지 않는다. 다른 슬롯(결과·기준·배운 점 등)을 먼저 꺼내지 않는다. "
+            "규칙: 아래 [이번에 말할 사실]만 자기 말로 답한다. 사실에 있는 내용은 한 가지도 빠뜨리지 않는다"
+            + (f"(최대 {self.p['max_sentences']}문장, 짧게)" if self.p.get("max_sentences") else "(문장 수는 사실의 길이에 맞춘다, 2~5문장)")
+            + ". 사실에 없는 내용을 지어내지 않는다. 다른 슬롯(결과·기준·배운 점 등)을 먼저 꺼내지 않는다. "
             "코치의 말을 되풀이하지 않는다. 존댓말, 구어체. 질문하지 않는다. '음,'·'네,'·'그랬죠' 같은 추임새로 문장을 시작하지 않는다. "
             "코치 질문과 [이번에 말할 사실]이 어긋나도 '질문은 ~인데', '그 답이 아니라', '이번에 말할 사실' 같은 설명 없이 사실만 자연스럽게 말한다."
         )

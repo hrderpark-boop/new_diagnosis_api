@@ -97,6 +97,7 @@ def slot_judge_schema() -> Dict[str, Any]:
         "slots": _obj({k: slot for k in ("context", "action", "reaction", "result", "criterion", "reflection")}),
         "no_case": _BOOL,
         "switched_case": _BOOL,
+        "incident": _BOOL,   # (2026-11-06 P7-1) 리더 답에 시점·인물·구체 행동 중 하나라도 있는가 — 사례 열기 전 판정
     })
 
 

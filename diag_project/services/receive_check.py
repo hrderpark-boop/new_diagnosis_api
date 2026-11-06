@@ -16,7 +16,7 @@ from diag_project.services.output_guard import _SUGGESTION_RE, is_question, spli
 LONG_ANSWER_CHARS = 150
 # (2026-11-04 BEI) 되받기 필수 턴 = 사례 탐침·여는 턴·SWEEP 턴 전부. 폴백 문장은 없다 — 재생성 2회 뒤에도 없으면 그대로 내보내고
 #   guard_log receive_miss 로 남긴다(린트 '되받기 없는 턴' 0 기준).
-RECEIVE_REQUIRED_INSTRUCTIONS = frozenset({"EPISODE_OPEN", "EPISODE_PROBE", "EPISODE_RETRY", "SWEEP_ANCHOR", "SWEEP_FOLLOWUP"})
+RECEIVE_REQUIRED_INSTRUCTIONS = frozenset({"EPISODE_OPEN", "EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_ANCHOR", "SWEEP_FOLLOWUP"})
 _QUOTE_STOP = {"그래서", "그리고", "그런데", "하지만", "그때", "당시", "저희", "우리", "제가", "저는", "저도", "팀원", "팀원들",
                "사람", "자신", "본인", "진행", "상황", "문제", "정도", "이후", "나중", "결국", "먼저", "다시", "계속", "조금", "많이",
                # (2026-11-04 2차) p3q 1차 인용구 '아니라 교육'·'특히 교육'·'구성해야 하니' — 부사·접속사·활용형이 명사로 잡혔다

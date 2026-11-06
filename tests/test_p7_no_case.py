@@ -1,0 +1,127 @@
+"""(2026-11-06 P7) 사례 없는 리더 대응 + 전수 탐색 보장 — 11/6 Ella 운영 세션(미탐색 14/26) 원인 교정.
+  P7-1 사례 유무를 사례 열기 전에(incident) · 2턴 연속 진전 없음 조기 종료 · NO_CASE_REFRAME
+  P7-2 리포트에 '미탐색' 없음 — 26칸 전부 점수(1.0 '사례 미확인'), 추천 카드 재료에서 제외
+  P7-3 그만하겠다 → 안내 한 줄 + 선택(이어서/지금 마치기), /finish 로 completed
+  P7-4 정의 질문 5틀 · P7-5 밀어붙이는 되받기 금지
+"""
+import uuid
+
+from diag_project.services import bei_engine as B
+
+CH = "organization_management"
+SUBS = ["비전 제시 및 공유", "전략적 사고", "변화관리(변화지향)", "혁신적 사고"]
+
+
+def _slots(**kw):
+    out = {k: {"status": "empty", "quote": ""} for k in B.SLOT_KEYS}
+    for k, (st, q) in kw.items():
+        out[k] = {"status": st, "quote": q}
+    return out
+
+
+def test_p7_1_incident_in_schema_and_stub():
+    from diag_project.llm_schemas import slot_judge_schema
+    from diag_project.services.slot_judge import _stub_slots
+    assert "incident" in slot_judge_schema()["properties"]
+    j = _stub_slots([("model", "여는 질문"), ("user", "딱히 그런 일은 없었어요.")], None)
+    assert j["no_case"] is True and j["incident"] is False
+    j2 = _stub_slots([("model", "여는 질문"), ("user", "작년 3월에 개편 지시가 내려왔을 때 두 강사가 반대했어요.")], None)
+    assert j2["incident"] is True
+
+
+def test_p7_1_stall_closes_episode_before_eight_turns():
+    st, ep = B.new_episode({}, CH, SUBS[0], "vision_sharing")
+    ep["slots"] = _slots(context=("filled", "작년 3월"))
+    ep["leader_turns"] = 2
+    # 진전 없는 턴 2번 → stall 2 → 'stalled'
+    ep = B.update_stall(ep, filled_before=1); assert ep["stall"] == 1
+    assert B.episode_done_reason(ep, st, CH) is None
+    ep = B.update_stall(ep, filled_before=1); assert ep["stall"] == 2
+    assert B.episode_done_reason(ep, st, CH) == "stalled"
+    # 진전이 있으면 0 으로
+    ep["slots"] = _slots(context=("filled", "작년 3월"), action=("filled", "따로 불렀어요"))
+    ep = B.update_stall(ep, filled_before=1); assert ep["stall"] == 0
+    # 슬롯이 하나도 없으면 stalled 로 닫지 않는다(그 경우는 no_case 경로)
+    ep0 = dict(ep, slots=_slots(), stall=3)
+    assert B.episode_done_reason(ep0, st, CH) is None
+    # stalled 사례도 사례 수에 든다
+    st = B.close_episode(st, CH, dict(ep, status="open"), "stalled", [{"sub": SUBS[0], "strength": "strong", "quote": "따로 불렀어요"}], SUBS)
+    assert B.counted_episodes(st, CH) == 1 and B.EPISODE_STALL_TURNS == 2
+    assert "NO_CASE_REFRAME" in B.BEI_INSTRUCTIONS and "EPISODE_RETRY" not in B.BEI_INSTRUCTIONS
+
+
+def test_p7_1_route_wiring_and_guides():
+    import inspect
+    from diag_project.routes import diagnoses as d
+    from diag_project.prompts.phase3a.episode_card import BEI_GUIDES, TURN_FORMAT_RULES
+    src = inspect.getsource(d._submit_message_phase3a)
+    assert '_jd.get("incident") is False' in src and 'instruction_used = "NO_CASE_REFRAME"' in src and "_bei.update_stall(_ep, _filled_before)" in src
+    assert "\"EPISODE_RETRY\"" not in src   # 상수 EPISODE_RETRY_MAX 는 남는다
+    g = BEI_GUIDES["NO_CASE_REFRAME"]
+    assert "작은 일이어도 됩니다" in g and "추궁은 금지" in g and "진짜 기억이 없으신가요" in g
+    assert "밀어붙이지 않는다" in TURN_FORMAT_RULES
+
+
+def test_p7_5_pushy_receive_is_state_leak():
+    from diag_project.services.output_guard import find_state_leak, strip_state_leak
+    txt = "그 부분은 마음에 걸려요. 진짜 기억이 없으신가요? 그럼 다른 장면으로 가 볼게요."
+    hits = find_state_leak(txt)
+    assert any("마음에 걸려요" in h for h in hits) and any("진짜 기억이" in h for h in hits)
+    out, n = strip_state_leak("솔직히 말씀하신 건지 궁금하네요. 그럼 최근 회의 장면 하나만 들려주세요.")
+    assert n == 1 and out.strip().startswith("그럼 최근 회의")
+
+
+def test_p7_2_recommender_skips_unconfirmed_cells():
+    from diag_project.services.course_recommender import _flatten_measured
+    det = {CH: {"sub_ledger": {
+        "비전 제시 및 공유": {"measured": True, "score": 2.0, "evidence": ["x"]},
+        "전략적 사고": {"measured": True, "score": 1.0, "unconfirmed": True, "unconfirmed_kind": "not_explored", "evidence": []},
+        "혁신적 사고": {"measured": True, "score": 1.0, "unconfirmed": True, "unconfirmed_kind": "no_case", "evidence": []},
+    }}}
+    assert [m["sub_name"] for m in _flatten_measured(det)] == ["비전 제시 및 공유"]
+
+
+def _participant_session(client):
+    from diag_project.database import async_session
+    from diag_project.models.diagnosis_session import DiagnosisSession
+    from diag_project.models.participant import Participant
+    from diag_project.services.participant_auth import create_participant_token
+    ELLA = uuid.UUID("00000000-0000-0000-0000-000000000011")
+
+    async def _mk():
+        async with async_session() as db:
+            p = Participant(email=f"p7-{uuid.uuid4().hex[:8]}@test.local", name="마침")
+            db.add(p); await db.flush()
+            s = DiagnosisSession(user_id=p.id, coach_id=ELLA, status="in_progress", current_topic="성과관리",
+                                 self_assessment_data={"pending_instruction": {"kind": "user_pause", "question": "q?"}})
+            db.add(s); await db.commit()
+            return str(p.id), str(s.id)
+    pid, sid = client.portal.call(_mk)
+    return pid, sid, {"Authorization": f"Bearer {create_participant_token(pid)}"}
+
+
+def test_p7_3_finish_endpoint_marks_completed(client):
+    pid, sid, hdr = _participant_session(client)
+    assert client.post(f"/api/v1/diagnoses/{sid}/finish").status_code == 401
+    r = client.post(f"/api/v1/diagnoses/{sid}/finish", headers=hdr)
+    assert r.status_code == 200 and r.json()["finished_early"] is True
+    st = client.get(f"/api/v1/diagnoses/{sid}/state", headers=hdr).json()
+    assert st["status"] == "completed" and st["is_completed"] is True and st["needs_user_decision"] is False
+    # 다시 부르면 already
+    assert client.post(f"/api/v1/diagnoses/{sid}/finish", headers=hdr).json().get("already") is True
+    # 다른 참여자는 403
+    _, _, hdr2 = _participant_session(client)
+    assert client.post(f"/api/v1/diagnoses/{sid}/finish", headers=hdr2).status_code == 403
+
+
+def test_p7_3_finish_choice_line_and_route_wiring():
+    import inspect
+    from diag_project.services.intro_messages import FINISH_CHOICE_LINE, finish_choice_line
+    from diag_project.routes import diagnoses as d
+    from diag_project.prompts.phase3a.layer3_state import _get_instruction_guide
+    assert finish_choice_line("Michael") == FINISH_CHOICE_LINE == "남은 항목은 이어서 하시면 채워지고, 지금 마치면 최저 수준으로 기록됩니다. 이어서 할까요, 마칠까요?"
+    src = inspect.getsource(d._submit_message_phase3a)
+    assert '_decision_kind = "finish_or_continue"' in src and '"kind": "user_pause"' in src and '"decision_kind": _decision_kind' in src
+    assert "_user_pause_resume" in src and "continue_ack" in src
+    g = _get_instruction_guide("USER_REQUESTS_PAUSE", {"chapter": CH})
+    assert "받아들이는 평서문 1문장" in g and "[SESSION_PAUSE]" not in g

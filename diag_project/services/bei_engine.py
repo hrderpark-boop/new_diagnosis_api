@@ -44,7 +44,8 @@ EPISODE_MIN_LEADER_TURNS = 4          # (2026-11-05 2단계 판정 1) 6/6 이 4�
 EPISODE_MIN = 2
 EPISODE_MAX = 3
 EPISODE_OPEN_MIN_REMAINING = 5        # 사례 하나 더 열려면 최소 이만큼 남아야 한다(SWEEP 예비는 별도)
-EPISODE_RETRY_MAX = 1                 # 사례가 없다(no_case)·단답이면 더 작은 단위로 1회만 재질문
+EPISODE_RETRY_MAX = 1                 # (P7-1) 여는 질문에 사례가 없으면(incident=no) 더 작게·다른 각도로 1회만(NO_CASE_REFRAME) — 하위역량당 최대 2턴
+EPISODE_STALL_TURNS = 2               # (P7-1) 사례 중 2턴 연속 슬롯 진전 0 이면 8턴 전에 조기 종료(status=stalled)
 SWEEP_MAX_PER_CHAPTER = 3             # (2026-11-05 P4-5) SWEEP 항목은 챕터당 3개까지 — 나머지는 not_explored(세션 ≤2 는 린트 기준)
 CHAPTER_BUDGET: dict[str, int] = {
     "organization_management": 16, "performance_management": 18, "people_management": 20,
@@ -53,7 +54,7 @@ CHAPTER_BUDGET: dict[str, int] = {
 DEFAULT_BUDGET = 18
 
 STATE_CONFIRM, STATE_ALIGN, STATE_EPISODE, STATE_SWEEP, STATE_CLOSE = "confirm", "align", "episode", "sweep", "close"
-BEI_INSTRUCTIONS = frozenset({"EPISODE_OPEN", "EPISODE_PROBE", "EPISODE_RETRY", "SWEEP_ANCHOR", "SWEEP_FOLLOWUP"})
+BEI_INSTRUCTIONS = frozenset({"EPISODE_OPEN", "EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_ANCHOR", "SWEEP_FOLLOWUP"})   # (P7-1) EPISODE_RETRY → NO_CASE_REFRAME
 # 이 instruction 의 코치 턴 뒤 리더 답은 BEI 리더 턴이다(ALIGN 앵커 답 포함)
 BEI_ANSWER_AFTER = BEI_INSTRUCTIONS | {"COMPETENCY_ALIGN"}
 LEDGER_KEYS = ("chapter_state", "bei_turns", "episodes", "covered", "weak", "sweep_asked", "unconfirmed",
@@ -104,7 +105,7 @@ def real_episodes(store: dict | None, chapter: str | None) -> list[dict]:
 def counted_episodes(store: dict | None, chapter: str | None) -> int:
     """사례 수 — 리더 턴 3 이상 들은 사례(no_case 로 바로 폐기된 것은 세지 않는다)."""
     return sum(1 for e in real_episodes(store, chapter)
-               if e.get("status") in ("done", "budget", "switched") or int(e.get("leader_turns") or 0) >= 3)
+               if e.get("status") in ("done", "budget", "switched", "stalled") or int(e.get("leader_turns") or 0) >= 3)
 
 
 def empty_slots() -> dict:
@@ -212,8 +213,15 @@ def merge_slots(old: dict | None, judged: dict | None, leader_text: str | None) 
     return out
 
 
+def update_stall(ep: dict, filled_before: int) -> dict:
+    """(P7-1) 이번 턴에 찬 슬롯 수가 늘지 않았으면 stall +1, 늘었으면 0."""
+    ep = dict(ep)
+    ep["stall"] = 0 if len(filled_slots(ep)) > int(filled_before) else int(ep.get("stall") or 0) + 1
+    return ep
+
+
 def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None) -> str | None:
-    """사례 종료 사유: 'slots'(6/6) | 'turns'(리더 턴 8) | 'budget'(챕터 예산) | None."""
+    """사례 종료 사유: 'slots'(6/6) | 'turns'(리더 턴 8) | 'budget'(챕터 예산) | 'stalled'(2턴 진전 없음) | None."""
     if not ep:
         return None
     turns = int(ep.get("leader_turns") or 0)
@@ -221,6 +229,8 @@ def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None
         return "turns"
     if remaining(store, chapter) <= 0:
         return "budget"
+    if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS and filled_slots(ep):
+        return "stalled"                      # (P7-1) 2턴 연속 슬롯 진전 없음 — 들은 것으로 매핑하고 다음으로
     if len(filled_slots(ep)) >= len(SLOT_KEYS) and turns >= EPISODE_MIN_LEADER_TURNS:
         return "slots"
     return None

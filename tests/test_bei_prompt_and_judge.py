@@ -104,12 +104,16 @@ def test_report_ledger_three_kinds_and_not_explored_blank():
     assert ne == {CH: ["혁신적 사고"]}
     tot = apply_unconfirmed_policy(results, meta)
     led = results[CH]["sub_ledger"]
-    assert led["혁신적 사고"]["status"] == "not_explored" and led["혁신적 사고"]["score"] is None and led["혁신적 사고"]["level_label"] == NOT_EXPLORED_LABEL
+    # (2026-11-06 P7-2) 미탐색도 1.0 '사례 미확인' — 같은 라벨·같은 점수. status/unconfirmed_kind 는 관리자·린트 구분용으로 남는다
+    assert led["혁신적 사고"]["status"] == "not_explored" and led["혁신적 사고"]["score"] == 1.0 and led["혁신적 사고"]["level_label"] == UNCONFIRMED_LABEL
+    assert led["혁신적 사고"]["unconfirmed"] is True and led["혁신적 사고"]["unconfirmed_kind"] == "not_explored" and "이어서 진행하면" in led["혁신적 사고"]["unconfirmed_text"]
+    assert NOT_EXPLORED_LABEL  # 관리자용 라벨 상수는 유지
     assert led["전략적 사고"]["unconfirmed_kind"] == "gate_dropped" and led["변화관리(변화지향)"]["unconfirmed_kind"] == "no_case"
     assert led["전략적 사고"]["level_label"] == UNCONFIRMED_LABEL and led["전략적 사고"]["score"] == 1.0
     assert tot["not_explored_total"] == 1 and tot["gate_dropped_total"] == 1 and tot["no_case_total"] == 1 and tot["probe_deficit_unconfirmed"] == 0
-    assert results[CH]["sub_scores"]["혁신적 사고"] is None and results[CH]["not_explored_count"] == 1
-    assert results[CH]["behavior_score"] == round((3.0 + 1.0 + 1.0) / 3, 2)   # 미탐색은 평균에서 제외
+    assert tot["unconfirmed_total"] == 3                                                       # 게이트 탈락 1 + 없음 1 + 미탐색 1
+    assert results[CH]["sub_scores"]["혁신적 사고"] == 1.0 and results[CH]["not_explored_count"] == 1 and results[CH]["measured_count"] == 4
+    assert results[CH]["behavior_score"] == round((3.0 + 1.0 + 1.0 + 1.0) / 4, 2)   # 26칸 전부 점수 — 미탐색 1.0 포함 평균
 
 
 def test_count_question_markers_catches_compound_questions():
@@ -190,10 +194,13 @@ def test_p4_1_slot_variants_rotate_per_session_and_caps():
     assert michael_will_question(0) != michael_will_question(1) != michael_will_question(2) and michael_will_question(3) == michael_will_question(0)
     # 정의 질문 5종 — 코치마다 5개 서로 다르고 {cn_eul} 자리 포함
     for k, pool in DEFINITION_VARIANTS.items():
-        assert len(pool) == 5 == len(set(pool)) and all("{cn_eul}" in v for v in pool), k
+        assert len(pool) == 5 == len(set(pool)) and all(("{cn_eul}" in v or "{cn_eun}" in v or "{cn}" in v) for v in pool), k
     vs = definition_question_variants("일관리", "Michael (마이클)")
-    assert len(set(vs)) == 5 and definition_question("일관리", "Michael (마이클)", 3) == vs[3] and "'일관리'를" in vs[3]
-    assert definition_question("조직관리", "Ella (엘라)", 0) == "리더님께서는 '조직관리'를 무엇이라고 생각하시나요?"   # 변형 0 = 기존 문장
+    assert len(set(vs)) == 5 and definition_question("일관리", "Michael (마이클)", 3) == vs[3] and "'일관리'" in vs[3]
+    assert definition_question("조직관리", "Ella (엘라)", 0) == "'조직관리'를 뭐라고 생각하세요?"   # (P7-4) 5틀: 뭐라고 생각 / 무엇이라고 보세요 / 리더님 말로 풀면 / 라고 하면 뭐가 먼저 / 한 문장으로
+    assert definition_question("일관리", "Jessica", 1) == "'일관리'는 무엇이라고 보십니까?" and definition_question("자기관리", "Daniel", 3) == "'자기관리'라고 하면 무엇이 먼저 떠오르십니까?"
+    for pool in DEFINITION_VARIANTS.values():
+        assert not any(("챙긴다" in v or "어떤 일" in v) for v in pool)
     for k in ALIGN_GUIDE_VARIANTS:
         assert len(ALIGN_GUIDE_VARIANTS[k]) == 3 and len(ALIGN_OPEN_VARIANTS[k]) == 3
         assert len({align_guide_line("네", k, i) for i in range(3)}) == 3 and len({align_open_line(k, i) for i in range(3)}) == 3

@@ -348,6 +348,36 @@ async def abandon_resumable_sessions(
 
 
 # ------------------------------------------------------------------
+# [0-b2] (2026-11-06 P7-3) 지금 마치기 — 남은 항목은 1.0 '사례 미확인'으로 확정하고 리포트 생성 대상(completed)으로 (POST /{session_id}/finish)
+@router.post("/{session_id}/finish")
+async def finish_session_early(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    caller: Caller = Depends(get_caller),
+):
+    """리더가 '지금 마치기'를 고르면 세션을 completed 로 바꾼다. 묻지 못한 칸은 분석의 미탐색 정책(P7-2)이 1.0 으로 채운다.
+    프론트는 이어서 /reports/{sid}/analyze 를 부른다. 열람 토큰·완료 세션은 그대로."""
+    if caller.is_viewer:
+        raise HTTPException(status_code=403, detail="열람 전용 접속에서는 할 수 없습니다.")
+    session = await assert_can_access_session(caller, session_id, db)
+    if session.status == "completed":
+        return {"status": "completed", "already": True, "session_id": str(session.id)}
+    if session.status in ("aborted", ABANDONED):
+        raise HTTPException(status_code=409, detail=f"이 세션은 마칠 수 없는 상태입니다: {session.status}")
+    _st = dict(session.self_assessment_data or {})
+    _st.pop("pending_instruction", None)
+    _st["finished_early"] = {"at": datetime.utcnow().isoformat(timespec="seconds"), "topic": session.current_topic}
+    session.self_assessment_data = _st
+    from sqlalchemy.orm.attributes import flag_modified as _fm_fin
+    _fm_fin(session, "self_assessment_data")
+    session.status = "completed"
+    session.current_topic = "Completed"
+    db.add(session)
+    await db.commit()
+    logger.info("🏁 지금 마치기: session=%s topic=%s", session.id, _st["finished_early"]["topic"])
+    return {"status": "completed", "finished_early": True, "session_id": str(session.id)}
+
+
 # [0-c] 복원 — abandoned → in_progress (POST /restore)  ※ 상태 전이 표의 유일한 복원 경로
 #   4(a) 즉시 되돌리기(자가진단 상단 배너)가 호출한다. 같은 참가자의 다른 진행 세션
 #   (방금 만든 빈 세션 등)은 abandoned 로. 참가자 인증은 (B) 에서 — 파일럿 범위 감수.
@@ -921,7 +951,19 @@ async def _submit_message_phase3a(
         _prev_instr_a = _prev_model_msgs_a[-1].instruction_used if _prev_model_msgs_a else None
         _prev_probe_a = _prev_model_msgs_a[-1].probe_type_used if _prev_model_msgs_a else None
         _store_a = dict(session.self_assessment_data or {})
-        _anomaly = _ia.detect(
+        # (2026-11-06 P7-3) 직전 턴이 '그만하겠다' 안내(USER_REQUESTS_PAUSE, 선택 대기)였으면: '이어서' 류 입력은 LLM·원장 없이 직전 질문을 다시 낸다.
+        _pend_up = dict(_store_a.get("pending_instruction") or {})
+        _user_pause_resume = (_pend_up.get("kind") == "user_pause" and _prev_instr_a == "USER_REQUESTS_PAUSE")
+        if _user_pause_resume:
+            _store_a.pop("pending_instruction", None)
+            session.self_assessment_data = _store_a
+            from sqlalchemy.orm.attributes import flag_modified as _fm_up
+            _fm_up(session, "self_assessment_data")
+            if _ia.is_pause_continue_phrase(request.content) and _pend_up.get("question"):
+                _anomaly_override_text = f"{_pl_an((state.get('coach_persona') or {}).get('name'), 'continue_ack')} {_pend_up['question']}"
+                instruction_used = "QUESTION_REASK"
+                _tm["anomaly"] = "user_pause_resume"
+        _anomaly = None if (_user_pause_resume and _anomaly_override_text) else _ia.detect(
             user_text=request.content, prev_user_text=_prev_user_text,
             earlier_user_texts=_prev_user_texts[:-2] if len(_prev_user_texts) >= 2 else [],
             prev_coach_text=_prev_coach_text, prev_instruction=_prev_instr_a,
@@ -944,7 +986,7 @@ async def _submit_message_phase3a(
                 session.self_assessment_data = _store_a
                 from sqlalchemy.orm.attributes import flag_modified as _fm_ac
                 _fm_ac(session, "self_assessment_data")
-            # (2026-11-04 BEI) 같은 사례에서 2회째 단답·반복은 고정 응답 없이 사례 단계로 — 더 작은 단위 재질문(EPISODE_RETRY) 1회, 그 뒤 사례 폐기
+            # (2026-11-04 BEI) 같은 사례에서 2회째 단답·반복은 고정 응답 없이 사례 단계로 — 더 작게·다른 각도 재질문(NO_CASE_REFRAME) 1회, 그 뒤 사례 폐기
             if _anomaly.kind == "repeat_prev":
                 _ac_all[_ac_key] = _ac_n; _store_a["anomaly_counts"] = _ac_all
                 session.self_assessment_data = _store_a
@@ -1004,7 +1046,7 @@ async def _submit_message_phase3a(
     }
 
     # ── (2026-11-04 BEI) 사례 단계 — LLM 호출 '이전'에 슬롯 판정(Haiku 1콜)·사례 종료·하위역량 매핑(1콜)·다음 상태를 결정한다.
-    #   결정기는 EPISODE_PROBE 를 내고, 여기서 EPISODE_OPEN / EPISODE_RETRY / SWEEP_ANCHOR / SWEEP_FOLLOWUP / CHAPTER_READY_TO_END 로 덮어쓴다.
+    #   결정기는 EPISODE_PROBE 를 내고, 여기서 EPISODE_OPEN / NO_CASE_REFRAME / SWEEP_ANCHOR / SWEEP_FOLLOWUP / CHAPTER_READY_TO_END 로 덮어쓴다.
     #   원장(episodes·covered·bei_turns…)은 session.self_assessment_data 에 두고, LLM 실패·일시정지 제안 턴은 스냅숏으로 되돌린다.
     #   설계: docs/design_bei_2026-11.md §1~§4 · 순수 함수: services/bei_engine · 판정: services/slot_judge
     from diag_project.data.competencies import find_sub_key_by_name as _fsk_b
@@ -1125,12 +1167,19 @@ async def _submit_message_phase3a(
             else:
                 _store, _ep = _bei.record_leader_turn(_store, chapter, _ep, turn_index=_turn_index_b)
                 _tr = _ep_transcript(_ep)
+                _filled_before = len(_bei.filled_slots(_ep))
                 _jd = await _judge_slots(llm, transcript=_tr, prev_slots=_ep.get("slots"))
-                _no_case = bool(_jd.get("no_case")) or _bei.is_no_case_text(_bei_user_text) or bool(state.get("bei_anomaly_repeat"))
+                # (2026-11-06 P7-1) 사례 유무는 사례를 열기 전에 — 여는 답(재질문 답 포함)에 시점·인물·구체 행동이 하나도 없으면(incident=false) 사례가 아니다
+                _opening_turn = int(_ep.get("leader_turns") or 0) <= 1 + int(_ep.get("retry") or 0)
+                _no_incident = (_jd.get("incident") is False) and _opening_turn and not _bei.filled_slots(_ep)
+                _no_case = bool(_jd.get("no_case")) or _no_incident or _bei.is_no_case_text(_bei_user_text) or bool(state.get("bei_anomaly_repeat"))
                 state["bei_last_no_case"] = _no_case
-                if not (_no_case and int(_ep.get("leader_turns") or 0) <= 1 + int(_ep.get("retry") or 0)):
+                _tm["incident"] = _jd.get("incident")
+                if not (_no_case and _opening_turn):
                     # 여는 답(재질문 답 포함)이 '그런 일 없다'면 슬롯을 채우지 않는다 — 없는 사례에 인용이 붙는 것을 막는다
                     _ep["slots"] = _bei.merge_slots(_ep.get("slots"), _jd.get("slots"), " ".join(t for r, t in _tr if r == "user"))
+                _ep = _bei.update_stall(_ep, _filled_before)
+                _tm["stall"] = int(_ep.get("stall") or 0)
                 _store = _bei.update_episode(_store, chapter, _ep)
                 _tm["slot_judge"] = "stub" if _jd.get("stub") else ("error" if _jd.get("error") else "ok")
                 _tm["slots_filled"] = len(_bei.filled_slots(_ep))
@@ -1148,14 +1197,15 @@ async def _submit_message_phase3a(
                     _reason = _bei.episode_done_reason(_ep, _store, chapter)
                     if _no_case and not _bei.filled_slots(_ep):
                         if int(_ep.get("retry") or 0) < _bei.EPISODE_RETRY_MAX and int(_ep.get("leader_turns") or 0) <= 2 and _reason is None:
+                            # (P7-1) 더 작게·다른 각도로 1회(NO_CASE_REFRAME). 그래도 없으면 no_case 기록, 다음 하위역량 — 사례를 열지 않는다
                             _ep["retry"] = int(_ep.get("retry") or 0) + 1
                             _store = _bei.update_episode(_store, chapter, _ep)
-                            _bei_ep = _ep; instruction_used = "EPISODE_RETRY"; _tm["bei"] = "retry"
+                            _bei_ep = _ep; instruction_used = "NO_CASE_REFRAME"; _tm["bei"] = "reframe"
                         else:
                             await _close_and_map(_ep, "no_case")
                             _next_after_close()
                     elif _reason:
-                        await _close_and_map(_ep, "done" if _reason == "slots" else _reason)
+                        await _close_and_map(_ep, "done" if _reason == "slots" else _reason)   # (P7-1) 'stalled' 포함 — 들은 슬롯만으로 매핑
                         _next_after_close()
                     else:
                         _bei_ep = _ep; instruction_used = "EPISODE_PROBE"; _tm["bei"] = "probe"
@@ -1184,7 +1234,7 @@ async def _submit_message_phase3a(
         # 사례 카드(system 프롬프트의 턴 동적 부분)
         _signal = ""
         _ans_len = len((_bei_user_text or "").replace(" ", ""))
-        if instruction_used in ("EPISODE_PROBE", "EPISODE_RETRY", "SWEEP_FOLLOWUP"):
+        if instruction_used in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
             if _ans_len < 20 or state.get("contains_avoidance_keywords"):
                 _signal = f"직전 답이 짧거나 회피 표지({_ans_len}자) — 더 작은 단위(그날 그 자리에서 처음 한 말)로 묻는다"
             elif _ans_len >= 150:
@@ -1606,8 +1656,18 @@ async def _submit_message_phase3a(
 
     # 일시중지 확정: USER_REQUESTS_PAUSE 면 LLM 의 [SESSION_PAUSE] 마커 누락과
     # 무관하게 무조건 일시중지 처리 (챕터 전환 차단 + 세션 대기 전환).
+    _decision_kind = None
     if instruction_used == "USER_REQUESTS_PAUSE":
-        is_session_paused = True
+        _prev_model_p = next((m for m in reversed(history_messages) if (m.role == MessageRole.MODEL or m.role == "model")), None)
+        _after_suggest = _prev_model_p is not None and (_prev_model_p.probe_type_used == "SUGGEST_PAUSE" or _prev_model_p.instruction_used == "USER_REQUESTS_PAUSE")
+        if _after_suggest:
+            is_session_paused = True            # 제안 뒤 '다음에 하기' / 안내 뒤 다시 그만하겠다 → 종전대로 일시정지(재개 가능)
+        else:
+            # (2026-11-06 P7-3) 자발적 중단 요청: 바로 멈추지 않고 안내 한 줄 + 선택(이어서 하기 / 지금 마치기). 선택 전까지 in_progress.
+            is_session_paused = False
+            needs_user_decision = True
+            _decision_kind = "finish_or_continue"
+            state["finish_choice_turn"] = True
 
     # 🛡️ 문맥 붕괴 방지: 코치가 감정 대응/휴식 제안/조기 종료를 하는 턴에는
     #   진단 안내·역량 정의·억지 동의 같은 '기계적 하이브리드 텍스트'를 절대
@@ -2025,7 +2085,7 @@ async def _submit_message_phase3a(
     #   위반 감지 → [names_mention·no_question·same_question·bare_ref·leak] 재생성 1회 → 남은 위반은 하드 교정(문장 단위, 질문 보존).
     #   (BEI) off_target·transition·recap 관찰·앵커 폴백은 폐지 — 질문이 끝내 없으면 8-w 턴 형식 검사가 다시 재생성한다(폴백 문장 없음).
     #   후처리 단계 전체 표: docs/postprocess_pipeline.md
-    _is_probe = instruction_used in ("EPISODE_PROBE", "EPISODE_RETRY", "SWEEP_FOLLOWUP")   # 질문을 LLM 이 쓰는 사례 턴
+    _is_probe = instruction_used in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP")   # 질문을 LLM 이 쓰는 사례 턴
     _is_open = instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR")                        # 질문은 시스템 앵커, LLM 은 되받기+다리
     if system_override_text is None and not _llm_error and clean_reply:
         from diag_project.services.output_guard import (
@@ -2517,6 +2577,26 @@ async def _submit_message_phase3a(
                 clean_reply, _before = enforce_exclamation_cap(_src, _ex_cap)
                 logger.info("❗ 느낌표 치환: %d → %d", _before, count_exclamations(clean_reply))
 
+    if state.get("finish_choice_turn") and not _llm_error:
+        # (2026-11-06 P7-3) 그만하겠다는 요청: [수용 1문장(LLM)] + 고정 안내 한 줄. 직전 질문을 pending(user_pause)으로 보관해 '이어서'면 그대로 다시 낸다.
+        from diag_project.services.intro_messages import finish_choice_line
+        from diag_project.services.input_anomaly import last_question_of as _lqo_f
+        from diag_project.services.output_guard import drop_question_sentences as _dqs_f, split_sentences as _ss_f, strip_praise as _sp_f
+        _ack_f, _ = _dqs_f(clean_reply or ""); _ack_f, _ = _sp_f(_ack_f)
+        _ack_f = " ".join([x.strip() for x in _ss_f(_ack_f) if x.strip()][:1])
+        clean_reply = f"{_ack_f}\n\n{finish_choice_line((state.get('coach_persona') or {}).get('name'))}".strip()
+        _pst_f = dict(session.self_assessment_data or {})
+        _prev_model_f = next((m for m in reversed(history_messages) if (m.role == MessageRole.MODEL or m.role == "model")), None)
+        _pst_f["pending_instruction"] = {
+            "kind": "user_pause", "instruction": getattr(_prev_model_f, "instruction_used", None), "chapter": chapter, "target": current_target_sub,
+            "question": _lqo_f(_prev_coach_text) or "", "user_text": "", "at": datetime.utcnow().isoformat(timespec="seconds"),
+        }
+        session.self_assessment_data = _pst_f
+        from sqlalchemy.orm.attributes import flag_modified as _fm_f
+        _fm_f(session, "self_assessment_data")
+        _tm["finish_choice"] = 1
+        logger.info("⏸️ 중단 요청 안내(선택 대기): chapter=%s question=%r", chapter, (_lqo_f(_prev_coach_text) or "")[:40])
+
     if needs_user_decision and _backend_pause_suggested and clean_reply:
         # (2026-10-22 P1-1) 제안 턴은 '되받기 한 문장 + 안내'만 — 질문은 삼키되 버리지 않는다:
         #   이 턴의 instruction·타겟·리더 답변을 pending 으로 저장하고, 원장(asked/turns/target)은 스텝 이전으로 되돌린다.
@@ -2620,7 +2700,7 @@ async def _submit_message_phase3a(
     # 9. 사례 행(Event) 저장 + AI 메시지 저장
     #   (2026-11-04 BEI) 탐침 종류는 instruction 으로만: 여는 턴·SWEEP 앵커·ALIGN = INCIDENT, 사례 탐침 = SPECIFICATION, META = META.
     _PROBE_TYPE_BY_INSTR = {"EPISODE_OPEN": "INCIDENT", "SWEEP_ANCHOR": "INCIDENT", "COMPETENCY_ALIGN": "INCIDENT",
-                            "EPISODE_PROBE": "SPECIFICATION", "EPISODE_RETRY": "SPECIFICATION", "SWEEP_FOLLOWUP": "SPECIFICATION",
+                            "EPISODE_PROBE": "SPECIFICATION", "NO_CASE_REFRAME": "SPECIFICATION", "SWEEP_FOLLOWUP": "SPECIFICATION",
                             "META_QUESTION_FROM_USER": "META"}
     probe_type_used = None if system_override_text is not None else _PROBE_TYPE_BY_INSTR.get(instruction_used)
 
@@ -2856,6 +2936,8 @@ async def _submit_message_phase3a(
             "meta_echo": _tm.get("meta_echo"),
             "anchor_attached": int(_tm.get("anchor_attached") or 0), "format_regen": int(_tm.get("format_regen") or 0),
             "format_miss": _tm.get("format_miss"), "receive_miss": int(_tm.get("receive_miss") or 0), "receive_phrase": _tm.get("receive_phrase"),
+            # (2026-11-06 P7-1) incident 슬롯 판정의 사례 유무 · stall 연속 무진전 턴 수
+            "incident": _tm.get("incident"), "stall": _tm.get("stall"),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):
@@ -2900,6 +2982,7 @@ async def _submit_message_phase3a(
         # 코치가 조기 종료를 '제안'함 — 프론트가 '다음에 하기/계속 진행하기'
         # 버튼을 노출해야 함 (Core Rule 7, 최대 2회)
         "needs_user_decision": needs_user_decision,
+        "decision_kind": _decision_kind,        # (P7-3) finish_or_continue = 이어서 하기 / 지금 마치기 선택
         "has_next_chapter": _safety_next_chapter is not None,
         "next_topic": _safety_next_topic,
         "reward": None,
@@ -3028,6 +3111,12 @@ async def get_session_state(
         and not _is_completed
         and session.status != "paused"
     )
+    # (2026-11-06 P7-3) 그만하겠다 안내 뒤 선택 대기(새로고침 복원): pending(kind=user_pause)이 남아 있으면 이어서/마치기 버튼
+    _decision_kind_state = None
+    if (_last_model_msg is not None and _last_model_msg.instruction_used == "USER_REQUESTS_PAUSE" and not _is_completed
+            and session.status == "in_progress" and ((session.self_assessment_data or {}).get("pending_instruction") or {}).get("kind") == "user_pause"):
+        _needs_user_decision = True
+        _decision_kind_state = "finish_or_continue"
 
     return {
         "session_id": session.id,
@@ -3037,6 +3126,7 @@ async def get_session_state(
         "is_paused": session.status == "paused",
         "is_completed": _is_completed,
         "needs_user_decision": _needs_user_decision,
+        "decision_kind": _decision_kind_state,
         "has_next_chapter": _next_chapter is not None,
         "next_topic": _next_topic,
         "messages": formatted_messages

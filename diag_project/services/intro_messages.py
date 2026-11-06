@@ -79,7 +79,8 @@ def definition_question(chapter_name: str, persona_name: str | None = None, vari
     """정의 질문 — (2026-11-05 P4-1) 5종 순환. variant 는 챕터 순서 인덱스(0~4) → 한 세션에서 같은 문장이 두 번 나가지 않는다."""
     from diag_project.services.korean import with_josa
     pool = DEFINITION_VARIANTS.get(persona_key(persona_name)) or DEFINITION_VARIANTS["Ella"]
-    return pool[int(variant) % len(pool)].format(cn_eul=with_josa(chapter_name, '을/를', quote=True))
+    return pool[int(variant) % len(pool)].format(cn_eul=with_josa(chapter_name, '을/를', quote=True), cn_eun=with_josa(chapter_name, '은/는', quote=True),
+                                                 cn=f"'{chapter_name}'")
 
 
 def definition_question_variants(chapter_name: str, persona_name: str | None = None) -> list[str]:
@@ -90,27 +91,24 @@ def definition_question_variants(chapter_name: str, persona_name: str | None = N
 # (2026-11-05 P4-1) 정의 질문 5종 — 문형은 공통(①무엇이라 생각 ②리더님 말로 하면 ③팀에서 챙긴다는 건 ④한 문장으로 ⑤평소 어떤 일로),
 #   어미·호칭은 페르소나. {cn_eul} = "'조직관리'를".
 DEFINITION_VARIANTS: dict[str, list[str]] = {
-    "Ella": ["리더님께서는 {cn_eul} 무엇이라고 생각하시나요?", "{cn_eul} 리더님 말로 하면 어떤 일인가요?",
-             "리더님 팀에서 {cn_eul} 챙긴다는 건 어떤 뜻이에요?", "{cn_eul} 한 문장으로 말씀하신다면요?", "평소 {cn_eul} 어떤 일이라고 보고 계세요?"],
-    "Jessica": ["리더님께서는 {cn_eul} 무엇이라고 보십니까?", "{cn_eul} 리더님 말로 하면 무엇입니까?",
-                "리더님 팀에서 {cn_eul} 챙긴다는 것은 무엇을 뜻합니까?", "{cn_eul} 한 문장으로 정의하면 무엇입니까?", "평소 {cn_eul} 어떤 일로 보고 계십니까?"],
-    "Olivia": ["리더님은 {cn_eul} 뭐라고 생각하세요?", "{cn_eul} 리더님 말로 풀면 어떤 거예요?",
-               "리더님 팀에서 {cn_eul} 챙긴다는 건 어떤 모습이에요?", "{cn_eul} 한 문장으로 하면요?", "평소 {cn_eul} 어떤 일로 보고 계세요?"],
-    "Daniel": ["리더님께서는 {cn_eul} 무엇이라고 생각하십니까?", "{cn_eul} 리더님 말씀으로 하면 어떤 일입니까?",
-               "리더님 팀에서 {cn_eul} 챙긴다는 것은 어떤 일입니까?", "{cn_eul} 한 문장으로 말씀해 주시겠습니까?", "평소 {cn_eul} 어떤 일로 보고 계십니까?"],
-    "Michael": ["리더님께서는 {cn_eul} 뭐라고 생각하세요?", "{cn_eul} 리더님 말로 하면 뭐예요?",
-                "리더님 팀에서 {cn_eul} 챙긴다는 건 뭘 하는 거예요?", "{cn_eul} 한 문장으로 딱 말하면요?", "평소 {cn_eul} 어떤 일로 보세요?"],
-    "Lucas": ["리더님께서는 {cn_eul} 무엇이라고 정의하십니까?", "{cn_eul} 리더님 말로 하면 무엇입니까?",
-              "리더님 팀에서 {cn_eul} 챙긴다는 건 무엇입니까?", "{cn_eul} 한 문장으로 하면요?", "{cn_eul} 평소 어떤 일로 보십니까?"],
+    # (2026-11-06 P7-4) 역량 이름을 넣어도 어색하지 않은 5틀만: 뭐라고 생각 / 무엇이라고 보세요 / 리더님 말로 풀면 / 라고 하면 뭐가 먼저 / 한 문장으로.
+    #   '챙긴다', '어떤 일' 틀은 삭제. {cn_eul}="'X'를" {cn_eun}="'X'는" {cn}="'X'"
+    "Ella": ["{cn_eul} 뭐라고 생각하세요?", "{cn_eun} 무엇이라고 보세요?", "{cn_eul} 리더님 말로 풀면요?", "{cn}라고 하면 뭐가 먼저 떠오르세요?", "{cn_eul} 한 문장으로 하면요?"],
+    "Jessica": ["{cn_eul} 뭐라고 생각하십니까?", "{cn_eun} 무엇이라고 보십니까?", "{cn_eul} 리더님 말로 풀면 무엇입니까?", "{cn}라고 하면 무엇이 먼저 떠오르십니까?", "{cn_eul} 한 문장으로 하면 무엇입니까?"],
+    "Olivia": ["{cn_eul} 뭐라고 생각하세요?", "{cn_eun} 무엇이라고 보세요?", "{cn_eul} 리더님 말로 풀면요?", "{cn}라고 하면 뭐가 먼저 떠올라요?", "{cn_eul} 한 문장으로 하면요?"],
+    "Daniel": ["{cn_eul} 무엇이라고 생각하십니까?", "{cn_eun} 무엇이라고 보십니까?", "{cn_eul} 리더님 말씀으로 풀면 어떻게 됩니까?", "{cn}라고 하면 무엇이 먼저 떠오르십니까?", "{cn_eul} 한 문장으로 말씀하시면요?"],
+    "Michael": ["{cn_eul} 뭐라고 생각하세요?", "{cn_eun} 무엇이라고 보세요?", "{cn_eul} 리더님 말로 풀면요?", "{cn}라고 하면 뭐가 먼저 떠오르세요?", "{cn_eul} 한 문장으로 딱 하면요?"],
+    "Lucas": ["{cn_eul} 뭐라고 생각하십니까?", "{cn_eun} 무엇이라고 보십니까?", "{cn_eul} 리더님 말로 풀면요?", "{cn}라고 하면 무엇이 먼저 떠오릅니까?", "{cn_eul} 한 문장으로 하면요?"],
 }
 
 # (2026-11-05 P4-1) 정의 질문 앞에 LLM 이 쓰는 '이 영역에서 무엇을 볼지' 1문장의 재료 — LLM 출력에 평서문이 없을 때의 결정론 폴백.
 CHAPTER_SCOPE_LINES: dict[str, str] = {
-    "organization_management": "팀이 갈 방향을 어떻게 세우고 바꾸셨는지, 그 과정에서 팀을 어떻게 움직이셨는지 함께 짚어볼 거예요.",
-    "performance_management": "목표를 어떻게 정하고 중간에 어떻게 점검하셨는지, 결과를 두고 팀원과 어떻게 이야기하셨는지 함께 짚어볼 거예요.",
-    "people_management": "팀원 한 사람 한 사람과 어떻게 신뢰를 쌓고, 갈등이나 성장의 순간에 어떻게 대하셨는지 함께 짚어볼 거예요.",
-    "work_management": "일을 계획하고 시간과 자원을 어떻게 나눠 쓰셨는지, 일하는 방식을 어떻게 다듬으셨는지 함께 짚어볼 거예요.",
-    "self_management": "리더님 자신의 상태를 어떻게 알아차리고 흔들릴 때 어떻게 중심을 잡으셨는지 함께 짚어볼 거예요.",
+    # (2026-11-06 P7-4 재검토) 역량 정의를 리더 말로 푼 범위 1문장 — LLM 이 안 썼을 때의 폴백
+    "organization_management": "팀의 방향을 어떻게 세우고, 바꿔야 할 때 팀을 어떻게 움직이셨는지 함께 짚어볼 거예요.",
+    "performance_management": "목표를 어떻게 정하고 점검하셨는지, 결과를 두고 팀원과 어떻게 이야기하셨는지 함께 짚어볼 거예요.",
+    "people_management": "팀원 한 사람 한 사람과 신뢰를 어떻게 쌓고, 갈등이나 성장의 순간에 어떻게 대하셨는지 함께 짚어볼 거예요.",
+    "work_management": "일을 어떻게 계획하고 시간과 자원을 어떻게 나눠 쓰셨는지 함께 짚어볼 거예요.",
+    "self_management": "리더님 자신의 상태를 어떻게 알아차리고, 흔들릴 때 어떻게 중심을 잡으셨는지 함께 짚어볼 거예요.",
 }
 
 
@@ -306,6 +304,14 @@ def persona_line(persona_name: str | None, key: str, **fmt) -> str:
     """페르소나별 고정 문장. fmt 는 {cn_eul}·{next}·{phrase}·{min} 자리."""
     line = PERSONA_LINES[persona_key(persona_name)].get(key) or PERSONA_LINES["Ella"][key]
     return line.format(**fmt) if fmt else line
+
+
+FINISH_CHOICE_LINE = "남은 항목은 이어서 하시면 채워지고, 지금 마치면 최저 수준으로 기록됩니다. 이어서 할까요, 마칠까요?"   # (2026-11-06 P7-3)
+
+
+def finish_choice_line(persona_name: str | None = None) -> str:
+    """(P7-3) 리더가 그만하겠다고 할 때 코치가 덧붙이는 안내 — 선택 버튼(이어서 하기 / 지금 마치기)은 프론트."""
+    return FINISH_CHOICE_LINE
 
 
 def chapter_end_bridge(next_topic: str, persona_name: str | None = None) -> str:

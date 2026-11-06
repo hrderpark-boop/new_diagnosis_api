@@ -137,7 +137,7 @@ InstructionType = Literal[
     # (2026-11-04 BEI) 사례 단계 — 결정기는 EPISODE_PROBE 를 내고, 라우트의 BEI 단계가 슬롯 판정 뒤 아래 넷으로 덮어쓴다
     "EPISODE_PROBE",
     "EPISODE_OPEN",
-    "EPISODE_RETRY",
+    "NO_CASE_REFRAME",
     "SWEEP_ANCHOR",
     "SWEEP_FOLLOWUP",
     "ABORT_CONFIRM",

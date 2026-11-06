@@ -114,6 +114,8 @@ def _flatten_measured(details: dict) -> list[dict]:
         for sub_name, e in ledger.items():
             if not isinstance(e, dict) or not e.get("measured"):
                 continue
+            if e.get("unconfirmed"):
+                continue          # (2026-11-06 P7-2) 사례 미확인·미탐색 1.0 은 근거가 없다 — 추천 카드의 재료가 아니다
             score = e.get("score")
             if score is None:
                 continue

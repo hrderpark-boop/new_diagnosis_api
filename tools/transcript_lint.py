@@ -61,7 +61,7 @@ _ENDINGS = ("시겠습니까", "셨습니까", "였습니까", "었습니까", "
             "요", "니까", "는가", "ㄴ가", "가", "니", "지")
 _PROBE_TYPE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _BEI_COACH_INSTR = set(BEI_INSTRUCTIONS) | {"COMPETENCY_ALIGN"}
-_PROBE_INSTR = {"EPISODE_PROBE", "EPISODE_RETRY", "SWEEP_FOLLOWUP"}
+_PROBE_INSTR = {"EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -313,7 +313,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
                 mapped_by_ch[chapter].add(lb[:-2])
         if instr in ("SWEEP_ANCHOR", "SWEEP_FOLLOWUP"):
             res["sweep_turns"] += 1
-        if instr == "EPISODE_RETRY":
+        if instr == "NO_CASE_REFRAME":
             res["retry_turns"] += 1
         if instr == "EPISODE_OPEN":
             res["open_turns"] += 1
@@ -421,7 +421,9 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         else:
             cs = {"covered": sorted(mapped_by_ch.get(ch, set())), "unconfirmed": [], "not_explored": [], "sweep_asked": []}
         res["coverage"][ch] = {"covered": len(cs["covered"]), "total": len(subs), "unconfirmed": len(cs["unconfirmed"]),
-                               "not_explored": len(cs["not_explored"]), "covered_subs": cs["covered"]}
+                               "not_explored": len(cs["not_explored"]), "covered_subs": cs["covered"],
+                               # (2026-11-06 P7) 탐색 = 물어본 하위역량(covered ∪ sweep ∪ unconfirmed ∪ no_case) — 전수 탐색 기준 N/N
+                               "asked": len(subs) - len(cs["not_explored"])}
         cov_total += len(cs["covered"]); sub_total += len(subs)
         res["unconfirmed_total"] += len(cs["unconfirmed"])
         res["not_explored_total"] += len(cs["not_explored"])
@@ -503,7 +505,7 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
             L.append(f"  챕터 리더 턴: " + ", ".join(f"{c[:4]} {n}" for c, n in r["chapter_leader_turns"].items())
                      + f" · 여는 턴 {r['open_turns']} · 재질문 {r['retry_turns']} · SWEEP 턴 {r['sweep_turns']} · 앵무새 미해결 {r['parrot_turns']}")
             for c, v in r["coverage"].items():
-                L.append(f"  커버리지 {c}: {v['covered']}/{v['total']} {v['covered_subs']} · 미확인 {v['unconfirmed']} · 미탐색 {v['not_explored']}")
+                L.append(f"  커버리지 {c}: {v['covered']}/{v['total']} {v['covered_subs']} · 탐색 {v.get('asked', '-')}/{v['total']} · 미확인 {v['unconfirmed']} · 미탐색 {v['not_explored']}")
             L.append("")
         L.append(f"**누설 턴** (전체 {r['leak_total']}건 · 엄격 {r['leak_strict_total']}건 — 엄격 = 가드 사전 기준)")
         if not r["leaks"]:
