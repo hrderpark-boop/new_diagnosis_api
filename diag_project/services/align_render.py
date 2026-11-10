@@ -107,6 +107,43 @@ def leader_definition_body(chapter: str, user_text: str | None) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+_DEF_TAIL_RES = (
+    r"\s*(이)?라고\s*(생각(합니다|해요|하고\s*있(습니다|어요)|했습니다|해)|봅니다|봐요|보고\s*있(습니다|어요)|믿(습니다|어요)|여깁니다|여겨요|할\s*수\s*있(습니다|어요))[.!…~]*$",
+    r"\s*(인\s*(것|거)|것|거)?\s*같(아요|습니다|네요)[.!…~]*$",
+    r"\s*(이)?(라고요|입니다|이에요|예요|이죠|이지요|죠|이요|요)[.!…~]*$",
+    r"[.!…~]+$",
+)
+DEF_QUOTE_MIN_EOJEOL = 4
+DEF_QUOTE_MAX_CHARS = 70
+
+
+def definition_quote(chapter: str, user_text: str | None) -> str:
+    """(2026-11-10 P9 승인 조건 4) ALIGN 받기 폴백에 인용할 리더 정의의 구절 — 정의 첫 문장에서 역량 이름과 '…라고 생각합니다' 꼬리를 떼고 남은 것.
+    4어절 이상이면 그 구절(길면 쉼표·연결어미에서 끊어 70자 안), 그보다 짧아도 정의 한 줄을 그대로 받는다. 정의가 없으면 빈 문자열."""
+    from diag_project.services.output_guard import split_sentences
+    body = leader_definition_body(chapter, user_text)
+    first = next((x.strip() for x in split_sentences(body) if x.strip()), "")
+    t = first
+    for _ in range(2):
+        for pat in _DEF_TAIL_RES:
+            t = re.sub(pat, "", t).strip()
+    t = t.strip(" ,'\"“”‘’")
+    from diag_project.prompts.phase3a.layer3_state import is_consent_only
+    if not t or is_consent_only(first) or len(re.sub(r"\s+", "", t)) < 4:
+        return ""                                  # '네'·'좋아요' 같은 동의만 온 답은 정의가 아니다 — 되받기 생략
+    if len(t) > DEF_QUOTE_MAX_CHARS:
+        cut = [m.end() for m in re.finditer(r"(,\s|고\s|며\s|서\s)", t) if DEF_QUOTE_MAX_CHARS // 2 <= m.end() <= len(t)]
+        tail = t[cut[0]:].strip() if cut else t[-DEF_QUOTE_MAX_CHARS:].split(" ", 1)[-1]
+        if len(tail.split()) >= DEF_QUOTE_MIN_EOJEOL:
+            t = tail
+    return t
+
+
+def _rago(phrase: str) -> str:
+    ch = (phrase or "")[-1:]
+    return "이라고" if ch and "가" <= ch <= "힣" and (ord(ch) - 0xAC00) % 28 else "라고"
+
+
 def render_align(
     *,
     llm_text: str,
@@ -121,10 +158,10 @@ def render_align(
     variant 는 챕터 순서 인덱스 — 안내·다리 고정 문장 3종 순환(P4-1)."""
     recv = receive_sentences(llm_text, chapter=chapter, sub_names=sub_names, user_text=user_text)
     if not recv:
-        # (2026-11-05 P3-1) 일반 폴백('네, 잘 들었어요') 금지 — 리더 정의의 명사구를 인용한 한 문장. 명사구가 없으면 되받기 생략.
-        body = leader_definition_body(chapter, user_text)
-        phrase = quote_phrase(body) or key_noun_phrase(body)
-        recv = [persona_line(persona_name, "align_receive_quote", phrase_eul=with_josa(f"'{phrase}'", "을/를"))] if phrase else []
+        # (2026-11-05 P3-1) 일반 폴백('네, 잘 들었어요') 금지. (2026-11-10 P9 승인 조건 4) 낱말 하나(''상태'를 중심에')가 아니라 리더 정의의 구절을
+        #   그대로 받아 '…라고 보시는군요.' — 구절이 없으면(정의가 비었으면) 되받기 생략.
+        phrase = definition_quote(chapter, user_text)
+        recv = [persona_line(persona_name, "align_receive_quote", quote_rago=f"'{phrase}'{_rago(phrase)}")] if phrase else []
     parts = [
         " ".join(recv),
         definition_sentence(chapter, persona_name) + "\n" + "\n".join(f"· {n}" for n in sub_names),

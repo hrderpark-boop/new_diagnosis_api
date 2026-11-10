@@ -359,7 +359,15 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
             from diag_project.services.persona_register import register_violations as _rv_l
             _body_l = " ".join(ln for ln in content.split("\n") if ln.strip() and not ln.strip().startswith("·"))
             _body_l = re.sub(r"['‘“\"][^'’”\"]{1,80}['’”\"]", "''", _body_l)     # 따옴표 인용(정의·리더 말)은 말투 검사에서 뺀다
-            _rv = _rv_l(coach_name, _body_l)
+            # (승인 조건 1) 어미 검사는 질문 문장(전 턴) + 시스템이 자리를 정한 평서문(여는 문장의 '왜 묻는지', 범위 문장)만 — 받는 문장은 보지 않는다
+            _rv = _rv_l(coach_name, _body_l, scope="questions")
+            _slot_l = []
+            if instr in ("EPISODE_OPEN", "COMPETENCY_ASK", "DIAGNOSIS_CONFIRM"):
+                _sb = [x.strip() for x in split_sentences(_body_l) if x.strip()]
+                _qi_l = [i for i, x in enumerate(_sb) if _isq_l(x)]
+                if _qi_l and _qi_l[-1] >= 1 and not _isq_l(_sb[_qi_l[-1] - 1]):
+                    _slot_l = _rv_l(coach_name, _sb[_qi_l[-1] - 1])
+            _rv = _rv + [x for x in _slot_l if x not in _rv]
             if _rv:
                 res["register_mix"] += len(_rv)
                 if instr in ("EPISODE_OPEN", "SWEEP_ANCHOR", "COMPETENCY_ASK", "DIAGNOSIS_CONFIRM"):
@@ -517,7 +525,7 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
     L.append("- 사례당 리더 턴: 종료된 사례별 리더 턴 수(괄호는 5~8 밖 사례 수). 6슬롯/종료 사례: 6/6 로 닫힌 사례 수 / 종료 사례 수.")
     L.append("- 되받기 없음/미인용: 사례 턴(EPISODE_*/SWEEP_*)에서 되받기 평서문이 없는 턴 / 리더 명사구를 인용하지 않은 턴. 형식 재생성/미해결: 8-w 재생성이 돈 턴 / 2회 뒤에도 되받기가 없어 그대로 나간 턴(폴백 없음) — 둘 다 0 목표.")
     L.append("- 고정문장 반복: 시스템 앵커 꼬리(마지막 2어절) 연속 2회 / 같은 페르소나 슬롯 연속 2회 — 0 이어야 함.")
-    L.append("- (2026-11-10 P9) 미탐색 = 끝난 챕터에서 한 번도 묻지 않은 하위역량(0 이어야 함). 말투 섞임 = 페르소나 어미와 다른 문장(여는 턴·범위 문장/전체), "
+    L.append("- (2026-11-10 P9) 미탐색 = 끝난 챕터에서 한 번도 묻지 않은 하위역량(0 이어야 함). 말투 섞임 = 페르소나 어미와 다른 질문 문장·여는 문장·범위 문장(여는 턴·범위 턴/전체; 받는 문장의 '~군요/~네요'는 세지 않는다), "
              "닫는 턴 질문 = 사례를 닫고 새 사례를 여는 턴의 받기 쪽에 질문·예고·조언·가정이 남은 턴, 주어 없는 질문 = 대상 낱말이 없는 탐침 질문 — 셋 다 0 목표.")
     L.append("- (2026-11-05 P4) 슬롯/챕터 최대 ≤1 · 평가 말투('좋습니다/좋은 방향/잘하셨/인상적' 류, 고정 문장 제외) 0 · 흉터(서술어 없음·호칭만·조사 끝) 0 · "
              "같은 고정 문장 세션 ≥3회 0 — 넷 다 P4 통과 기준.")

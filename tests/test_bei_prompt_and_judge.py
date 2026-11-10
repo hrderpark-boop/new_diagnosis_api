@@ -299,7 +299,7 @@ def test_p4_6_close_summary_material_strips_leading_conjunction_and_template_gon
                                                        "bei_close_episodes": [{"idx": 1, "action": "그래서 두 사람을 따로 불렀어요", "context": "", "result": ""},
                                                                               {"idx": 2, "action": "그리고 파일럿을 먼저 돌렸어요", "context": "", "result": ""}]})
     # (2026-11-10 P9-9) 재료는 사례 + 보완 답, 합쳐 2~3문장
-    assert "합쳐서 2문장 안으로" in g and "사례 2:" in g and "'두 사람을 따로 불렀어요'" in g and "'그래서 두 사람" not in g
+    assert "합쳐서 2~2문장으로" in g and "'파일럿을 먼저 돌렸어요'" in g and "'두 사람을 따로 불렀어요'" in g and "'그래서 두 사람" not in g
     src = inspect.getsource(d._submit_message_phase3a)
     assert "첫 사례에서는 '" not in src and "close_summary_mode" in src
 

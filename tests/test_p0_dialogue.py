@@ -56,7 +56,7 @@ def test_render_align_quotes_leader_phrase_when_llm_gave_only_questions():
     assert "'" in first and "잘 들었" not in first and ("중심" in first or "컨디션" in first), first
     assert align_shape_ok(out, _subs("self_management"))[0]
     for name in ("Ella", "Jessica", "Olivia", "Daniel", "Michael", "Lucas"):
-        assert "{phrase_eul}" in PERSONA_LINES[name]["align_receive_quote"] and "align_receive_fallback" not in PERSONA_LINES[name]
+        assert "{quote_rago}" in PERSONA_LINES[name]["align_receive_quote"] and "align_receive_fallback" not in PERSONA_LINES[name]
     # 명사구가 없는 답(짧은 단답)이면 되받기를 생략하고 정의부터
     out2 = render_align(llm_text="그렇군요?", chapter="self_management", sub_names=_subs("self_management"),
                         persona_name="Ella", anchor="그런 순간이 있었어요?", user_text="네.")

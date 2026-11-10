@@ -511,8 +511,10 @@ def _quote_from_user(c: str, u: str) -> bool:
 
 
 _FALSE_ATTR_RE = re.compile(
-    r"(?:방금|앞서|아까|조금 전|지금)?\s*(?:말씀하신|말씀해\s*주신|언급하신|말씀한)\s*['‘’\"“”]([^'‘’\"“”\n]{1,20})['‘’\"“”]"
-    r"\s*(?:과도|와도|과|와|이랑|하고|도)?\s*(?:닿아\s*있(?:는데요|습니다만|어요)|이어지(?:는데요|는 부분인데요|네요)|연결되(?:는데요|네요)|관련(?:이)?\s*있는데요|맞닿아\s*있는데요|이어서\s*(?:여쭙니다|여쭙겠습니다|여쭤볼게요|묻겠습니다))[,，.]?\s*")
+    r"(?:방금|앞서|아까|조금 전|지금)?\s*(?:말씀하신|말씀해\s*주신|언급하신|말씀한)\s*['‘’\"“”]([^'‘’\"“”\n]{1,40})['‘’\"“”]"
+    r"(?:\s*(?:이)?(?:라)?는\s*(?:대목|말씀|부분|이야기|표현))?"
+    r"\s*(?:과도|와도|과|와|이랑|하고|도)?\s*(?:닿아\s*있(?:는데요|습니다만|어요)|이어지(?:는데요|는 부분인데요|네요)|연결되(?:는데요|네요)|관련(?:이)?\s*있는데요|맞닿아\s*있는데요"
+    r"|(?:이어서|연결해|연결해서|이어)\s*(?:여쭙니다|여쭙겠습니다|여쭤볼게요|여쭤보겠습니다|묻겠습니다)|이어서(?=[,，])|연결해서(?=[,，]))[,，.]?\s*")
 
 
 def strip_false_attribution(text: str, user_text: str | None) -> tuple[str, list[str]]:
@@ -1054,6 +1056,9 @@ def question_lacks_referent(question: str, context_texts: list[str] | None = Non
         return False
     core = _REF_NOISE_RE.sub("", q)
     toks = core.split()
+    # (P9 승인 조건 3) 누구의 반응·태도·표정·변화인지가 없으면 길이와 무관하게 대상 없음 — "말이나 표정, 이후 태도 변화 중 기억에 남는 것을 …"
+    if _REACTION_RE.search(core) and not _PERSON_RE.search(core) and not re.search(r"['‘’\"“”]", core):
+        return True
     if len(toks) > 6 or re.search(r"['‘’\"“”]", core):
         return False
     ctx = set()
@@ -1073,8 +1078,29 @@ def question_lacks_referent(question: str, context_texts: list[str] | None = Non
     return not any(c in ctx for c in q_chunks)
 
 
+_REACTION_RE = re.compile(r"(반응|태도|표정|변화|말이나\s*행동|말이나\s*표정)")
+_PERSON_CORE = (r"(?:[가-힣A-Za-z]{1,6}\s?(?:님|씨|선임|책임|수석|대리|과장|차장|부장|팀장|실장|본부장|대표|사원|주임|매니저|강사|기획|운영)(?:\s?(?:님|씨))?"
+                r"|(?:두|세|네|몇|여러)\s?(?:분|사람|명|강사|선임)|팀원(?:들|분들)?|구성원(?:들)?|동료(?:들)?|상대(?:방|분)?|그분(?:들)?|상사|고객(?:사)?|후배|선배|강사(?:들|분들)?)")
+_PERSON_RE = re.compile(_PERSON_CORE)
+
+
+def key_person(user_text: str | None) -> str:
+    """리더 답에 나온 인물 표현 하나 — 여럿이면 묶음 표현('두 분')을 먼저, 없으면 마지막에 나온 사람. 없으면 빈 문자열."""
+    t = user_text or ""
+    m = re.search(r"(?:두|세|네|몇|여러)\s?(?:분|사람|명)", t)
+    if m:
+        return re.sub(r"(사람|명)$", "분", m.group(0))
+    found = [x.group(0).strip() for x in _PERSON_RE.finditer(t) if x.group(0).strip() not in ("리더님",)]
+    return found[-1] if found else ""
+
+
 def attach_referent(question: str, context_text: str | None) -> str:
-    """대상이 없는 질문 앞에 앞 문장(리더 답)의 핵심 명사구를 붙인다 — '달라진 부분이 …' → ''분담표'와 관련해 달라진 부분이 …'."""
+    """대상이 없는 질문 앞에 앞 문장(리더 답)의 인물·핵심 명사구를 붙인다 — '말이나 표정, 태도 변화 중 …' → '두 분의 말이나 표정, …',
+    '달라진 부분이 …' → ''분담표'와 관련해 달라진 부분이 …'."""
+    core0 = _REF_NOISE_RE.sub("", (question or "").strip())
+    if _REACTION_RE.search(core0) and not _PERSON_RE.search(core0):
+        who = key_person(context_text)
+        return f"{who}의 {core0}" if who else f"상대분의 {core0}"
     np_ = key_noun_phrase(context_text)
     if not np_:
         return question
@@ -1107,3 +1133,23 @@ def drop_unfinished_tail(text: str | None) -> tuple[str, int]:
     if not m:
         return t, 0
     return t[: m[-1].end()].rstrip(), 1
+
+
+# ── (2026-11-10 P9 p9c) 챕터 종료 요약 — 지시문을 되읊는 문장·해석 문장은 요약이 아니다 ──────────────────────────────
+#   p9c 조직관리 종료 턴: "3번째 재료는 사례가 아니라 보완 답의 중복 문장이라 … 한 문장에 묶었습니다. 재료에 없는 사실은 더하지 않았습니다."
+_SUMMARY_META_RE = re.compile(r"(재료|보완\s*답|문장(에|으로)\s*묶|별도\s*사례|더하지\s*않|중복\s*문장|번째\s*(재료|사례|이야기)는|요약(했|하였|해\s*드렸|하면)|되짚(었|어\s*보))")
+_SUMMARY_INTERP_RE = re.compile(r"((으)?로\s*(보입니다|보여요|읽힙니다|읽혀요|들립니다|들려요)|뜻(이군요|입니다|이에요|으로)|셈(입니다|이에요|이군요)|것\s*같습니다|것\s*같아요)[.!…]*$")
+
+
+def drop_summary_noise(text: str | None) -> tuple[str, int]:
+    """종료 요약에서 지시문 되읊기(재료·보완 답 …)와 해석 문장('…한 장면으로 보입니다')을 지운다. (결과, 지운 문장 수)."""
+    kept, n = [], 0
+    for s in split_sentences(text or ""):
+        s = s.strip()
+        if not s:
+            continue
+        if _SUMMARY_META_RE.search(s) or _SUMMARY_INTERP_RE.search(s):
+            n += 1
+            continue
+        kept.append(s)
+    return " ".join(kept).strip(), n

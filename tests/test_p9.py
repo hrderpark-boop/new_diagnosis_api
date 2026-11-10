@@ -151,7 +151,12 @@ def test_p9_6_register_per_persona():
     from diag_project.services import intro_messages as IM
     from diag_project.services.persona_register import apply_register, register_violations
     out, n, left = apply_register("Jessica", "팀 목표를 어떻게 나누시는지 듣고 싶어요. 최근에 목표를 같이 정하신 일이 있으셨어요? 회의로 꽉 찬 오전이셨군요. 그렇게 읽히네요.")
-    assert left == [] and n == 4 and out == "팀 목표를 어떻게 나누시는지 듣고 싶습니다. 최근에 목표를 같이 정하신 일이 있으셨습니까? 회의로 꽉 찬 오전이셨습니다. 그렇게 읽힙니다."
+    # (승인 조건 1) '~군요/~네요' 받는 문장은 Jessica 도 그대로 — 고치는 것은 해요체 질문과 (scope="all" 일 때) 그 밖의 해요체 평서문
+    assert left == [] and n == 2 and out == "팀 목표를 어떻게 나누시는지 듣고 싶습니다. 최근에 목표를 같이 정하신 일이 있으셨습니까? 회의로 꽉 찬 오전이셨군요. 그렇게 읽히네요."
+    q_only = apply_register("Jessica", "두 분을 따로 부르셨어요. 그 자리에서 무엇을 먼저 말씀하셨어요?", scope="questions")
+    assert q_only == ("두 분을 따로 부르셨어요. 그 자리에서 무엇을 먼저 말씀하셨습니까?", 1, [])          # 받는 문장은 손대지 않는다
+    assert apply_register("Daniel", "그렇게 풀어가셨군요. 그때 기준이 뭐였어요?", scope="questions")[0] == "그렇게 풀어가셨군요. 그때 기준이 뭐였습니까?"
+    assert apply_register("Jessica", "네, 알겠어요. 안내드릴게요.", scope="questions", fixed=["안내드릴게요."])[0] == "네, 알겠어요. 안내드리겠습니다."
     assert apply_register("Jessica", "목표를 어떻게 정하고 점검하셨는지 함께 짚어볼 거예요.")[0] == "목표를 어떻게 정하고 점검하셨는지 함께 짚어보겠습니다."
     assert apply_register("Ella", "최근에 실수를 바로 알리신 일이 있으셨습니까?")[0] == "최근에 실수를 바로 알리신 일이 있으셨어요?"
     assert register_violations("Daniel", "그렇게 풀어가셨군요. 그 기준이 무엇이었는지요?") == [] and register_violations("Lucas", "조치는 들었고요, 결과는요?") == []
@@ -166,7 +171,7 @@ def test_p9_6_register_per_persona():
             assert apply_register(pk, IM.chapter_scope_line(ch))[2] == [], (pk, ch)
     from diag_project.data.coaches_persona import COACHES_PERSONA
     jes = next(v for v in COACHES_PERSONA.values() if "Jessica" in v["name"])["system_prompt"]
-    assert "'~습니다/~습니까'만" in jes and "속도였군요" not in jes and "어땠어요" not in jes
+    assert "질문은 '~습니까'로만 끝낸다" in jes and "/어땠어요'" not in jes and "확인하셨죠?" not in jes and "있었나요?'" not in jes
 
 
 def test_p9_7_phrase_caps_and_opener_frames():
@@ -207,7 +212,8 @@ def test_p9_9_summary_material_includes_sweep_answers_and_last_receive_wired():
         {"idx": 1, "kind": "sweep", "context": "", "action": "늦은 이유를 먼저 물어봤어요", "result": ""},
         {"idx": 2, "kind": "sweep", "context": "", "action": "중간에 한 번 알려 달라고 했어요", "result": ""},
         {"idx": 3, "kind": "sweep", "context": "", "action": "주간 회의에서 숫자를 같이 봤어요", "result": ""}]})
-    assert "보완 답: 행동 '늦은 이유를 먼저 물어봤어요'" in g and "합쳐서 3문장 안으로" in g
+    # (p9c) 재료에 '사례'·'보완 답' 꼬리표를 붙이지 않는다 — 꼬리표를 되읊는 문장이 나왔다
+    assert "행동 '늦은 이유를 먼저 물어봤어요'" in g and "합쳐서 2~3문장으로" in g and "보완 답" not in g
     assert len([x for x in clean_close_summary("가. 나. 다. 라. 마.", 5).split(". ") if x]) == 3
     src = inspect.getsource(__import__("diag_project.routes.diagnoses", fromlist=["x"]))
     assert "render_last_receive" in src and '"sweep_done")' in src and "final_receive" in src
@@ -218,6 +224,7 @@ def test_p9_followups_from_first_sim():
     from diag_project.prompts.phase3a import layer3_state
     from diag_project.services.output_guard import question_lacks_referent
     from diag_project.services.persona_register import apply_register
+    assert apply_register("Jessica", "네, 하반기에 교육 일정이 몰리면 시간 쓰는 방식이 자연스럽게 정해지죠.", scope="questions")[1] == 0   # 받는 문장은 범위 밖
     assert apply_register("Jessica", "네, 하반기에 교육 일정이 몰리면 시간 쓰는 방식이 자연스럽게 정해지죠.") == (
         "네, 하반기에 교육 일정이 몰리면 시간 쓰는 방식이 자연스럽게 정해집니다.", 1, [])
     assert apply_register("Jessica", "교육 기획과 운영을 함께 맡으시는군요, 팀원 네 분과 함께 움직이는 자리일 텐데요.")[2] == []
@@ -245,3 +252,63 @@ def test_p9_followups_from_second_sim():
     out, removed = strip_false_attribution("목표를 어떻게 세우셨는지 짚어보겠습니다. 방금 말씀하신 '기준'과 이어서 여쭙니다. '성과관리'는 무엇이라고 보십니까?", "네, 다음으로 이어가 주세요.")
     assert removed == ["기준"] and "말씀하신" not in out and out.endswith("무엇이라고 보십니까?")
     assert not smalltalk_followup_ok("그 와중에 팀 목표는 어떻게 맞춰가고 계십니까?")
+
+
+def test_p9_conditional_approval_items():
+    """P9 조건부 승인 4건 — 점검표 문장 누설 / 누구의 반응인지 없는 질문 / ALIGN 받기 폴백은 정의 구절 인용."""
+    from diag_project.prompts.phase3a.episode_card import build_episode_card
+    from diag_project.services import bei_engine as B
+    from diag_project.services.align_render import definition_quote, render_align
+    from diag_project.services.leak_lexicon import find_state_report
+    from diag_project.services.output_guard import attach_referent, key_person, question_lacks_referent
+    # 2. 점검표 문장
+    for s in ("이 사례에서 아직 여쭙지 않은 부분은 상대 반응입니다.", "이 사례에서 아직 여쭙지 않은 것은 리더님께서 지금 돌아보실 때의 판단입니다.",
+              "이 사례에서 다음으로 여쭙겠습니다."):
+        assert find_state_report(s), s
+    assert not find_state_report("6월부터 공통 교안으로 나갔고 같은 문제로 회의가 열리지 않았습니다.")
+    st, ep = B.new_episode({}, "people_management", "갈등관리", "conflict_management")
+    card = build_episode_card(instruction="EPISODE_PROBE", chapter="people_management", ep=dict(ep, leader_turns=2), bei_turns=2, budget=24)
+    assert "리더에게 말하지 않는다" in card and "여쭙지 않은" not in card            # 금지 예문을 지시문에 쓰지 않는다(베낀다)
+    # 3. 누구의 반응·태도·표정·변화인지 없는 질문 → 직전 답의 인물을 붙인다
+    user = "하루를 비워서 두 분을 한자리에 앉혔어요. 각자 양보 못 할 항목을 세 개씩만 적어 보게 했고, 나머지는 제가 정했습니다."
+    q = "말이나 표정, 이후 태도 변화 중 기억에 남는 것을 말씀해 주십시오."
+    assert question_lacks_referent(q, [user]) and key_person(user) == "두 분"
+    assert attach_referent(q, user) == "두 분의 말이나 표정, 이후 태도 변화 중 기억에 남는 것을 말씀해 주십시오."
+    assert not question_lacks_referent(attach_referent(q, user), [user])
+    assert not question_lacks_referent("그 제안을 받은 박선임 님의 반응은 어땠습니까?", [user])
+    assert key_person("박선임 님은 그럼 그렇게 하죠 하고 받아들였어요.") == "박선임 님" and attach_referent("반응은 어땠습니까?", "그날 바로 보고했습니다.").startswith("상대분의 ")
+    # 4. ALIGN 받기 폴백 — 낱말 하나가 아니라 정의 구절
+    assert definition_quote("people_management", "사람관리는 한 사람 한 사람의 상태를 알고 맞춰 주는 일 같아요.") == "한 사람 한 사람의 상태를 알고 맞춰 주는 일"
+    assert definition_quote("performance_management", "성과관리는 목표를 같이 정하고 중간에 점검해서 끝까지 가게 하는 일이라고 봐요.") == "목표를 같이 정하고 중간에 점검해서 끝까지 가게 하는 일"
+    assert definition_quote("organization_management", "소통이요.") == "" and definition_quote("organization_management", "네") == ""
+    assert definition_quote("organization_management", "조직관리는 방향 정하기입니다.") == "방향 정하기"          # 4어절 미만이어도 정의 한 줄은 그대로 받는다
+    out = render_align(llm_text="", chapter="people_management", sub_names=["갈등관리"], persona_name="Jessica (제시카)", anchor="최근에 그런 일이 있으셨습니까?",
+                       user_text="사람관리는 한 사람 한 사람의 상태를 알고 맞춰 주는 일 같아요.")
+    assert out.startswith("'한 사람 한 사람의 상태를 알고 맞춰 주는 일'이라고 보시는군요.") and "중심에 두고" not in out
+
+
+def test_p9_followups_from_confirm_sim():
+    """p9c 확인 시뮬에서 본 것 — 종료 요약의 지시문 되읊기·해석 한 줄 / 여는 턴·영역 첫 턴의 허위 귀속 / 늦은 시간 인사."""
+    from datetime import datetime as _dt
+    from diag_project.services.close_render import clean_close_summary
+    from diag_project.services.leak_lexicon import find_state_report
+    from diag_project.services.output_guard import drop_summary_noise, strip_false_attribution
+    from diag_project.services.time_greeting import get_time_greeting
+    meta = ("3번째 재료는 사례가 아니라 보완 답의 중복 문장이라 별도 사례로 쓰지 않고, 보완 답의 행동 내용을 한 문장에 묶었습니다. 재료에 없는 사실은 더하지 않았습니다. "
+            "작년 3월 개편 지시 때 두 분을 따로 불러 이유부터 들으셨고, 파일럿 만족도가 높게 나와 하반기 전체 개편으로 이어졌습니다.")
+    out, n = drop_summary_noise(meta)
+    assert n == 2 and out.startswith("작년 3월 개편 지시 때") and "재료" not in clean_close_summary(meta, 3)
+    assert find_state_report("3번째 재료는 사례가 아니라 보완 답의 중복 문장입니다.") and find_state_report("재료에 없는 사실은 더하지 않았습니다.")
+    assert drop_summary_noise("이기획 님이 먼저 멘토를 맡겠다고 나섰다는 건 리더님이 길러 두신 역량이 팀으로 번진 장면으로 보입니다.") == ("", 1)
+    assert drop_summary_noise("표로 정리해 가져가셨고, 이후 납기를 한 번도 놓치지 않았습니다.")[1] == 0
+    u1 = "자료 지연이 거의 사라졌고, 하반기엔 강사 둘이 운영 개선안을 먼저 들고 왔습니다."
+    o1, r1 = strip_false_attribution("기준이 스스로 돌아가기 시작했다는 뜻이군요. 방금 말씀하신 '기준'과 이어서 여쭙니다. 개인 사정으로 힘든 팀원을 배려하신 적, 근래에 있습니까?", u1)
+    assert r1 == ["기준"] and "말씀하신" not in o1
+    o2, r2 = strip_false_attribution("딱히 떠오르는 일이 없으시다면 그대로 넘어가겠습니다. 방금 말씀하신 '기준'과 연결해 여쭙니다. 잘하는 팀원에게 어려운 일을 맡기신 적 있습니까?", "딱히 그런 일은 없었던 것 같아요.")
+    assert r2 == ["기준"] and "연결해" not in o2
+    o3, r3 = strip_false_attribution("네, 사람관리 영역으로 넘어가겠습니다. 방금 말씀하신 '일정표를 다시 짜 팀에 공유하셨다'는 대목과 이어서, 사람을 움직이신 방식을 짚어보려 합니다.", "네, 다음으로 이어가 주세요.")
+    assert len(r3) == 1 and o3 == "네, 사람관리 영역으로 넘어가겠습니다. 사람을 움직이신 방식을 짚어보려 합니다."
+    q = get_time_greeting(_dt(2026, 11, 10, 23, 40))["greeting_question"]
+    assert "시간 시간" not in q and q.endswith("?")
+    src = inspect.getsource(__import__("diag_project.routes.diagnoses", fromlist=["x"]))
+    assert "_is_probe or _is_open or instruction_used == \"COMPETENCY_ASK\"" in src and "_uniq_m" in src

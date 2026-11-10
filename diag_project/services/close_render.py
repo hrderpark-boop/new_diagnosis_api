@@ -22,7 +22,9 @@ _NOTICE_RE = re.compile(r"(보세요|주세요|볼게요|보겠습니다|주십�
 def clean_close_summary(text: str, n_eps: int, *, no_case_tail: bool = False) -> str:
     """질문·칭찬·상태 누설·전환·예고 문장을 걷어내고 '사례 N에서는' 번호 매기기를 떼어 사례 수만큼(최소 2문장) 남긴다."""
     from diag_project.services.output_guard import drop_unfinished_tail
+    from diag_project.services.output_guard import drop_summary_noise
     t, _ = drop_unfinished_tail(text or "")          # (P9, p9b) 토큰 상한에서 잘린 꼬리 문장은 버린다
+    t, _ = drop_summary_noise(t)                     # (P9, p9c) 지시문 되읊기·해석 문장은 요약이 아니다
     t, _ = drop_question_sentences(t)
     t, _ = strip_praise(t)
     t, _ = strip_state_leak(t)
@@ -50,7 +52,7 @@ def _material(episodes: list[dict]) -> str:
     for e in episodes:
         parts = [f"{lab}: {strip_leading_conjunction(e.get(k))}" for k, lab in (("context", "상황"), ("action", "행동"), ("result", "결과")) if e.get(k)]
         if parts:
-            lines.append(("- 보완 답: " if e.get("kind") == "sweep" else f"- 사례 {e.get('idx')}: ") + " / ".join(parts))
+            lines.append("- " + " / ".join(parts))        # (p9c) '사례'·'보완 답' 꼬리표를 주면 그 말을 되읊는다 — 꼬리표 없이 내용만
     return "\n".join(lines)
 
 
@@ -63,9 +65,9 @@ async def render_close_summary(llm, *, episodes: list[dict], persona_name: str |
     n_sum = min(3, max(2, n))      # (2026-11-10 P9-9) 2~3문장
     need = min(n, 2)
     base = (
-        f"당신은 리더십 BEI 코치 {persona_name or 'Ella'}입니다. 지금 영역에서 들은 이야기 {n}개(사례와 짧은 보완 답)를 리더에게 짧게 되짚는 문장을 씁니다.\n\n"
+        f"당신은 리더십 BEI 코치 {persona_name or 'Ella'}입니다. 지금 영역에서 들은 이야기 {n}개를 리더에게 짧게 되짚는 문장을 씁니다.\n\n"
         f"[재료 — 리더가 한 말 그대로]\n{_material(eps)}\n\n"
-        f"[규칙]\n- 재료를 합쳐 {n_sum}문장 안으로(사례는 한 문장씩, 짧은 보완 답은 한 문장에 묶어도 된다). 각 문장은 행동(없으면 상황·결과)을 리더가 쓴 말을 살려 과거 사실로 쓴다('~하셨고 …했습니다' 꼴, 존댓말).\n"
+        f"[규칙]\n- 아래 이야기들을 합쳐 2~{n_sum}문장으로. 어떻게 썼는지 설명하지 말고 문장만 쓴다. 각 문장은 행동(없으면 상황·결과)을 리더가 쓴 말을 살려 과거 사실로 쓴다('~하셨고 …했습니다' 꼴, 존댓말).\n"
         "- 한 문장은 70자 안쪽으로 짧게. 따옴표 인용 나열이 아니라 코치의 문장으로. '사례 1에서는', '첫 사례에서는', '다음 사례에서는' 같은 번호·순서 매기기 금지.\n"
         "- 문장 첫머리 접속사('그래서', '그리고') 금지. 평가·칭찬('좋은', '인상적', '잘') 금지. 질문·예고·전환('이제 …로') 금지. 재료에 없는 사실 금지.\n"
         + (f"- 말투: {register_hint}\n" if register_hint else "")
@@ -83,6 +85,8 @@ async def render_close_summary(llm, *, episodes: list[dict], persona_name: str |
         if find_praise(cand):
             cand, _ = strip_praise(cand)
         m = episodes_matched(cand, eps) if cand else 0
+        if n >= 2 and len([x for x in split_sentences(cand) if x.strip()]) < 2:
+            m = min(m, need - 1)                       # (p9c) 한 문장짜리는 요건 미달로 — 다시 쓴다
         if m > best_n:
             best, best_n = cand, m
         if best_n >= need:
@@ -101,7 +105,6 @@ async def render_last_receive(llm, *, user_text: str | None, persona_name: str |
 
     from diag_project.services.bei_engine import is_no_case_text
     from diag_project.services.output_guard import close_side_violation, find_state_leak, is_question
-    from diag_project.services.persona_register import apply_register
     from diag_project.services.persona_voice import tails_for
     fallback = tails_for(persona_name)[0]
     ut = re.sub(r"\s+", " ", (user_text or "").strip())
@@ -122,5 +125,4 @@ async def render_last_receive(llm, *, user_text: str | None, persona_name: str |
     cand = sents[0] if sents else ""
     if (not cand or is_question(cand) or close_side_violation(cand) or find_praise(cand) or find_state_leak(cand) or len(cand) > _LAST_RECV_MAX):
         return fallback
-    cand, _, left = apply_register(persona_name, cand)
-    return fallback if left else cand
+    return cand          # (승인 조건 1) 받는 문장은 어미를 강제하지 않는다

@@ -6,6 +6,10 @@
   혼용(mixed)       Lucas — 말투 프로필이 '~요/~죠' 단문이고 고정 문장은 합쇼체('알겠습니다')라 설계상 섞인다. 검사하지 않는다.
   해요체(polite)    Ella · Olivia · Michael — 질문이 '~습니까?' 로 끝나면 섞임.
 교정은 보수적인 어미표로만 하고, 표에 없는 어미는 건드리지 않는다(위반으로 남겨 호출자가 폴백).
+
+(2026-11-10 P9 승인 조건 1) 어미 강제는 **질문 문장과 고정 문장**에만 건다. 받는 문장(되받기)은 Jessica·Daniel 도 '~군요/~네요/~셨군요'를 쓴다 —
+금지는 해요체 질문('~어요?')뿐. scope="questions" 는 질문 문장(+ fixed 로 넘긴 고정 문장)만 보고, scope="all" 은 시스템이 자리를 정한 문장
+(여는 문장·범위 문장·첫 인사·안내 본문)에 쓴다.
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ _POLITE_END_RE = re.compile(r"(요|죠)" + _TAIL)
 _POLITE_MID_RE = re.compile(r"[가-힣](는데요|인데요|거든요|고요|구요|지만요|서요|니까요|군요|네요|어요|아요|신가요|셨나요)\s*[,，—]")
 _DANIEL_OK_RE = re.compile(r"(는지요|은지요|인지요|신지요|을지요|지요|군요)" + _TAIL)   # 고정 문장 '~셨군요.'
 _LUCAS_OK_RE = re.compile(r"(나요|은요|는요|건요|면요|만요|군요)" + _TAIL)
+_RECV_OK_RE = re.compile(r"(군요|네요)" + _TAIL)
 _FORMAL_Q_RE = re.compile(r"(습니까|십니까|입니까|ㅂ니까|읍니까)\?*$")
 # (p9b) 해라체 평서('…꽤 다르다.')·전언 꼴('…다르더랍니다.')은 어느 페르소나에게도 섞임 — 여는 문장 틀을 평서체로 주자 LLM 이 그대로 냈다
 _PLAIN_END_RE = re.compile(r"(?<!니)다[.!…]*$")
@@ -60,16 +65,24 @@ def register_of(persona_name: str | None) -> str:
     return REGISTER.get(persona_key(persona_name), "polite")
 
 
-def register_violations(persona_name: str | None, text: str | None) -> list[str]:
-    """페르소나 말투와 다른 어미로 끝난 문장 목록(섞임). 고정 문장·인용은 호출자가 걸러서 넘긴다."""
+def _norm(s: str) -> str:
+    return re.sub(r"[\s.,!?~'\"“”‘’…·—-]+", "", s or "")
+
+
+def register_violations(persona_name: str | None, text: str | None, *, scope: str = "all", fixed: list[str] | None = None) -> list[str]:
+    """페르소나 말투와 다른 어미로 끝난 문장 목록(섞임). scope="questions" 면 질문 문장과 fixed(고정 문장)만 본다 — 받는 문장은 보지 않는다."""
+    from diag_project.services.output_guard import is_question
     reg = register_of(persona_name)
     k = persona_key(persona_name)
     out: list[str] = []
     if reg == "mixed":
         return out
+    fixed_n = {_norm(f) for f in (fixed or []) if f}
     for s in split_sentences(text or ""):
         s = s.strip()
         if not s:
+            continue
+        if scope == "questions" and not (is_question(s) or _norm(s) in fixed_n):
             continue
         core = s.rstrip(".?!…~\"'”’ ")
         if (_PLAIN_END_RE.search(s) and not s.rstrip().endswith("?")) or _HEARSAY_END_RE.search(s):
@@ -78,6 +91,9 @@ def register_violations(persona_name: str | None, text: str | None) -> list[str]
         if reg in ("formal", "terse"):
             bad = bool(_POLITE_END_RE.search(s)) or bool(_POLITE_MID_RE.search(s))
             if bad and k == "Daniel" and _DANIEL_OK_RE.search(s) and not _POLITE_MID_RE.search(s):
+                bad = False
+            # (승인 조건 1) '~군요/~네요'로 끝나는 평서문(받는 문장)은 합쇼체 코치에게도 허용 — 문장 가운데의 '~군요,' 연결도 그대로 둔다
+            if bad and _RECV_OK_RE.search(s) and not s.rstrip().endswith("?"):
                 bad = False
             if bad and reg == "terse" and _LUCAS_OK_RE.search(s) and not _POLITE_MID_RE.search(s):
                 bad = False
@@ -169,10 +185,10 @@ def _politen_sentence(s: str) -> str:
     return s
 
 
-def apply_register(persona_name: str | None, text: str | None) -> tuple[str, int, list[str]]:
-    """말투가 섞인 문장을 어미표로 교정한다. (결과, 고친 문장 수, 그래도 남은 위반 문장)."""
+def apply_register(persona_name: str | None, text: str | None, *, scope: str = "all", fixed: list[str] | None = None) -> tuple[str, int, list[str]]:
+    """말투가 섞인 문장을 어미표로 교정한다. (결과, 고친 문장 수, 그래도 남은 위반 문장). scope·fixed 는 register_violations 와 같다."""
     src = text or ""
-    bad = register_violations(persona_name, src)
+    bad = register_violations(persona_name, src, scope=scope, fixed=fixed)
     if not bad:
         return src, 0, []
     reg = register_of(persona_name)
@@ -183,4 +199,4 @@ def apply_register(persona_name: str | None, text: str | None) -> tuple[str, int
         if new != s:
             out = out.replace(s, new, 1)
             n += 1
-    return out, n, register_violations(persona_name, out)
+    return out, n, register_violations(persona_name, out, scope=scope, fixed=fixed)

@@ -70,6 +70,7 @@ def build_episode_card(
             L.append("반쯤 나온 것(한 번 더 구체화해도 좋다): " + " / ".join(_quote_line(ep, x) for x in partial))
         if missing:
             L.append("아직 없는 것(이 순서로 하나씩): " + " → ".join(SLOT_LABELS[x] for x in missing))
+            L.append("위 세 줄은 코치만 보는 점검표다. 무엇을 들었고 무엇이 남았는지를 리더에게 말하지 않는다 — 받는 문장 뒤에 바로 질문한다.")   # (P9 승인 조건 2)
             nxt = missing[0]
             L.append(f"이번 턴: '{SLOT_LABELS[nxt]}' 하나를 묻는다 — {SLOT_HINTS[nxt]}. "
                      "리더가 다른 데로 가면 한 번은 따라가되 질문은 이 사례로 돌아온다.")

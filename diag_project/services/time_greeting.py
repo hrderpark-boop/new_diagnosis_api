@@ -112,6 +112,7 @@ def get_time_greeting(now: datetime | None = None) -> dict[str, str]:
 
     # (2026-11-04 P3-5) 라포 첫 턴 안부 질문 — '오전 마무리'는 "오전 마무리는 어떠세요?", 그 밖은 "[시간대] 시간은 어떻게 보내고 계세요?"
     greeting_question = ("오전 마무리는 어떠세요?" if part == "오전 마무리"
+                         else "오늘 하루는 어떻게 보내셨어요?" if part == "늦은 시간"      # (2026-11-10 p9c) '오늘 늦은 시간 시간은 …' 낱말 중복
                          else f"오늘 {ampm_phrase} 시간은 어떻게 보내고 계세요?")
     return {
         "hour_text": hour_text,

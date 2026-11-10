@@ -422,10 +422,10 @@ def _get_instruction_guide(
         for e in _close_eps:
             _parts = [f"{lab} '{_slc(e.get(k))}'" for k, lab in (("context", "상황"), ("action", "행동"), ("result", "결과")) if e.get(k)]
             if _parts:
-                _lines_c.append(("   - 보완 답: " if e.get("kind") == "sweep" else f"   - 사례 {e.get('idx')}: ") + " / ".join(_parts))
+                _lines_c.append("   - " + " / ".join(_parts))   # (P9 p9c) '사례'·'보완 답' 꼬리표를 주면 그 말을 되읊는다 — 꼬리표 없이 내용만
         _n_sum_c = min(3, max(2, len(_lines_c)))   # (2026-11-10 P9-9) 사례와 보완 답을 합쳐 2~3문장
-        _close_material = (f"\n\n📎 **요약 재료(리더님 말 그대로 — {len(_lines_c)}개, 합쳐서 {_n_sum_c}문장 안으로 되짚는다)**:\n" + "\n".join(_lines_c)
-                           + f"\n   ✅ 출력은 오직 이 재료로 만든 과거 사실 서술 {_n_sum_c}문장 이내(사례는 한 문장씩, 짧은 보완 답은 한 문장에 묶어도 된다). 리더님의 마지막 답에 반응하지 않는다. "
+        _close_material = (f"\n\n📎 **리더님이 이 영역에서 한 말({len(_lines_c)}개 — 합쳐서 2~{_n_sum_c}문장으로 되짚는다)**:\n" + "\n".join(_lines_c)
+                           + f"\n   ✅ 출력은 위 내용만으로 만든 과거 사실 서술 2~{_n_sum_c}문장. 어떻게 묶었는지·무엇을 뺐는지 설명하지 않는다. 리더님의 마지막 답에 반응하지 않는다. "
                            "'되짚어 보겠습니다'·'떠올려 보세요'·'여쭙니다' 같은 예고·지시·질문 문장은 한 줄도 쓰지 않는다(시스템이 지운다)."
                            + ("\n   ⚠ 리더님의 마지막 답은 '그런 일이 없다'였습니다. 그 답을 받거나('없으셨군요', '떠오르는 장면이 없을 수도') "
                               "질문을 좁히겠다·방향을 바꾸겠다는 말을 쓰지 마세요 — 바로 위 사례 요약 두 문장만." if (state or {}).get("bei_close_no_case") else ""))

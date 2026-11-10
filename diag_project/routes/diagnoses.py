@@ -1168,6 +1168,16 @@ async def _submit_message_phase3a(
                         for e in _bei.episodes(_store, chapter)
                         if e.get("status") in ("done", "turns", "budget", "stalled", "reserve", "switched", "sweep_done"))
                     if any(x.get(k) for k in ("context", "action", "result"))]
+                #   (p9c) 보완 답이 앞 사례의 말을 되풀이한 것('아까 말씀드린 그 일에서요 …')은 재료에서 뺀다 — 중복 재료가 지시문 되읊기를 불렀다
+                from diag_project.services.output_guard import _content_chunks as _cc_m
+                _seen_m: list[set] = []
+                _uniq_m = []
+                for _x in state["bei_close_episodes"]:
+                    _cx = {c for k in ("context", "action", "result") for c in _cc_m(_x.get(k) or "") if len(c) >= 2}
+                    if _cx and any(len(_cx & s_) >= 0.6 * len(_cx) for s_ in _seen_m):
+                        continue
+                    _seen_m.append(_cx); _uniq_m.append(_x)
+                state["bei_close_episodes"] = _uniq_m
                 state["bei_close_no_case"] = bool(state.get("bei_last_no_case"))
             _tm["bei"] = plan
 
@@ -1991,8 +2001,8 @@ async def _submit_message_phase3a(
 
             def _clean_close(txt: str) -> str:
                 """질문·칭찬·상태 누설·전환·예고 문장을 걷어내고 사례 수만큼(최소 2문장) 남긴다."""
-                from diag_project.services.output_guard import drop_unfinished_tail as _dut_e
-                t, _ = _dut_e(txt); t, _ = _dqs_e(t); t, _ = _sp_e(t); t, _ = _ssl_e(t); t, _ = _sts_e(t)
+                from diag_project.services.output_guard import drop_summary_noise as _dsn_e, drop_unfinished_tail as _dut_e
+                t, _ = _dut_e(txt); t, _ = _dsn_e(t); t, _ = _dqs_e(t); t, _ = _sp_e(t); t, _ = _ssl_e(t); t, _ = _sts_e(t)
                 t = " ".join(x for x in _ss_e(t) if not re.search(r"(보세요|주세요|볼게요|보겠습니다|주십시오)[.!…]?$|되짚어|여쭙|여쭤|궁금", x))
                 if state.get("bei_close_no_case"):
                     # (2026-11-05 2단계 판정 4) SWEEP 마지막 답이 '없음'이면 그 답을 받는 문장·'방향을 바꿔/좁혀' 류를 걷어낸다
@@ -2001,10 +2011,14 @@ async def _submit_message_phase3a(
                 return " ".join([_scn_e(x).strip() for x in _ss_e(t) if _scn_e(x).strip()][:_n_sum_c]).strip()   # (P4-6) '사례 1에서는' 번호 매기기 제거 · (P9-9) 2~3문장
 
             def _eps_matched(txt: str) -> int:
-                """재료(사례 인용)와 2개 이상 겹치는 사례 수 — 사례마다 한 문장이 실제로 그 사례를 되짚는지."""
+                """재료(사례 인용)와 2개 이상 겹치는 사례 수 — 사례마다 한 문장이 실제로 그 사례를 되짚는지.
+                (P9 p9c) 재료가 2개 이상인데 요약이 한 문장뿐이면 요건(_need_c)에 못 미친 것으로 친다 — 재생성·집중 렌더로 넘긴다."""
                 _ct = set(_cc_e(txt))
-                return sum(1 for e in _eps_c
-                           if len({c for k in ("context", "action", "result") for c in _cc_e(e.get(k) or "") if len(c) >= 2} & _ct) >= 2)
+                _m = sum(1 for e in _eps_c
+                         if len({c for k in ("context", "action", "result") for c in _cc_e(e.get(k) or "") if len(c) >= 2} & _ct) >= 2)
+                if _n_eps_c >= 2 and len([x for x in _ss_e(txt) if x.strip()]) < 2:
+                    _m = min(_m, _need_c - 1)
+                return _m
 
             # (2026-11-05 P4-6) 인용은 재료 — LLM 이 사례 전부(2~3개)를 한 문장씩 되짚는다. 빠진 사례가 있으면 재생성 ≤2, 그래도 어느 사례도
             #   되짚지 못하면 고정 다리만(지어낸 서술 없음). 인용을 나열하던 옛 템플릿(…하셨고, …하셨다고 들었습니다)은 폐지.
@@ -2514,8 +2528,11 @@ async def _submit_message_phase3a(
         _qs_w3 = [x for x in _sents_w3 if is_question_sentence(x)]
         _ctx_w3 = [_llm_user_text or ""]
         # 질문 하나만 남긴 턴(앞 질문을 지움)이거나 질문 앞에 받는 문장이 없는 턴에서만 본다 — 받는 문장이 대상을 말한 짧은 후속 질문은 그대로 둔다
+        from diag_project.services.output_guard import _PERSON_RE as _per_w3, _REACTION_RE as _rea_w3
         _trimmed_w3 = bool(_tm.get("one_q")) or not [x for x in _sents_w3 if not is_question_sentence(x)]
-        if len(_qs_w3) == 1 and _trimmed_w3 and _qlr_w3(_qs_w3[0], _ctx_w3):
+        #   (승인 조건 3) 누구의 반응·태도·표정·변화인지 없는 질문은 언제나 본다 — 같은 턴의 받는 문장이 사람을 말했으면 대상이 있는 것으로 친다
+        _react_w3 = bool(_qs_w3) and bool(_rea_w3.search(_qs_w3[-1])) and not _per_w3.search(" ".join(_sents_w3))
+        if len(_qs_w3) == 1 and (_trimmed_w3 or _react_w3) and _qlr_w3(_qs_w3[0], _ctx_w3) and not (not _trimmed_w3 and not _react_w3):
             _tm["no_referent"] = 1
             _fixed_q3 = False
             try:
@@ -2637,11 +2654,14 @@ async def _submit_message_phase3a(
                 _body_k = chapter_scope_line(chapter)   # (P4-1) '이 영역에서 무엇을 볼지' 1문장 — LLM 이 안 썼으면 결정론 문장
                 _tm["scope_fallback"] = 1
             # (2026-11-10 P9-6) 범위 문장에도 페르소나 어미 — LLM 문장·폴백 문장 모두. 교정 뒤에도 섞이면 폴백 문장(교정본)으로
+            #   (승인 조건 1) 어미 강제는 범위 문장(본문의 마지막 평서문)에만 — 앞의 받는 문장은 그대로 둔다
             from diag_project.services.persona_register import apply_register as _areg_k
-            _body_k, _n_reg_k, _left_k = _areg_k(_pn_k, _body_k)
+            _sk = [x.strip() for x in _ss_k(_body_k) if x.strip()]
+            _scope_k, _n_reg_k, _left_k = _areg_k(_pn_k, _sk[-1])
             if _left_k:
-                _body_k, _, _ = _areg_k(_pn_k, chapter_scope_line(chapter))
+                _scope_k, _, _ = _areg_k(_pn_k, chapter_scope_line(chapter))
                 _tm["scope_fallback"] = 2
+            _body_k = " ".join(_sk[:-1] + [_scope_k])
             if _n_reg_k:
                 _tm["register_fix"] = int(_tm.get("register_fix") or 0) + _n_reg_k
             clean_reply = f"{_body_k.rstrip()} {_defq_k}".strip()
@@ -2767,7 +2787,7 @@ async def _submit_message_phase3a(
 
     # 8-x2. (2026-11-06 P7) 허위 귀속 절 삭제 — 사례 턴(LLM 질문 턴)에서 "방금 말씀하신 '피드백'과도 닿아 있는데요," 처럼 리더가 하지 않은 말
     #   (하위역량 이름)을 리더 말로 돌리는 연결 절을 지운다(p7b Ella NO_CASE_REFRAME 7회). 실제 리더 발화에 있는 인용은 보존. 결정론, 재생성 없음.
-    if system_override_text is None and not _llm_error and (clean_reply or "").strip() and (_is_probe or instruction_used == "COMPETENCY_ASK"):   # (P9) 영역 첫 턴에도
+    if system_override_text is None and not _llm_error and (clean_reply or "").strip() and (_is_probe or _is_open or instruction_used == "COMPETENCY_ASK"):   # (P9) 영역 첫 턴·여는 턴에도
         from diag_project.services.output_guard import strip_false_attribution as _sfa_x
         clean_reply, _fa_removed = _sfa_x(clean_reply, _llm_user_text)
         if _fa_removed:
@@ -2841,11 +2861,15 @@ async def _submit_message_phase3a(
                 logger.info("🗣️ 입버릇 상한 → 대체 표현: %s", _pc_z)
         except Exception as _e_pc:   # noqa: BLE001
             logger.warning("입버릇 상한 처리 실패 — 건너뜀: %s", _e_pc)
-        # (2026-11-10 P9-6) 페르소나 말투 — 모든 코치 문장에 건다(Jessica 는 '~습니다/~습니까'만, Ella·Olivia·Michael 은 질문을 '~습니까'로 끝내지 않는다).
+        # (2026-11-10 P9-6 → 승인 조건 1) 페르소나 말투 — **질문 문장과 고정 문장에만** 건다(Jessica·Daniel 은 질문을 '~습니까'로, Ella·Olivia·Michael 은
+        #   질문을 '~습니까'로 끝내지 않는다). 받는 문장(되받기)은 '~군요/~네요/~셨군요' 그대로 둔다. 시스템 고정 턴(템플릿)과 안내 본문은 전부 본다.
         #   어미표에 있는 꼴만 고치고(재생성 없음) 남은 것은 guard_log register_left 로 남긴다.
         try:
+            from diag_project.services.intro_messages import build_intro_anchor_section as _bias_z
             from diag_project.services.persona_register import apply_register as _areg_z
-            clean_reply, _n_reg_z, _left_z = _areg_z((state.get("coach_persona") or {}).get("name"), clean_reply)
+            _fixed_z = [x for x in split_sentences(_bias_z()) if x.strip()] if instruction_used == "DIAGNOSIS_INTRO" else []
+            clean_reply, _n_reg_z, _left_z = _areg_z((state.get("coach_persona") or {}).get("name"), clean_reply,
+                                                     scope=("all" if system_override_text is not None else "questions"), fixed=_fixed_z)
             if _n_reg_z:
                 _tm["register_fix"] = int(_tm.get("register_fix") or 0) + _n_reg_z
             if _left_z:
