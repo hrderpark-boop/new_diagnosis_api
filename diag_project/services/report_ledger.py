@@ -274,3 +274,19 @@ def rescore_without_confidence(details: dict) -> dict:
         radar[ch] = new_final
     return {"changed": changed, "total_score": overall_score(list(radar.values())), "radar": radar}
 
+
+def confidence_free_view(details, total_score, radar, *, is_human_edited: bool = False):
+    """(2026-11-11) 저장된 리포트를 확신도 가점 없이 보여 줄 값 묶음 — 관리자 리포트 상세가 고객 화면과 같은 값을 내도록 쓴다.
+
+    반환 (details, total_score, radar). 원본은 건드리지 않는다(깊은 복사 뒤 다시 계산, DB 는 그대로).
+    관리자 교정본·details 없음은 저장값 그대로. 점수 정책은 바꾸지 않는다 — 26칸 전부 점수, 평균에서 빼는 칸 없음.
+    """
+    if is_human_edited or not isinstance(details, dict) or not details:
+        return details, total_score, radar
+    import copy
+    view = copy.deepcopy(details)
+    rs = rescore_without_confidence(view)
+    if not rs["changed"]:
+        return view, total_score, radar
+    return view, (rs["total_score"] if rs["total_score"] is not None else total_score), rs["radar"]
+

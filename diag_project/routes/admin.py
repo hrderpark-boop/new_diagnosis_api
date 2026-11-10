@@ -1070,6 +1070,12 @@ async def get_report_detail(
         }
 
     saved = report.scores or {}
+    # (2026-11-11) 확신도 가점 제거 — 고객 리포트와 같은 값으로 보여 준다(표시 전용, DB 는 그대로, 교정본은 건드리지 않는다).
+    from diag_project.services.report_ledger import confidence_free_view
+    _details_adm, _total_adm, _radar_adm = confidence_free_view(
+        saved.get("details", {}), report.total_score, saved.get("radar_chart", {}),
+        is_human_edited=bool(report.is_human_edited),
+    )
     return {
         "id": str(report.id),
         "session_id": str(report.session_id),
@@ -1078,10 +1084,10 @@ async def get_report_detail(
         "company_name": await _company_name(
             db, participant.company_id if participant else None
         ),
-        "total_score": report.total_score,
+        "total_score": _total_adm,
         "summary": report.summary,
-        "radar_chart": saved.get("radar_chart", {}),
-        "details": saved.get("details", {}),
+        "radar_chart": _radar_adm,
+        "details": _details_adm,
         "top_keywords": saved.get("top_keywords", []),
         "blind_spot": saved.get("blind_spot"),
         "idp": saved.get("idp", []),
