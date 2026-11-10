@@ -1279,7 +1279,12 @@ async def _submit_message_phase3a(
         if instruction_used == "SWEEP_ANCHOR" and current_target_sub:
             _w_eps = [x for x in (_bei.weak_map(_store, chapter).get(current_target_sub) or []) if isinstance(x, int)]
             if _w_eps:
-                _weak_hint = f"아까 {_w_eps[0]}번째 사례에서 이쪽 이야기가 살짝 나왔다 — '그쪽을 하나 더' 결로 잇는다"
+                # (2026-11-10 P10) 사례를 번호로 부르지 않는다 — 그 사례에서 리더가 쓴 말로 지칭한다
+                _w_ep = next((e for e in _bei.episodes(_store, chapter) if e.get("kind", "episode") == "episode" and e.get("idx") == _w_eps[0]), None)
+                _w_sl = (_w_ep or {}).get("slots") or {}
+                _w_q = ((_w_sl.get("context") or {}).get("quote") or (_w_sl.get("action") or {}).get("quote") or "")[:40]
+                _weak_hint = ((f"아까 리더가 '{_w_q}' 라고 말한 이야기에서 이쪽이 살짝 나왔다" if _w_q else "앞서 들은 이야기에서 이쪽이 살짝 나왔다")
+                              + " — '그쪽을 하나 더' 결로 잇는다. 그 이야기는 내용으로 지칭하고 번호로 부르지 않는다")
         _prev_eps_card = [{"idx": i + 1, "summary": f"[{e.get('chapter')}] {e.get('summary')}"}
                           for i, e in enumerate((state.get("all_collected_events") or [])[-5:])]
         from diag_project.prompts.phase3a.episode_card import build_episode_card as _bec
@@ -2562,7 +2567,7 @@ async def _submit_message_phase3a(
     if (instruction_used == "EPISODE_PROBE" and _bei_ep and system_override_text is None and not _llm_error and chapter
             and not needs_user_decision and (clean_reply or "").strip()):
         from diag_project.services.intro_messages import persona_line as _pl_s
-        from diag_project.services.output_guard import starts_without_main_clause as _swmc_s
+        from diag_project.services.output_guard import is_request_statement as _irs_s, starts_without_main_clause as _swmc_s
         from diag_project.services.persona_voice import persona_key as _pk_s
         _pn_s = _pk_s((state.get("coach_persona") or {}).get("name"))
         _sd_s = session.self_assessment_data or {}
@@ -2571,7 +2576,8 @@ async def _submit_message_phase3a(
         _ch_i_pre = [k for k in COMPETENCY_FRAMEWORK if k != "supplementary"].index(chapter) if chapter in COMPETENCY_FRAMEWORK else 0
         _sents_s = [x for x in split_sentences(clean_reply) if x.strip()]
         _lead_s = [x for x in _sents_s if not is_question_sentence(x) and not _swmc_s(x)
-                   and not re.search(r"(여쭤보겠|여쭙겠|질문드리|물어보겠|묻겠|여쭤볼게요|여쭙니다)[.!…]?$", x.strip())][:2]   # (P4) 예고 문장은 되받기가 아니다 — 슬롯 질문과 어긋난다
+                   and not re.search(r"(여쭤보겠|여쭙겠|질문드리|물어보겠|묻겠|여쭤볼게요|여쭙니다)[.!…]?$", x.strip())
+                   and not _irs_s(x)][:2]   # (P4) 예고 문장은 되받기가 아니다 · (P10) 요청형('…조금 더 듣고 싶습니다')도 — 슬롯 질문과 겹쳐 한 턴에 두 번 묻게 된다
         _qi_s = next((i for i, x in enumerate(_sents_s) if is_question_sentence(x)), None)
         _q_now_s = " ".join(_sents_s[_qi_s:]) if _qi_s is not None else ""
         _filled_s = set(_bei.filled_slots(_bei_ep))
@@ -2801,6 +2807,25 @@ async def _submit_message_phase3a(
         try:
             from diag_project.services.leak_lexicon import find_leaks as _fl_y, find_state_report as _fsr_y, strip_leak_sentences as _sls_y
             from diag_project.services.output_guard import strip_state_leak as _ssl_y, rewrite_incident_word as _riw_y
+            # (2026-11-10 P10) 사례 번호 금지 — "사례 1에서 …" 는 그 사례에서 리더가 쓴 낱말로("아까 말씀하신 개편 건에서") 바꾼다
+            if chapter and re.search(r"사례", clean_reply):
+                from diag_project.services.output_guard import key_noun_phrase as _knp_y, rewrite_case_numbers as _rcn_y
+                _labels_y = {}
+                for _e_y in _bei.episodes(session.self_assessment_data or {}, chapter):
+                    if _e_y.get("kind", "episode") == "episode":
+                        _sl_y = _e_y.get("slots") or {}
+                        _lb_y = _knp_y((_sl_y.get("context") or {}).get("quote") or (_sl_y.get("action") or {}).get("quote") or "")
+                        if _lb_y:
+                            _labels_y[int(_e_y.get("idx") or 0)] = _lb_y
+                clean_reply, _n_cn_y = _rcn_y(clean_reply, _labels_y)
+                if _n_cn_y:
+                    _tm["case_number"] = _n_cn_y
+            # (2026-11-10 P10) 요청형 받는 문장('…조금 더 듣고 싶습니다.') 뒤에 질문이 있으면 요청 문장을 지운다 — 한 턴에 묻는 것은 하나
+            if _is_probe:
+                from diag_project.services.output_guard import drop_request_statements as _drs_y
+                clean_reply, _n_rq_y = _drs_y(clean_reply)
+                if _n_rq_y:
+                    _tm["request_cut"] = _n_rq_y
             if "사건" in clean_reply:   # (p2f) 8-i 뒤 재생성 출력(8-j·8-n·8-h)에도 '사건' 치환
                 clean_reply, _n_riw_y = _riw_y(clean_reply)
                 if _n_riw_y:
@@ -3118,6 +3143,7 @@ async def _submit_message_phase3a(
             "close_side_cut": int(_tm.get("close_side_cut") or 0), "close_side_tail": int(_tm.get("close_side_tail") or 0), "no_referent": _tm.get("no_referent"),
             "phrase_cap": _tm.get("phrase_cap"), "register_fix": int(_tm.get("register_fix") or 0), "register_left": int(_tm.get("register_left") or 0),
             "final_receive": _tm.get("final_receive"), "smalltalk_time": int(_tm.get("smalltalk_time") or 0),
+            "case_number": int(_tm.get("case_number") or 0), "request_cut": int(_tm.get("request_cut") or 0),   # (P10) 사례 번호 치환 · 요청형 받는 문장 삭제
             "anchor_attached": int(_tm.get("anchor_attached") or 0), "format_regen": int(_tm.get("format_regen") or 0),
             "format_miss": _tm.get("format_miss"), "receive_miss": int(_tm.get("receive_miss") or 0), "receive_phrase": _tm.get("receive_phrase"),
             # (2026-11-06 P7-1) incident 슬롯 판정의 사례 유무 · stall 연속 무진전 턴 수

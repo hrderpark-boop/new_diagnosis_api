@@ -1153,3 +1153,57 @@ def drop_summary_noise(text: str | None) -> tuple[str, int]:
             continue
         kept.append(s)
     return " ".join(kept).strip(), n
+
+
+# ── (2026-11-10 P10) 코치 발화에 사례 번호 금지 — "사례 1에서 …" 대신 "아까 말씀하신 개편 건에서 …" ─────────────────────
+#   번호는 코치의 내부 순번이고 리더는 무엇이 1번인지 모른다. 그 사례에서 리더가 쓴 낱말(label)이 있으면 내용으로, 없으면 번호만 뗀 지칭으로 바꾼다.
+_KOR_ORD = {"첫": 1, "한": 1, "두": 2, "둘": 2, "세": 3, "셋": 3, "네": 4, "넷": 4}
+_CASE_REF_RE = re.compile(
+    r"(?:(?:아까|앞서|앞의|위의|방금)\s*)?"
+    r"(?:사례\s*(?P<n1>\d+)\s*번?|(?P<n2>\d+)\s*번째?\s*사례|(?P<k>첫|한|두|세|네)\s*번째\s*사례|(?P<k2>첫)\s*사례)")
+
+
+def rewrite_case_numbers(text: str | None, labels: dict[int, str] | None = None) -> tuple[str, int]:
+    """'사례 1에서'·'두 번째 사례에서는' → '아까 말씀하신 개편 건에서'(labels[번호] 가 있을 때) / '앞서 말씀하신 이야기에서'. (결과, 바꾼 수).
+    목록 줄('· ')과 따옴표 안은 건드리지 않는다."""
+    labels = labels or {}
+    n_done = 0
+
+    def _sub(m):
+        nonlocal n_done
+        idx = int(m.group("n1") or m.group("n2") or 0) or _KOR_ORD.get(m.group("k") or m.group("k2") or "", 0)
+        lab = (labels.get(idx) or "").strip()
+        n_done += 1
+        return f"아까 말씀하신 {lab} 건" if lab else "앞서 말씀하신 이야기"
+
+    out_lines = []
+    for line in (text or "").split("\n"):
+        if line.strip().startswith("·"):
+            out_lines.append(line)
+            continue
+        parts = re.split(r"(['‘“\"][^'’”\"\n]{0,80}['’”\"])", line)
+        out_lines.append("".join(p if i % 2 else _CASE_REF_RE.sub(_sub, p) for i, p in enumerate(parts)))
+    return "\n".join(out_lines), n_done
+
+
+# ── (2026-11-10 P10) 요청형으로 끝난 받는 문장 — "…조금 더 듣고 싶습니다." 뒤에 질문이 붙으면 한 턴에 두 번 묻는다 ───────────────
+_REQUEST_STMT_RE = re.compile(
+    r"((듣고|알고|여쭙고|여쭤보고|묻고|확인하고)\s*싶(습니다|어요|네요)|들려주(시면|셨으면)\s*(좋겠|합니다|해요)|말씀해\s*주(시면|셨으면)\s*(좋겠|합니다)"
+    r"|(는지|은지|인지|을지)[^.?!]{0,30}(싶습니다|싶어요|바랍니다))[.!…]*$")
+
+
+def is_request_statement(sentence: str | None) -> bool:
+    """받는 문장처럼 보이지만 실제로는 묻는 문장인가 — '그 대답에서 두 분이 어떤 표정으로 받아들였는지 조금 더 듣고 싶습니다.'"""
+    return bool(_REQUEST_STMT_RE.search((sentence or "").strip()))
+
+
+def drop_request_statements(text: str | None) -> tuple[str, int]:
+    """마지막 질문 앞에 있는 요청형 평서문을 지운다(한 턴에 묻는 것은 하나). 질문이 없으면 그대로 둔다 — 그 요청이 이 턴의 질문이다. (결과, 지운 수)."""
+    sents = [x.strip() for x in split_sentences(text or "") if x.strip()]
+    qi = [i for i, x in enumerate(sents) if is_question(x) and not is_request_statement(x)]
+    if not qi:
+        return (text or ""), 0
+    last = qi[-1]
+    kept = [x for i, x in enumerate(sents) if not (i < last and is_request_statement(x))]
+    n = len(sents) - len(kept)
+    return (" ".join(kept).strip() if n else (text or "")), n
