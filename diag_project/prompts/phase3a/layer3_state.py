@@ -155,6 +155,14 @@ def _build_rapport_guide(state: dict | None) -> str:
     )
 
     # 카테고리별 가이드 — 시스템이 고른 1개만 LLM 에 보여줌
+    # (2026-11-10 P9-2) 지금 시간대를 준다 — 아직 오지 않은 시간대(오전의 '오후')를 되물음에 넣지 않게
+    from diag_project.services.output_guard import future_daypart_words as _fdw
+    from diag_project.services.time_greeting import current_daypart as _cdp
+    _part_now = (state or {}).get("current_daypart") or _cdp()
+    _future_now = _fdw(_part_now)
+    _smalltalk_time_rule = (
+        f"🕒 **지금은 '{_part_now}'입니다.** 이미 지난 시간대만 말합니다"
+        + (f" — {'·'.join(_future_now)} 이야기는 아직 오지 않았으므로 꺼내지 않습니다(둘을 묶어 묻는 것도 금지).\n" if _future_now else ".\n"))
     category_guides = {
         "일상": (
             f"**이번 턴 카테고리 (시스템 강제): 일상**\n\n"
@@ -205,9 +213,10 @@ def _build_rapport_guide(state: dict | None) -> str:
             "직전 턴에 '[시간대] 시간은 어떻게 보내고 계세요?' 를 물었고, 리더님이 방금 그 답을 하셨습니다.\n"
             "이번 턴 출력은 **받는 문장 1~2개 + (선택) 가벼운 되물음 1개**입니다. 담당 업무·기대 질문은 다음 턴에 시스템이 "
             "붙이므로 여기서 묻지 마세요.\n\n"
-            "🗣 **되물음 규칙**: 리더님 말에서 나온 것만 되묻습니다(말에 없는 사정·감정을 전제로 묻지 않습니다). "
+            + _smalltalk_time_rule +
+            "🗣 **되물음 규칙**: 리더님 말에서 나온 것만 되묻습니다(말에 없는 사정·감정을 전제로 묻지 않습니다). 되물음은 물음표로 끝나는 질문형으로만 씁니다. "
             "물음표 문장은 최대 하나. **일·업무·역할·팀을 묻지 않는다 — 그건 다음 턴이 묻는다.** 스몰톡 소재(하루·날씨·점심·분위기·"
-            "오전/오후가 어땠는지) 안에서만. 업무·역할 질문은 시스템이 지웁니다.\n"
+            "지나온 시간이 어땠는지) 안에서만. 업무·역할 질문은 시스템이 지웁니다.\n"
             f"   ({EXAMPLE_LABEL}) 리더 '요즘 출장이 잦아요' → '출장이 잦다 하시니, 현장이 많은 쪽이세요 아니면 회의가 많은 쪽이세요?'\n"
             f"   ({EXAMPLE_LABEL}) 리더 '오전에 회의가 많았어요' → '회의로 꽉 찬 오전이셨네요. 회의는 주로 팀 안에서 하세요, 바깥 분들과 하세요?'\n\n"
             + _RECEIVE_RULES.replace("- 금지: 질문, ", "- 금지: 말에서 나오지 않은 질문, ").replace("출력: 평서문 한 문장. 끝.", "출력: 평서문 1~2문장(+ 되물음 1개). 끝.")
@@ -300,11 +309,11 @@ def _build_confirm_guide(state: dict | None) -> str:
     _cn_eun = with_josa(chapter_name, "은/는", quote=True)
     _cn_ro = with_josa(chapter_name, "으로/로", quote=True)
     # (P4-1) 범위 1문장의 결 — 다른 영역(일관리)의 문장으로 보여 주고, 이 영역 문장은 LLM 이 정의에서 푼다
-    _scope_hint = "일을 어떻게 계획하고 시간과 자원을 어떻게 나눠 쓰셨는지 함께 짚어볼 거예요." if chapter != "work_management" \
-        else "팀이 갈 방향을 어떻게 세우고 바꾸셨는지 함께 짚어볼 거예요."
+    # (2026-11-10 P9) 다른 '영역'의 문장을 예로 주면 그대로 베낀다(p9a: 성과관리 범위 문장이 일관리 문장으로 나감) — 진단과 무관한 분야의 문장으로 꼴만 보인다
+    _scope_hint = "장을 어떻게 보고 남은 재료를 어떻게 나눠 쓰셨는지 함께 짚어볼 거예요."
     if is_first_chapter:
         opening_strategy = (
-            f"**도입 + 범위 1문장 (첫 영역)** — (2026-11-05 P4-1) 정의 질문은 시스템이 붙입니다. 질문을 쓰지 마세요.\n"
+            f"**첫 영역 시작 + 범위 1문장** — (2026-11-05 P4-1) 정의 질문은 시스템이 붙입니다. 질문을 쓰지 마세요.\n"
             f"준비됐다는 동의를 짧게 받은 뒤(평가 리드 '좋습니다' 금지), 첫 영역 {_cn_ro} 들어가며 "
             f"**이 영역에서 무엇을 볼지 1문장**을 리더가 쓰는 말로 씁니다 — 아래 영역 정의를 풀어서, 역량·항목 이름 나열 없이.\n"
             f"  영역 정의: {framework.get('description', '')}\n"
@@ -413,9 +422,10 @@ def _get_instruction_guide(
         for e in _close_eps:
             _parts = [f"{lab} '{_slc(e.get(k))}'" for k, lab in (("context", "상황"), ("action", "행동"), ("result", "결과")) if e.get(k)]
             if _parts:
-                _lines_c.append(f"   - 사례 {e.get('idx')}: " + " / ".join(_parts))
-        _close_material = (f"\n\n📎 **요약 재료(리더님 말 그대로 — 사례 {len(_lines_c)}개, 사례마다 한 문장씩 되짚는다)**:\n" + "\n".join(_lines_c)
-                           + f"\n   ✅ 출력은 오직 이 재료로 만든 과거 사실 서술 {len(_lines_c)}문장(사례 순서대로 한 문장씩). 리더님의 마지막 답에 반응하지 않는다. "
+                _lines_c.append(("   - 보완 답: " if e.get("kind") == "sweep" else f"   - 사례 {e.get('idx')}: ") + " / ".join(_parts))
+        _n_sum_c = min(3, max(2, len(_lines_c)))   # (2026-11-10 P9-9) 사례와 보완 답을 합쳐 2~3문장
+        _close_material = (f"\n\n📎 **요약 재료(리더님 말 그대로 — {len(_lines_c)}개, 합쳐서 {_n_sum_c}문장 안으로 되짚는다)**:\n" + "\n".join(_lines_c)
+                           + f"\n   ✅ 출력은 오직 이 재료로 만든 과거 사실 서술 {_n_sum_c}문장 이내(사례는 한 문장씩, 짧은 보완 답은 한 문장에 묶어도 된다). 리더님의 마지막 답에 반응하지 않는다. "
                            "'되짚어 보겠습니다'·'떠올려 보세요'·'여쭙니다' 같은 예고·지시·질문 문장은 한 줄도 쓰지 않는다(시스템이 지운다)."
                            + ("\n   ⚠ 리더님의 마지막 답은 '그런 일이 없다'였습니다. 그 답을 받거나('없으셨군요', '떠오르는 장면이 없을 수도') "
                               "질문을 좁히겠다·방향을 바꾸겠다는 말을 쓰지 마세요 — 바로 위 사례 요약 두 문장만." if (state or {}).get("bei_close_no_case") else ""))
@@ -487,12 +497,11 @@ def _get_instruction_guide(
     _exp_short = _exp_raw[:120].replace("'", "’")
     _exp_desc = f"'{_exp_short}'" if _exp_raw else "(기록 없음)"
     # (P4-1) 범위 1문장의 결은 '다른 영역'의 문장으로 — 같은 영역 문장을 주면 그대로 베낀다
-    _scope_example = ("일을 어떻게 계획하고 시간과 자원을 어떻게 나눠 쓰셨는지 함께 짚어볼 거예요." if _cur != "work_management"
-                      else "팀이 갈 방향을 어떻게 세우고 바꾸셨는지 함께 짚어볼 거예요.")
+    _scope_example = "장을 어떻게 보고 남은 재료를 어떻게 나눠 쓰셨는지 함께 짚어볼 거예요."   # (2026-11-10 P9) 진단과 무관한 분야의 문장 — 꼴(~을 어떻게 하셨는지 함께 짚어볼 거예요)만 참고
 
     guides = {
         "COMPETENCY_ASK": (
-            f"영역 도입 — '{_cur_chapter_name}' 영역에 들어가는 턴입니다. (2026-11-05 P4-1) 정의 질문은 시스템이 뒤에 붙입니다 — "
+            f"'{_cur_chapter_name}' 영역에 들어가는 턴입니다. (2026-11-05 P4-1) 정의 질문은 시스템이 뒤에 붙입니다 — "
             "질문을 쓰지 마세요(쓰면 지워집니다).\n\n"
             "🚨 감정 상태 점검: 직전 답변이 극심한 스트레스·거부라면 역량 이야기 대신 그 감정에 머무르세요(Core Rule 7).\n\n"
             "이번 턴 출력(평서문 1~2문장):\n"
@@ -500,7 +509,7 @@ def _get_instruction_guide(
             f"2) **이 영역에서 무엇을 볼지 1문장** — 아래 영역 정의를 리더가 쓰는 일상어로 풀어 '~을 어떻게 하셨는지 함께 짚어볼 거예요' 결로. "
             "역량·하위역량 이름 나열 금지.\n"
             f"   영역 정의: {_cur_fw.get('description', '')}\n"
-            f"   결({EXAMPLE_LABEL}, 다른 영역의 문장): '{_scope_example}'\n\n"
+            f"   꼴만 참고({EXAMPLE_LABEL}, 진단과 무관한 분야의 문장 — 낱말을 가져오지 말 것): '{_scope_example}'\n\n"
             "⛔ 금지: 질문(정의 질문 포함 — 시스템이 붙인다), 공식 정의 선언, 하위역량 목록, '좋습니다'·'잘하셨' 류 평가 리드, "
             "'넘어가겠습니다' 류 진행 보고. 톤: 페르소나. 2문장 이내."
         ),

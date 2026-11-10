@@ -24,7 +24,7 @@ def _judged(**status):
 
 def test_budget_and_states():
     assert [B.chapter_budget(c) for c in ("organization_management", "performance_management", "people_management",
-                                          "work_management", "self_management")] == [16, 18, 20, 18, 16]
+                                          "work_management", "self_management")] == [16, 18, 24, 18, 16]   # (P9-1) 사람관리 24
     st: dict = {}
     assert B.chapter_state(st, CH) == "confirm" and B.remaining(st, CH) == 16
     st = B.set_chapter_state(st, CH, B.STATE_EPISODE)
@@ -98,7 +98,13 @@ def test_plan_after_episode_budget_rules():
     # 남은 8 − 2 = 6 ≥ 5 → 3번째 사례
     assert B.plan_after_episode(st, CH, SUBS) == "episode"
     st["bei_turns"] = {CH: 16}
-    assert B.plan_after_episode(st, CH, SUBS) == "close"
+    # (2026-11-10 P9-1) 예산이 0 이어도 미질문(변화관리·혁신)이 남아 있으면 SWEEP — 종료 조건은 '모든 하위역량 asked' 하나
+    assert B.plan_after_episode(st, CH, SUBS) == "sweep"
+    for s_ in SUBS[2:]:
+        st, sw_ = B.new_episode(st, CH, s_, s_, kind="sweep")
+        st = B.close_episode(st, CH, sw_, "no_case", [], SUBS)
+        st = B.mark_unconfirmed(st, CH, s_)
+    assert B.unasked(st, CH, SUBS) == [] and B.plan_after_episode(st, CH, SUBS) == "close"
 
 
 def test_sweep_target_followup_and_unconfirmed():

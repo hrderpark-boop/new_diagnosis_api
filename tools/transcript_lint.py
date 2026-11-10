@@ -213,7 +213,8 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         # 고정 문장(시스템 앵커·슬롯) 연속 반복 — 목표 0
         "tail_repeat": 0, "slot_repeat": 0, "anchor_reuse": 0, "repeat_issues": [],
         # (2026-11-05 P4) 슬롯 챕터당 최대(≤1) · 평가 말투 턴(0) · 흉터 문장 턴(0) · 같은 고정 문장 세션 ≥3회(0) · 여는 문장 모드 · SWEEP 다리 누락 · 종료 요약 모드
-        "slot_per_chapter_max": 0, "slot_by_chapter": {}, "praise_turns": 0, "praise_issues": [], "broken_turns": 0, "broken_issues": [],
+        "slot_per_chapter_max": 0, "slot_by_chapter": {}, "register_mix": 0, "register_mix_open": 0, "register_issues": [], "close_side_q": 0, "close_side_issues": [],
+        "no_referent_q": 0, "no_referent_issues": [], "praise_turns": 0, "praise_issues": [], "broken_turns": 0, "broken_issues": [],
         "repeat3": [], "opener_modes": {}, "sweep_bridge_missing": 0, "close_modes": {}, "scope_fallback_turns": 0,
         # (BEI) 사례 단계
         "episodes": {}, "episode_turns": [], "episode_turns_out_of_range": 0, "episodes_six_slots": 0, "episodes_closed": 0,
@@ -352,6 +353,34 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
                 _nx = norm_sentence(x)
                 if len(_nx) >= 6:
                     _sent_counter[_nx] += 1
+        # 7-1. (2026-11-10 P9) 말투 섞임 · 닫는 턴 질문 · 주어 없는 질문 — 셋 다 0 이 통과 기준
+        if chapter and instr != "DIAGNOSIS_INTRO":
+            from diag_project.services.output_guard import _CLOSE_SIDE_BAN_RE as _csb_l, is_question as _isq_l, question_lacks_referent as _qlr_l
+            from diag_project.services.persona_register import register_violations as _rv_l
+            _body_l = " ".join(ln for ln in content.split("\n") if ln.strip() and not ln.strip().startswith("·"))
+            _body_l = re.sub(r"['‘“\"][^'’”\"]{1,80}['’”\"]", "''", _body_l)     # 따옴표 인용(정의·리더 말)은 말투 검사에서 뺀다
+            _rv = _rv_l(coach_name, _body_l)
+            if _rv:
+                res["register_mix"] += len(_rv)
+                if instr in ("EPISODE_OPEN", "SWEEP_ANCHOR", "COMPETENCY_ASK", "DIAGNOSIS_CONFIRM"):
+                    res["register_mix_open"] += len(_rv)
+                res["register_issues"].append({"t": t, "instr": instr, "sentence": _rv[0][:90]})
+            _ss_p9 = [x.strip() for x in split_sentences(content) if x.strip()]
+            if instr in ("EPISODE_OPEN", "SWEEP_ANCHOR") and g.get("closed"):
+                _qi = [i for i, x in enumerate(_ss_p9) if _isq_l(x)]
+                _before = _ss_p9[:_qi[-1]] if _qi else _ss_p9
+                _bad_c = [x for x in _before if _isq_l(x) or _csb_l.search(x)]
+                # 여는 문장의 '왜 묻는지' 평서문은 닫는 쪽이 아니다 — 마지막 질문 바로 앞 1~2문장은 질문일 때만 센다
+                _bad_c = [x for x in _bad_c if _isq_l(x) or x in _before[:max(0, len(_before) - 2)]]
+                if _bad_c:
+                    res["close_side_q"] += 1
+                    res["close_side_issues"].append({"t": t, "instr": instr, "sentence": _bad_c[0][:90]})
+            if instr in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
+                _qs_p9 = [x for x in _ss_p9 if _isq_l(x)]
+                _trim_p9 = bool(g.get("one_q")) or len(_qs_p9) == len(_ss_p9)      # 라우트 8-w3 과 같은 조건: 질문 하나만 남긴 턴 또는 받는 문장이 없는 턴
+                if _qs_p9 and _trim_p9 and _qlr_l(_qs_p9[-1], [prev_user or ""]):
+                    res["no_referent_q"] += 1
+                    res["no_referent_issues"].append({"t": t, "instr": instr, "sentence": _qs_p9[-1][:90]})
         if g.get("opener"):
             res["opener_modes"][g["opener"]] = res["opener_modes"].get(g["opener"], 0) + 1
         if g.get("sweep_bridge") == 0:
@@ -470,8 +499,8 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
     L: list[str] = []
     L.append("## 코치 재생 전문 린트 요약")
     L.append("")
-    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN | 잘림 | 미감지 a/b | 사례당 리더 턴(5~8 밖) | 6슬롯/종료 사례 | 챕터 리더 턴 최대 | 커버리지 | 미확인/미탐색 | 되받기 없음/미인용(대상) | 형식 재생성/미해결 | 고정문장 반복 꼬리/슬롯/앵커재사용 | 슬롯 사례(보존/턴) | 슬롯/챕터 최대 | 평가 말투 | 흉터 | 고정문장≥3회 | 좋습니다 최대 | 동일앵커 |")
-    L.append("|---|---|---:|---:|---:|---:|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN | 잘림 | 미감지 a/b | 사례당 리더 턴(5~8 밖) | 6슬롯/종료 사례 | 챕터 리더 턴 최대 | 커버리지 | 미확인/미탐색 | 되받기 없음/미인용(대상) | 형식 재생성/미해결 | 고정문장 반복 꼬리/슬롯/앵커재사용 | 슬롯 사례(보존/턴) | 슬롯/챕터 최대 | 평가 말투 | 흉터 | 고정문장≥3회 | 좋습니다 최대 | 동일앵커 | 말투 섞임(여는·범위/전체) | 닫는 턴 질문 | 주어 없는 질문 |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for r in results:
         same = cross["per_coach"].get(r["coach"], 0)
         ep_s = ",".join(str(n) for n in r["episode_turns"]) or "-"
@@ -482,12 +511,14 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
                  f"{ep_s}({r['episode_turns_out_of_range']}) | {r['episodes_six_slots']}/{r['episodes_closed']} | {r['chapter_leader_turns_max']} | {cov_s} | "
                  f"{r['unconfirmed_total']}/{r['not_explored_total']} | {r['no_receive_turns']}/{r['receive_no_quote_turns']}({r['receive_turns']}) | "
                  f"{r['format_regen_turns']}/{r['receive_miss_turns']} | {r['tail_repeat']}/{r['slot_repeat']}/{r['anchor_reuse']} | {r['slot_episodes']}({r['slot_kept']}/{r['slot_turns']}) | "
-                 f"{r['slot_per_chapter_max']} | {r['praise_turns']} | {r['broken_turns']} | {len(r['repeat3'])} | {r['good_lead_max']} | {same} |")
+                 f"{r['slot_per_chapter_max']} | {r['praise_turns']} | {r['broken_turns']} | {len(r['repeat3'])} | {r['good_lead_max']} | {same} | {r['register_mix_open']}/{r['register_mix']} | {r['close_side_q']} | {r['no_referent_q']} |")
     L.append("")
     L.append("- 미감지 a/b: (직전 사용자 턴 반복 미감지/발생) · (코치 질문 붙여넣기 미감지/발생)")
     L.append("- 사례당 리더 턴: 종료된 사례별 리더 턴 수(괄호는 5~8 밖 사례 수). 6슬롯/종료 사례: 6/6 로 닫힌 사례 수 / 종료 사례 수.")
     L.append("- 되받기 없음/미인용: 사례 턴(EPISODE_*/SWEEP_*)에서 되받기 평서문이 없는 턴 / 리더 명사구를 인용하지 않은 턴. 형식 재생성/미해결: 8-w 재생성이 돈 턴 / 2회 뒤에도 되받기가 없어 그대로 나간 턴(폴백 없음) — 둘 다 0 목표.")
     L.append("- 고정문장 반복: 시스템 앵커 꼬리(마지막 2어절) 연속 2회 / 같은 페르소나 슬롯 연속 2회 — 0 이어야 함.")
+    L.append("- (2026-11-10 P9) 미탐색 = 끝난 챕터에서 한 번도 묻지 않은 하위역량(0 이어야 함). 말투 섞임 = 페르소나 어미와 다른 문장(여는 턴·범위 문장/전체), "
+             "닫는 턴 질문 = 사례를 닫고 새 사례를 여는 턴의 받기 쪽에 질문·예고·조언·가정이 남은 턴, 주어 없는 질문 = 대상 낱말이 없는 탐침 질문 — 셋 다 0 목표.")
     L.append("- (2026-11-05 P4) 슬롯/챕터 최대 ≤1 · 평가 말투('좋습니다/좋은 방향/잘하셨/인상적' 류, 고정 문장 제외) 0 · 흉터(서술어 없음·호칭만·조사 끝) 0 · "
              "같은 고정 문장 세션 ≥3회 0 — 넷 다 P4 통과 기준.")
     if any(r["mapping_accuracy"] is not None for r in results):
@@ -495,6 +526,11 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
     L.append(f"- 코치 간 동일 앵커 문장 쌍 합계: **{cross['pairs']}** (0 이어야 함)")
     for d in cross["duplicates"]:
         L.append(f"  - {' · '.join(d['coaches'])}: \"{d['sentence']}\"")
+    L.append("")
+    for r in results:
+        for key, title in (("register_issues", "말투 섞임"), ("close_side_issues", "닫는 턴 질문"), ("no_referent_issues", "주어 없는 질문")):
+            for it in r.get(key) or []:
+                L.append(f"- [P9 {title}] {r['coach_name']} t{it['t']} {it['instr']}: {it['sentence']}")
     L.append("")
     for r in results:
         L.append(f"### {r['coach_name']}({r['coach']}) — {os.path.basename(r['file'])} (코치 턴 {r['coach_turns']})")

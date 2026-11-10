@@ -21,7 +21,9 @@ _NOTICE_RE = re.compile(r"(보세요|주세요|볼게요|보겠습니다|주십�
 
 def clean_close_summary(text: str, n_eps: int, *, no_case_tail: bool = False) -> str:
     """질문·칭찬·상태 누설·전환·예고 문장을 걷어내고 '사례 N에서는' 번호 매기기를 떼어 사례 수만큼(최소 2문장) 남긴다."""
-    t, _ = drop_question_sentences(text or "")
+    from diag_project.services.output_guard import drop_unfinished_tail
+    t, _ = drop_unfinished_tail(text or "")          # (P9, p9b) 토큰 상한에서 잘린 꼬리 문장은 버린다
+    t, _ = drop_question_sentences(t)
     t, _ = strip_praise(t)
     t, _ = strip_state_leak(t)
     t, _ = strip_transition_sentences(t)
@@ -29,7 +31,7 @@ def clean_close_summary(text: str, n_eps: int, *, no_case_tail: bool = False) ->
     if no_case_tail:
         sents = [x for x in sents if not re.search(r"(없(었|으|다|을|는)|떠오르|좁혀|방향을\s*(조금\s*)?바꿔|다른\s*(방향|쪽|질문)|여쭙|여쭤)", x)]
     sents = [strip_case_numbering(x).strip() for x in sents]
-    return " ".join([x for x in sents if x][:max(2, n_eps)]).strip()
+    return " ".join([x for x in sents if x][:min(3, max(2, n_eps))]).strip()   # (2026-11-10 P9-9) 사례와 보완 답을 합쳐 2~3문장
 
 
 def episodes_matched(text: str, episodes: list[dict]) -> int:
@@ -48,7 +50,7 @@ def _material(episodes: list[dict]) -> str:
     for e in episodes:
         parts = [f"{lab}: {strip_leading_conjunction(e.get(k))}" for k, lab in (("context", "상황"), ("action", "행동"), ("result", "결과")) if e.get(k)]
         if parts:
-            lines.append(f"- 사례 {e.get('idx')}: " + " / ".join(parts))
+            lines.append(("- 보완 답: " if e.get("kind") == "sweep" else f"- 사례 {e.get('idx')}: ") + " / ".join(parts))
     return "\n".join(lines)
 
 
@@ -58,11 +60,13 @@ async def render_close_summary(llm, *, episodes: list[dict], persona_name: str |
     if llm is None or not eps:
         return "", 0
     n = len(eps)
+    n_sum = min(3, max(2, n))      # (2026-11-10 P9-9) 2~3문장
+    need = min(n, 2)
     base = (
-        f"당신은 리더십 BEI 코치 {persona_name or 'Ella'}입니다. 지금 영역에서 들은 사례 {n}개를 리더에게 짧게 되짚는 문장을 씁니다.\n\n"
+        f"당신은 리더십 BEI 코치 {persona_name or 'Ella'}입니다. 지금 영역에서 들은 이야기 {n}개(사례와 짧은 보완 답)를 리더에게 짧게 되짚는 문장을 씁니다.\n\n"
         f"[재료 — 리더가 한 말 그대로]\n{_material(eps)}\n\n"
-        f"[규칙]\n- 정확히 {n}문장, 사례 순서대로 사례마다 한 문장. 각 문장은 그 사례의 행동(없으면 상황·결과)을 리더가 쓴 말을 살려 과거 사실로 쓴다('~하셨고 …했습니다' 꼴, 존댓말).\n"
-        "- 따옴표 인용 나열이 아니라 코치의 문장으로. '사례 1에서는', '첫 사례에서는', '다음 사례에서는' 같은 번호·순서 매기기 금지.\n"
+        f"[규칙]\n- 재료를 합쳐 {n_sum}문장 안으로(사례는 한 문장씩, 짧은 보완 답은 한 문장에 묶어도 된다). 각 문장은 행동(없으면 상황·결과)을 리더가 쓴 말을 살려 과거 사실로 쓴다('~하셨고 …했습니다' 꼴, 존댓말).\n"
+        "- 한 문장은 70자 안쪽으로 짧게. 따옴표 인용 나열이 아니라 코치의 문장으로. '사례 1에서는', '첫 사례에서는', '다음 사례에서는' 같은 번호·순서 매기기 금지.\n"
         "- 문장 첫머리 접속사('그래서', '그리고') 금지. 평가·칭찬('좋은', '인상적', '잘') 금지. 질문·예고·전환('이제 …로') 금지. 재료에 없는 사실 금지.\n"
         + (f"- 말투: {register_hint}\n" if register_hint else "")
         + "\n출력: 문장만."
@@ -71,7 +75,7 @@ async def render_close_summary(llm, *, episodes: list[dict], persona_name: str |
     prompt = base
     for i in range(max(1, rounds)):
         try:
-            out = await llm._generate_with_retry(prompt=prompt, max_tokens=320, thinking_budget=0, call_type="close_summary", temperature=0.4)
+            out = await llm._generate_with_retry(prompt=prompt, max_tokens=480, thinking_budget=0, call_type="close_summary", temperature=0.4)
         except Exception as e:  # noqa: BLE001
             logger.warning("종료 요약 렌더링 실패: %s", e)
             break
@@ -81,7 +85,42 @@ async def render_close_summary(llm, *, episodes: list[dict], persona_name: str |
         m = episodes_matched(cand, eps) if cand else 0
         if m > best_n:
             best, best_n = cand, m
-        if best_n >= n:
+        if best_n >= need:
             break
-        prompt = base + f"\n\n🚨 방금 출력은 사례 {n}개 중 {m}개만 되짚었습니다. 빠진 사례의 재료(행동)를 넣어 {n}문장으로 다시 쓰세요."
+        prompt = base + f"\n\n🚨 방금 출력은 재료 {n}개 중 {m}개만 되짚었습니다. 빠진 재료(행동)를 넣어 {n_sum}문장 안으로 다시 쓰세요."
     return best, best_n
+
+
+# ── (2026-11-10 P9-9) 세션 마지막 답 받기 1문장 ─────────────────────────────────────────────────────────────
+_LAST_RECV_MAX = 70
+
+
+async def render_last_receive(llm, *, user_text: str | None, persona_name: str | None) -> str:
+    """세션의 마지막 리더 답을 받는 평서문 1문장. 질문·평가·조언·가정·상태 보고 없이 들은 사실만. 실패·형식 불합격·스텁은 페르소나 마무리 어구."""
+    import os
+
+    from diag_project.services.bei_engine import is_no_case_text
+    from diag_project.services.output_guard import close_side_violation, find_state_leak, is_question
+    from diag_project.services.persona_register import apply_register
+    from diag_project.services.persona_voice import tails_for
+    fallback = tails_for(persona_name)[0]
+    ut = re.sub(r"\s+", " ", (user_text or "").strip())
+    if llm is None or os.getenv("FM_LLM_STUB") or not ut or is_no_case_text(ut) or len(ut.replace(" ", "")) < 8:
+        return fallback
+    prompt = (
+        f"당신은 리더십 BEI 코치 {persona_name or 'Ella'}입니다. 리더의 마지막 답을 받는 문장을 정확히 한 문장 씁니다.\n\n"
+        f"[리더의 마지막 답]\n{ut[-400:]}\n\n"
+        "[규칙]\n- 리더가 쓴 낱말 하나를 넣어 들은 사실만 다시 말하는 평서문 한 문장(존댓말).\n"
+        "- 질문·평가·칭찬·조언·가정('~했다면')·감사·작별·진행 안내 금지. 리더가 하지 않은 말 금지.\n\n출력: 문장만."
+    )
+    try:
+        out = await llm._generate_with_retry(prompt=prompt, max_tokens=120, thinking_budget=0, call_type="last_receive", temperature=0.3)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("마지막 답 받기 렌더링 실패: %s", e)
+        return fallback
+    sents = [x.strip() for x in split_sentences(re.sub(r"\s*\n+\s*", " ", (out or "").strip().strip('"“”'))) if x.strip()]
+    cand = sents[0] if sents else ""
+    if (not cand or is_question(cand) or close_side_violation(cand) or find_praise(cand) or find_state_leak(cand) or len(cand) > _LAST_RECV_MAX):
+        return fallback
+    cand, _, left = apply_register(persona_name, cand)
+    return fallback if left else cand

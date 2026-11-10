@@ -260,7 +260,7 @@ def test_p4_4_opener_shape_why_plus_existence_question():
 
 
 def test_p4_5_sweep_cap_three_per_chapter_and_bridge_rule():
-    """SWEEP 은 챕터당 3개 상한(나머지 not_explored) · 연속 SWEEP 순번 · 다리 표지 판정 · 카드가 2개째부터 다리 필수를 지시."""
+    """(2026-11-10 P9-1) SWEEP 챕터당 상한 삭제 — 미질문이 남아 있으면 끝까지 묻는다 · 연속 SWEEP 순번 · 다리 표지 판정 · 카드가 2개째부터 다리 필수를 지시."""
     from diag_project.services import bei_engine as B
     from diag_project.services.output_guard import has_sweep_bridge
     from diag_project.prompts.phase3a.episode_card import build_episode_card
@@ -268,16 +268,16 @@ def test_p4_5_sweep_cap_three_per_chapter_and_bridge_rule():
     subs = [f"s{i}" for i in range(9)]
     st: dict = {"bei_turns": {CH: 10}, "covered": {CH: {"s0": [{"episode": 1}]}}}
     opened = []
-    for _ in range(5):
+    for _ in range(12):
         t = B.sweep_target(st, CH, subs)
         if t is None:
             break
         st, _ep = B.new_episode(st, CH, t, t, kind="sweep")
         opened.append(t)
-    assert opened == ["s1", "s2", "s3"] and B.sweep_count(st, CH) == 3 and B.sweep_target(st, CH, subs) is None
-    assert B.consecutive_sweeps(st, CH) == 3
+    assert opened == [f"s{i}" for i in range(1, 9)] and B.sweep_target(st, CH, subs) is None      # 상한 없이 8개 전부
+    assert B.consecutive_sweeps(st, CH) == 8
     cov = B.coverage_summary(st, CH, subs)
-    assert cov["not_explored"] == ["s4", "s5", "s6", "s7", "s8"]
+    assert cov["not_explored"] == [] and B.unasked(st, CH, subs) == []
     assert has_sweep_bridge("아까 공통 양식 얘기에서 살짝 나왔는데, 그쪽을 하나 더 여쭙고 싶어요.") and not has_sweep_bridge("교안을 먼저 확보하는 쪽이 과정을 살린다고 보셨군요.")
     card = build_episode_card(instruction="SWEEP_ANCHOR", chapter=CH, ep=None, bei_turns=10, budget=20, anchor_text="그런 일, 최근에 있으셨어요?",
                               sweep_seq=2, bridge_material="'하루를 비워서 두 분을 한자리에 앉혔어요'")
@@ -298,7 +298,8 @@ def test_p4_6_close_summary_material_strips_leading_conjunction_and_template_gon
     g = _get_instruction_guide("CHAPTER_READY_TO_END", {"chapter": "organization_management",
                                                        "bei_close_episodes": [{"idx": 1, "action": "그래서 두 사람을 따로 불렀어요", "context": "", "result": ""},
                                                                               {"idx": 2, "action": "그리고 파일럿을 먼저 돌렸어요", "context": "", "result": ""}]})
-    assert "사례마다 한 문장씩" in g and "사례 2개" in g and "'두 사람을 따로 불렀어요'" in g and "'그래서 두 사람" not in g
+    # (2026-11-10 P9-9) 재료는 사례 + 보완 답, 합쳐 2~3문장
+    assert "합쳐서 2문장 안으로" in g and "사례 2:" in g and "'두 사람을 따로 불렀어요'" in g and "'그래서 두 사람" not in g
     src = inspect.getsource(d._submit_message_phase3a)
     assert "첫 사례에서는 '" not in src and "close_summary_mode" in src
 

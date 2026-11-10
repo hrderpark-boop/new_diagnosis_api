@@ -132,9 +132,28 @@ def _sub_material(chapter: str | None, sub_key: str | None) -> dict:
             "example": lv2, "cue": cues[0] if cues else ""}
 
 
+# (2026-11-10 P9-7) 여는 문장(왜 묻는지) 틀 3종 — 11/10 운영 Jessica: 여는 문장마다 '…살펴보려고 합니다'. 세션에서 연 사례 순번으로 돌린다.
+OPENER_FRAMES = (
+    "'~을 어떻게 하시는지 듣고 싶습니다'라는 뜻의 존댓말 한 문장(무엇을 듣고 싶은지로 끝난다).",
+    "'이번에는 ~ 쪽 이야기입니다'라는 뜻의 짧은 존댓말 한 문장.",
+    "'~하는 방식은 팀마다, 사람마다 다릅니다'처럼 사실을 말하는 존댓말 한 문장(듣고 싶다·보려 한다는 말 없이, '~다르다'·'~더랍니다' 꼴 금지).",
+)
+OPENER_FRAME_EXAMPLES = (
+    "맡길 일과 직접 할 일을 어떻게 가르시는지 듣고 싶어요. 최근에 '이건 내가 안 하고 맡겨 보자' 하신 일이 있으셨어요?",
+    "이번에는 일을 맡기는 쪽 이야기예요. 최근에 '이건 내가 안 하고 맡겨 보자' 하신 일이 있으셨어요?",
+    "일을 어디까지 맡길지는 리더마다 선이 달라요. 최근에 '이건 내가 안 하고 맡겨 보자' 하신 일이 있으셨어요?",
+)
+
+
+def _frame_example(persona_name: str | None, frame: int) -> str:
+    """틀 예시를 그 페르소나의 말투로 — 해요체 예시를 합쇼체 코치에게 주면 어미가 섞인다."""
+    from diag_project.services.persona_register import apply_register
+    return apply_register(persona_name, OPENER_FRAME_EXAMPLES[int(frame) % len(OPENER_FRAME_EXAMPLES)])[0]
+
+
 async def render_opener(
     llm, *, chapter: str | None, sub_key: str | None, persona_name: str | None, leader_text: str | None, fallback_question: str,
-    register_hint: str = "",
+    register_hint: str = "", frame: int = 0,
 ) -> tuple[str, str]:
     """(여는 문장 전체, 모드). 모드 'llm' | 'llm_regen' | 'fallback'. 폴백은 fallback_question(사전 앵커, 이미 페르소나 어미) 그대로."""
     mat = _sub_material(chapter, sub_key)
@@ -146,6 +165,7 @@ async def render_opener(
     base = (
         "당신은 리더십 BEI 코치입니다. 리더에게 새 사례 하나를 청하는 '여는 문장'을 만드세요. 출력은 정확히 두 문장입니다.\n\n"
         "① 왜 묻는지 1문장 — 아래 [무엇을 보는지]를 리더가 쓰는 일상어로 풀어 씁니다. 역량·하위역량 이름, '역량'·'항목'·'지표' 같은 말은 쓰지 않습니다.\n"
+        f"   이번 문장의 틀: {OPENER_FRAMES[int(frame) % len(OPENER_FRAMES)]} '살펴보려고'라는 말은 쓰지 않습니다.\n"
         "② 있었는지 묻는 질문 1문장 — '최근에 ~한 일이 있으셨어요?' 처럼 그런 일이 있었는지 여는 질문. "
         "있었음을 전제하는 문형('~받으셨을 때 어떻게', '~하셨을 때 무엇을')은 금지합니다. 선택지·가정형 금지. 은유 금지. 평가·칭찬 금지.\n"
         "질문 뒤 덧붙임은 없어도 되고, 쓰면 1문장(범위를 낮추는 말)으로 — 세션 안에서 같은 덧붙임을 되풀이하지 않는다.\n\n"
@@ -153,8 +173,7 @@ async def render_opener(
         + (f"- 행동 예: {mat['example']}\n" if mat.get("example") else "") + (f"- 행동 단서: {mat['cue']}\n" if mat.get("cue") else "")
         + (f"\n[리더가 방금 한 말(결만 참고, 되받지 않는다)] {lead}\n" if lead else "")
         + f"\n[코치 말투] {persona_name or 'Ella'} — {register_hint or '존댓말, 부드럽게'}\n"
-        "\n[결 참고 — 다른 영역의 예, 그대로 쓰지 말 것] 맡길 일과 직접 할 일을 어떻게 가르시는지 보는 쪽인데요, "
-        "최근에 '이건 내가 안 하고 맡겨 보자' 하신 일이 있으셨어요?\n"
+        "\n[결 참고 — 다른 영역의 예, 낱말을 그대로 쓰지 말 것] " + _frame_example(persona_name, frame) + "\n"
         "\n순서가 중요합니다: 첫 문장은 물음표 없는 평서문(무엇을 보는지), 그 다음 문장이 질문입니다. 질문으로 시작하면 실패입니다.\n"
         "\n출력: 문장만. 따옴표·머리말·설명 없이."
     )

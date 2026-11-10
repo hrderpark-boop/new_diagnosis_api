@@ -25,6 +25,12 @@ def daypart(hour: int, minute: int = 0) -> str:
     return "늦은 시간"
 
 
+def current_daypart(now: datetime | None = None) -> str:
+    """(2026-11-10 P9-2) 지금 시간대 이름(KST) — 스몰톡 되물음이 아직 오지 않은 시간대를 말하지 않게 가이드·가드에 넘긴다."""
+    n = _now_seoul(now)
+    return daypart(n.hour, n.minute)
+
+
 def _now_seoul(now: datetime | None = None) -> datetime:
     seoul = ZoneInfo("Asia/Seoul")
     if now is None:

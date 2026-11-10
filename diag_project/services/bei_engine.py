@@ -3,8 +3,9 @@
 챕터 = DIAGNOSIS_CONFIRM → ALIGN → EPISODE(×2~3) → SWEEP → CLOSE.
   · EPISODE: 사례 하나를 6슬롯(상황·시점 / 리더 행동 / 상대 반응 / 결과 / 판단 기준 / 다시 한다면·배운 것)이 찰 때까지 듣는다.
     종료 = 6/6 또는 사례 리더 턴 8 또는 챕터 예산 도달. 종료 시 Haiku 다중 라벨(services/slot_judge.map_episode)로 하위역량에 배정.
-  · SWEEP: covered(strong) 가 없는 하위역량만 앵커 1 + 후속 ≤1. (P4-5) 챕터당 3개 상한, 나머지는 not_explored.
-  · 예산 B(챕터 리더 턴): 조직 16 / 성과 18 / 사람 20 / 일 18 / 자기 16. 3번째 사례는 미커버 ≥2 이고 남은 턴 − 미커버 수 ≥ 5 일 때만.
+  · SWEEP: covered(strong) 가 없는 하위역량만 앵커 1 + 후속 ≤1. (2026-11-10 P9-1) 챕터당 상한 없음 — 종료 조건은 "모든 하위역량 asked" 하나.
+  · 예산 B(챕터 리더 턴): 조직 16 / 성과 18 / 사람 24 / 일 18 / 자기 16. 3번째 사례는 미커버 ≥2 이고 남은 턴 − 미질문 수 ≥ 5 일 때만(사람관리는 사례 2개까지).
+  · (P9-1) 예약: 미질문 하위역량 수 × 1턴은 항상 남긴다. 사례가 예약을 침범하면 6슬롯 전이라도 닫는다(status=reserve).
 
 상태는 전부 session.self_assessment_data(JSON) 안의 키에 둔다(호출자가 영속화):
   chapter_state[ch]  confirm|align|episode|sweep|close
@@ -46,11 +47,12 @@ EPISODE_MAX = 3
 EPISODE_OPEN_MIN_REMAINING = 5        # 사례 하나 더 열려면 최소 이만큼 남아야 한다(SWEEP 예비는 별도)
 EPISODE_RETRY_MAX = 1                 # (P7-1) 여는 질문에 사례가 없으면(incident=no) 더 작게·다른 각도로 1회만(NO_CASE_REFRAME) — 하위역량당 최대 2턴
 EPISODE_STALL_TURNS = 2               # (P7-1) 사례 중 2턴 연속 슬롯 진전 0 이면 8턴 전에 조기 종료(status=stalled)
-SWEEP_MAX_PER_CHAPTER = 3             # (2026-11-05 P4-5) SWEEP 항목은 챕터당 3개까지 — 나머지는 not_explored(세션 ≤2 는 린트 기준)
+SWEEP_MAX_PER_CHAPTER = None          # (2026-11-10 P9-1) 챕터당 SWEEP 상한 삭제 — 11/10 Jessica 사람관리에서 동기부여·공감을 묻지 않고 1.0 이 기록됐다
 CHAPTER_BUDGET: dict[str, int] = {
-    "organization_management": 16, "performance_management": 18, "people_management": 20,
+    "organization_management": 16, "performance_management": 18, "people_management": 24,   # (P9-1) 사람관리 20 → 24(하위역량 9개)
     "work_management": 18, "self_management": 16,
 }
+CHAPTER_EPISODE_MAX: dict[str, int] = {"people_management": 2}   # (P9-1) 사람관리는 사례 2개까지 — 나머지 턴은 전수 질문에 쓴다
 DEFAULT_BUDGET = 18
 
 STATE_CONFIRM, STATE_ALIGN, STATE_EPISODE, STATE_SWEEP, STATE_CLOSE = "confirm", "align", "episode", "sweep", "close"
@@ -105,7 +107,7 @@ def real_episodes(store: dict | None, chapter: str | None) -> list[dict]:
 def counted_episodes(store: dict | None, chapter: str | None) -> int:
     """사례 수 — 리더 턴 3 이상 들은 사례(no_case 로 바로 폐기된 것은 세지 않는다)."""
     return sum(1 for e in real_episodes(store, chapter)
-               if e.get("status") in ("done", "budget", "switched", "stalled") or int(e.get("leader_turns") or 0) >= 3)
+               if e.get("status") in ("done", "budget", "switched", "stalled", "reserve", "turns") or int(e.get("leader_turns") or 0) >= 3)
 
 
 def empty_slots() -> dict:
@@ -220,8 +222,8 @@ def update_stall(ep: dict, filled_before: int) -> dict:
     return ep
 
 
-def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None) -> str | None:
-    """사례 종료 사유: 'slots'(6/6) | 'turns'(리더 턴 8) | 'budget'(챕터 예산) | 'stalled'(2턴 진전 없음) | None."""
+def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None, all_subs: list[str] | None = None) -> str | None:
+    """사례 종료 사유: 'slots'(6/6) | 'turns'(리더 턴 8) | 'budget'(챕터 예산) | 'reserve'(미질문 예약 침범) | 'stalled'(2턴 진전 없음) | None."""
     if not ep:
         return None
     turns = int(ep.get("leader_turns") or 0)
@@ -229,6 +231,8 @@ def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None
         return "turns"
     if remaining(store, chapter) <= 0:
         return "budget"
+    if all_subs and remaining(store, chapter) <= len(unasked(store, chapter, all_subs)):
+        return "reserve"                      # (P9-1) 미질문 하위역량 수 × 1턴 예약을 침범 — 6슬롯 전이라도 닫는다
     if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS and filled_slots(ep):
         return "stalled"                      # (P7-1) 2턴 연속 슬롯 진전 없음 — 들은 것으로 매핑하고 다음으로
     if len(filled_slots(ep)) >= len(SLOT_KEYS) and turns >= EPISODE_MIN_LEADER_TURNS:
@@ -325,6 +329,18 @@ def uncovered(store: dict | None, chapter: str | None, all_subs: list[str], prio
     return [s for s in order_by_priority(list(all_subs), list(priority or [])) if s not in skip]
 
 
+def unasked(store: dict | None, chapter: str | None, all_subs: list[str]) -> list[str]:
+    """(2026-11-10 P9-1) 아직 한 번도 묻지 않은 하위역량 — asked(여는 앵커·SWEEP 앵커·strong 매핑)·no_case·unconfirmed 어디에도 없는 것.
+    챕터 종료 조건과 예약 턴 수의 기준이다."""
+    done = set(_list(store, "asked_subs", chapter)) | set(_list(store, "no_case_subs", chapter)) | set(_list(store, "unconfirmed", chapter)) \
+        | covered_set(store, chapter) | set(_list(store, "sweep_asked", chapter))
+    return [s for s in all_subs if s not in done]
+
+
+def episode_max(chapter: str | None) -> int:
+    return CHAPTER_EPISODE_MAX.get(chapter or "", EPISODE_MAX)
+
+
 def pick_opener(store: dict | None, chapter: str | None, all_subs: list[str], priority: list[str] | None = None) -> str | None:
     """다음 사례를 여는 하위역량 — 미커버 중 이전 사례의 여는 하위역량이 아닌 첫 항목. 전부 썼으면 미커버 첫 항목."""
     used = {e.get("opener_sub") for e in episodes(store, chapter) if e.get("opener_sub")}
@@ -339,11 +355,17 @@ def sweep_count(store: dict | None, chapter: str | None) -> int:
 
 
 def sweep_target(store: dict | None, chapter: str | None, all_subs: list[str], priority: list[str] | None = None) -> str | None:
-    """다음 SWEEP 하위역량 — 미커버 중 아직 안 물은 첫 항목. (P4-5) 이 챕터의 SWEEP 항목이 SWEEP_MAX_PER_CHAPTER 에 닿았으면 None."""
-    if sweep_count(store, chapter) >= SWEEP_MAX_PER_CHAPTER:
-        return None
+    """다음 SWEEP 하위역량 — (2026-11-10 P9-1) 미질문 항목 먼저(전수 질문), 그 다음 물었지만 strong 근거가 없는 항목(예산이 남았을 때만).
+    챕터당 상한은 없다. 미질문이 남아 있으면 예산이 0 이어도 앵커 1턴은 낸다."""
     asked = set(_list(store, "sweep_asked", chapter))
-    return next((s for s in uncovered(store, chapter, all_subs, priority) if s not in asked), None)
+    cands = [s for s in uncovered(store, chapter, all_subs, priority) if s not in asked]
+    un = set(unasked(store, chapter, all_subs))
+    first = next((s for s in cands if s in un), None)
+    if first:
+        return first
+    if remaining(store, chapter) <= 0:
+        return None
+    return cands[0] if cands else None
 
 
 def consecutive_sweeps(store: dict | None, chapter: str | None) -> int:
@@ -364,16 +386,17 @@ def plan_after_episode(store: dict | None, chapter: str | None, all_subs: list[s
     n = counted_episodes(store, chapter)
     rem = remaining(store, chapter)
     unc = uncovered(store, chapter, all_subs)
-    if not unc:
+    un = unasked(store, chapter, all_subs)
+    if not unc and not un:
         return STATE_CLOSE
-    if rem <= 0:
-        return STATE_CLOSE
-    if n < EPISODE_MIN and rem >= EPISODE_OPEN_MIN_REMAINING:
+    # (2026-11-10 P9-1) 종료 조건은 "모든 하위역량 asked" 하나 — 미질문이 남아 있으면 예산이 0 이어도 SWEEP(앵커 1턴)로 간다.
+    #   사례를 새로 열려면 여는 하위역량을 뺀 미질문 수만큼(1턴씩)을 예약하고도 최소 턴이 남아야 한다.
+    reserve = max(0, len(un) - 1)
+    can_open = rem - reserve >= EPISODE_OPEN_MIN_REMAINING
+    if n < EPISODE_MIN and can_open:
         return STATE_EPISODE
-    if n == EPISODE_MIN and len(unc) >= 2 and rem - len(unc) >= EPISODE_OPEN_MIN_REMAINING:
+    if EPISODE_MIN <= n < episode_max(chapter) and len(unc) >= 2 and can_open and rem - len(unc) >= EPISODE_OPEN_MIN_REMAINING:
         return STATE_EPISODE
-    if n < EPISODE_MIN and rem < EPISODE_OPEN_MIN_REMAINING:
-        return STATE_SWEEP if sweep_target(store, chapter, all_subs) else STATE_CLOSE
     return STATE_SWEEP if sweep_target(store, chapter, all_subs) else STATE_CLOSE
 
 
@@ -384,8 +407,8 @@ def sweep_followup_allowed(store: dict | None, chapter: str | None, all_subs: li
     sl = (ep.get("slots") or {})
     if sl.get("action", {}).get("status") == "filled" and sl.get("result", {}).get("status") == "filled":
         return False
-    n_left = len([s for s in uncovered(store, chapter, all_subs) if s not in set(_list(store, "sweep_asked", chapter))])
-    return remaining(store, chapter) > n_left
+    # (P9-1) 후속 1턴은 미질문 예약(1턴씩)을 침범하지 않을 때만
+    return remaining(store, chapter) > len(unasked(store, chapter, all_subs))
 
 
 # ── 스냅숏(LLM 실패·일시정지 제안 되돌림) ───────────────────────────────────
@@ -409,7 +432,8 @@ def coverage_summary(store: dict | None, chapter: str, all_subs: list[str]) -> d
     sweep = set(_list(store, "sweep_asked", chapter))
     unc = set(_list(store, "unconfirmed", chapter))
     noc = set(_list(store, "no_case_subs", chapter))
-    not_explored = [s for s in all_subs if s not in cov and s not in sweep and s not in unc and s not in noc]
+    asked = set(_list(store, "asked_subs", chapter))   # (P9-1) 여는 앵커로 물은 항목도 물은 것 — 미탐색은 '한 번도 묻지 않은 것'만
+    not_explored = [s for s in all_subs if s not in cov and s not in sweep and s not in unc and s not in noc and s not in asked]
     return {
         "covered": sorted(cov), "sweep_asked": sorted(sweep), "unconfirmed": sorted(unc | noc),
         "not_explored": not_explored, "episodes": counted_episodes(store, chapter), "bei_turns": bei_turns(store, chapter),

@@ -292,7 +292,7 @@ def smalltalk_followup_ok(question: str) -> bool:
     return not _WORK_Q_RE.search(question or "")
 
 
-_WORK_Q_RE = re.compile(r"(업무|역할|담당|맡고|맡으|맡은|맡기|챙기|직무|직책|직급|프로젝트|일정|교육|조율|우선순위|회의|보고|고객|무슨 일|어떤 일|어떤 분야|일로|일은|일이|일에|팀(은|이|을|에|에서|원|장)|회사에서|부서|조직|직접)")   # (2026-11-05) s2a: '직접 챙기시나요, 팀에 맡기시나요' 가 통과했다
+_WORK_Q_RE = re.compile(r"(목표|성과|업무|역할|담당|맡고|맡으|맡은|맡기|챙기|직무|직책|직급|프로젝트|일정|교육|조율|우선순위|회의|보고|고객|무슨 일|어떤 일|어떤 분야|일로|일은|일이|일에|팀(은|이|을|에|에서|원|장)|회사에서|부서|조직|직접)")   # (2026-11-05) s2a: '직접 챙기시나요, 팀에 맡기시나요' 가 통과했다
 
 
 def replace_statements(text: str, replacement: str = "그러셨군요.") -> str:
@@ -512,7 +512,7 @@ def _quote_from_user(c: str, u: str) -> bool:
 
 _FALSE_ATTR_RE = re.compile(
     r"(?:방금|앞서|아까|조금 전|지금)?\s*(?:말씀하신|말씀해\s*주신|언급하신|말씀한)\s*['‘’\"“”]([^'‘’\"“”\n]{1,20})['‘’\"“”]"
-    r"\s*(?:과도|와도|과|와|이랑|하고|도)?\s*(?:닿아\s*있(?:는데요|습니다만|어요)|이어지(?:는데요|는 부분인데요|네요)|연결되(?:는데요|네요)|관련(?:이)?\s*있는데요|맞닿아\s*있는데요)[,，]?\s*")
+    r"\s*(?:과도|와도|과|와|이랑|하고|도)?\s*(?:닿아\s*있(?:는데요|습니다만|어요)|이어지(?:는데요|는 부분인데요|네요)|연결되(?:는데요|네요)|관련(?:이)?\s*있는데요|맞닿아\s*있는데요|이어서\s*(?:여쭙니다|여쭙겠습니다|여쭤볼게요|묻겠습니다))[,，.]?\s*")
 
 
 def strip_false_attribution(text: str, user_text: str | None) -> tuple[str, list[str]]:
@@ -1000,3 +1000,110 @@ _CASE_NUMBERING_RE = re.compile(r"^(?:(?:첫|두|세|네)\s*(?:번째)?\s*사례
 def strip_case_numbering(sentence: str) -> str:
     return _CASE_NUMBERING_RE.sub("", (sentence or "").strip(), count=1)
 
+
+
+# ── (2026-11-10 P9-4) 사례 닫는 턴 = [직전 답 받기 1문장] + [새 사례 여는 문장] ──────────────────────────────
+#   닫는 쪽(LLM 본문)에 질문·'여쭙고 싶습니다'·'궁금'·코치의 조언·가정('~했다면 ~했을 것')이 남으면 새 사례 질문과 겹치거나
+#   답할 수 없는 말이 된다(11/10 운영 Jessica). 평서문 중 금지 꼴은 지우고 받기 1문장(연속 SWEEP 다리가 있으면 2문장)만 남긴다.
+_CLOSE_SIDE_BAN_RE = re.compile(
+    r"(여쭙고\s*싶|여쭤보고\s*싶|묻고\s*싶|물어보고\s*싶|궁금"
+    # (p9a) 평서문 꼴의 요청 — "…어떤 표정이었는지 기억나는 대로 짚어 주시면 됩니다."
+    r"|(짚어|말씀해|들려|떠올려|얘기해|이야기해|적어|알려)\s*주(시면|셔도|시기)\s*(됩니다|돼요|좋겠|바랍니다)|기억나는\s*대로|(는지|은지|인지|을지)[,，]?\s[^.?!]*(주시면|주십시오|주세요|바랍니다)"
+    r"|하시면\s*좋|해\s*보시면|해\s*보시길|하시길\s*(권|바)|권해\s*드|권합니다|추천(드|합)|필요가\s*있|하셔야\s*(합|해|할)|하는\s*(게|것이)\s*좋"
+    r"|(했|였|셨|았|었)(다|더라)면|으셨다면|한다면|라면\s.*(겠|을\s*(것|거|텐데|수도))|(했|였|됐|았|었)을\s*(것|거|텐데|수도)|을\s*텐데|였을\s*것)")
+
+
+def close_side_violation(sentence: str) -> bool:
+    return bool(is_question(sentence) or _CLOSE_SIDE_BAN_RE.search(sentence or ""))
+
+
+def clean_close_side(body: str, *, max_statements: int = 1, keep: list[str] | None = None) -> tuple[str, int]:
+    """여는 턴의 LLM 본문에서 질문·예고·조언·가정 문장을 지우고 평서문을 max_statements 개만 남긴다. keep(고정 문장)은 건드리지 않는다.
+    (결과, 지운 문장 수)."""
+    keep_c = {_compact(k) for k in (keep or []) if k}
+    out: list[str] = []
+    n_stmt = n_cut = 0
+    for s in split_sentences(body or ""):
+        s = s.strip()
+        if not s:
+            continue
+        if _compact(s) in keep_c:
+            out.append(s)
+            continue
+        if close_side_violation(s) or n_stmt >= max_statements:
+            n_cut += 1
+            continue
+        out.append(s)
+        n_stmt += 1
+    return " ".join(out).strip(), n_cut
+
+
+# ── (2026-11-10 P9-5) 주어·대상이 없는 질문 — "달라진 부분이 있었는지 궁금합니다" ─────────────────────────────
+#   질문 하나만 남기면(앞 질문 삭제) 뒤 질문이 가리키던 대상이 함께 사라진다. 질문의 내용 어절이 리더 답·같은 턴 앞 문장 어디와도
+#   겹치지 않고 짧으면(어절 ≤ 5) 대상이 없다고 본다.
+_REF_NOISE_RE = re.compile(r"^(그럼|그러면|그렇다면|혹시|리더님(께서는|은|이|께서)?|그때|그 뒤(에|로)?|그 후(에|로)?|이후(에|로)?)[,\s]*")
+_REF_GENERIC = {"부분", "점", "것", "게", "일", "변화", "반응", "결과", "이유", "기준", "생각", "느낌", "장면", "순간", "말", "말씀", "무엇", "어떤",
+                "어떻게", "달라진", "바뀐", "있었", "있으셨", "궁금", "기억", "떠오르", "들려", "주실", "주시", "그때", "그 뒤", "이후", "가장", "먼저", "혹시"}
+
+
+def question_lacks_referent(question: str, context_texts: list[str] | None = None) -> bool:
+    """질문 안에 무엇에 대해 묻는지 가리키는 낱말이 없는가 — 조사가 붙은 명사(…이/가/을/를/은/는/에/의…)가 하나도 없거나 전부 일반 명사
+    ('부분·점·변화·반응')뿐이고, 리더가 쓴 낱말도 없을 때. '그 전환을'처럼 구체 명사가 있으면 대상이 있다고 본다."""
+    q = (question or "").strip()
+    if not q or not is_question(q):
+        return False
+    core = _REF_NOISE_RE.sub("", q)
+    toks = core.split()
+    if len(toks) > 6 or re.search(r"['‘’\"“”]", core):
+        return False
+    ctx = set()
+    for t in context_texts or []:
+        ctx.update(c for c in _content_chunks(t or "") if len(c) >= 2)
+    for tok in toks:
+        m = re.match(r"^([가-힣A-Za-z0-9]{1,12}?)(이|가|을|를|은|는|에|에서|에게|의|도|과|와|으로|로|께서|께)$", tok.strip(",.?!"))
+        if not m:
+            continue
+        noun = m.group(1)
+        if len(noun) < 2 and noun not in ("팀", "일"):
+            continue
+        if any(noun == g_ or noun.startswith(g_) for g_ in _REF_GENERIC):
+            continue
+        return False                               # 구체 명사 + 조사 → 대상이 있다
+    q_chunks = [c for c in _content_chunks(core) if len(c) >= 2 and not any(c.startswith(g_) or g_.startswith(c) for g_ in _REF_GENERIC)]
+    return not any(c in ctx for c in q_chunks)
+
+
+def attach_referent(question: str, context_text: str | None) -> str:
+    """대상이 없는 질문 앞에 앞 문장(리더 답)의 핵심 명사구를 붙인다 — '달라진 부분이 …' → ''분담표'와 관련해 달라진 부분이 …'."""
+    np_ = key_noun_phrase(context_text)
+    if not np_:
+        return question
+    core = _REF_NOISE_RE.sub("", (question or "").strip())
+    return f"'{np_}'{_josa(np_, '과', '와')} 관련해 {core}"
+
+
+# ── (2026-11-10 P9-2) 스몰톡 되물음의 시간대 — 아직 오지 않은 시간대(오전에 '오후')를 말하지 않는다 ───────────────────
+_FUTURE_DAYPART_WORDS: dict[str, tuple[str, ...]] = {
+    "오전": ("점심", "오후", "저녁", "퇴근", "밤"), "오전 마무리": ("점심", "오후", "저녁", "퇴근", "밤"),
+    "점심": ("오후", "저녁", "퇴근", "밤"), "오후": ("저녁", "퇴근", "밤"), "저녁": (), "늦은 시간": (),
+}
+
+
+def future_daypart_words(part: str | None) -> tuple[str, ...]:
+    return _FUTURE_DAYPART_WORDS.get(part or "", ())
+
+
+def mentions_future_daypart(text: str | None, part: str | None) -> list[str]:
+    """지금 시간대(part) 기준으로 아직 오지 않은 시간대 낱말 — 오전의 '오전과 오후 중'·'오후에는' 등."""
+    return [w for w in future_daypart_words(part) if w in (text or "")]
+
+
+def drop_unfinished_tail(text: str | None) -> tuple[str, int]:
+    """(2026-11-10 P9, p9b) 출력이 토큰 상한에서 잘려 마지막 문장이 끝나지 않았으면('…7월 신규 리더십 과정 운영') 그 꼬리를 버린다."""
+    t = (text or "").rstrip()
+    if not t or re.search(r"[.?!…][\"'”’)]*$", t):
+        return t, 0
+    m = list(re.finditer(r"[.?!…][\"'”’)]*(?=\s)", t))
+    if not m:
+        return t, 0
+    return t[: m[-1].end()].rstrip(), 1

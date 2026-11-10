@@ -48,12 +48,13 @@ def is_substantive(user_text: str | None, instruction_used: str | None) -> bool:
 
 # ── 일시중지 제안(SUGGEST_PAUSE) — 백엔드 기준 (2026-09-22) ──
 SITTING_GAP_MIN = 30          # 이 시간 이상 비면 새 '앉은 자리'
-PAUSE_SUGGEST_AFTER_MIN = 45  # 한 자리에서 이만큼 지나면
-PAUSE_SUGGEST_AFTER_TURNS = 30  # 또는 코치 턴이 이만큼 쌓이면
-PAUSE_SUGGEST_COOLDOWN_TURNS = 12  # 한 번 제안한 뒤 이만큼은 다시 안 함
-PAUSE_SUGGEST_MAX = 2         # 2-Strike 유지
-# (2026-11-04 BEI) 제안은 사례 탐침 턴에서만 — 여는 턴·SWEEP 앵커 턴(시스템 질문이 붙는 턴)은 제외
-PAUSE_SUGGEST_INSTRUCTIONS = frozenset({"EPISODE_PROBE", "EPISODE_RETRY", "SWEEP_FOLLOWUP"})
+# (2026-11-10 P9-8) 시간 기준만 — 세션 시작(또는 재개) 40분 뒤 첫 제안, 그 뒤 30분 간격, 사례가 끝난 턴(다음 사례를 여는 턴)에서만.
+#   옛 기준(45분 또는 코치 턴 30, 사례 탐침 턴)은 폐지: 11/10 Jessica 세션에서 14분째에 제안이 나간 원인이 '코치 턴 30' 조건이었다
+#   (답이 짧고 빠르면 시간과 무관하게 발동), 그리고 탐침 턴에 끼어들어 사례 흐름을 끊었다(p7b·p7c).
+PAUSE_SUGGEST_AFTER_MIN = 40      # 한 자리(시작·재개)에서 이만큼 지나면 첫 제안
+PAUSE_SUGGEST_INTERVAL_MIN = 30   # 제안 뒤 이만큼 지나야 다음 제안
+# 사례가 끝나 다음 사례·보완 질문을 여는 턴 — 이 턴에서만 제안한다(탐침 도중 금지)
+PAUSE_SUGGEST_INSTRUCTIONS = frozenset({"EPISODE_OPEN", "SWEEP_ANCHOR"})
 
 
 def sitting_stats(timestamps: list[datetime], now: datetime | None = None) -> tuple[float, int]:
@@ -73,17 +74,29 @@ def sitting_stats(timestamps: list[datetime], now: datetime | None = None) -> tu
 def should_suggest_pause(
     *,
     elapsed_min: float,
-    sitting_messages: int,
-    suggest_pause_count: int,
-    turns_since_last_suggest: int | None,
+    minutes_since_last_suggest: float | None,
     instruction_used: str | None,
+    case_closed: bool,
 ) -> bool:
-    """사례 탐침 턴에서, 한 자리가 길어졌고(시간 또는 턴), 아직 2회 미만 제안했고, 최근에 제안하지 않았을 때."""
-    if instruction_used not in PAUSE_SUGGEST_INSTRUCTIONS:
+    """(2026-11-10 P9-8) 사례가 끝난 턴에서만, 한 자리 40분 이후, 직전 제안에서 30분 이후. 턴 수 기준·횟수 상한 없음.
+    elapsed_min: 이번 자리(세션 시작 또는 재개) 경과 분. minutes_since_last_suggest: 이번 자리의 직전 제안 뒤 경과 분(없으면 None)."""
+    if not case_closed or instruction_used not in PAUSE_SUGGEST_INSTRUCTIONS:
         return False
-    if suggest_pause_count >= PAUSE_SUGGEST_MAX:
+    if elapsed_min < PAUSE_SUGGEST_AFTER_MIN:
         return False
-    if turns_since_last_suggest is not None and turns_since_last_suggest < PAUSE_SUGGEST_COOLDOWN_TURNS:
+    if minutes_since_last_suggest is not None and minutes_since_last_suggest < PAUSE_SUGGEST_INTERVAL_MIN:
         return False
-    coach_turns = sitting_messages // 2
-    return elapsed_min >= PAUSE_SUGGEST_AFTER_MIN or coach_turns >= PAUSE_SUGGEST_AFTER_TURNS
+    return True
+
+
+def sitting_start_index(messages: list) -> int:
+    """(P9-8) 이번 자리의 첫 메시지 인덱스 — 30분 이상 빈 뒤의 첫 메시지, 또는 '다음에 하기'(USER_REQUESTS_PAUSE) 뒤 재개한 첫 메시지."""
+    start = 0
+    for i in range(1, len(messages)):
+        a, b = messages[i - 1], messages[i]
+        ta, tb = getattr(a, "created_at", None), getattr(b, "created_at", None)
+        if ta and tb and (tb - ta).total_seconds() >= SITTING_GAP_MIN * 60:
+            start = i
+        if getattr(a, "instruction_used", None) == "USER_REQUESTS_PAUSE":
+            start = i
+    return start
