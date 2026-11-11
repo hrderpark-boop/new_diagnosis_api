@@ -221,6 +221,8 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         "smalltalk": None, "smalltalk_total_s": None, "smalltalk_regen": None, "short_bare_q": 0, "short_bare_issues": [],
         "summary_eval": 0, "summary_eval_issues": [], "empty_receive": 0, "empty_receive_issues": [],
         "instruction_echo": 0, "instruction_echo_issues": [],
+        # (2026-11-11 재생성 예산) 질문 지워짐 = 탐침 턴에 직접 묻는 문장이 없다(질문 없음, 또는 '예를 들어 … 주시면 돼요' 도움말만 남음) · 재생성 2회 이상 턴(예산 위반)
+        "question_lost": 0, "question_lost_issues": [], "regen_over": 0, "regen_turns": 0, "turn_totals": [],
         # (BEI) 사례 단계
         "episodes": {}, "episode_turns": [], "episode_turns_out_of_range": 0, "episodes_six_slots": 0, "episodes_closed": 0,
         "chapter_leader_turns": {}, "chapter_leader_turns_max": 0, "coverage": {}, "coverage_ratio": None,
@@ -438,6 +440,11 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
                 res["multi_q_turns"] += 1
                 res["multi_q_issues"].append({"t": t, "instr": instr, "sentence": " / ".join(question_sentences(_plain_l))[:120]})
             if chapter and instr in _PROBE_INSTR:
+                from diag_project.services.output_guard import is_aid_sentence as _ias_l
+                _qs_all_l = question_sentences(_plain_l)
+                if not [x for x in _qs_all_l if not _ias_l(x)]:
+                    res["question_lost"] += 1
+                    res["question_lost_issues"].append({"t": t, "instr": instr, "sentence": (_qs_all_l[-1] if _qs_all_l else _plain_l)[:110]})
                 _qs_sb = question_sentences(_plain_l)
                 if _qs_sb and _isbq_l(_qs_sb[-1], [prev_user or ""]):
                     res["short_bare_q"] += 1
@@ -471,6 +478,11 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
             if not _ok_s and _why_s in ("no_case_words", "example_copied", "shape", "garbled_choice"):
                 res["slot_generic"] += 1
                 res["slot_issues"].append({"t": t, "instr": instr, "why": _why_s, "sentence": str(g.get("slot_text"))[:90]})
+        if g.get("total"):
+            res["turn_totals"].append(float(g.get("total")))
+            _rg_l = int(g.get("regen") or 0) + int(g.get("render_regen") or 0)
+            res["regen_turns"] += 1 if _rg_l else 0
+            res["regen_over"] += 1 if _rg_l > 1 else 0
         if g.get("smalltalk"):
             res["smalltalk"] = g.get("smalltalk"); res["smalltalk_total_s"] = g.get("total"); res["smalltalk_regen"] = g.get("regen")
         if g.get("opener"):
@@ -591,8 +603,8 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
     L: list[str] = []
     L.append("## 코치 재생 전문 린트 요약")
     L.append("")
-    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN | 잘림 | 미감지 a/b | 사례당 리더 턴(5~8 밖) | 6슬롯/종료 사례 | 챕터 리더 턴 최대 | 커버리지 | 미확인/미탐색 | 되받기 없음/미인용(대상) | 형식 재생성/미해결 | 고정문장 반복 꼬리/슬롯/앵커재사용 | 슬롯 사례(보존/턴) | 슬롯/챕터 최대 | 평가 말투 | 흉터 | 고정문장≥3회 | 좋습니다 최대 | 동일앵커 | 말투 섞임(여는·범위/전체) | 닫는 턴 질문 | 주어 없는 질문 | 입버릇 초과(궁금/쪽 이야기/채움) | 질문 2개+ 턴 | 고정 받기(반복/미인용/내용 없음) | 슬롯 일반문 | 짧은 질문 | 요약 총평 | 지시문 되읊기 |")
-    L.append("|---|---|---:|---:|---:|---:|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN | 잘림 | 미감지 a/b | 사례당 리더 턴(5~8 밖) | 6슬롯/종료 사례 | 챕터 리더 턴 최대 | 커버리지 | 미확인/미탐색 | 되받기 없음/미인용(대상) | 형식 재생성/미해결 | 고정문장 반복 꼬리/슬롯/앵커재사용 | 슬롯 사례(보존/턴) | 슬롯/챕터 최대 | 평가 말투 | 흉터 | 고정문장≥3회 | 좋습니다 최대 | 동일앵커 | 말투 섞임(여는·범위/전체) | 닫는 턴 질문 | 주어 없는 질문 | 입버릇 초과(궁금/쪽 이야기/채움) | 질문 2개+ 턴 | 고정 받기(반복/미인용/내용 없음) | 슬롯 일반문 | 짧은 질문 | 요약 총평 | 지시문 되읊기 | 질문 지워짐 | 재생성 턴(2회 이상) |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for r in results:
         same = cross["per_coach"].get(r["coach"], 0)
         ep_s = ",".join(str(n) for n in r["episode_turns"]) or "-"
@@ -605,7 +617,7 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
                  f"{r['format_regen_turns']}/{r['receive_miss_turns']} | {r['tail_repeat']}/{r['slot_repeat']}/{r['anchor_reuse']} | {r['slot_episodes']}({r['slot_kept']}/{r['slot_turns']}) | "
                  f"{r['slot_per_chapter_max']} | {r['praise_turns']} | {r['broken_turns']} | {len(r['repeat3'])} | {r['good_lead_max']} | {same} | {r['register_mix_open']}/{r['register_mix']} | {r['close_side_q']} | {r['no_referent_q']} | "
                  f"{r['phrase_over']['gunggeum']}/{r['phrase_over']['side_story']}/{r['phrase_over']['filler']} | {r['multi_q_turns']} | "
-                 f"{r['fixed_receive']}/{r['receive_no_quote_turns']}/{r['empty_receive']} | {r['slot_generic']} | {r['short_bare_q']} | {r['summary_eval']} | {r['instruction_echo']} |")
+                 f"{r['fixed_receive']}/{r['receive_no_quote_turns']}/{r['empty_receive']} | {r['slot_generic']} | {r['short_bare_q']} | {r['summary_eval']} | {r['instruction_echo']} | {r['question_lost']} | {r['regen_turns']}({r['regen_over']}) |")
     L.append("")
     L.append("- 미감지 a/b: (직전 사용자 턴 반복 미감지/발생) · (코치 질문 붙여넣기 미감지/발생)")
     L.append("- 사례당 리더 턴: 종료된 사례별 리더 턴 수(괄호는 5~8 밖 사례 수). 6슬롯/종료 사례: 6/6 로 닫힌 사례 수 / 종료 사례 수.")
@@ -632,9 +644,14 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
             L.append(f"- [P10 입버릇 — {it['kind']}] {r['coach_name']} t{it['t']} {it['instr']}: {it['sentence']}")
         for key, title in (("multi_q_issues", "질문 2개+"), ("fixed_receive_issues", "고정 받기(반복)"), ("empty_receive_issues", "고정 받기(내용 없음)"),
                            ("slot_issues", "슬롯 일반문"), ("short_bare_issues", "짧은 질문"), ("summary_eval_issues", "요약 총평"),
-                           ("instruction_echo_issues", "지시문 되읊기")):
+                           ("instruction_echo_issues", "지시문 되읊기"), ("question_lost_issues", "질문 지워짐")):
             for it in r.get(key) or []:
                 L.append(f"- [P10 {title}] {r['coach_name']} t{it['t']} {it['instr']}: {it['sentence']}")
+        if r.get("turn_totals"):
+            _tt = sorted(r["turn_totals"])
+            _p50 = _tt[len(_tt) // 2] if len(_tt) % 2 else round((_tt[len(_tt) // 2 - 1] + _tt[len(_tt) // 2]) / 2, 2)
+            _p95 = _tt[max(0, int(round(len(_tt) * 0.95)) - 1)]
+            L.append(f"- [턴 소요] {r['coach_name']}: LLM 턴 {len(_tt)}개 · p50 {_p50}s · p95 {_p95}s · 최대 {_tt[-1]}s · 재생성 걸린 턴 {r['regen_turns']} · 재생성 2회 이상 {r['regen_over']}")
         if r.get("smalltalk"):
             L.append(f"- [P10 스몰톡] {r['coach_name']}: 처리 {r['smalltalk']} · 소요 {r['smalltalk_total_s']}s · 재생성 {r['smalltalk_regen']} · 받기 폴백(리더 절 인용) {r['receive_fallback_turns']}턴")
     L.append("")

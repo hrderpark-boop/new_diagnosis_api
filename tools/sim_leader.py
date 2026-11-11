@@ -350,15 +350,29 @@ async def run_session(tag: str, coach: str, port: int, out_dir: Path, profile: d
     store = json.loads(sad[0]) if sad and sad[0] else {}
     gl = {(g.get("ch"), g.get("t")): g for g in store.get("guard_log", []) if isinstance(g, dict)}
     gl_t = {g.get("t"): g for g in store.get("guard_log", []) if isinstance(g, dict)}   # 종료 턴은 다음 챕터로 태깅되므로 t 로 보조 매칭
+    # (2026-11-11) 행과 guard 짝짓기는 순서대로 — 챕터 종료 턴은 메시지가 다음 챕터로 태깅되고 t 가 챕터마다 겹쳐, (챕터, t)·t 만으로는
+    #   다른 턴의 guard 가 붙었다(종료 턴의 소요·요약 모드가 엉뚱한 SWEEP 턴 값으로 보였다). guard_log 는 코치 턴 순서라 (t, instr) 가 같은 다음 항목을 차례로 잇는다.
+    _gl_seq = [g for g in store.get("guard_log", []) if isinstance(g, dict)]
+    _gp = 0
+
+    def _guard_for(t, instr, ch):
+        nonlocal _gp
+        for k in range(_gp, min(len(_gl_seq), _gp + 4)):
+            if _gl_seq[k].get("t") == t and _gl_seq[k].get("instr") == instr:
+                _gp = k + 1
+                return _gl_seq[k]
+        return gl.get((ch, t)) or gl_t.get(t)
+
     out_rows = [{"t": t, "role": role, "chapter": ch, "probe": probe, "instr": instr, "content": content,
-                 "guard": ((gl.get((ch, t)) or gl_t.get(t)) if role == "model" else None)} for t, role, ch, probe, instr, content in rows]
+                 "guard": (_guard_for(t, instr, ch) if role == "model" else None)} for t, role, ch, probe, instr, content in rows]
     ledger = {k: store.get(k) for k in ("chapter_state", "bei_turns", "episodes", "covered", "weak", "sweep_asked", "unconfirmed",
                                         "no_case_subs", "asked_subs", "anchored_subs") if store.get(k) is not None}
     truth = {"episodes": [{"id": e["id"], "chapter": e["chapter"], "subs": e["subs"], "used": e["id"] in leader.used} for e in profile["episodes"]],
              "no_case_subs": profile.get("no_case_subs") or []}
     result = {"session": sid, "coach": coach, "provider": provider, "stub": stub, "status": sad[1] if sad else None,
               "topic": sad[2] if sad else None, "elapsed_s": round(elapsed), "turns": turns, "rows": out_rows, "ledger": ledger, "truth": truth,
-              "cost_usd": _cost_usd(out_dir / f"sim_usage_{tag}_{coach}.jsonl"), "leader_llm_calls": leader.usage["calls"]}
+              "cost_usd": _cost_usd(out_dir / f"sim_usage_{tag}_{coach}.jsonl"), "leader_llm_calls": leader.usage["calls"],
+              "guard_log": _gl_seq}
     json.dump(result, open(out_dir / f"sim_result_{tag}_{coach}.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"=== {tag}_{coach} status={result['status']} topic={result['topic']} rows={len(rows)} turns={turns} {elapsed:.0f}s cost=${result['cost_usd']}")
     return result

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from diag_project.config import phase3a_enabled
 from diag_project.database import get_db
+from diag_project.services import turn_progress as _tp   # (2026-11-11 단계 표시)
 from diag_project.models.diagnosis_session import DiagnosisSession, ChatMessage, MessageRole
 from diag_project.models.coach_persona import CoachPersona
 from diag_project.models.participant import Participant
@@ -567,8 +568,21 @@ async def submit_message(
     await assert_can_access_session(caller, request.session_id, db)
     use_phase3a = phase3a_enabled()
     if use_phase3a:
-        return await _submit_message_phase3a(request, db, llm)
+        # (2026-11-11 단계 표시) 턴이 도는 동안의 단계를 세션별로 기록 — 프론트가 GET /{sid}/turn_stage 로 읽어 대기 문구를 바꾼다
+        _tp.start(str(request.session_id))
+        try:
+            return await _submit_message_phase3a(request, db, llm)
+        finally:
+            _tp.clear(str(request.session_id))
     return await _submit_message_legacy(request, db, llm)
+
+
+@router.get("/{session_id}/turn_stage")
+async def get_turn_stage(session_id: uuid.UUID, db: AsyncSession = Depends(get_db), caller: Caller = Depends(get_caller)):
+    """(2026-11-11 단계 표시) 지금 돌고 있는 코치 턴의 단계 — reading(답을 읽는 중) → thinking(질문을 고르는 중) → polishing(문장을 다듬는 중).
+    돌고 있는 턴이 없으면 idle. 프로세스 메모리라 재시작하면 idle 로 보인다(프론트는 점 세 개만 보인다)."""
+    await assert_can_access_session(caller, session_id, db)
+    return _tp.get_stage(str(session_id))
 
 
 async def _submit_message_legacy(
@@ -736,9 +750,12 @@ async def _submit_message_phase3a(
     async def _timed_regen(**kw):
         """재생성 호출 래퍼 — 횟수·시간 누적 + 꼬리 블록 자동 전달.
         (2026-11-11 P10-1) 스몰톡 턴(_tm["no_regen"])은 LLM 1회만 — 재생성 요청이 와도 부르지 않고 빈 응답을 돌려준다(호출 지점은 결정론 교정으로 넘어간다)."""
-        if _tm.get("no_regen"):
+        # (2026-11-11 재생성 예산) 한 턴에서 모든 검사를 합쳐 재생성은 최대 1회 — 집중 호출(여는 문장·슬롯·요약·마지막 받기)의 다시 쓰기도 같은 예산.
+        #   예산을 쓴 뒤의 위반은 호출 지점의 결정론 수선(삭제·자르기·대상 붙이기·구절 인용 받기)으로만 처리하고, 수선도 안 되면 그대로 내보내 로그에 남긴다.
+        if _tm.get("no_regen") or _tm.get("budget_used"):
             _tm["regen_skipped"] = int(_tm.get("regen_skipped") or 0) + 1
             return {"reply": "", "error": "no_regen"}
+        _tm["budget_used"] = 1
         _r0 = _time.perf_counter()
         _tm["regen_n"] += 1
         try:
@@ -1065,6 +1082,7 @@ async def _submit_message_phase3a(
     _bei_ep = None                 # 이번 턴 LLM 이 겨냥하는 사례(카드)
     _bei_closed: list[dict] = []   # 이번 턴에 종료된 사례 — 9단계에서 Event 행으로 쓴다
     _bei_anchor_text = None        # EPISODE_OPEN·SWEEP_ANCHOR 에 시스템이 붙일 앵커(EPISODE_OPEN 은 P4-4 여는 문장: 왜 묻는지 + 있었는지 질문)
+    _opener_task = None            # (호출 순서) 여는 문장 렌더 — 코치 본 호출과 병렬로 돌리고 본 호출 뒤에 합친다
     _sweep_seq_b = 0               # (P4-5) 연속 SWEEP 순번 — 2 이상이면 앵커 앞 다리 문장 필수
     _bridge_mat_b = None           # (P4-5) 다리 재료 — 앞 사례에서 리더가 쓴 말
     _bei_user_text = (state.get("resume_pending") or {}).get("user_text") or request.content or ""
@@ -1092,7 +1110,13 @@ async def _submit_message_phase3a(
         #   순번 = 이번에 여는 사례보다 앞서 연 사례 수(이번 것은 원장에 이미 들어 있어 1을 뺀다) — 세션 첫 사례가 '이번에는 ~' 으로 열리지 않게
         _frame_op = _off(max(0, sum(len(v or []) for v in ((session.self_assessment_data or {}).get("episodes") or {}).values()) - 1))
         _txt_op, _mode_op = await render_opener(llm, chapter=chapter, sub_key=(_fsk_b(chapter, sub) if (chapter and sub) else None), persona_name=_pn_op,
-                                                leader_text=_bei_user_text, fallback_question=fallback_q, register_hint=_hint, frame=_frame_op)
+                                                leader_text=_bei_user_text, fallback_question=fallback_q, register_hint=_hint, frame=_frame_op,
+                                                rounds=(1 if _tm.get("budget_used") else 2))
+        if _mode_op in ("llm_regen", "fallback_retry"):
+            _tm["budget_used"] = 1                     # (재생성 예산) 여는 문장을 한 번 다시 썼다 — 이 턴의 재생성은 여기까지
+            _tm["render_regen"] = int(_tm.get("render_regen") or 0) + 1
+        if _mode_op == "fallback_retry":
+            _mode_op = "fallback"
         # (2026-11-10 P9-6) LLM 이 쓴 여는 문장에도 페르소나 어미 — 교정 뒤에도 섞이면 사전 앵커(이미 페르소나 어미)로
         if _mode_op in ("llm", "llm_regen"):
             from diag_project.services.persona_register import apply_register as _areg_op
@@ -1258,8 +1282,10 @@ async def _submit_message_phase3a(
             _openers_b = [e.get("opener_sub") for e in _bei.episodes(_store, chapter) if e.get("kind", "episode") == "episode"]
             _bei_anchor_text = _anchor_for_sub(current_target_sub, alt=(instruction_used == "SWEEP_ANCHOR" and current_target_sub in _openers_b))
             if instruction_used == "EPISODE_OPEN":
-                _bei_anchor_text, _op_mode = await _opener_for(current_target_sub, _bei_anchor_text)
-                _tm["opener"] = _op_mode
+                # (2026-11-11 호출 순서) 여는 문장 렌더(1.2초, 다시 쓰면 2.5초)는 코치 본 호출과 서로 기다릴 이유가 없다 — 본 호출은 닫는 쪽 받기 1문장만 쓰고
+                #   여는 문장의 주제만 알면 된다. 카드에는 사전 앵커(같은 하위역량)를 주고 렌더는 본 호출과 병렬로 돌린 뒤, 본 호출이 끝난 자리에서 합친다.
+                import asyncio as _aio_op
+                _opener_task = _aio_op.ensure_future(_opener_for(current_target_sub, _bei_anchor_text))
             else:
                 _sweep_seq_b = _bei.consecutive_sweeps(_store, chapter)
                 _last_ep_b = next((e for e in reversed(_bei.episodes(_store, chapter))
@@ -1518,15 +1544,27 @@ async def _submit_message_phase3a(
             "PROMPT_INJECTION_DETECTED",
         }
         _l0 = _time.perf_counter()
-        llm_output = await llm.generate_phase3a_interaction(
-            system_prompt=system_prompt,
-            chapter_context=chapter_context,
-            turn_state_text=turn_state_text,
-            compressed_history=compressed_history,
-            user_message=_llm_user_text,   # (2026-10-22 P1-1) 재개 턴은 제안 직전 답변
-            light_mode=(instruction_used in _LIGHT_MODE_INSTRUCTIONS),
-            tail_block=_style_tail,
-        )
+        _tp.set_stage(str(session.id), "thinking")
+        if instruction_used == "CHAPTER_READY_TO_END":
+            # (2026-11-11 호출 순서) 챕터 종료 턴은 코치 본 호출을 하지 않는다 — 본 호출 출력은 쓰이지 않았다(요약은 재료만 주는 집중 호출이 쓰고,
+            #   마지막 챕터는 받기 1문장 + 고정 종료 문구, 사례 0 챕터는 고정 문장). 종전에는 본 호출 1회 + 요약 재생성 2회가 먼저 돌았다(p10a·p10b·lb1 전부 집중 호출로 끝남).
+            llm_output = {"reply": ""}
+            _tm["close_main_skipped"] = 1
+        else:
+            # (2026-11-11 호출 순서) 조직관리 정의 잇기 턴(ALIGN)의 사례 1 여는 문장도 본 호출과 병렬로
+            if instruction_used == "COMPETENCY_ALIGN" and chapter and current_target_sub and _opener_task is None:
+                import asyncio as _aio_al
+                _opener_task = _aio_al.ensure_future(_opener_for(current_target_sub, _anchor_for_sub(current_target_sub)))
+                _tm["opener_align_task"] = 1
+            llm_output = await llm.generate_phase3a_interaction(
+                system_prompt=system_prompt,
+                chapter_context=chapter_context,
+                turn_state_text=turn_state_text,
+                compressed_history=compressed_history,
+                user_message=_llm_user_text,   # (2026-10-22 P1-1) 재개 턴은 제안 직전 답변
+                light_mode=(instruction_used in _LIGHT_MODE_INSTRUCTIONS),
+                tail_block=_style_tail,
+            )
         _tm["llm"] = _time.perf_counter() - _l0
         reply = llm_output["reply"]
         llm_state = {}          # (2026-09-22) 자기보고 JSON 폐기 — 항상 빈 dict
@@ -1541,6 +1579,8 @@ async def _submit_message_phase3a(
             #   같은 세션에서 3회 연속이면 세션을 paused 로 두고 "저장 후 나중에 이어서" 안내. 연속 카운터만 저장한다.
             _kind = llm_output.get("error_kind") or "llm"
             logger.error("💥 코치 턴 LLM 실패(kind=%s) session=%s instr=%s → 턴 롤백", _kind, str(session.id)[:8], instruction_used)
+            if _opener_task is not None:
+                _opener_task.cancel()
             await db.rollback()
             await db.refresh(session)
             from sqlalchemy.orm.attributes import flag_modified as _fm_le
@@ -1575,6 +1615,18 @@ async def _submit_message_phase3a(
                 "completed_topics": _done_le,
                 "_phase3a_metadata": {"guard": "LLM_ERROR", "streak": _streak},
             }
+
+    # (2026-11-11 호출 순서) 병렬로 돌린 여는 문장 렌더를 여기서 합친다 — 이후 단계는 전부 완성된 여는 문장을 본다
+    _opener_result = None
+    if _opener_task is not None:
+        try:
+            _opener_result = await _opener_task
+        except Exception as _e_ot:   # noqa: BLE001 — 렌더 실패는 사전 앵커로
+            logger.warning("여는 문장 렌더 태스크 실패 → 사전 앵커: %s", _e_ot)
+        if instruction_used == "EPISODE_OPEN" and _opener_result:
+            _bei_anchor_text, _op_mode = _opener_result
+            _tm["opener"] = _op_mode
+    _tp.set_stage(str(session.id), "polishing")
 
     # 8. 제어 태그 처리 (감사 위험 #4 해결)
     is_chapter_completed = "[CHAPTER_COMPLETE]" in reply
@@ -1999,7 +2051,13 @@ async def _submit_message_phase3a(
             _tm["anchor_render"] = _ar_mode
             from diag_project.services.output_guard import strip_frame_lead
             _anchor = strip_frame_lead(_ar_q)
-            _anchor, _op_mode_al = await _opener_for(current_target_sub, _anchor)   # (P4-4) 사례 1 여는 문장
+            if _opener_result and _tm.get("opener_align_task"):
+                # (호출 순서) 본 호출과 병렬로 만든 여는 문장 — 렌더가 불합격(사전 폴백)이면 종전 경로의 앵커(_anchor)를 그대로 쓴다
+                _op_txt_al, _op_mode_al = _opener_result
+                if _op_mode_al in ("llm", "llm_regen"):
+                    _anchor = _op_txt_al
+            else:
+                _anchor, _op_mode_al = await _opener_for(current_target_sub, _anchor)   # (P4-4) 사례 1 여는 문장
             _tm["opener"] = _op_mode_al
             # 조립은 모든 후처리(8-i 가드·8-n 입버릇·8-h 느낌표 …)가 끝난 뒤 '마지막'(8-z)에 한다 — 중간 단계의 재생성이
             #   조립 결과를 덮지 못하게. 여기서는 재료만 보관하고, clean_reply 는 LLM 되받기 원문 그대로 가드를 통과시킨다.
@@ -2070,32 +2128,18 @@ async def _submit_message_phase3a(
             #   되짚지 못하면 고정 다리만(지어낸 서술 없음). 인용을 나열하던 옛 템플릿(…하셨고, …하셨다고 들었습니다)은 폐지.
             _sum = _clean_close(clean_reply)
             _best_n = _eps_matched(_sum) if (_sum and _eps_c) else 0
-            _close_rounds = 0
-            while _eps_c and _close_rounds < 2 and (not _sum or _best_n < _need_c):
-                _close_rounds += 1
-                try:
-                    _cl_out = await _timed_regen(
-                        system_prompt=system_prompt, chapter_context=chapter_context,
-                        turn_state_text=turn_state_text + (
-                            f"\n\n🚨 [시스템 — 재생성 지시] 재료(들은 이야기 {_n_eps_c}개)를 합쳐 {_n_sum_c}문장 안으로, 재료의 리더님 말을 풀어 과거 사실로만 "
-                            f"쓰세요. 평가·질문·전환·예고 문장 금지, 문장 첫머리 접속사 금지. 이 지시문의 단어를 답에 옮기지 마세요."),
-                        compressed_history=compressed_history, user_message=request.content, light_mode=True)
-                    _cand_c = _clean_close(_MARKER_RE.sub("", _cl_out.get("reply") or "").strip())
-                except Exception as _e_cl:   # noqa: BLE001
-                    logger.error("종료 요약 재생성 실패: %s", _e_cl)
-                    _cand_c = ""
-                _n_c = _eps_matched(_cand_c) if _cand_c else 0
-                if _n_c > _best_n:
-                    _sum, _best_n = _cand_c, _n_c
-            _close_mode = "llm" if _close_rounds == 0 else "llm_regen"
+            # (2026-11-11 재생성 예산·호출 순서) 본 호출 재생성 루프(≤2회)는 없앴다 — 본 호출은 직전 답에 끌려 요약을 못 썼고(전부 집중 호출로 끝남)
+            #   그만큼 3~4초가 먼저 지나갔다. 요약은 재료만 주는 집중 호출 1회, 재료를 다 못 짚으면 1회 다시(이 턴의 재생성 예산).
+            _close_mode = "llm"
             if _eps_c and _best_n < _need_c:
                 # (P4-6) 본 호출이 직전 답('네, 맞아요')에 끌려 질문을 이어 쓰는 일이 잦다(p4a Michael 3/3) — 이력 없이 재료만 주는 집중 호출로 다시 만든다
                 try:
                     from diag_project.services.close_render import render_close_summary as _rcs
                     from diag_project.services.intro_messages import PERSONA_LINES as _PL_c, persona_key as _pk_c
                     _pn_c = (state.get("coach_persona") or {}).get("name")
-                    _cs_txt, _cs_n = await _rcs(llm, episodes=_eps_c, persona_name=_pn_c,
+                    _cs_txt, _cs_n = await _rcs(llm, episodes=_eps_c, persona_name=_pn_c, rounds=(1 if _tm.get("budget_used") else 2),
                                                register_hint="어미 결: " + _PL_c[_pk_c(_pn_c)]["align_definition"].format(cn_eul="'○○'을", defn="…"))
+                    _tm["budget_used"] = 1          # 집중 호출이 다시 쓰기까지 썼을 수 있다 — 종료 턴의 뒤 단계는 결정론 수선만
                     if _cs_n > _best_n:
                         _sum, _best_n, _close_mode = _cs_txt, _cs_n, "focused"
                 except Exception as _e_cs:   # noqa: BLE001
@@ -2116,7 +2160,10 @@ async def _submit_message_phase3a(
             try:
                 from diag_project.services.close_render import render_last_receive as _rlr
                 # (2026-11-11 P10-5) LLM 1문장, 리더 답 인용 필수 — 불합격이면 리더 절 인용, 받을 내용이 없으면 받기 없이 종료 문구
-                _recv_fin, _fin_mode = await _rlr(llm, user_text=_bei_user_text or request.content, persona_name=_pn_fin)
+                _recv_fin, _fin_mode = await _rlr(llm, user_text=_bei_user_text or request.content, persona_name=_pn_fin,
+                                                  rounds=(1 if _tm.get("budget_used") else 2))
+                if _fin_mode in ("llm_regen", "quote"):
+                    _tm["budget_used"] = 1
                 _tm["final_receive_mode"] = _fin_mode
             except Exception as _e_fin:   # noqa: BLE001
                 logger.error("마지막 답 받기 렌더 실패: %s", _e_fin)
@@ -2136,6 +2183,7 @@ async def _submit_message_phase3a(
                 wrap_up = f"{wrap_up} 리포트는 {estimate_label(_n_ready)} 정도면 준비됩니다."
             except Exception as _ee:
                 logger.warning("리포트 예상 시간 계산 실패(문구 생략): %s", _ee)
+        _tm["no_regen"] = 1   # (재생성 예산) 종료 턴 본문은 요약(또는 고정 문구) — 뒤 단계가 본 호출 재생성으로 덮지 않는다. 남은 위반은 결정론 수선만
         if _next_ch:
             # 전환 '예고'까지만. 다음 역량의 정의 질문(COMPETENCY_ASK)은 리더님이
             # 팝업으로 확인한 뒤 다음 턴의 첫 발화가 된다. (과거엔 '?' 가 없으면
@@ -2528,6 +2576,10 @@ async def _submit_message_phase3a(
         #   질문을 LLM 이 쓰는 턴(_q_expected)에만 — 여는 턴의 질문은 시스템 앵커라 8-w2 가 닫는 쪽을 정리한다.
         def _trim_two(txt: str) -> tuple[str, int]:
             from diag_project.services.output_guard import keep_main_question as _kmq_t, split_compound_question as _scq_t
+            from diag_project.services.output_guard import revive_question_receive as _rqr_t
+            txt, _n_rv_t = _rqr_t(txt, _llm_user_text)   # (재생성 예산) 질문 꼴 받기("…뜻이었을까요?")는 지우지 않고 평서 꼴("…뜻이었군요.")로 살린다
+            if _n_rv_t:
+                _tm["recv_revived"] = int(_tm.get("recv_revived") or 0) + _n_rv_t
             _t, _n_qo_t = _kmq_t(txt)                 # (lb1) 질문 뒤 도움말('예를 들어 … 떠올려 주시면 돼요')을 먼저 걷어낸다 — 진짜 질문이 남게
             _t, _n_sc_t = _scq_t(_t)
             if _cq_w(_t) > 1:
@@ -2547,7 +2599,7 @@ async def _submit_message_phase3a(
             _iss = _issues_for_regen(clean_reply)
         _rounds = 0
         _ph = _qp_r(_llm_user_text)
-        while _iss and _rounds < 2:
+        while _iss and _rounds < 1 and not (_tm.get("budget_used") or _tm.get("no_regen")):   # (재생성 예산) 턴당 1회 — 이미 썼으면 바로 결정론 수선으로
             _rounds += 1
             _notes_w = ["\n\n🚨 [시스템 — 재생성 지시] 방금 응답의 형식이 어긋났습니다. 되받기 1~3문장 + 질문 1개로 다시 쓰세요. 이 지시문의 단어를 답에 옮기지 마세요."]
             if "no_receive" in _iss or "no_quote" in _iss:
@@ -2584,6 +2636,23 @@ async def _submit_message_phase3a(
                     _tm["one_q"] = int(_tm.get("one_q") or 0) + _n_tq2
                     _tm["two_q_trim"] = 1
         _tm["format_regen"] = _rounds
+        if _iss:
+            # (2026-11-11 재생성 예산) 재생성 뒤에도 남은 위반은 결정론 수선 — 긴 받기는 3문장으로 자르고, 질문이 없으면 리더 말을 받아 한 걸음 더 묻는 문장을 붙인다.
+            #   받기 없음·미인용은 아래에서 구절 인용 받기로, 두 질문은 위에서 이미 잘랐다. 수선하지 못한 사유(유도형 질문 등)만 format_miss 로 남긴다.
+            _fixed_iss: list[str] = []
+            if "long_receive" in _iss:
+                from diag_project.services.receive_check import receive_statements as _rst_w
+                _keep3 = [x for x in _rst_w(clean_reply) if _cpt_w(x) not in _fixed_wc][:3]
+                if _keep3:
+                    clean_reply = _spl_r(clean_reply, " ".join(_keep3), 3, keep_fixed=_fixed_w)
+                    _fixed_iss.append("long_receive")
+            if "no_question" in _iss and _q_expected:
+                from diag_project.services.output_guard import followup_from_user as _ffu_w
+                clean_reply = f"{clean_reply.rstrip()} {_ffu_w(_llm_user_text)}".strip()
+                _fixed_iss.append("no_question")
+            if _fixed_iss:
+                _tm["format_repaired"] = _fixed_iss
+                _iss = [x for x in _iss if x not in _fixed_iss]
         if _iss:
             _tm["format_miss"] = list(_iss)
             if "two_questions" in _iss:
@@ -2714,7 +2783,10 @@ async def _submit_message_phase3a(
             _mq_pending = False
         if _pn_s == "Michael" and _mq_pending and _lead_s:
             if _mq_n < _mw_cap:
-                _mq, _mq_mode = await _rsl(llm, kind="will", persona_name=_pn_s, transcript=_ep_transcript(_bei_ep), used=_slot_texts_s)
+                _mq, _mq_mode = await _rsl(llm, kind="will", persona_name=_pn_s, transcript=_ep_transcript(_bei_ep), used=_slot_texts_s,
+                                           rounds=(1 if _tm.get("budget_used") else 2))
+                if _mq_mode == "llm_regen" or (_mq_mode or "").startswith("miss:"):
+                    _tm["budget_used"] = 1
                 _tm["slot_render"] = _mq_mode
                 if _mq:
                     clean_reply = " ".join(_lead_s + [_mq]).strip()
@@ -2725,7 +2797,10 @@ async def _submit_message_phase3a(
                 _tm["michael_q_done"] = 1; _tm["michael_q_cap"] = 1   # 세션 상한 — 대기만 해제
         elif (_slot_kind and not _slot_chapters.get(chapter)
               and len(_slot_used_idx) < _sl_cap and _ep_turn_s in (3, 4, 5) and _lead_s and _slot_target_now not in _filled_s):
-            _slot_txt, _slot_mode = await _rsl(llm, kind=_slot_kind, persona_name=_pn_s, transcript=_ep_transcript(_bei_ep), used=_slot_texts_s)
+            _slot_txt, _slot_mode = await _rsl(llm, kind=_slot_kind, persona_name=_pn_s, transcript=_ep_transcript(_bei_ep), used=_slot_texts_s,
+                                               rounds=(1 if _tm.get("budget_used") else 2))
+            if _slot_mode == "llm_regen" or (_slot_mode or "").startswith("miss:"):
+                _tm["budget_used"] = 1
             _tm["slot_render"] = _slot_mode
             if _slot_txt:
                 if _slot_kind in ("criterion", "reason", "counterfactual", "other_side"):
@@ -3300,6 +3375,11 @@ async def _submit_message_phase3a(
             "slot_render": _tm.get("slot_render"), "receive_fallback": _tm.get("receive_fallback"), "first_bridge": int(_tm.get("first_bridge") or 0),
             "final_receive_mode": _tm.get("final_receive_mode"),
             "two_q_trim": int(_tm.get("two_q_trim") or 0),   # (지연 단축 b) 두 질문을 재생성 없이 잘랐다
+            # (재생성 예산·호출 순서) render_regen 집중 호출의 다시 쓰기 수 · recv_revived 질문 꼴 받기를 평서 꼴로 살린 수 · format_repaired 결정론 수선 사유 ·
+            #   close_main_skipped 종료 턴 본 호출 생략 · receive_dropped 받을 낱말 없는 받기 삭제
+            "render_regen": int(_tm.get("render_regen") or 0), "recv_revived": int(_tm.get("recv_revived") or 0),
+            "format_repaired": _tm.get("format_repaired"), "close_main_skipped": int(_tm.get("close_main_skipped") or 0),
+            "receive_dropped": int(_tm.get("receive_dropped") or 0),
             "anchor_attached": int(_tm.get("anchor_attached") or 0), "format_regen": int(_tm.get("format_regen") or 0),
             "format_miss": _tm.get("format_miss"), "receive_miss": int(_tm.get("receive_miss") or 0), "receive_phrase": _tm.get("receive_phrase"),
             # (2026-11-06 P7-1) incident 슬롯 판정의 사례 유무 · stall 연속 무진전 턴 수

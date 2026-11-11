@@ -177,7 +177,7 @@ def _frame_example(persona_name: str | None, frame: int) -> str:
 
 async def render_opener(
     llm, *, chapter: str | None, sub_key: str | None, persona_name: str | None, leader_text: str | None, fallback_question: str,
-    register_hint: str = "", frame: int = 0,
+    register_hint: str = "", frame: int = 0, rounds: int = 2,
 ) -> tuple[str, str]:
     """(여는 문장 전체, 모드). 모드 'llm' | 'llm_regen' | 'fallback'. 폴백은 fallback_question(사전 앵커, 이미 페르소나 어미) 그대로."""
     mat = _sub_material(chapter, sub_key)
@@ -210,7 +210,7 @@ async def render_opener(
     )
     mode = "llm"
     prompt = base
-    for attempt in range(2):
+    for attempt in range(max(1, rounds)):       # (재생성 예산) 턴당 다시 쓰기는 1회 — 호출자가 예산을 이미 썼으면 rounds=1
         try:
             out = await llm._generate_with_retry(prompt=prompt, max_tokens=200, thinking_budget=0, call_type="opener_render", temperature=0.5)
         except Exception as e:  # noqa: BLE001
@@ -223,11 +223,11 @@ async def render_opener(
             ok, why = False, "register"
         if ok:
             return text, mode
-        logger.info("여는 문장 형식 불합격(%s) → %s: %r", why, "재생성" if attempt == 0 else "사전 폴백", text[:90])
+        logger.info("여는 문장 형식 불합격(%s) → %s: %r", why, "재생성" if attempt + 1 < max(1, rounds) else "사전 폴백", text[:90])
         mode = "llm_regen"
         prompt = base + (f"\n\n🚨 방금 출력은 형식이 어긋났습니다({why}). "
                          + ("앞 절 + 쉼표 + 그런 일이 있었는지 묻는 질문, 한 문장으로만 다시 쓰세요." if one_sentence else
                             "첫 문장 = 물음표 없는 평서문(이 영역에서 무엇을 보는지), 둘째 문장 = 그런 일이 있었는지 묻는 질문. 이 순서로 두 문장만 다시 쓰세요.")
                          + f" 말투는 {_rh_r(persona_name)}")   # p4b: 2/2 가 질문부터 시작(no_why)
-    return fallback_question, "fallback"
+    return fallback_question, ("fallback_retry" if max(1, rounds) >= 2 else "fallback")
 

@@ -51,7 +51,7 @@ def test_p10_1_reserve_questions_three_per_coach_per_daypart_and_safe():
 
 def test_p10_1_smalltalk_turn_wiring_one_llm_call_no_regen():
     src = _route_src()
-    assert 'if _tm.get("no_regen"):' in src and '"regen_skipped"' in src                          # 재생성 요청은 건너뛴다
+    assert 'if _tm.get("no_regen") or _tm.get("budget_used"):' in src and '"regen_skipped"' in src   # 재생성 요청은 건너뛴다
     assert "is_contentless_smalltalk" in src and '_tm["smalltalk"] = "fixed"' in src              # 내용 없는 답 → LLM 없음
     assert '_tm["smalltalk"] = "reserve"' in src and "_smalltalk_reserve()" in src                # 검사 탈락 → 예비 되물음
     assert '_pl_r("smalltalk_q")' not in src                                                       # 옛 고정 질문(바쁜 쪽·여유 있는 쪽)은 쓰지 않는다
@@ -422,7 +422,7 @@ def test_latency_b_two_questions_trimmed_without_regen():
     from diag_project.services.output_guard import count_question_markers as c, keep_last_question, split_compound_question
     src = _route_src()
     i = src.index("def _trim_two(txt: str)")
-    j = src.index("while _iss and _rounds < 2:", i)
+    j = src.index("while _iss and _rounds < 1 and not", i)
     pre = src[i:j]
     assert 'if _q_expected and "two_questions" in _iss:' in pre and "_timed_regen" not in pre            # 루프 앞에서 바로 자른다(LLM 호출 없음)
     assert '_tm["two_q_trim"] = 1' in pre and "_issues_for_regen(clean_reply)" in pre
@@ -468,3 +468,84 @@ def test_latency_b_followups_from_sim():
     # 3) 범위 문장 자리의 예고 문장("먼저 여쭤볼게요.")은 범위 문장이 아니다
     src = _route_src()
     assert "여쭤볼게요|여쭙겠습니다" in src[src.index("# (lb1) 범위 문장 자리에 예고 문장"):][:400] and "keep_main_question as _kmq_t" in src
+
+
+# ── (2026-11-11) 재생성 예산 · 질문 꼴 받기 살리기 · 호출 순서 · 단계 표시 ──────────────────────────────────────
+def test_regen_budget_one_per_turn_then_deterministic_repair():
+    src = _route_src()
+    # 재생성 래퍼: 예산을 썼으면 LLM 을 부르지 않는다. 집중 호출(여는 문장·슬롯·요약·마지막 받기)의 다시 쓰기도 같은 예산
+    i = src.index("async def _timed_regen(**kw):")
+    wrap = src[i: i + 1200]
+    assert 'if _tm.get("no_regen") or _tm.get("budget_used"):' in wrap and '_tm["budget_used"] = 1' in wrap
+    assert src.count('rounds=(1 if _tm.get("budget_used") else 2)') >= 5
+    # 8-w: 재생성 1회, 그 뒤는 결정론 수선(긴 받기 자르기 · 질문 없으면 후속 질문 · 받기 없으면 구절 인용 받기)
+    j = src.index("while _iss and _rounds < 1 and not (_tm.get(\"budget_used\")")
+    after = src[j: src.index("# 8-w2.", j)]
+    assert '"long_receive" in _iss' in after and "followup_from_user as _ffu_w" in after and "quote_receive as _qrcv_w" in after
+    assert '_tm["format_repaired"] = _fixed_iss' in after
+    # 종료 턴: 본 호출 재생성 루프 없음, 본문은 뒤 단계가 재생성으로 덮지 않는다
+    k = src.index("# 8-d. CHAPTER_READY_TO_END")
+    close = src[k: src.index("# 8-f.", k)]
+    assert "_timed_regen" not in close and '_tm["no_regen"] = 1' in close
+
+
+def test_question_shaped_receive_is_revived_as_statement():
+    from diag_project.services.output_guard import count_question_markers as c, keep_main_question, question_to_statement as q2s, revive_question_receive as rv
+    assert q2s("처음의 반대가 거리를 둔 게 아니라 조건부였다는 뜻이었을까요?") == "처음의 반대가 거리를 둔 게 아니라 조건부였다는 뜻이었군요."
+    assert q2s("그 뒤로 두 분이 먼저 자료를 가져오셨나요?") == "그 뒤로 두 분이 먼저 자료를 가져오셨군요."
+    assert q2s("두 분이 남는 쪽을 고르신 거죠?") == "두 분이 남는 쪽을 고르신 거군요."
+    assert q2s("그때 무엇을 먼저 확인하셨어요?") == "그때 무엇을 먼저 확인하셨군요."     # 어미표는 꼴만 본다 — 진짜 질문인지는 revive 의 내용 검사가 거른다
+    assert q2s("분담표를 다시 짜셨군요.") is None and q2s("그 뒤에는 어떻게 하실 건가요?") is not None
+    u = "처음엔 그래도 결국 바꿀 거잖아요 하던 김선임 선임이 파일럿 2주차부터 본인 과정 자료를 먼저 가져왔어요."
+    t = ("파일럿 2주차에 김선임이 먼저 자료를 가져왔다는 건, 처음의 반대가 거리를 둔 게 아니라 조건부였다는 뜻이었을까요? "
+         "그 2주 사이에 어떤 신호를 보고 움직였다고 느끼셨어요?")
+    out, n = rv(t, u)
+    assert n == 1 and out.startswith("파일럿 2주차에 김선임이 먼저 자료를 가져왔다는 건, 처음의 반대가 거리를 둔 게 아니라 조건부였다는 뜻이었군요.")
+    assert c(out) == 1 and keep_main_question(out)[0] == out                      # 받기가 살아서 질문은 하나만 남는다
+    # 리더 말을 담지 않은 첫 질문은 받기가 아니다 — 바꾸지 않는다(종전대로 마지막 질문만 남는다)
+    t2 = "그때 기분이 어떠셨나요? 그 뒤에는 무엇을 하셨어요?"
+    assert rv(t2, u) == (t2, 0)
+    # 평서문 받기가 이미 있으면 건드리지 않는다
+    t3 = "자료를 먼저 가져왔군요. 그게 조건부였다는 뜻이었을까요? 그때 무엇을 보셨어요?"
+    assert rv(t3, u) == (t3, 0)
+    assert "revive_question_receive as _rqr_t" in _route_src()
+
+
+def test_call_order_opener_parallel_and_close_turn_skips_main_call():
+    src = _route_src()
+    # 사례를 닫고 새로 여는 턴: 여는 문장 렌더는 코치 본 호출과 병렬(태스크) — 본 호출 뒤에 합친다
+    assert "_opener_task = _aio_op.ensure_future(_opener_for(current_target_sub, _bei_anchor_text))" in src
+    assert src.index("_opener_task = _aio_op.ensure_future") < src.index("llm_output = await llm.generate_phase3a_interaction(") < src.index("_opener_result = await _opener_task")
+    assert "_opener_task.cancel()" in src                                                       # 본 호출 실패 시 정리
+    # 챕터 종료 턴: 본 호출 생략(출력을 쓰지 않았다)
+    i = src.index('if instruction_used == "CHAPTER_READY_TO_END":\n            # (2026-11-11 호출 순서)')
+    assert 'llm_output = {"reply": ""}' in src[i: i + 700]
+    from diag_project.services.anchor_render import render_opener
+    assert "rounds: int = 2" in inspect.getsource(render_opener)
+
+
+def test_turn_stage_progress_and_endpoint():
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import turn_progress as tp
+    sid = "s-1"
+    assert tp.get_stage(sid)["stage"] == "idle"
+    tp.start(sid)
+    assert tp.get_stage(sid) == {"stage": "reading", "label": "답변을 읽고 있어요", "elapsed_s": tp.get_stage(sid)["elapsed_s"]}
+    tp.set_stage(sid, "polishing"); tp.set_stage(sid, "thinking")                 # 단계는 뒤로 가지 않는다
+    assert tp.get_stage(sid)["stage"] == "polishing" and tp.get_stage(sid)["label"] == "문장을 다듬고 있어요"
+    tp.set_stage(sid, "없는단계"); tp.set_stage("모르는세션", "thinking")          # 무시
+    tp.clear(sid)
+    assert tp.get_stage(sid) == {"stage": "idle", "label": "", "elapsed_s": 0.0}
+    assert "/{session_id}/turn_stage" in {getattr(r, "path", "") for r in D.router.routes}
+    src = inspect.getsource(D.get_turn_stage)
+    assert "assert_can_access_session" in src                                                  # 남의 세션 단계는 볼 수 없다
+    sub = inspect.getsource(D.submit_message)
+    assert "_tp.start(" in sub and "finally:" in sub and "_tp.clear(" in sub                    # 어떤 경로로 끝나도 지운다
+
+
+def test_lc1_followup_gunggeum_comma_joined_two_questions():
+    """측정 시뮬 lc1: "…오갔는지 궁금해요, 이 파일럿 말고 다른 방식도 검토하셨을까요?" — 쉼표로 이은 두 질문은 뒤 질문만 남긴다."""
+    from diag_project.services.output_guard import count_question_markers as c, split_compound_question as sp
+    t = "그 판단이 이탈을 먼저 내다본 데서 나왔군요. 머릿속에서 어떤 선택지들이 오갔는지 궁금해요, 이 파일럿 말고 다른 방식도 검토하셨을까요?"
+    assert c(t) == 2 and sp(t) == ("그 판단이 이탈을 먼저 내다본 데서 나왔군요. 이 파일럿 말고 다른 방식도 검토하셨을까요?", 1)
+    assert c("두 분의 태도가 어떻게 달라졌는지 궁금해요.") == 1

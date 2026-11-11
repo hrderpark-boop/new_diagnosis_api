@@ -321,7 +321,9 @@ _REQUEST_Q_RE = re.compile(r"(들려주세요|는지도요|얘기해\s*주세요
 # (2026-11-05 2단계 판정 2) 한 문장 안의 두 질문: '~는지, 그리고 ~?' / '~는지, 또는 ~' / '~는지, (그때·어떤·무엇·언제·왜·어떻게·누구) ~?'
 #   — '~는지, 숫자든 현장 변화든 말씀해 주시겠습니까?' 처럼 뒤에 의문사·접속사가 없으면 한 질문이다(s2c Jessica 재생성 6턴 공회전의 원인).
 _COMPOUND_Q_RE = re.compile(r"(는지|은지|인지|을지|였는지|었는지|했는지)[,，]\s*(?=(그리고|또는|아니면|또\s|그때|어떤|무엇|언제|어디|왜\s|어떻게|누구|누가))"
-                            r"|[,，]\s*그리고\s+(?=(그때|그 뒤|리더님|어떤|무엇|언제|어디|왜\s|어떻게|배우신|느끼신|누구))")
+                            r"|[,，]\s*그리고\s+(?=(그때|그 뒤|리더님|어떤|무엇|언제|어디|왜\s|어떻게|배우신|느끼신|누구))"
+                            # (2026-11-11 시뮬 lc1) "…어떤 선택지들이 오갔는지 궁금해요, 이 파일럿 말고 다른 방식도 검토하셨을까요?" — 쉼표로 이은 두 질문
+                            r"|궁금(?:해요|합니다|한데요|하네요)[,，]\s*(?=\S)")
 # '…과 이어서 여쭙니다.' 류는 질문이 아니라 다음 질문으로 가는 다리 — 질문 수에 넣지 않는다
 _LEAD_IN_Q_RE = re.compile(r"(이어서|이어|대해|관련해|관해|연결해서|연결해)\s*(여쭙니다|여쭤보겠습니다|여쭤볼게요|묻겠습니다|질문드리겠습니다|질문드립니다|여쭙겠습니다)[.…]?$")
 
@@ -379,7 +381,7 @@ def split_compound_question(text: str) -> tuple[str, int]:
     for s_ in split_sentences(text or ""):
         s0 = s_.strip()
         if s0 and is_question(s0) and _COMPOUND_Q_RE.search(s0):
-            parts = re.split(r"(?:는지|은지|인지|을지|였는지|었는지|했는지)[,，]\s*(?:그리고|또는|아니면|또)?\s*", s0)
+            parts = re.split(r"(?:는지|은지|인지|을지|였는지|었는지|했는지)[,，]\s*(?:그리고|또는|아니면|또)?\s*|궁금(?:해요|합니다|한데요|하네요)[,，]\s*", s0)
             if len(parts) >= 2 and parts[-1].strip():      # '설득하셨는지, 속도를 조절하셨는지, 아니면 ~?' → 마지막 절만
                 s0 = parts[-1].strip()
                 n += 1
@@ -489,6 +491,46 @@ def is_aid_sentence(sentence: str | None) -> bool:
     if not s_ or s_.endswith("?"):
         return False
     return bool(_AID_LEAD_RE.search(s_) or _AID_END_RE.search(s_))
+
+
+# (2026-11-11 재생성 예산) 질문 꼴 받기 — "…조건부였다는 뜻이었을까요?" 는 묻는 말이 아니라 받는 말이다. 두 질문을 자를 때 지우지 않고
+#   평서 꼴("…뜻이었군요.")로 바꿔 받기로 살린다. 아는 어미만 바꾼다.
+_Q_TO_STMT: list[tuple[str, str]] = [
+    (r"(이었|였|었|았|했|셨|됐|겠)을까요\?$", r"\1군요."),
+    (r"(이었|였|었|았|했|셨|됐)(나요|어요|던가요|죠|지요|습니까|던 거죠|던 건가요)\?$", r"\1군요."),
+    (r"(거|것|셈)(일까요|인가요|이죠|죠|지요|예요|이에요)\?$", r"\1군요."),
+    (r"(건|겁)(가요|니까)\?$", "거군요."),
+    (r"일까요\?$", "이군요."), (r"인가요\?$", "이군요."), (r"(이)?신가요\?$", "이시군요."),
+    (r"(겠)(죠|지요|네요)\?$", r"\1네요."), (r"(네요|군요)\?$", r"\1."),
+]
+
+
+def question_to_statement(sentence: str | None) -> str | None:
+    """질문 꼴로 끝난 받는 문장을 평서 꼴로 — '…뜻이었을까요?' → '…뜻이었군요.'. 바꿀 수 없으면 None."""
+    s_ = (sentence or "").strip()
+    if not s_.endswith("?"):
+        return None
+    for pat, repl in _Q_TO_STMT:
+        new = re.sub(pat, repl, s_)
+        if new != s_:
+            return new
+    return None
+
+
+def revive_question_receive(text: str | None, user_text: str | None) -> tuple[str, int]:
+    """받는 평서문 없이 질문 꼴 받기로 시작한 턴("…뜻이었을까요? 그때 …?")에서, 첫 질문이 리더 말을 담고 있으면 평서 꼴로 바꿔 받기로 살린다.
+    질문이 하나뿐이거나 이미 평서문 받기가 있으면 그대로 둔다. (결과, 바꾼 수)"""
+    sents = [x.strip() for x in split_sentences(text or "") if x.strip()]
+    if len(sents) < 2 or not is_question(sents[0]) or sum(1 for x in sents if is_question(x)) < 2:
+        return (text or ""), 0
+    new = question_to_statement(sents[0])
+    if not new:
+        return (text or ""), 0
+    theirs = {c for c in _content_chunks(user_text or "") if len(c) >= 2}
+    mine = {c for c in _content_chunks(new) if len(c) >= 2}
+    if len({c for c in mine if c in theirs or any(len(o) >= 3 and (c.startswith(o) or o.startswith(c)) for o in theirs)}) < 2:
+        return (text or ""), 0                       # 리더 말을 담지 않은 질문은 받기가 아니라 그냥 질문이다
+    return (text or "").replace(sents[0], new, 1), 1
 
 
 def keep_main_question(text: str) -> tuple[str, int]:
