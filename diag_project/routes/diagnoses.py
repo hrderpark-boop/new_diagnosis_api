@@ -2527,9 +2527,12 @@ async def _submit_message_phase3a(
         #   절반이 못 고쳤고(p10b: 미해결 3턴) 턴마다 3초 안팎이 들었다. 남긴 질문에 대상이 없으면 아래 8-w3(P9-5)이 그대로 보정한다.
         #   질문을 LLM 이 쓰는 턴(_q_expected)에만 — 여는 턴의 질문은 시스템 앵커라 8-w2 가 닫는 쪽을 정리한다.
         def _trim_two(txt: str) -> tuple[str, int]:
-            from diag_project.services.output_guard import split_compound_question as _scq_t
-            _t, _n_sc_t = _scq_t(txt)
-            _t, _n_qo_t = _klq_w(_t)
+            from diag_project.services.output_guard import keep_main_question as _kmq_t, split_compound_question as _scq_t
+            _t, _n_qo_t = _kmq_t(txt)                 # (lb1) 질문 뒤 도움말('예를 들어 … 떠올려 주시면 돼요')을 먼저 걷어낸다 — 진짜 질문이 남게
+            _t, _n_sc_t = _scq_t(_t)
+            if _cq_w(_t) > 1:
+                _t, _n_more = _klq_w(_t)
+                _n_qo_t += _n_more
             return _t, _n_sc_t + _n_qo_t
 
         def _issues_for_regen(txt: str) -> list[str]:
@@ -2781,6 +2784,11 @@ async def _submit_message_phase3a(
             #   (승인 조건 1) 어미 강제는 범위 문장(본문의 마지막 평서문)에만 — 앞의 받는 문장은 그대로 둔다
             from diag_project.services.persona_register import apply_register as _areg_k
             _sk = [x.strip() for x in _ss_k(_body_k) if x.strip()]
+            # (lb1) 범위 문장 자리에 예고 문장("먼저 여쭤볼게요.")만 온 턴 — 예고는 범위 문장이 아니다. 걷어내고, 남는 게 없으면 영역별 범위 문장으로
+            _sk = [x for x in _sk if not re.search(r"(여쭤볼게요|여쭙겠습니다|여쭤보겠습니다|물어볼게요|묻겠습니다|질문드릴게요|질문드리겠습니다|시작할게요|시작하겠습니다)[.!…]*$", x)]
+            if not _sk:
+                _sk = [chapter_scope_line(chapter)]
+                _tm["scope_fallback"] = 1
             _first_ch_k = instruction_used == "DIAGNOSIS_CONFIRM"
             if _first_ch_k:
                 # (2026-11-11 P10-7) 첫 영역 진입 다리는 고정 문장으로 복원 — LLM 이 쓴 진입 문장('그럼 첫 영역인 …부터')은 걷어내고 범위 문장만 남긴다

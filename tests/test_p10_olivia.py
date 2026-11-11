@@ -440,3 +440,31 @@ def test_latency_b_two_questions_trimmed_without_regen():
     assert trim(t2) == "분담표를 다시 짜셨군요. 그 뒤 일정은 어떻게 됐나요?" and c(trim(t2)) == 1
     t3 = "분담표를 다시 짜셨군요. 그런 일이 또 있었나요? 있었다면 언제였고, 어떤 장면이었나요?"
     assert trim(t3) == t3                                                                                  # 조건절로 잇는 한 쌍은 한 질문으로 둔다
+
+
+# ── 지연 단축 b 시뮬(lb1)에서 본 부작용 — 결정론 수정 ────────────────────────────────────────────────────────
+def test_latency_b_followups_from_sim():
+    from diag_project.services.output_guard import count_question_markers as c, is_aid_sentence, keep_main_question, split_compound_question
+    from diag_project.services.receive_check import check_receive
+    # 1) 질문 뒤 도움말이 '마지막 질문'으로 남고 진짜 질문이 지워졌다
+    t = ("한꺼번에 밀어붙이면 강사들이 떠날 수 있다고 보셨고, 속도 대신 두 분이 남을 수 있는 쪽을 택하셨군요. "
+         "그 결정을 하실 때 리더님이 직접 두 분께 건네신 말이나 행동이 있었을까요? 예를 들어 어떤 식으로 설득하거나, 일정을 어떻게 조정하셨는지 떠올려 주시면 돼요.")
+    assert is_aid_sentence("예를 들어 어떤 식으로 설득하거나, 일정을 어떻게 조정하셨는지 떠올려 주시면 돼요.")
+    assert is_aid_sentence("팀 앞에서 방향을 설명하셨는지, 두 분을 따로 만나셨는지 편하게 떠올려 주시면 돼요.") and not is_aid_sentence("그때 두 분은 뭐라고 하셨어요?")
+    out, n = keep_main_question(t)
+    assert out.endswith("건네신 말이나 행동이 있었을까요?") and n == 1 and c(out) == 1
+    # 직접 묻는 문장이 없으면 도움말이 그 턴의 질문이다 — 지우지 않는다
+    only_aid = "작년 3월에 지시가 내려왔군요. 팀 앞에서 방향을 설명하셨는지, 두 분을 따로 만나셨는지 편하게 떠올려 주시면 돼요."
+    assert keep_main_question(only_aid) == (only_aid, 0)
+    # 직접 질문이 둘이면 종전대로 마지막 질문
+    two = "분담표를 다시 짜셨군요. 그때 두 분은 뭐라고 하셨어요? 그 뒤에 일정은 어떻게 됐나요?"
+    assert keep_main_question(two)[0] == "분담표를 다시 짜셨군요. 그 뒤에 일정은 어떻게 됐나요?"
+    assert split_compound_question(keep_main_question(two)[0])[1] == 0
+    # 2) 명사가 아니어도 리더 말을 담은 받기는 인용으로 본다(따옴표로 옮긴 구절 · 리더 어절 2개 이상) — 내용 없는 받기는 여전히 미인용
+    u = "한꺼번에 밀어붙이면 강사들이 떠날 수 있다고 봤어요. 그래서 속도보다는 두 사람이 남을 수 있는 쪽을 골랐습니다."
+    assert check_receive('리더님이 "떠날 수 있다"는 쪽을 먼저 떠올리셨다는 게, 사람을 지키는 방향으로 무게를 두신 것처럼 들려요. 그럼 무엇을 먼저 확인하셨어요?', u) == (True, True)
+    assert check_receive("흥미로운 지점이에요. 그 뒤에는요?", "제가 따로 불러서 분담표를 다시 짰습니다.") == (True, False)
+    assert check_receive("그 판단이 지금 돌아보니 가장 분명하게 남으셨군요. 무엇이 달라졌을까요?", "강사들도 처음부터 같이 배우게 했으면 더 빨랐을 것 같아요.") == (True, False)
+    # 3) 범위 문장 자리의 예고 문장("먼저 여쭤볼게요.")은 범위 문장이 아니다
+    src = _route_src()
+    assert "여쭤볼게요|여쭙겠습니다" in src[src.index("# (lb1) 범위 문장 자리에 예고 문장"):][:400] and "keep_main_question as _kmq_t" in src

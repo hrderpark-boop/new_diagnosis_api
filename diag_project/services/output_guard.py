@@ -477,6 +477,38 @@ def strip_suggestion_statements(text: str) -> tuple[str, int]:
     return re.sub(r"\n{3,}", "\n\n", out).strip(), len(bad)
 
 
+# (2026-11-11 지연 단축 b, 시뮬 lb1) 질문 뒤에 붙는 '도움말'은 질문이 아니다 — "예를 들어 어떤 식으로 설득하거나 … 떠올려 주시면 돼요.",
+#   "팀 앞에서 설명하셨는지, 따로 만나셨는지 편하게 떠올려 주시면 돼요." 마지막 질문만 남길 때 이 문장이 '마지막 질문'으로 뽑혀 진짜 질문이 지워졌다.
+_AID_LEAD_RE = re.compile(r"^(예를 들어|예를 들면|이를테면|가령|예컨대|작은 일이어도|사소한 것이어도|편하게)")
+_AID_END_RE = re.compile(r"(주시면\s*(돼요|됩니다|좋겠어요|좋겠습니다|충분해요|충분합니다)|주셔도\s*(돼요|됩니다|좋아요|좋습니다)|(이어도|여도|라도)\s*(괜찮아요|괜찮습니다|좋아요|좋습니다|돼요|됩니다))[.!…]*$")
+
+
+def is_aid_sentence(sentence: str | None) -> bool:
+    """질문을 돕는 덧붙임 문장인가 — 물음표로 끝나지 않고 '예를 들어 …'로 시작하거나 '… 주시면 돼요' 로 끝난다."""
+    s_ = (sentence or "").strip()
+    if not s_ or s_.endswith("?"):
+        return False
+    return bool(_AID_LEAD_RE.search(s_) or _AID_END_RE.search(s_))
+
+
+def keep_main_question(text: str) -> tuple[str, int]:
+    """한 턴 한 질문(재생성 없이): 도움말 문장을 먼저 걷어내고, 그래도 질문이 둘 이상이면 마지막 질문만 남긴다.
+    질문이 도움말뿐이면(직접 묻는 문장이 없으면) 그 도움말이 이 턴의 질문이다 — 마지막 하나를 남긴다. (결과, 지운 문장 수)"""
+    sents = [s.strip() for s in split_sentences(text or "") if s.strip()]
+    qs = [s for s in sents if is_question(s)]
+    direct = [s for s in qs if not is_aid_sentence(s)]
+    if len(qs) < 2 or not direct:
+        return keep_last_question(text)
+    aids = [s for s in sents if is_aid_sentence(s)]
+    out, n = text, 0
+    for a in aids:
+        out = out.replace(a, "", 1)
+        n += 1
+    out = re.sub(r"[ \t]{2,}", " ", out).strip()
+    out2, n2 = keep_last_question(out)
+    return out2, n + n2
+
+
 def keep_last_question(text: str) -> tuple[str, int]:
     """(2026-10-21) 한 턴 한 질문: 물음표 문장이 2개 이상이면 마지막 하나만 남긴다(평서문은 유지)."""
     sents = split_sentences(text or "")

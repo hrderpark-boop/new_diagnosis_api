@@ -120,7 +120,20 @@ def check_receive(text: str | None, user_text: str | None) -> tuple[bool, bool]:
     nouns = leader_nouns(user_text)
     if not nouns:
         return True, True
-    return True, bool(quoted_nouns(text, user_text))
+    if quoted_nouns(text, user_text):
+        return True, True
+    # (2026-11-11 지연 단축 b, 시뮬 lb1) 명사가 아니어도 리더 말을 담았으면 인용이다 — 따옴표로 옮긴 구절("떠날 수 있다")이 리더 답에 그대로 있거나,
+    #   리더가 쓴 어절이 둘 이상 들어 있을 때. 명사만 보던 판정이 내용 있는 받기를 '미인용'으로 떨어뜨려 재생성을 불렀다.
+    from diag_project.services.output_guard import _content_chunks
+    body = " ".join(stmts)
+    u_c = _compact(user_text or "")
+    for m in re.finditer(r"['‘“\"]([^'’”\"\n]{4,40})['’”\"]", body):
+        if _compact(m.group(1)) in u_c:
+            return True, True
+    theirs = {c for c in _content_chunks(user_text or "") if len(c) >= 2}
+    mine = {c for c in _content_chunks(body) if len(c) >= 2}
+    shared = {c for c in mine if c in theirs or any(len(o) >= 3 and (c.startswith(o) or o.startswith(c)) for o in theirs)}
+    return True, len(shared) >= 2
 
 
 def quote_phrase(user_text: str | None) -> str | None:
