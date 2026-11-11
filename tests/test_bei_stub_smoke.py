@@ -54,6 +54,10 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
     queue = list(ONBOARDING)
     meta: dict = {}
     reached_end = False
+    # (2026-11-11 단계 표시) 도는 턴이 없으면 idle · 인증 없이는 볼 수 없다
+    _ts = client.get(f"/api/v1/diagnoses/{sid}/turn_stage", headers=hdr)
+    assert _ts.status_code == 200 and _ts.json() == {"stage": "idle", "label": "", "elapsed_s": 0.0}
+    assert client.get(f"/api/v1/diagnoses/{sid}/turn_stage").status_code in (401, 403)
     for i in range(1, 45):
         u = queue.pop(0) if queue else asyncio.run(leader.answer(coach_text, chapter=meta.get("chapter"), instr=meta.get("instruction_used"),
                                                                  target_sub=meta.get("target"), bei_state=meta.get("bei_state"), probe=meta.get("probe_type_used")))
