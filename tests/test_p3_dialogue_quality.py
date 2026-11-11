@@ -107,7 +107,8 @@ def test_pipeline_wiring_rotation_broken_suggestion():
     assert "delete_broken_statements" in src and "replace_broken_statements" not in src and "strip_suggestion_statements" in src
     # (P4-2) 평가 말투는 재생성 키 · (P4-4) 여는 문장 렌더 · (P4-5) SWEEP 다리 · (P4-1) 정의 질문 5종·슬롯 세션 상한 · (P4-6) 종료 요약 템플릿 폐지
     assert '"praise"}' in src and "_opener_for(current_target_sub" in src and "has_sweep_bridge" in src
-    assert "definition_question_variants" in src and "next_slot_sentence" in src and "michael_will_question" in src
+    assert "definition_question_variants" in src and "slot_kind_for" in src and "render_slot" in src   # (P10-2) 슬롯 문장은 렌더
+    assert "next_slot_sentence" not in src and "michael_will_question" not in src
     assert "close_summary_from_quotes" not in src and "_eps_matched(" in src
     assert "MICHAEL_GOOD_LEAD_CAP" not in src      # '좋습니다' 상한 폐지 — 전면 제거
     # 순서: 8-i → 8-n → 8-v(흉터) → 8-w(턴 형식) → 8-s(슬롯) → 8-p → 8-h → 8-x2 → 8-y → 8-z → 9

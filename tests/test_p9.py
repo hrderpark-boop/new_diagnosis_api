@@ -181,7 +181,8 @@ def test_p9_7_phrase_caps_and_opener_frames():
     t = "목표를 어떻게 나누셨는지 살펴보려고 합니다. 그 기준을 말씀해 주시겠습니까?"
     assert enforce_phrase_caps(t, session_texts=["살펴보려고 합니다."], chapter_texts=["말씀해 주시겠습니까?"]) == (t, {})
     out, done = enforce_phrase_caps(t, session_texts=["살펴보려고 합니다. 살펴보려고 해요."], chapter_texts=["말씀해 주시겠습니까? 말씀해 주시겠습니까?"])
-    assert done == {"salpyeo": 1, "malsseum": 1} and count_phrases([out]) == {"salpyeo": 0, "malsseum": 0}
+    _cp = count_phrases([out])
+    assert done == {"salpyeo": 1, "malsseum": 1} and _cp["salpyeo"] == 0 and _cp["malsseum"] == 0
     src = inspect.getsource(__import__("diag_project.routes.diagnoses", fromlist=["x"]))
     assert "enforce_phrase_caps" in src and "frame=_frame_op" in src
 
@@ -244,8 +245,10 @@ def test_p9_followups_from_second_sim():
     assert apply_register("Jessica", "업무를 조직의 목표와 어떻게 이어 붙이는지는 리더마다, 팀마다 꽤 다르다.")[0].endswith("꽤 다릅니다.")
     assert apply_register("Jessica", "팀마다, 사람마다 목표를 나누는 방식은 조금씩 다르더랍니다.")[0].endswith("조금씩 다릅니다.")
     assert register_violations("Ella", "일을 어디까지 맡길지는 리더마다 선이 다르다.") and apply_register("Jessica", "그것이 문제다.")[2] == ["그것이 문제다."]
-    assert all("존댓말" in f for f in OPENER_FRAMES) and _frame_example("Jessica", 2).startswith("일을 어디까지 맡길지는 리더마다 선이 다릅니다.")
-    assert register_violations("Jessica", _frame_example("Jessica", 0)) == [] and register_violations("Ella", _frame_example("Ella", 1)) == []
+    # (2026-11-11 P10-3·4) 틀 설명은 어미를 싣지 않고(합쇼체 틀을 해요체 코치가 베꼈다), 채움 문장 틀은 삭제 — 예시는 코치 말투로 바꿔 준다
+    assert not any(("다릅니다" in f or "입니다" in f or "습니다" in f) for f in OPENER_FRAMES) and "마다" not in _frame_example("Jessica", 2)
+    assert register_violations("Jessica", _frame_example("Jessica", 0), scope="strict") == [] and register_violations("Ella", _frame_example("Ella", 1), scope="strict") == []
+    assert _frame_example("Jessica", 2).endswith("있으셨습니까?") and "것입니다만," in _frame_example("Jessica", 2)
     cut = "합동 리뷰를 만드셨고, 같은 문제로 회의가 없었습니다. 같은 해 7월 신규 리더십 과정 운영"
     assert drop_unfinished_tail(cut) == ("합동 리뷰를 만드셨고, 같은 문제로 회의가 없었습니다.", 1) and "과정 운영" not in clean_close_summary(cut, 3)
     assert drop_unfinished_tail("끝난 문장입니다.") == ("끝난 문장입니다.", 0)

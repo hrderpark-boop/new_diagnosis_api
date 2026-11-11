@@ -88,7 +88,8 @@ async def render_anchor(
 _PRESUPPOSE_RE = re.compile(r"(하셨을 때|받으셨을 때|했을 때|겪으셨을 때|들으셨을 때|생겼을 때|때 어떻게|때는 어떻게|때 무엇을|때 뭘|때 어떤 식)")
 _EXIST_RE = re.compile(r"(있으셨|있었|있으세요|있나요|있을까요|있으신가요|있습니까|있으십니까|떠오르|기억(나|에 남)|겪으신 적|하신 적|해 ?보신 적|"
                        r"들려주(세요|시겠|실래|시지요|시죠)|말씀해 주|얘기해 주|꼽으신다면|하나만)")
-_WHY_CLAUSE_RE = re.compile(r"^(.{8,}?(인데요|거든요|보려고요|보려고 해요|궁금해서요|보는 쪽이에요))[,，]\s*(.{6,}\?)$")
+_WHY_CLAUSE_RE = re.compile(r"^(.{8,}?(인데요|건데요|것인데요|거든요|보려고요|보려고 해요|궁금해서요|보는 쪽이에요|입니다만|습니다만))[,，]\s*(.{6,}\?)$")
+_OPENER_EXAMPLE_WORDS = ("장바구니", "장을 보", "장 볼", "장 보는")   # (P10) 결 참고 예시(다른 분야)의 낱말 — 출력에 들어오면 베낀 것
 _OPENER_WHY_MAX = 2       # 질문 앞 평서문 최대 2문장
 _OPENER_TAIL_MAX = 1      # 질문 뒤 짧은 덧붙임('작은 일이어도요.') 최대 1문장
 
@@ -120,6 +121,11 @@ def opener_shape_ok(text: str) -> tuple[bool, str]:
         return False, "name_or_metaphor"
     if len(text) > 240 or len(q) > 130:
         return False, "length"
+    if any(w in text for w in _OPENER_EXAMPLE_WORDS):
+        return False, "example_copied"
+    from diag_project.services.phrase_caps import is_filler_sentence
+    if any(is_filler_sentence(x) for x in sents[:qi]):
+        return False, "filler"                      # (P10-3) '~은 팀마다, 사람마다 다릅니다' 류 채움 문장
     return True, ""
 
 
@@ -132,23 +138,36 @@ def _sub_material(chapter: str | None, sub_key: str | None) -> dict:
             "example": lv2, "cue": cues[0] if cues else ""}
 
 
-# (2026-11-10 P9-7) 여는 문장(왜 묻는지) 틀 3종 — 11/10 운영 Jessica: 여는 문장마다 '…살펴보려고 합니다'. 세션에서 연 사례 순번으로 돌린다.
+# (2026-11-10 P9-7 → 2026-11-11 P10-3) 여는 문장(왜 묻는지) 틀 3종 — 세션에서 연 사례 순번으로 돌린다.
+#   P10-3: 채움 문장 틀('~하는 방식은 팀마다, 사람마다 다릅니다')은 삭제 — 어느 주제에나 붙는 일반론이었다. 대신 '주제 절 + 질문' 한 문장 틀.
+#   '이번에는 ~ 쪽 이야기' 틀은 세션 2회만(순번 1·5). 틀 설명은 어미를 싣지 않는다 — 합쇼체로 쓴 틀을 해요체 코치가 그대로 베꼈다(11/11 Olivia).
 OPENER_FRAMES = (
-    "'~을 어떻게 하시는지 듣고 싶습니다'라는 뜻의 존댓말 한 문장(무엇을 듣고 싶은지로 끝난다).",
-    "'이번에는 ~ 쪽 이야기입니다'라는 뜻의 짧은 존댓말 한 문장.",
-    "'~하는 방식은 팀마다, 사람마다 다릅니다'처럼 사실을 말하는 존댓말 한 문장(듣고 싶다·보려 한다는 말 없이, '~다르다'·'~더랍니다' 꼴 금지).",
+    "무엇을 듣고 싶은지 말하는 한 문장('~을 어떻게 하시는지 듣고 싶다'는 뜻). 그 다음 문장이 질문.",
+    "주제를 바꾸는 짧은 한 문장('이번에는 ~ 쪽 이야기'라는 뜻). 그 다음 문장이 질문.",
+    "평서문을 따로 두지 않고 질문 한 문장으로만 쓴다 — 무엇에 관한 것인지를 앞 절에 넣고 쉼표로 이어서 묻는다('~에 관한 건데요, 최근에 ~ 있으셨어요?' 꼴).",
 )
 OPENER_FRAME_EXAMPLES = (
-    "맡길 일과 직접 할 일을 어떻게 가르시는지 듣고 싶어요. 최근에 '이건 내가 안 하고 맡겨 보자' 하신 일이 있으셨어요?",
-    "이번에는 일을 맡기는 쪽 이야기예요. 최근에 '이건 내가 안 하고 맡겨 보자' 하신 일이 있으셨어요?",
-    "일을 어디까지 맡길지는 리더마다 선이 달라요. 최근에 '이건 내가 안 하고 맡겨 보자' 하신 일이 있으셨어요?",
+    "장을 볼 때 무엇부터 담으시는지 듣고 싶어요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
+    "이번에는 장을 보는 쪽 이야기예요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
+    "장 볼 때 순서를 정하는 일에 관한 건데요, 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
 )
+_OPENER_FRAME_SEQ = (0, 1, 2, 0, 2, 1, 0, 2)
+
+
+def opener_frame_for(n_opened: int) -> int:
+    """세션에서 n 번째(0부터)로 여는 사례의 틀 — '이번에는 ~ 쪽 이야기'(1번 틀)는 세션에서 두 번만, 그 뒤로는 0·2번을 번갈아."""
+    n = max(0, int(n_opened))
+    if n < len(_OPENER_FRAME_SEQ):
+        return _OPENER_FRAME_SEQ[n]
+    return 0 if n % 2 == 0 else 2
 
 
 def _frame_example(persona_name: str | None, frame: int) -> str:
     """틀 예시를 그 페르소나의 말투로 — 해요체 예시를 합쇼체 코치에게 주면 어미가 섞인다."""
     from diag_project.services.persona_register import apply_register
-    return apply_register(persona_name, OPENER_FRAME_EXAMPLES[int(frame) % len(OPENER_FRAME_EXAMPLES)])[0]
+    ex = OPENER_FRAME_EXAMPLES[int(frame) % len(OPENER_FRAME_EXAMPLES)]
+    out = apply_register(persona_name, ex, scope="strict")[0]
+    return out.replace("건데요,", "것입니다만,") if out != ex or "습니까" in out else out
 
 
 async def render_opener(
@@ -162,20 +181,27 @@ async def render_opener(
     if llm is None or not sub_key or not mat.get("name"):
         return fallback_question, "fallback"
     lead = re.sub(r"\s+", " ", (leader_text or "").strip())[-200:]
+    from diag_project.services.persona_register import apply_register as _areg_r, register_hint as _rh_r, register_violations as _rv_r
+    frame = int(frame) % len(OPENER_FRAMES)
+    one_sentence = frame == 2
     base = (
-        "당신은 리더십 BEI 코치입니다. 리더에게 새 사례 하나를 청하는 '여는 문장'을 만드세요. 출력은 정확히 두 문장입니다.\n\n"
-        "① 왜 묻는지 1문장 — 아래 [무엇을 보는지]를 리더가 쓰는 일상어로 풀어 씁니다. 역량·하위역량 이름, '역량'·'항목'·'지표' 같은 말은 쓰지 않습니다.\n"
-        f"   이번 문장의 틀: {OPENER_FRAMES[int(frame) % len(OPENER_FRAMES)]} '살펴보려고'라는 말은 쓰지 않습니다.\n"
-        "② 있었는지 묻는 질문 1문장 — '최근에 ~한 일이 있으셨어요?' 처럼 그런 일이 있었는지 여는 질문. "
+        "당신은 리더십 BEI 코치입니다. 리더에게 새 사례 하나를 청하는 '여는 문장'을 만드세요. "
+        + ("출력은 정확히 한 문장(질문)입니다.\n\n" if one_sentence else "출력은 정확히 두 문장입니다.\n\n")
+        + "① 왜 묻는지 — 아래 [무엇을 보는지]를 리더가 쓰는 일상어로 풀어 씁니다. 역량·하위역량 이름, '역량'·'항목'·'지표' 같은 말은 쓰지 않습니다.\n"
+        f"   이번 틀: {OPENER_FRAMES[frame]} '살펴보려고'·'궁금'이라는 말은 쓰지 않습니다. "
+        "'~은 팀마다, 사람마다 다르다' 같은 누구에게나 맞는 일반론은 쓰지 않습니다.\n"
+        "② 있었는지 묻는 질문 — '최근에 ~한 일이 있으셨어요?' 처럼 그런 일이 있었는지 여는 질문. "
         "있었음을 전제하는 문형('~받으셨을 때 어떻게', '~하셨을 때 무엇을')은 금지합니다. 선택지·가정형 금지. 은유 금지. 평가·칭찬 금지.\n"
         "질문 뒤 덧붙임은 없어도 되고, 쓰면 1문장(범위를 낮추는 말)으로 — 세션 안에서 같은 덧붙임을 되풀이하지 않는다.\n\n"
         f"[무엇을 보는지 — {mat['name']}(이름은 쓰지 말 것)]\n- 정의: {mat['lv2']}\n- 한 단계 위: {mat['lv3']}\n"
         + (f"- 행동 예: {mat['example']}\n" if mat.get("example") else "") + (f"- 행동 단서: {mat['cue']}\n" if mat.get("cue") else "")
-        + (f"\n[리더가 방금 한 말(결만 참고, 되받지 않는다)] {lead}\n" if lead else "")
-        + f"\n[코치 말투] {persona_name or 'Ella'} — {register_hint or '존댓말, 부드럽게'}\n"
-        "\n[결 참고 — 다른 영역의 예, 낱말을 그대로 쓰지 말 것] " + _frame_example(persona_name, frame) + "\n"
-        "\n순서가 중요합니다: 첫 문장은 물음표 없는 평서문(무엇을 보는지), 그 다음 문장이 질문입니다. 질문으로 시작하면 실패입니다.\n"
-        "\n출력: 문장만. 따옴표·머리말·설명 없이."
+        # (P10 p10a) 한 문장 틀에서는 리더의 직전 말을 주지 않는다 — 주제 절 대신 직전 답을 되물어('…먼저 꺼내 보신 적이 있으셨나요?') 2회 다 불합격했다
+        + (f"\n[리더가 방금 한 말(결만 참고, 되받지 않는다)] {lead}\n" if (lead and not one_sentence) else "")
+        + f"\n[코치 말투] {persona_name or 'Ella'} — {_rh_r(persona_name)}" + (f" ({register_hint})" if register_hint else "") + "\n"
+        "\n[결 참고 — 진단과 무관한 분야의 예. 낱말을 그대로 쓰지 말 것] " + _frame_example(persona_name, frame) + "\n"
+        + ("\n한 문장입니다: 앞 절(무엇에 관한 것인지) + 쉼표 + 그런 일이 있었는지 묻는 질문.\n" if one_sentence else
+           "\n순서가 중요합니다: 첫 문장은 물음표 없는 평서문(무엇을 보는지), 그 다음 문장이 질문입니다. 질문으로 시작하면 실패입니다.\n")
+        + "\n출력: 문장만. 따옴표·머리말·설명 없이."
     )
     mode = "llm"
     prompt = base
@@ -186,12 +212,17 @@ async def render_opener(
             logger.warning("여는 문장 렌더링 실패 → 사전 폴백: %s", e)
             return fallback_question, "fallback"
         text = re.sub(r"\s*\n+\s*", " ", (out or "").strip().strip('"“”'))
+        text = _areg_r(persona_name, text, scope="strict")[0]          # (P10-4) 여는 문장은 코치 어미 강제 — 표로 고칠 수 있는 꼴은 여기서
         ok, why = opener_shape_ok(text)
+        if ok and _rv_r(persona_name, text, scope="strict"):
+            ok, why = False, "register"
         if ok:
             return text, mode
         logger.info("여는 문장 형식 불합격(%s) → %s: %r", why, "재생성" if attempt == 0 else "사전 폴백", text[:90])
         mode = "llm_regen"
-        prompt = base + (f"\n\n🚨 방금 출력은 형식이 어긋났습니다({why}). 첫 문장 = 물음표 없는 평서문(이 영역에서 무엇을 보는지), "
-                         "둘째 문장 = 그런 일이 있었는지 묻는 질문. 이 순서로 두 문장만 다시 쓰세요.")   # p4b: 2/2 가 질문부터 시작(no_why)
+        prompt = base + (f"\n\n🚨 방금 출력은 형식이 어긋났습니다({why}). "
+                         + ("앞 절 + 쉼표 + 그런 일이 있었는지 묻는 질문, 한 문장으로만 다시 쓰세요." if one_sentence else
+                            "첫 문장 = 물음표 없는 평서문(이 영역에서 무엇을 보는지), 둘째 문장 = 그런 일이 있었는지 묻는 질문. 이 순서로 두 문장만 다시 쓰세요.")
+                         + f" 말투는 {_rh_r(persona_name)}")   # p4b: 2/2 가 질문부터 시작(no_why)
     return fallback_question, "fallback"
 

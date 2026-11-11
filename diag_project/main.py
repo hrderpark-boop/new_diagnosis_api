@@ -110,6 +110,18 @@ async def on_startup():
         import asyncio as _aio
         from diag_project.services.ops_monitor import synthetic_loop
         _aio.get_event_loop().create_task(synthetic_loop())
+    # (2026-11-11 P10-1) 누설 사전 예열 — 사전은 프로세스당 한 번 소스에서 뽑는데(로컬 1.9초, 이벤트 루프를 막는다) 종전에는 기동 뒤 첫 LLM 턴이
+    #   그 값을 치렀다. 세션의 첫 LLM 턴은 스몰톡 되물음이라 배포 직후 첫 세션의 스몰톡이 느렸다. 기동 때 별도 스레드에서 미리 만든다.
+    try:
+        import asyncio as _aio_w
+
+        def _warm_lexicon():
+            from diag_project.services.leak_lexicon import guard_lexicon
+            guard_lexicon()
+
+        _aio_w.get_event_loop().run_in_executor(None, _warm_lexicon)
+    except Exception as _e_w:   # noqa: BLE001 — 예열 실패가 기동을 막지 않게
+        logger.warning("누설 사전 예열 실패(첫 턴에서 만든다): %s", _e_w)
     # 🧭 재발 방지: 어느 대화 흐름으로 뜨는지 기동 시 명시 출력.
     #   (박기진 사고: USE_PHASE3A 오파싱/오설정이 조용히 레거시로 새는 것을 막는다.)
     import os as _os

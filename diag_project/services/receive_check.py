@@ -145,6 +145,41 @@ def quote_phrase(user_text: str | None) -> str | None:
 
 
 
+QUOTE_RECEIVE_MAX = 42
+_CLAUSE_CUT_RE = re.compile(r"(,\s|고\s|며\s|서\s|는데\s|지만\s|니까\s)")
+
+
+def quote_receive(user_text: str | None) -> str:
+    """(2026-11-11 P10-5) 받기 폴백 1문장 — 리더가 방금 한 말의 마지막 절을 그대로 받는다("'분담표를 다시 짰습니다'라고 하셨군요.").
+    '흥미로운 지점이에요' 처럼 어느 답에나 붙는 고정 문구는 쓰지 않는다. 받을 절(3어절 이상)이 없으면 빈 문자열 — 호출자는 받기 없이 내보낸다."""
+    from diag_project.services.bei_engine import is_no_case_text
+    from diag_project.services.output_guard import strip_leading_conjunction
+    ut = re.sub(r"\s+", " ", (user_text or "").strip())
+    if not ut or is_no_case_text(ut):
+        return ""
+    cands = [strip_leading_conjunction(x.strip()).strip(" .!?…~\"'“”‘’") for x in split_sentences(ut) if x.strip() and not x.strip().endswith("?")]
+    cands = [c for c in cands if len(c.split()) >= 3]
+    if not cands:
+        return ""
+    t = cands[-1]
+    if len(t) > QUOTE_RECEIVE_MAX:
+        cuts = [m.end() for m in _CLAUSE_CUT_RE.finditer(t)]
+        tail = next((t[c:].strip() for c in cuts if len(t) - c <= QUOTE_RECEIVE_MAX and len(t[c:].split()) >= 3), "")
+        if not tail:
+            return ""
+        t = tail
+    t = re.sub(r"['‘’\"“”]", "", t).strip()            # 리더 말 안의 따옴표는 뗀다 — 겉 따옴표와 겹친다
+    ch = t[-1]
+    rago = "이라고" if ("가" <= ch <= "힣" and (ord(ch) - 0xAC00) % 28) else "라고"
+    return f"'{t}'{rago} 하셨군요."
+
+
+def receive_has_content(sentence: str | None, user_text: str | None) -> bool:
+    """받는 문장이 리더 직전 답의 낱말을 하나라도 담고 있는가."""
+    body = _compact(sentence or "")
+    return any(_compact(n) in body for n in leader_nouns(user_text))
+
+
 def splice_receive(reply: str, new_receive: str, cap: int = 1, keep_fixed: list[str] | None = None) -> str:
     """본문의 되받기(첫 질문 앞 평서문)를 new_receive 의 평서문(최대 cap)으로 바꾼다. 질문부는 그대로.
     keep_fixed 에 있는 고정 문장(슬롯 응원·관찰·전환 다리)이 되받기 자리에 있었으면 새 되받기 뒤에 보존한다."""

@@ -93,6 +93,20 @@ def is_consent(text: str | None) -> bool:
     return bool(t) and bool(_CONSENT_OPENER_RE.match(t))
 
 
+# (2026-11-11 P10-1) 스몰톡 답에 받을 내용이 없는가 — 10자 이하이거나 '그냥 그래요'·'별로요' 류. 이런 답은 LLM 없이 고정 받기 + 예비 되물음으로 간다.
+SMALLTALK_SHORT_CHARS = 10
+_SMALLTALK_FLAT_RE = re.compile(r"(그냥\s*(그래|그렇|그랬|있|지내|보내)|그저\s*그래|별로(요|예요|였|네요)?|그럭저럭|쏘쏘|보통(이에요|이죠|입니다|이었|이요)|평소(랑|와|처럼)\s*(비슷|같)|"
+                                r"딱히|모르겠|특별한\s*(건|것|일)\s*없|별일\s*없|뭐\s*그냥|그렇죠\s*뭐|늘\s*똑같|똑같(아요|죠|습니다))")
+
+
+def is_contentless_smalltalk(text: str | None) -> bool:
+    t = (text or "").strip()
+    core = re.sub(r"[\s.,!?~…ㅎㅋ^]+", "", t)
+    if len(core) <= SMALLTALK_SHORT_CHARS:
+        return True
+    return len(core) <= 24 and bool(_SMALLTALK_FLAT_RE.search(t))
+
+
 def is_pause_continue_phrase(text: str | None) -> bool:
     return bool(_PAUSE_CONTINUE_RE.search((text or "").strip()))
 

@@ -10,6 +10,11 @@
 (2026-11-10 P9 승인 조건 1) 어미 강제는 **질문 문장과 고정 문장**에만 건다. 받는 문장(되받기)은 Jessica·Daniel 도 '~군요/~네요/~셨군요'를 쓴다 —
 금지는 해요체 질문('~어요?')뿐. scope="questions" 는 질문 문장(+ fixed 로 넘긴 고정 문장)만 보고, scope="all" 은 시스템이 자리를 정한 문장
 (여는 문장·범위 문장·첫 인사·안내 본문)에 쓴다.
+
+(2026-11-11 P10-4) scope="strict" — 여는 문장·범위 문장·다리처럼 **코치가 자리를 정해 쓰는 문장**은 코치 어미를 강제한다. 받는 문장만 자유.
+  해요체 코치(Ella·Olivia·Michael): 평서문이 '~습니다/~ㅂ니다/~십시오'로 끝나도 섞임(11/11 운영 Olivia: 여는 문장 '…다릅니다', '…이야기입니다').
+  합쇼체 코치(Jessica·Daniel): '~군요/~네요' 면제 없이 '~습니다/~습니까'만.
+  "all" 은 종전대로 — 공용 안내 본문(합쇼체·해요체가 섞인 템플릿)을 해요체 코치에게서 건드리지 않기 위해 strict 를 따로 둔다.
 """
 from __future__ import annotations
 
@@ -78,6 +83,7 @@ def register_violations(persona_name: str | None, text: str | None, *, scope: st
     if reg == "mixed":
         return out
     fixed_n = {_norm(f) for f in (fixed or []) if f}
+    strict = scope == "strict"
     for s in split_sentences(text or ""):
         s = s.strip()
         if not s:
@@ -93,7 +99,8 @@ def register_violations(persona_name: str | None, text: str | None, *, scope: st
             if bad and k == "Daniel" and _DANIEL_OK_RE.search(s) and not _POLITE_MID_RE.search(s):
                 bad = False
             # (승인 조건 1) '~군요/~네요'로 끝나는 평서문(받는 문장)은 합쇼체 코치에게도 허용 — 문장 가운데의 '~군요,' 연결도 그대로 둔다
-            if bad and _RECV_OK_RE.search(s) and not s.rstrip().endswith("?"):
+            #   (P10-4) strict(여는 문장·범위 문장·다리)에서는 면제하지 않는다
+            if bad and not strict and _RECV_OK_RE.search(s) and not s.rstrip().endswith("?"):
                 bad = False
             if bad and reg == "terse" and _LUCAS_OK_RE.search(s) and not _POLITE_MID_RE.search(s):
                 bad = False
@@ -102,7 +109,32 @@ def register_violations(persona_name: str | None, text: str | None, *, scope: st
         else:
             if _FORMAL_Q_RE.search(core + ("?" if s.rstrip().endswith("?") else "")) and s.rstrip().endswith("?"):
                 out.append(s)
+            elif strict and is_formal_statement(s):
+                out.append(s)
     return out
+
+
+def is_formal_statement(sentence: str | None) -> bool:
+    """평서문이 합쇼체('~습니다/~ㅂ니다/~십시오')로 끝나는가 — '니다' 앞 글자에 ㅂ 받침이 있거나 '습니다', 또는 '~시오'."""
+    body = (sentence or "").strip().rstrip(".?!…~\"'”’ ")
+    if (sentence or "").rstrip().endswith("?"):
+        return False
+    if body.endswith(("십시오", "시오")):
+        return True
+    if not body.endswith("니다") or len(body) < 3:
+        return False
+    ch = body[-3]
+    return "가" <= ch <= "힣" and (ord(ch) - 0xAC00) % 28 == 17
+
+
+def register_hint(persona_name: str | None) -> str:
+    """LLM 집중 호출(여는 문장·슬롯·받기)에 넘기는 말투 지시 한 줄."""
+    reg = register_of(persona_name)
+    if reg == "formal":
+        return "합쇼체 — 문장은 '~습니다', 질문은 '~습니까?'로 끝낸다. '~요'로 끝내지 않는다."
+    if reg == "mixed":
+        return "짧은 단문 존댓말 — 군말·호칭 없이."
+    return "해요체 — 문장은 '~요', 질문은 '~요?'로 끝낸다. '~습니다/~습니까'로 끝내지 않는다."
 
 
 def _has_batchim(ch: str) -> bool:
@@ -174,10 +206,81 @@ def _formalize_sentence(s: str) -> str:
     return t
 
 
+# (2026-11-11 P10-4) 합쇼체 평서문 → 해요체. 아는 꼴(표) → 불규칙 예외 → 규칙(모음 어간 ㅂ니다·받침 어간 습니다) 순서. 모르는 꼴은 그대로 둔다(호출자 폴백).
+_TO_POLITE_STMT: list[tuple[str, str]] = [
+    (r"려고 합니다", "려고 해요"), (r"려 합니다", "려고 해요"),
+    (r"보겠습니다", "볼게요"), (r"하겠습니다", "할게요"), (r"드리겠습니다", "드릴게요"), (r"가겠습니다", "갈게요"), (r"듣겠습니다", "들을게요"),
+    (r"여쭙겠습니다", "여쭤볼게요"), (r"묻겠습니다", "물어볼게요"), (r"두겠습니다", "둘게요"),
+    (r"것입니다", "거예요"), (r"겁니다", "거예요"), (r"아닙니다", "아니에요"),
+    (r"싶습니다", "싶어요"), (r"있습니다", "있어요"), (r"없습니다", "없어요"), (r"같습니다", "같아요"),
+    (r"(았|었|였|했|셨|겠)습니다", r"\1어요"),
+    (r"다릅니다", "달라요"), (r"합니다", "해요"), (r"됩니다", "돼요"), (r"드립니다", "드려요"), (r"십니다", "세요"),
+    (r"주십시오", "주세요"), (r"하십시오", "하세요"), (r"십시오", "세요"),
+]
+_POLITE_IRREGULAR: dict[str, str] = {
+    "만듭니다": "만들어요", "압니다": "알아요", "엽니다": "열어요", "늡니다": "늘어요", "듭니다": "들어요", "이끕니다": "이끌어요", "끕니다": "끌어요",
+    "풉니다": "풀어요", "따릅니다": "따라요", "듣습니다": "들어요", "묻습니다": "물어요", "걷습니다": "걸어요", "깨닫습니다": "깨달아요",
+    "그렇습니다": "그래요", "이렇습니다": "이래요", "어떻습니다": "어때요", "낫습니다": "나아요", "짓습니다": "지어요", "잇습니다": "이어요",
+    "돕습니다": "도와요", "곱습니다": "고와요",
+    # '~이다' 로 끝나는 동사(명사+입니다 와 꼴이 같다) — 보이다·줄이다·높이다 …
+    "보입니다": "보여요", "줄입니다": "줄여요", "높입니다": "높여요", "붙입니다": "붙여요", "움직입니다": "움직여요", "기울입니다": "기울여요",
+    "들입니다": "들여요", "쓰입니다": "쓰여요", "놓입니다": "놓여요", "섞입니다": "섞여요", "쌓입니다": "쌓여요", "모입니다": "모여요",
+}
+_REGULAR_B_STEMS = set("잡입좁뽑씹접집업")
+
+
+def _jamo(ch: str) -> tuple[int, int, int]:
+    code = ord(ch) - 0xAC00
+    return code // 588, (code // 28) % 21, code % 28
+
+
+def _compose(cho: int, jung: int, jong: int = 0) -> str:
+    return chr(0xAC00 + cho * 588 + jung * 28 + jong)
+
+
+def _polite_stmt(body: str) -> str | None:
+    """합쇼체 평서문 몸통(문장부호 제외) → 해요체. 못 바꾸면 None."""
+    for pat, rep in _TO_POLITE_STMT:
+        new = re.sub(pat + "$", rep, body)
+        if new != body:
+            return new
+    for k_, v_ in sorted(_POLITE_IRREGULAR.items(), key=lambda kv: -len(kv[0])):
+        if body.endswith(k_):
+            return body[: -len(k_)] + v_
+    if body.endswith("입니다") and len(body) >= 4 and "가" <= body[-4] <= "힣":
+        return body[:-3] + ("이에요" if _has_batchim(body[-4]) else "예요")
+    if body.endswith("습니다") and len(body) >= 4 and "가" <= body[-4] <= "힣":
+        stem = body[:-3]
+        cho, jung, jong = _jamo(stem[-1])
+        if jong == 17 and stem[-1] not in _REGULAR_B_STEMS:           # ㅂ 불규칙: 어렵습니다 → 어려워요
+            return stem[:-1] + _compose(cho, jung) + "워요"
+        return stem + ("아요" if jung in (0, 2, 8) else "어요")          # 좋습니다 → 좋아요, 먹습니다 → 먹어요
+    if body.endswith("니다") and len(body) >= 3 and "가" <= body[-3] <= "힣":
+        cho, jung, jong = _jamo(body[-3])
+        if jong != 17:
+            return None
+        head = body[:-3]
+        if jung == 18 and cho == 5 and head and "가" <= head[-1] <= "힣" and _jamo(head[-1])[2] == 0:   # 르 불규칙: 고릅니다 → 골라요
+            pc, pj, _ = _jamo(head[-1])
+            return head[:-1] + _compose(pc, pj, 8) + ("라요" if pj in (0, 8) else "러요")
+        if jung in (0, 1, 4, 5, 6):                                    # 가/내/서/세/펴 + 요
+            return head + _compose(cho, jung) + "요"
+        nxt = {8: 9, 13: 14, 18: 4, 20: 6}.get(jung)                   # ㅗ→ㅘ, ㅜ→ㅝ, ㅡ→ㅓ, ㅣ→ㅕ
+        if nxt is not None:
+            return head + _compose(cho, nxt) + "요"
+        if jung == 16:                                                 # 쉬 + 어요
+            return head + _compose(cho, jung) + "어요"
+    return None
+
+
 def _politen_sentence(s: str) -> str:
     t = s.strip()
     if not t.endswith("?"):
-        return s
+        m = re.search(_TAIL, t)
+        punct = m.group("p") if m else ""
+        body = t[: len(t) - len(punct)] if punct else t
+        new = _polite_stmt(body) if is_formal_statement(t) else None
+        return (new + (punct or ".")) if new else s
     for pat, rep in _TO_POLITE_Q:
         new = re.sub(pat, rep, t)
         if new != t:

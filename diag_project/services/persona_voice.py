@@ -7,7 +7,7 @@ LLM 이 아니라 규칙이다. 질문의 내용(묻는 대상·시점·행동)�
   Daniel  격식 "~시겠습니까?"
   Michael '직접' 행동 강조(2026-11-05 P4-2: "좋습니다," 도입은 평가 말투로 전면 금지 — michael_lead_guard 는 떼기만 한다)
   Lucas   최단문, 도입구·호칭 없음
-또한 페르소나별 탐침 선호(레이어3 지시)와 되받기 마무리 어구 풀 5개(서로 안 겹침)를 둔다.
+또한 페르소나별 탐침 선호(레이어3 지시)를 둔다.
 측정 원칙(묻는 순서·하위역량·예산)은 백엔드가 정하고 여기서는 건드리지 않는다.
 """
 from __future__ import annotations
@@ -16,21 +16,16 @@ import re
 
 from diag_project.services.intro_messages import persona_key
 
-# ── 되받기 마무리 어구 풀(5개씩, 서로 안 겹침, 금지 어구 아님) ──────────────────────
-PERSONA_TAILS: dict[str, list[str]] = {
-    "Ella":    ["그러셨군요.", "그렇게 이어졌군요.", "그 대목이 눈에 들어와요.", "그 선택이 보여요.", "그 흐름이 잡혀요."],
-    "Jessica": ["확인했습니다.", "정리됩니다.", "기록해 두겠습니다.", "그 부분은 분명합니다.", "핵심이 보입니다."],
-    "Olivia":  ["흥미로운 지점이에요.", "다른 면이 보여요.", "거기서 갈래가 났군요.", "뜻밖의 대목이에요.", "그 선택이 궤도를 바꿨군요."],
-    "Daniel":  ["그러셨습니까.", "무게가 있는 결정이었겠습니다.", "경험이 묻어나는 대목입니다.", "그렇게 풀어가셨군요.", "그 판단이 중심을 잡았겠습니다."],
-    "Michael": ["그렇게 움직이셨군요.", "그게 움직임이네요.", "바로 그 행동이에요.", "힘이 실린 결정이네요.", "속도가 붙었군요."],   # (P4-2) '좋습니다' 삭제
-    "Lucas":   ["알겠습니다.", "그렇군요.", "됐습니다.", "그 지점이군요.", "넘어가죠."],
-}
+# (2026-11-11 P10-5) 되받기 마무리 어구 풀(PERSONA_TAILS — '흥미로운 지점이에요', '그 선택이 궤도를 바꿨군요' …)은 전수 삭제했다.
+#   어느 답에나 붙는 받기 문구였다. 받기는 직전 답의 내용을 담는다 — 폴백은 receive_check.quote_receive(리더 절 인용).
 
 # ── 탐침 선호(레이어3 지시 문장) ──────────────────────────────────────────────────
 PROBE_PREFERENCE: dict[str, str] = {
     "Ella":    "되받기는 관찰 문장 2문장까지 허용(리더가 쓴 명사만). 탐침은 장면·행동을 차분히 따라간다.",
     "Jessica": "되받기는 1문장. 탐침은 숫자·기간·횟수·비율을 먼저 묻는다(언제·며칠·몇 명·몇 %). 완곡어('혹시', '조금')는 쓰지 않는다.",
-    "Olivia":  "되받기는 1~2문장. 챕터에 한 번은 대조 탐침('반대로 했다면 어땠을까요?', '안 했다면 무엇이 달라졌을까요?')을 쓴다 — 이미 썼으면 쓰지 않는다. 대조 질문일 때만 '거꾸로 보면요,' 같은 도입구를 쓰고, 다른 질문 앞에는 붙이지 않는다.",
+    # (2026-11-11 P10-2) 대조(가정) 질문은 본 호출이 쓰지 않는다 — 사례 내용을 넣은 한 문장을 slot_render 가 따로 쓴다. 본 호출에 맡기면
+    #   '반대로 했다면 어땠을까요?' 처럼 어느 사례에나 붙는 꼴이 나오고, 턴 형식 검사(가정형)와도 부딪혔다.
+    "Olivia":  "되받기는 1~2문장. 탐침은 리더가 고른 쪽과 버린 쪽, 그 자리에 있던 다른 사람이 보인 반응을 차례로 따라간다. 가정 질문('~했다면')은 쓰지 않는다.",
     "Daniel":  "되받기는 관찰 문장 2문장까지 허용. 격식 어미('~하셨습니까', '~시겠습니까'). 탐침은 결정의 기준과 책임을 묻는다.",
     "Michael": "되받기는 1~2문장, 짧고 힘 있게. 탐침은 리더가 직접 한 행동을 먼저 묻는다('직접 뭘 하셨어요'). '좋습니다'·'좋은 선택' 같은 평가 리드는 쓰지 않는다 — 사실을 되짚는 문장으로 시작한다.",
     "Lucas":   "되받기는 1문장, 최단문. 도입구·'리더님' 호칭 없이 바로 묻는다. 숫자·기간·결과를 먼저 묻는다.",
@@ -48,25 +43,19 @@ def is_contrast_question(text: str | None) -> bool:
     return bool(_CONTRAST_RE.search(body))
 
 
-def tails_for(persona_name: str | None) -> list[str]:
-    return list(PERSONA_TAILS.get(persona_key(persona_name), PERSONA_TAILS["Ella"]))
-
-
 def preference_for(persona_name: str | None, *, contrast_used: bool = False) -> str:
     k = persona_key(persona_name)
     txt = PROBE_PREFERENCE.get(k, PROBE_PREFERENCE["Ella"])
-    if k == "Olivia" and contrast_used:
-        txt = txt.replace("챕터에 한 번은 대조 탐침('반대로 했다면 어땠을까요?', '안 했다면 무엇이 달라졌을까요?')을 쓴다 — 이미 썼으면 쓰지 않는다.",
-                          "대조 탐침은 이 챕터에서 이미 썼으니 다시 쓰지 않는다.")
-    return txt
+    return txt   # (P10-2) contrast_used 는 호환용 인자 — 대조 질문은 slot_render 가 챕터당 1회 넣는다
 
 
 def persona_guide_block(persona_name: str | None, *, contrast_used: bool = False) -> str:
-    """레이어3 페르소나 블록 뒤에 붙는 선호·마무리 어구 지시."""
+    """레이어3 페르소나 블록 뒤에 붙는 탐침 선호 지시.
+    (2026-11-11 P10-5) 마무리 어구를 목록에서 고르라는 지시와 어구 목록을 삭제 — 11/11 운영 세션의 고정 받기 문구는 이 지시가 낸 것이었다.
+    (이 docstring 은 누설 사전 소스에 포함되므로 따옴표 인용을 넣지 않는다.)"""
     k = persona_key(persona_name)
-    tails = " / ".join(t.rstrip(".") for t in tails_for(k))
     return (f"[🎭 탐침 선호 — {k}] {preference_for(k, contrast_used=contrast_used)}\n"
-            f"되받기 마무리 어구는 이 중에서 고르되 연속 턴에 같은 것을 쓰지 않는다: {tails}.\n\n")
+            "되받기는 리더가 방금 한 말의 내용(리더가 쓴 낱말)을 담아 쓴다. 내용 없이 어느 답에나 붙일 수 있는 한마디로 받지 않는다.\n\n")
 
 
 # ── 어미 변환 ─────────────────────────────────────────────────────────────────
@@ -128,8 +117,9 @@ _OLIVIA_ENDINGS = [
     (r"어땠어요\?$", "어땠을까요?"), (r"어땠나요\?$", "어땠을까요?"), (r"했어요\?$", "했을까요?"),
     (r"됐어요\?$", "됐을까요?"), (r"에요\?$", "일까요?"), (r"예요\?$", "일까요?"), (r"어요\?$", "을까요?"),
     (r"나요\?$", "을까요?"), (r"신가요\?$", "실까요?"), (r"습니까\?$", "을까요?"),
-    # 사전 문장이 이미 '~을까요?' 면 '~을지요?' 로(Ella 기본형과 같은 문장이 나가지 않게)
-    (r"있으실까요\?$", "있으실지요?"), (r"었을까요\?$", "었을지요?"), (r"을까요\?$", "을지요?"),
+    # 사전 문장이 이미 '~을까요?' 면 '~나요?' 로(Ella 기본형과 같은 문장이 나가지 않게).
+    #   (2026-11-11 P10-4) 종전 '~을지요?'('어떤 일이었을지요?')는 Olivia 의 해요체 결과 맞지 않아 폐기.
+    (r"있으실까요\?$", "있으세요?"), (r"어떤 일이었을까요\?$", "어떤 일이었는지 들려주실래요?"), (r"었을까요\?$", "었나요?"), (r"을까요\?$", "나요?"),
 ]
 # (2026-11-04 P3-4 2차) Michael 은 요청형 — 질문을 '들려주세요' 청유로 바꾼다. 사용자 결정: 구어체 '~어요?'는 Ella 와 겹쳐 폐기.
 #   구조 규칙(_michael_request): 존재 질문 '…하신 적/일, 최근에 있으셨어요?' → '최근에 …하셨던 일, 하나만 들려주세요.'
@@ -318,19 +308,17 @@ def restore_slot_sentence(reply: str, persona: str | None, slot_text: str | None
     # 비교 단위는 슬롯 문장의 첫 문장 — Daniel 관찰은 2문장('… 되지요. 저도 그랬습니다.')이라 리드 1문장 상한이 뒷문장을 자른다(p2c 25턴 중 14).
     _key = (split_sentences(slot_text) or [slot_text])[0]
     if persona == "Michael":
-        from diag_project.services.intro_messages import PERSONA_SLOT_VARIANTS
+        # (2026-11-04 P3-2 → 2026-11-11 P10-2) 응원 턴(슬롯 종류 "Michael"): [되받기] + 응원 문장(사례 내용을 넣어 쓴 것) + 질문.
+        #   되받기가 없으면 응원만 넣지 않는다. 실행 의지 질문 턴은 슬롯 종류가 "Michael_q" 라 아래 일반 경로(되받기 1문장 + 질문).
         _ld = slot_text
-        if _n(slot_text) in {_n(x) for x in PERSONA_SLOT_VARIANTS["Michael"]}:   # (P4-1) 응원 5종 어느 것이든
-            # (2026-11-04 P3-2) 응원 턴: [리더 결정 요약(LLM 되받기)] + 응원 문장 + 질문. 되받기가 없으면 빈 응원은 넣지 않는다.
-            if _n(_ld) in _n(reply):
-                return reply, False
-            sents = [x for x in split_sentences(reply) if x.strip()]
-            stmts = [x for x in sents if not is_question_sentence(x)]
-            if not stmts:
-                return reply, False
-            i = sents.index(stmts[0])
-            return " ".join(sents[: i + 1] + [_ld] + sents[i + 1:]).strip(), True
-        # 실행 의지 질문 턴(Michael_q)은 아래 일반 경로(되받기 1문장 + 질문)
+        if _n(_ld) in _n(reply):
+            return reply, False
+        sents = [x for x in split_sentences(reply) if x.strip()]
+        stmts = [x for x in sents if not is_question_sentence(x)]
+        if not stmts:
+            return reply, False
+        i = sents.index(stmts[0])
+        return " ".join(sents[: i + 1] + [_ld] + sents[i + 1:]).strip(), True
     if _n(_key) in _n(reply):
         return reply, False
     if persona == "Olivia" and _CONTRAST_RE.search(reply):

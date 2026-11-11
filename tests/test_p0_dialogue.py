@@ -308,41 +308,39 @@ def test_indirect_question_with_yeojjwo_bolgeyo_pairs_conditional_followup():
 
 
 def test_restore_slot_sentence_rebuilds_lost_fixed_line():
+    """(2026-11-11 P10-2 로 갱신) 슬롯 문장은 고정 문구가 아니라 사례 내용을 넣어 쓴 렌더본 — 뒤 단계가 지웠을 때 되돌리는 자리 규칙은 그대로."""
     from diag_project.services.persona_voice import restore_slot_sentence
-    from diag_project.services.intro_messages import PERSONA_LINES, DANIEL_OBSERVATIONS
-    mq = PERSONA_LINES["Michael"]["slot_q"]
-    ml = PERSONA_LINES["Michael"]["slot_lead"]
-    # (2026-11-04 P3-2) Michael 응원 턴(slot_text=응원 문장): 8-n 재생성이 응원을 지웠으면 되받기 뒤에 되돌린다
-    out, r = restore_slot_sentence("좋습니다, 참여율을 핵심으로 정하셨군요. 그 조율 자리는 언제쯤이었을까요?", "Michael", ml)
-    assert r and out == f"좋습니다, 참여율을 핵심으로 정하셨군요. {ml} 그 조율 자리는 언제쯤이었을까요?"
+    mq = "다음에 또 일정이 겹치면 참여율부터 무엇을 하시겠어요?"          # 실행 의지 질문(렌더본)
+    ml = "반대가 있는데도 참여율을 핵심으로 정하신 그 선택, 응원해요."     # 응원 문장(렌더본)
+    # Michael 응원 턴(슬롯 종류 "Michael"): 뒤 단계가 응원을 지웠으면 되받기 뒤에 되돌린다
+    out, r = restore_slot_sentence("참여율을 핵심으로 정하셨군요. 그 조율 자리는 언제쯤이었을까요?", "Michael", ml)
+    assert r and out == f"참여율을 핵심으로 정하셨군요. {ml} 그 조율 자리는 언제쯤이었을까요?"
     # 남아 있으면 손대지 않는다(띄어쓰기 차이 무시)
     out, r = restore_slot_sentence(f"참여율을 핵심으로 정하셨군요. {ml.replace(' ', '  ')} 그 뒤에는요?", "Michael", ml)
     assert not r
-    # 되받기가 없으면 빈 응원은 넣지 않는다
+    # 되받기가 없으면 응원만 넣지 않는다
     out, r = restore_slot_sentence("그 조율 자리는 언제쯤이었을까요?", "Michael", ml)
     assert not r
-    # 실행 의지 질문 턴(slot_text=고정 질문): 되받기 1문장 + 고정 질문
-    out, r = restore_slot_sentence("좋습니다, 참여율을 핵심으로 정하셨군요. 그 조율 자리는 언제쯤이었을까요?", "Michael", mq)
-    assert r and out == f"좋습니다, 참여율을 핵심으로 정하셨군요. {mq}"
-    out, r = restore_slot_sentence(f"그러셨군요. {mq}", "Michael", mq)
+    # 실행 의지 질문 턴(슬롯 종류 "Michael_q"): 되받기 1문장 + 슬롯 질문
+    out, r = restore_slot_sentence("참여율을 핵심으로 정하셨군요. 그 조율 자리는 언제쯤이었을까요?", "Michael_q", mq)
+    assert r and out == f"참여율을 핵심으로 정하셨군요. {mq}"
+    out, r = restore_slot_sentence(f"그러셨군요. {mq}", "Michael_q", mq)
     assert not r
     # Jessica: 첫 되받기 1문장 + 기준 질문
-    jq = PERSONA_LINES["Jessica"]["slot_q"]
+    jq = "2주로 정하실 때 무엇을 기준으로 삼으셨습니까?"
     out, r = restore_slot_sentence("2주라고 하셨죠. 그렇게 생각하시게 된 계기가 된 일이 하나 있으셨을까요?", "Jessica", jq)
     assert r and out == f"2주라고 하셨죠. {jq}"
-    # Daniel: 관찰 문장을 앞에 되돌리고 나머지는 보존
-    ob = DANIEL_OBSERVATIONS[1]
+    # Daniel: 관찰 문장을 되받기 뒤에 되돌리고 나머지는 보존
+    ob = "두 선임 사이에서 과제를 혼자 정해야 했던 자리, 가볍지 않으셨겠습니다."
     out, r = restore_slot_sentence("알겠습니다. 그때 어떤 과제였는지 말씀해 주시겠습니까?", "Daniel", ob)
-    assert r and out == f"알겠습니다. {ob} 그때 어떤 과제였는지 말씀해 주시겠습니까?"   # (P3-2) 관찰은 되받기 뒤
+    assert r and out == f"알겠습니다. {ob} 그때 어떤 과제였는지 말씀해 주시겠습니까?"
     assert restore_slot_sentence("그때 어떤 과제였는지 말씀해 주시겠습니까?", "Daniel", ob)[0].startswith(ob)
-    # 리드 1문장 상한이 관찰의 뒷문장('저도 그랬습니다.')을 잘라도 첫 문장이 남았으면 복원하지 않는다(중복 방지)
-    out, r = restore_slot_sentence(f"{ob.split('. ')[0]}. 그 뒤에는 어떻게 되었습니까?", "Daniel", ob)
+    # Olivia: LLM 이 다른 대조 질문을 남겼으면 그대로, 없으면 되받기 1문장 + 슬롯 질문
+    oq = "시범 운영 없이 바로 전면 도입하셨다면 팀원들은 어떻게 움직였을까요?"
+    out, r = restore_slot_sentence("그때 안 했다면 무엇이 달라졌을까요?", "Olivia", oq)
     assert not r
-    # Olivia: LLM 이 다른 대조 질문을 남겼으면 그대로
-    out, r = restore_slot_sentence("그 팀원 입장에서는 어떤 장면이었을까요?", "Olivia", PERSONA_LINES["Olivia"]["slot_q"])
-    assert not r
-    out, r = restore_slot_sentence("네, 그러셨군요. 그 다음은 어떻게 되었나요?", "Olivia", PERSONA_LINES["Olivia"]["slot_q"])
-    assert r and out.endswith(PERSONA_LINES["Olivia"]["slot_q"])
+    out, r = restore_slot_sentence("네, 그러셨군요. 그 다음은 어떻게 되었나요?", "Olivia", oq)
+    assert r and out.endswith(oq)
 
 
 
@@ -351,7 +349,7 @@ def test_quote_josa_for_numbers_and_slot_wording():
     from diag_project.services.intro_messages import PERSONA_LINES
     assert quote_josa("8%") == "라고" and quote_josa("3명") == "이라고" and quote_josa("48시간") == "이라고"
     assert quote_josa("2배") == "라고" and quote_josa("10건") == "이라고" and quote_josa("5회") == "라고" and quote_josa("13") == "이라고" and quote_josa("12") == "라고"
-    assert PERSONA_LINES["Michael"]["slot_q"] == "다음에 비슷한 상황이 오면 어떻게 하실 생각이세요?"
+    assert all("slot_q" not in v and "slot_lead" not in v for v in PERSONA_LINES.values())   # (P10-2) 고정 슬롯 문장 키 삭제
 
 
 def test_indirect_question_with_want_to_confirm_is_question():

@@ -326,15 +326,40 @@ _COMPOUND_Q_RE = re.compile(r"(는지|은지|인지|을지|였는지|었는지|�
 _LEAD_IN_Q_RE = re.compile(r"(이어서|이어|대해|관련해|관해|연결해서|연결해)\s*(여쭙니다|여쭤보겠습니다|여쭤볼게요|묻겠습니다|질문드리겠습니다|질문드립니다|여쭙겠습니다)[.…]?$")
 
 
+# (2026-11-11 P10-6) 한 문장에 의문사를 쉼표로 이어 묻는 질문 — "언제, 누구와 그 이야기를 하셨고, 무엇이 달라졌나요?" 는 질문 세 개다.
+#   쉼표로 나뉜 절마다 의문사가 있을 때만 센다('누가 언제 무엇을 했는지'처럼 쉼표 없이 한 절에 든 것은 한 질문).
+_WH_RE = re.compile(r"(언제|어디서|어디에서|어디로|누구와|누구랑|누구에게|누구한테|누가|누구를|무엇을|무엇이|무엇부터|뭘|뭐가|뭐라고|왜|어떻게|어떤\s*[가-힣]+|몇\s*[가-힣]+|얼마나)")
+
+
+def wh_clause_count(sentence: str | None) -> int:
+    """질문 문장에서 의문사를 쉼표로 늘어놓은 절의 수. 1 이하면 한 질문.
+    절이 셋 이상이면 그 수, 둘이면 한쪽이 의문사만 덜렁 있는 나열 꼴('언제, 누구와 …')일 때만 2 —
+    '있었다면 언제였고, 어떤 장면이었나요?' 처럼 한 장면을 이어 묻는 두 절은 한 질문으로 둔다."""
+    s_ = (sentence or "").strip()
+    if not s_ or not is_question(s_):
+        return 0
+    body = re.sub(r"['‘“\"][^'’”\"\n]{0,80}['’”\"]", "", s_)        # 따옴표 안(리더 인용)은 세지 않는다
+    wh = [c.strip() for c in re.split(r"[,，]", body) if _WH_RE.search(c)]
+    if len(wh) >= 3:
+        return len(wh)
+    # (P10 p10a) 간접 질문 절 두 개 — "두 분이 어떻게 움직였는지, 가장 먼저 눈에 띈 변화가 무엇이었는지 들려주실 수 있을까요?"
+    if len(wh) == 2 and all(re.search(r"(는지|은지|인지|을지|ㄴ지)(\s|$)", c) for c in wh):
+        return 2
+    if len(wh) == 2 and any(len(re.sub(r"^(그때|그리고|또)\s*", "", c).split()) <= 1 for c in wh[:-1]):
+        return 2
+    return min(len(wh), 1)
+
+
 def count_question_markers(text: str) -> int:
-    """질문 표지 수 = 질문 문장(간접 질문·요청형 포함) 수 + 한 문장 안의 복합 질문 절. 2 이상이면 '두 질문'."""
+    """질문 표지 수 = 질문 문장(간접 질문·요청형 포함) 수 + 한 문장 안의 복합 질문 절·의문사 나열 절. 2 이상이면 '두 질문'."""
     n = 0
     for s_ in split_sentences(text or ""):
         s_ = s_.strip()
         if not s_ or _LEAD_IN_Q_RE.search(s_):
             continue
         if is_question(s_):
-            n += 1 + len(_COMPOUND_Q_RE.findall(s_))
+            extra = len(_COMPOUND_Q_RE.findall(s_))
+            n += 1 + max(extra, wh_clause_count(s_) - 1, 0)
     return n
 
 
@@ -357,6 +382,13 @@ def split_compound_question(text: str) -> tuple[str, int]:
             parts = re.split(r"(?:는지|은지|인지|을지|였는지|었는지|했는지)[,，]\s*(?:그리고|또는|아니면|또)?\s*", s0)
             if len(parts) >= 2 and parts[-1].strip():      # '설득하셨는지, 속도를 조절하셨는지, 아니면 ~?' → 마지막 절만
                 s0 = parts[-1].strip()
+                n += 1
+        elif s0 and wh_clause_count(s0) >= 2:
+            # (P10-6) 의문사 나열 — 의문사가 든 마지막 쉼표 절만 남긴다("언제, 누구와 …하셨고, 무엇이 달라졌나요?" → "무엇이 달라졌나요?")
+            clauses = [c.strip() for c in re.split(r"[,，]", s0) if c.strip()]
+            last = next((c for c in reversed(clauses) if _WH_RE.search(c)), "")
+            if last and last != s0:
+                s0 = re.sub(r"^(그리고|또는|또|그래서)\s+", "", last)
                 n += 1
         out.append(s0)
     return " ".join(x for x in out if x), n
@@ -1009,6 +1041,10 @@ def strip_case_numbering(sentence: str) -> str:
 #   답할 수 없는 말이 된다(11/10 운영 Jessica). 평서문 중 금지 꼴은 지우고 받기 1문장(연속 SWEEP 다리가 있으면 2문장)만 남긴다.
 _CLOSE_SIDE_BAN_RE = re.compile(
     r"(여쭙고\s*싶|여쭤보고\s*싶|묻고\s*싶|물어보고\s*싶|궁금"
+    # (2026-11-11 P10-6) "…조금 더 듣고 싶어요." — 요청형 평서문도 닫는 쪽에서는 질문이다(11/11 운영 Olivia: SWEEP 여는 턴 앞에 남았다)
+    r"|(듣고|알고|확인하고|들어\s*보고|여쭤\s*보고)\s*싶"
+    # (P10 p10a) "그럼 이 사례를 조금 더 펼쳐 볼게요." — 받기가 아니라 진행 예고(새 사례를 여는 턴에서는 틀린 말이기도 하다)
+    r"|(사례|이야기|얘기|장면|부분)(를|을)?\s*(조금\s*|좀\s*)?더\s*(펼쳐|들어|이어|짚어|파고|들여다)|(짚고|묻고)\s*싶은\s*(건|것은|게)"
     # (p9a) 평서문 꼴의 요청 — "…어떤 표정이었는지 기억나는 대로 짚어 주시면 됩니다."
     r"|(짚어|말씀해|들려|떠올려|얘기해|이야기해|적어|알려)\s*주(시면|셔도|시기)\s*(됩니다|돼요|좋겠|바랍니다)|기억나는\s*대로|(는지|은지|인지|을지)[,，]?\s[^.?!]*(주시면|주십시오|주세요|바랍니다)"
     r"|하시면\s*좋|해\s*보시면|해\s*보시길|하시길\s*(권|바)|권해\s*드|권합니다|추천(드|합)|필요가\s*있|하셔야\s*(합|해|할)|하는\s*(게|것이)\s*좋"
@@ -1045,6 +1081,7 @@ def clean_close_side(body: str, *, max_statements: int = 1, keep: list[str] | No
 #   겹치지 않고 짧으면(어절 ≤ 5) 대상이 없다고 본다.
 _REF_NOISE_RE = re.compile(r"^(그럼|그러면|그렇다면|혹시|리더님(께서는|은|이|께서)?|그때|그 뒤(에|로)?|그 후(에|로)?|이후(에|로)?)[,\s]*")
 _REF_GENERIC = {"부분", "점", "것", "게", "일", "변화", "반응", "결과", "이유", "기준", "생각", "느낌", "장면", "순간", "말", "말씀", "무엇", "어떤",
+                "이야기", "얘기", "대화", "상황", "분위기", "과정",
                 "어떻게", "달라진", "바뀐", "있었", "있으셨", "궁금", "기억", "떠오르", "들려", "주실", "주시", "그때", "그 뒤", "이후", "가장", "먼저", "혹시"}
 
 
@@ -1055,6 +1092,8 @@ def question_lacks_referent(question: str, context_texts: list[str] | None = Non
     if not q or not is_question(q):
         return False
     core = _REF_NOISE_RE.sub("", q)
+    if _PERSON_RE.search(core):
+        return False                               # (P10-2) '두 분은 뭐라고 하셨어요?' — 사람을 가리키면 대상이 있다
     toks = core.split()
     # (P9 승인 조건 3) 누구의 반응·태도·표정·변화인지가 없으면 길이와 무관하게 대상 없음 — "말이나 표정, 이후 태도 변화 중 기억에 남는 것을 …"
     if _REACTION_RE.search(core) and not _PERSON_RE.search(core) and not re.search(r"['‘’\"“”]", core):
@@ -1094,6 +1133,21 @@ def key_person(user_text: str | None) -> str:
     return found[-1] if found else ""
 
 
+# (2026-11-11 P10-2) 탐침 질문 최소 길이 — 대상·장면 없이 15자 이하인 질문("그때 어떤 이야기가 오갔나요?")
+SHORT_QUESTION_CHARS = 15
+_TALK_RE = re.compile(r"(이야기|얘기|대화|말씀|말이|말을|오갔|나눴|나누셨|주고받)")
+
+
+def is_short_bare_question(question: str | None, context_texts: list[str] | None = None) -> bool:
+    """공백·문장부호를 뺀 길이가 15자 이하이고 무엇에 대해·누구와의 일인지 가리키는 낱말이 없는 질문."""
+    q = (question or "").strip()
+    if not q or not is_question(q):
+        return False
+    if len(re.sub(r"[\s.,!?~'\"“”‘’…·]+", "", q)) > SHORT_QUESTION_CHARS:
+        return False
+    return question_lacks_referent(q, context_texts)
+
+
 def attach_referent(question: str, context_text: str | None) -> str:
     """대상이 없는 질문 앞에 앞 문장(리더 답)의 인물·핵심 명사구를 붙인다 — '말이나 표정, 태도 변화 중 …' → '두 분의 말이나 표정, …',
     '달라진 부분이 …' → ''분담표'와 관련해 달라진 부분이 …'."""
@@ -1101,10 +1155,16 @@ def attach_referent(question: str, context_text: str | None) -> str:
     if _REACTION_RE.search(core0) and not _PERSON_RE.search(core0):
         who = key_person(context_text)
         return f"{who}의 {core0}" if who else f"상대분의 {core0}"
+    if _TALK_RE.search(core0) and not _PERSON_RE.search(core0):
+        who = key_person(context_text)                     # (P10-2) 오간 이야기는 사람과의 일 — 리더 답에 나온 사람을 붙인다
+        if who:
+            lead = "그때 " if re.match(r"^\s*그때", question or "") else ""
+            return f"{lead}{who}{_josa(who, '과', '와')} {core0}"
     np_ = key_noun_phrase(context_text)
     if not np_:
         return question
-    core = _REF_NOISE_RE.sub("", (question or "").strip())
+    # (P10-2) 질문 본문은 그대로 둔다 — 머리의 '그 뒤에는'을 떼면 조사만 남는다('는 어떻게 됐나요?'). 군말(그럼·혹시·호칭)만 뗀다.
+    core = re.sub(r"^(그럼|그러면|그렇다면|혹시|리더님(께서는|은|이|께서)?)[,\s]*", "", (question or "").strip())
     return f"'{np_}'{_josa(np_, '과', '와')} 관련해 {core}"
 
 
@@ -1138,7 +1198,10 @@ def drop_unfinished_tail(text: str | None) -> tuple[str, int]:
 # ── (2026-11-10 P9 p9c) 챕터 종료 요약 — 지시문을 되읊는 문장·해석 문장은 요약이 아니다 ──────────────────────────────
 #   p9c 조직관리 종료 턴: "3번째 재료는 사례가 아니라 보완 답의 중복 문장이라 … 한 문장에 묶었습니다. 재료에 없는 사실은 더하지 않았습니다."
 _SUMMARY_META_RE = re.compile(r"(재료|보완\s*답|문장(에|으로)\s*묶|별도\s*사례|더하지\s*않|중복\s*문장|번째\s*(재료|사례|이야기)는|요약(했|하였|해\s*드렸|하면)|되짚(었|어\s*보))")
-_SUMMARY_INTERP_RE = re.compile(r"((으)?로\s*(보입니다|보여요|읽힙니다|읽혀요|들립니다|들려요)|뜻(이군요|입니다|이에요|으로)|셈(입니다|이에요|이군요)|것\s*같습니다|것\s*같아요)[.!…]*$")
+_SUMMARY_INTERP_RE = re.compile(r"((으)?로\s*(보입니다|보여요|읽힙니다|읽혀요|들립니다|들려요)|뜻(이군요|입니다|이에요|으로)|셈(입니다|이에요|이군요)|것\s*같습니다|것\s*같아요"
+                                # (P10 p10a) 총평 — "…직접 쓰셨다는 점에서, 저희는 리더가 실행의 첫 장면을 스스로 만드는 힘을 봐요."
+                                r"|(힘|강점|리더십|자질|태도|면모|저력)(을|를|이|가)\s*(봐요|봅니다|보여요|보입니다|느껴요|느낍니다|드러나요|드러납니다|엿보여요|엿보입니다))[.!…]*$"
+                                r"|(다는|라는)\s*점에서[,，]?\s*(저희는|저는)")
 
 
 def drop_summary_noise(text: str | None) -> tuple[str, int]:
@@ -1187,9 +1250,18 @@ def rewrite_case_numbers(text: str | None, labels: dict[int, str] | None = None)
 
 
 # ── (2026-11-10 P10) 요청형으로 끝난 받는 문장 — "…조금 더 듣고 싶습니다." 뒤에 질문이 붙으면 한 턴에 두 번 묻는다 ───────────────
+# (2026-11-11 P10-6) 해요체('듣고 싶어요/싶은데요')·'궁금해요'·평서문에 물음표만 붙인 꼴('…궁금해요?', '…듣고 싶어요?')도 요청형이다
 _REQUEST_STMT_RE = re.compile(
-    r"((듣고|알고|여쭙고|여쭤보고|묻고|확인하고)\s*싶(습니다|어요|네요)|들려주(시면|셨으면)\s*(좋겠|합니다|해요)|말씀해\s*주(시면|셨으면)\s*(좋겠|합니다)"
-    r"|(는지|은지|인지|을지)[^.?!]{0,30}(싶습니다|싶어요|바랍니다))[.!…]*$")
+    r"((듣고|알고|여쭙고|여쭤보고|묻고|확인하고|들어\s*보고)\s*싶(습니다|어요|네요|은데요|어서요)|들려주(시면|셨으면)\s*(좋겠|합니다|해요)"
+    r"|말씀해\s*주(시면|셨으면)\s*(좋겠|합니다)|궁금(해요|합니다|하네요|한데요|해지네요|해집니다|해서요)"
+    r"|(는지|은지|인지|을지)[^.?!]{0,30}(싶습니다|싶어요|바랍니다)"
+    r"|(는지|은지|인지|을지)(예요|이에요|입니다))[.!…?]*$")   # (P10 p10a) "한 가지 짚고 싶은 건, … 어떤 과정으로 자리 잡았는지예요."
+
+
+def is_statement_with_question_mark(sentence: str | None) -> bool:
+    """평서문 어미에 물음표만 붙은 문장인가 — '…궁금해요?', '…듣고 싶어요?'. 묻는 꼴이 아니라 요청형으로 다룬다."""
+    s_ = (sentence or "").strip()
+    return s_.endswith("?") and bool(_REQUEST_STMT_RE.search(s_))
 
 
 def is_request_statement(sentence: str | None) -> bool:
@@ -1197,13 +1269,15 @@ def is_request_statement(sentence: str | None) -> bool:
     return bool(_REQUEST_STMT_RE.search((sentence or "").strip()))
 
 
-def drop_request_statements(text: str | None) -> tuple[str, int]:
-    """마지막 질문 앞에 있는 요청형 평서문을 지운다(한 턴에 묻는 것은 하나). 질문이 없으면 그대로 둔다 — 그 요청이 이 턴의 질문이다. (결과, 지운 수)."""
+def drop_request_statements(text: str | None, keep: set[str] | None = None) -> tuple[str, int]:
+    """마지막 질문 앞에 있는 요청형 평서문을 지운다(한 턴에 묻는 것은 하나). 질문이 없으면 그대로 둔다 — 그 요청이 이 턴의 질문이다. (결과, 지운 수).
+    keep(공백 뗀 문장 집합 — 시스템 여는 문장·슬롯 문장)은 지우지 않는다. '…궁금해요?' 처럼 평서문에 물음표만 붙인 꼴도 요청형으로 본다."""
+    keep = keep or set()
     sents = [x.strip() for x in split_sentences(text or "") if x.strip()]
     qi = [i for i, x in enumerate(sents) if is_question(x) and not is_request_statement(x)]
     if not qi:
         return (text or ""), 0
     last = qi[-1]
-    kept = [x for i, x in enumerate(sents) if not (i < last and is_request_statement(x))]
+    kept = [x for i, x in enumerate(sents) if not (i < last and is_request_statement(x) and re.sub(r"\s+", "", x) not in keep)]
     n = len(sents) - len(kept)
     return (" ".join(kept).strip() if n else (text or "")), n

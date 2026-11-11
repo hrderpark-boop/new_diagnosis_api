@@ -95,34 +95,61 @@ async def render_close_summary(llm, *, episodes: list[dict], persona_name: str |
     return best, best_n
 
 
-# ── (2026-11-10 P9-9) 세션 마지막 답 받기 1문장 ─────────────────────────────────────────────────────────────
-_LAST_RECV_MAX = 70
+# ── (2026-11-10 P9-9 → 2026-11-11 P10-5) 세션 마지막 답 받기 1문장 ─────────────────────────────────────────────
+#   LLM 1문장, 리더 답의 낱말 인용 필수. 불합격이면 한 번 더 쓰고, 그래도 안 되면 리더 답의 마지막 절을 그대로 받는다(quote_receive).
+#   어느 답에나 붙는 고정 문구('흥미로운 지점이에요')는 없다 — 받을 내용이 없으면('네'·'없어요') 받기 없이 종료 문구로 간다.
+_LAST_RECV_MAX = 80
 
 
-async def render_last_receive(llm, *, user_text: str | None, persona_name: str | None) -> str:
-    """세션의 마지막 리더 답을 받는 평서문 1문장. 질문·평가·조언·가정·상태 보고 없이 들은 사실만. 실패·형식 불합격·스텁은 페르소나 마무리 어구."""
+def last_receive_ok(sentence: str | None, user_text: str | None) -> tuple[bool, str]:
+    """마지막 답 받기 형식 검사 — (통과, 사유). 평서문 1문장 · 리더 낱말 인용 · 질문·조언·가정·평가·상태 보고 없음 · 길이."""
+    from diag_project.services.output_guard import close_side_violation, find_state_leak, is_question
+    from diag_project.services.receive_check import receive_has_content
+    cand = (sentence or "").strip()
+    if not cand:
+        return False, "empty"
+    if is_question(cand) or close_side_violation(cand):
+        return False, "question_or_advice"
+    if find_praise(cand) or find_state_leak(cand):
+        return False, "praise_or_state"
+    if len(cand) > _LAST_RECV_MAX:
+        return False, "length"
+    if not receive_has_content(cand, user_text):
+        return False, "no_quote"
+    return True, ""
+
+
+async def render_last_receive(llm, *, user_text: str | None, persona_name: str | None, rounds: int = 2) -> tuple[str, str]:
+    """(받는 문장, 모드). 모드 'llm' | 'llm_regen' | 'quote'(리더 절 인용 폴백) | 'none'(받을 내용 없음)."""
     import os
 
     from diag_project.services.bei_engine import is_no_case_text
-    from diag_project.services.output_guard import close_side_violation, find_state_leak, is_question
-    from diag_project.services.persona_voice import tails_for
-    fallback = tails_for(persona_name)[0]
+    from diag_project.services.receive_check import leader_nouns, quote_receive
     ut = re.sub(r"\s+", " ", (user_text or "").strip())
-    if llm is None or os.getenv("FM_LLM_STUB") or not ut or is_no_case_text(ut) or len(ut.replace(" ", "")) < 8:
-        return fallback
-    prompt = (
+    if not ut or is_no_case_text(ut) or len(ut.replace(" ", "")) < 8 or not leader_nouns(ut):
+        return "", "none"
+    fallback = quote_receive(ut)
+    if llm is None or os.getenv("FM_LLM_STUB"):
+        return (fallback, "quote") if fallback else ("", "none")
+    base = (
         f"당신은 리더십 BEI 코치 {persona_name or 'Ella'}입니다. 리더의 마지막 답을 받는 문장을 정확히 한 문장 씁니다.\n\n"
         f"[리더의 마지막 답]\n{ut[-400:]}\n\n"
-        "[규칙]\n- 리더가 쓴 낱말 하나를 넣어 들은 사실만 다시 말하는 평서문 한 문장(존댓말).\n"
+        "[규칙]\n- 리더가 위에서 쓴 낱말(구절)을 그대로 넣어, 들은 사실만 다시 말하는 평서문 한 문장(존댓말, 60자 안쪽).\n"
+        "- 어느 답에나 붙일 수 있는 말('그러셨군요', '잘 들었습니다')로 때우지 않는다.\n"
         "- 질문·평가·칭찬·조언·가정('~했다면')·감사·작별·진행 안내 금지. 리더가 하지 않은 말 금지.\n\n출력: 문장만."
     )
-    try:
-        out = await llm._generate_with_retry(prompt=prompt, max_tokens=120, thinking_budget=0, call_type="last_receive", temperature=0.3)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("마지막 답 받기 렌더링 실패: %s", e)
-        return fallback
-    sents = [x.strip() for x in split_sentences(re.sub(r"\s*\n+\s*", " ", (out or "").strip().strip('"“”'))) if x.strip()]
-    cand = sents[0] if sents else ""
-    if (not cand or is_question(cand) or close_side_violation(cand) or find_praise(cand) or find_state_leak(cand) or len(cand) > _LAST_RECV_MAX):
-        return fallback
-    return cand          # (승인 조건 1) 받는 문장은 어미를 강제하지 않는다
+    prompt, mode = base, "llm"
+    for attempt in range(max(1, rounds)):
+        try:
+            out = await llm._generate_with_retry(prompt=prompt, max_tokens=120, thinking_budget=0, call_type="last_receive", temperature=0.3)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("마지막 답 받기 렌더링 실패: %s", e)
+            break
+        sents = [x.strip() for x in split_sentences(re.sub(r"\s*\n+\s*", " ", (out or "").strip().strip('"“”'))) if x.strip()]
+        cand = sents[0] if sents else ""
+        ok, why = last_receive_ok(cand, ut)
+        if ok:
+            return cand, mode          # 받는 문장은 어미를 강제하지 않는다
+        mode = "llm_regen"
+        prompt = base + f"\n\n🚨 방금 출력은 조건에 맞지 않았습니다({why}). 리더가 쓴 낱말을 넣은 평서문 한 문장으로 다시 쓰세요."
+    return (fallback, "quote") if fallback else ("", "none")

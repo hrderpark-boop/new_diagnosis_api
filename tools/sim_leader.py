@@ -437,6 +437,9 @@ async def analyze_result(path: str) -> None:
 async def _main_async(args) -> None:
     out_dir = Path(os.environ.get("SIM_OUT") or os.getcwd())
     profile = _load_profile(args.profile)
+    if getattr(args, "smalltalk", None):
+        # (2026-11-11 P10-1) 스몰톡 답을 바꿔 돌린다 — 운영에서 본 '그냥 그래요' 같은 내용 없는 답의 경로(LLM 없이 고정 받기 + 예비 되물음) 확인용
+        profile = dict(profile); profile["onboarding"] = {**(profile.get("onboarding") or {}), "smalltalk": args.smalltalk}
     coaches = [c for c in args.coaches.split(",") if c]
     port_base = int(os.environ.get("RP_PORT_BASE", "8070"))
     servers = {c: (_start_server(args.tag, c, port_base + i, out_dir, provider=args.provider, stub=args.stub), port_base + i) for i, c in enumerate(coaches)}
@@ -461,6 +464,7 @@ def main(argv=None) -> int:
     ap.add_argument("--provider", default=os.environ.get("LLM_PROVIDER", "claude"))
     ap.add_argument("--stub", action="store_true")
     ap.add_argument("--profile", default=str(ROOT / "tools/sim_profiles/edu_team_lead.json"))
+    ap.add_argument("--smalltalk", help="스몰톡 답 바꾸기(예: '그냥 그래요')")
     ap.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--dump", help="sim_result_*.json 전문 출력")
     ap.add_argument("--analyze", help="sim_result_*.json 의 세션을 분석(Sonnet 1회) — 지시문에 횟수·USD 가 있을 때만")

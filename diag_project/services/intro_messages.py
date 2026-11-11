@@ -71,16 +71,13 @@ RAPPORT_EXPECTATION_QUESTION = "이번 진단에서 기대하시는 것이 있�
 RAPPORT_INTRO_BRIDGE_NO_EXPECTATION = "네, 그러면 제가 오늘 흐름부터 설명드릴게요."
 
 
-# (2026-10-22 P1-3) 질문 없는 턴 금지 — LLM 출력에 질문이 없으면 백엔드가 그 턴의 고정 질문을 붙인다.
-RAPPORT_SMALLTALK_FALLBACK_QUESTION = "오늘 하루는 바쁜 쪽이었어요, 여유 있는 쪽이었어요?"
-
 
 def definition_question(chapter_name: str, persona_name: str | None = None, variant: int = 0) -> str:
     """정의 질문 — (2026-11-05 P4-1) 5종 순환. variant 는 챕터 순서 인덱스(0~4) → 한 세션에서 같은 문장이 두 번 나가지 않는다."""
     from diag_project.services.korean import with_josa
     pool = DEFINITION_VARIANTS.get(persona_key(persona_name)) or DEFINITION_VARIANTS["Ella"]
     return pool[int(variant) % len(pool)].format(cn_eul=with_josa(chapter_name, '을/를', quote=True), cn_eun=with_josa(chapter_name, '은/는', quote=True),
-                                                 cn=f"'{chapter_name}'")
+                                                 cn_iga=with_josa(chapter_name, '이/가', quote=True), cn=f"'{chapter_name}'")
 
 
 def definition_question_variants(chapter_name: str, persona_name: str | None = None) -> list[str]:
@@ -88,17 +85,28 @@ def definition_question_variants(chapter_name: str, persona_name: str | None = N
     return [definition_question(chapter_name, persona_name, i) for i in range(len(DEFINITION_VARIANTS["Ella"]))]
 
 
-# (2026-11-05 P4-1) 정의 질문 5종 — 문형은 공통(①무엇이라 생각 ②리더님 말로 하면 ③팀에서 챙긴다는 건 ④한 문장으로 ⑤평소 어떤 일로),
-#   어미·호칭은 페르소나. {cn_eul} = "'조직관리'를".
+# (2026-11-11 P10-2) 정의 질문 5종 — 완결 문장. '~풀면요?'·'~하면요?'·'뭐가 먼저 떠올라요?' 같은 생략형은 폐기(11/11 운영 Olivia 검토).
+#   문형: ①어떤 일이라고 생각 ②무엇을 하는 일 ③리더님 말로 설명 ④팀에서 잘 된다는 것은 어떤 모습 ⑤리더님께 어떤 의미.
+#   {cn_eul}="'X'를" {cn_eun}="'X'는" {cn_iga}="'X'가" {cn}="'X'". 어미·호칭은 페르소나.
 DEFINITION_VARIANTS: dict[str, list[str]] = {
-    # (2026-11-06 P7-4) 역량 이름을 넣어도 어색하지 않은 5틀만: 뭐라고 생각 / 무엇이라고 보세요 / 리더님 말로 풀면 / 라고 하면 뭐가 먼저 / 한 문장으로.
-    #   '챙긴다', '어떤 일' 틀은 삭제. {cn_eul}="'X'를" {cn_eun}="'X'는" {cn}="'X'"
-    "Ella": ["{cn_eul} 뭐라고 생각하세요?", "{cn_eun} 무엇이라고 보세요?", "{cn_eul} 리더님 말로 풀면요?", "{cn}라고 하면 뭐가 먼저 떠오르세요?", "{cn_eul} 한 문장으로 하면요?"],
-    "Jessica": ["{cn_eul} 뭐라고 생각하십니까?", "{cn_eun} 무엇이라고 보십니까?", "{cn_eul} 리더님 말로 풀면 무엇입니까?", "{cn}라고 하면 무엇이 먼저 떠오르십니까?", "{cn_eul} 한 문장으로 하면 무엇입니까?"],
-    "Olivia": ["{cn_eul} 뭐라고 생각하세요?", "{cn_eun} 무엇이라고 보세요?", "{cn_eul} 리더님 말로 풀면요?", "{cn}라고 하면 뭐가 먼저 떠올라요?", "{cn_eul} 한 문장으로 하면요?"],
-    "Daniel": ["{cn_eul} 무엇이라고 생각하십니까?", "{cn_eun} 무엇이라고 보십니까?", "{cn_eul} 리더님 말씀으로 풀면 어떻게 됩니까?", "{cn}라고 하면 무엇이 먼저 떠오르십니까?", "{cn_eul} 한 문장으로 말씀하시면요?"],
-    "Michael": ["{cn_eul} 뭐라고 생각하세요?", "{cn_eun} 무엇이라고 보세요?", "{cn_eul} 리더님 말로 풀면요?", "{cn}라고 하면 뭐가 먼저 떠오르세요?", "{cn_eul} 한 문장으로 딱 하면요?"],
-    "Lucas": ["{cn_eul} 뭐라고 생각하십니까?", "{cn_eun} 무엇이라고 보십니까?", "{cn_eul} 리더님 말로 풀면요?", "{cn}라고 하면 무엇이 먼저 떠오릅니까?", "{cn_eul} 한 문장으로 하면요?"],
+    "Ella": ["{cn_eul} 리더님은 어떤 일이라고 생각하세요?", "리더님이 보시기에 {cn_eun} 무엇을 하는 일인가요?",
+             "{cn_eul} 리더님 말로 설명하신다면 어떻게 말씀하시겠어요?", "리더님 팀에서 {cn_iga} 잘 된다는 것은 어떤 모습이라고 생각하세요?",
+             "리더님께 {cn_eun} 어떤 의미인가요?"],
+    "Jessica": ["{cn_eul} 리더님은 어떤 일이라고 생각하십니까?", "리더님이 보시기에 {cn_eun} 무엇을 하는 일입니까?",
+                "{cn_eul} 리더님 말로 설명하신다면 어떻게 말씀하시겠습니까?", "리더님 팀에서 {cn_iga} 잘 된다는 것은 어떤 모습이라고 생각하십니까?",
+                "리더님께 {cn_eun} 어떤 의미입니까?"],
+    "Olivia": ["{cn_eul} 리더님은 어떤 일이라고 생각하세요?", "리더님이 보기에 {cn_eun} 무엇을 하는 일인가요?",
+               "{cn_eul} 리더님 말로 설명한다면 어떻게 말씀하시겠어요?", "리더님 팀에서 {cn_iga} 잘 된다는 건 어떤 모습이라고 생각하세요?",
+               "리더님에게 {cn_eun} 어떤 의미예요?"],
+    "Daniel": ["{cn_eul} 리더님께서는 어떤 일이라고 생각하십니까?", "리더님께서 보시기에 {cn_eun} 무엇을 하는 일입니까?",
+               "{cn_eul} 리더님 말씀으로 설명하신다면 어떻게 말씀하시겠습니까?", "리더님 팀에서 {cn_iga} 잘 된다는 것은 어떤 모습이라고 생각하십니까?",
+               "리더님께 {cn_eun} 어떤 의미입니까?"],
+    "Michael": ["{cn_eul} 리더님은 어떤 일이라고 생각하세요?", "리더님이 보시기에 {cn_eun} 무엇을 하는 일인가요?",
+                "{cn_eul} 리더님 말로 설명하신다면 어떻게 말씀하시겠어요?", "리더님 팀에서 {cn_iga} 잘 된다는 건 어떤 모습이라고 생각하세요?",
+                "리더님께 {cn_eun} 어떤 의미인가요?"],
+    "Lucas": ["{cn_eul} 리더님은 어떤 일이라고 생각하십니까?", "리더님이 보기에 {cn_eun} 무엇을 하는 일입니까?",
+              "{cn_eul} 리더님 말로 설명하면 어떻게 됩니까?", "리더님 팀에서 {cn_iga} 잘 된다는 것은 어떤 모습입니까?",
+              "리더님에게 {cn_eun} 어떤 의미입니까?"],
 }
 
 # (2026-11-05 P4-1) 정의 질문 앞에 LLM 이 쓰는 '이 영역에서 무엇을 볼지' 1문장의 재료 — LLM 출력에 평서문이 없을 때의 결정론 폴백.
@@ -126,13 +134,11 @@ def pause_suggestion_text(elapsed_min: int, persona_name: str | None = None) -> 
 # (2026-10-22) 고정 문장의 페르소나별 변형 — 구조는 하나(어느 자리에 무엇을 붙이는가), 문장은 페르소나. 없는 키·코치는 Ella 로.
 PERSONA_LINES: dict[str, dict[str, str]] = {
     "Ella": {
-        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
-        "slot_q": "",
-        "slot_q2": "",
-        "slot_lead": "",
+        # (2026-11-11 P10-7) 첫 영역 진입 다리(고정) · (P10-1) 내용 없는 스몰톡 답을 받는 고정 1문장
+        "first_bridge": "그럼 첫 영역인 {cn}부터 볼게요.",
+        "smalltalk_flat": "그러셨군요.",
         "role_q": "평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 것이 있으세요?",
-        "smalltalk_q": "오늘 하루는 바쁜 쪽이었어요, 여유 있는 쪽이었어요?",
         "intro_bridge": "네, 그러면 제가 오늘 흐름부터 설명드릴게요.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 생각하시나요?",
         "end_bridge": "이제 '{next}'로 이어가 보겠습니다.",
@@ -154,13 +160,11 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "continue_ack": "네, 이어갈게요.",
     },
     "Jessica": {
-        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
-        "slot_q": "그 결정의 기준은 무엇이었습니까?",
-        "slot_q2": "",
-        "slot_lead": "",
+        # (2026-11-11 P10-7) 첫 영역 진입 다리(고정) · (P10-1) 내용 없는 스몰톡 답을 받는 고정 1문장
+        "first_bridge": "그럼 첫 영역인 {cn}부터 보겠습니다.",
+        "smalltalk_flat": "그러셨군요.",
         "role_q": "평소 어떤 일을 맡고 계신지 간단히 말씀해 주시겠습니까? 팀 규모와 주요 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 것이 있습니까?",
-        "smalltalk_q": "오늘은 바쁜 쪽이었습니까, 여유 있는 쪽이었습니까?",
         "intro_bridge": "알겠습니다. 그러면 오늘 흐름부터 설명드리겠습니다.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 보십니까?",
         "end_bridge": "이제 '{next}'로 넘어가겠습니다.",
@@ -182,13 +186,11 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "continue_ack": "알겠습니다, 이어가겠습니다.",
     },
     "Olivia": {
-        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
-        "slot_q": "반대로 하셨다면 어떻게 됐을까요?",
-        "slot_q2": "그 팀원 입장에서는 어떤 장면이었을까요?",
-        "slot_lead": "",
+        # (2026-11-11 P10-7) 첫 영역 진입 다리(고정) · (P10-1) 내용 없는 스몰톡 답을 받는 고정 1문장
+        "first_bridge": "그럼 첫 영역인 {cn}부터 볼게요.",
+        "smalltalk_flat": "그랬군요.",
         "role_q": "평소 어떤 일을 맡고 계세요? 팀 규모나 주로 하시는 업무 정도면 충분해요.",
         "expect_q": "이번 진단에서 기대하는 게 있다면 뭐예요?",
-        "smalltalk_q": "오늘은 바쁜 쪽이었어요, 아니면 여유 있는 쪽이었어요?",
         "intro_bridge": "좋아요, 그럼 오늘 흐름부터 바로 설명드릴게요.",
         "definition": "리더님은 {cn_eul} 뭐라고 생각하세요?",
         "end_bridge": "이제 '{next}' 쪽으로 각도를 바꿔 볼게요.",
@@ -210,13 +212,11 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "continue_ack": "좋아요, 이어갈게요.",
     },
     "Daniel": {
-        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
-        "slot_q": "",
-        "slot_q2": "",
-        "slot_lead": "그 자리, 저도 압니다. 쉽지 않지요.",
+        # (2026-11-11 P10-7) 첫 영역 진입 다리(고정) · (P10-1) 내용 없는 스몰톡 답을 받는 고정 1문장
+        "first_bridge": "그러면 첫 영역인 {cn}부터 여쭙겠습니다.",
+        "smalltalk_flat": "그러셨군요.",
         "role_q": "평소 어떤 일을 맡고 계신지 간단히 들려주시겠습니까? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 바가 있으십니까?",
-        "smalltalk_q": "오늘 하루는 바쁜 쪽이셨습니까, 여유 있는 쪽이셨습니까?",
         "intro_bridge": "네, 그러면 오늘 흐름부터 안내드리겠습니다.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 생각하십니까?",
         "end_bridge": "이제 '{next}'로 이어가겠습니다.",
@@ -238,13 +238,11 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "continue_ack": "네, 이어가겠습니다.",
     },
     "Michael": {
-        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
-        "slot_q": "다음에 비슷한 상황이 오면 어떻게 하실 생각이세요?",
-        "slot_q2": "",
-        "slot_lead": "그 선택, 응원합니다.",
+        # (2026-11-11 P10-7) 첫 영역 진입 다리(고정) · (P10-1) 내용 없는 스몰톡 답을 받는 고정 1문장
+        "first_bridge": "그럼 첫 영역인 {cn}부터 바로 가 볼게요.",
+        "smalltalk_flat": "그러셨군요.",
         "role_q": "평소 어떤 일을 맡고 계신지 간단히 들려주시겠어요? 팀 규모나 주로 하시는 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 게 있으세요?",
-        "smalltalk_q": "오늘은 바쁜 쪽이었어요, 여유 있는 쪽이었어요?",
         "intro_bridge": "그러면 오늘 흐름부터 바로 설명드릴게요.",
         "definition": "리더님께서는 {cn_eul} 뭐라고 생각하세요?",
         "end_bridge": "이제 '{next}'로 바로 가 보겠습니다.",
@@ -266,13 +264,11 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "continue_ack": "네, 바로 이어갈게요.",
     },
     "Lucas": {
-        # (2026-10-29 P2-1 → 2026-11-04 BEI) 사례당 1회 고정 슬롯 — 어미가 아니라 "하는 일"로 코치를 가른다
-        "slot_q": "그 방법을 고른 이유, 한 줄로 하면요?",
-        "slot_q2": "",
-        "slot_lead": "",
+        # (2026-11-11 P10-7) 첫 영역 진입 다리(고정) · (P10-1) 내용 없는 스몰톡 답을 받는 고정 1문장
+        "first_bridge": "첫 영역, {cn}부터 갑니다.",
+        "smalltalk_flat": "그렇군요.",
         "role_q": "평소 맡고 계신 일은요? 팀 규모와 주요 업무 정도면 됩니다.",
         "expect_q": "이번 진단에서 기대하시는 건요?",
-        "smalltalk_q": "오늘은 바쁜 쪽이었습니까, 여유 있는 쪽이었습니까?",
         "intro_bridge": "알겠습니다. 오늘 흐름부터 짚겠습니다.",
         "definition": "리더님께서는 {cn_eul} 무엇이라고 정의하십니까?",
         "end_bridge": "이제 '{next}'입니다.",
@@ -298,7 +294,7 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
 RAPPORT_ROLE_QUESTION = PERSONA_LINES["Ella"]["role_q"]
 RAPPORT_EXPECTATION_QUESTION = PERSONA_LINES["Ella"]["expect_q"]
 RAPPORT_INTRO_BRIDGE_NO_EXPECTATION = PERSONA_LINES["Ella"]["intro_bridge"]
-RAPPORT_SMALLTALK_FALLBACK_QUESTION = PERSONA_LINES["Ella"]["smalltalk_q"]
+# (2026-11-11 P10-1) 스몰톡 고정 질문('바쁜 쪽·여유 있는 쪽')은 삭제 — 예비 되물음 SMALLTALK_RESERVE(코치별 3종 × 시간대)로 대체
 
 
 def persona_key(persona_name: str | None) -> str:
@@ -310,6 +306,46 @@ def persona_line(persona_name: str | None, key: str, **fmt) -> str:
     """페르소나별 고정 문장. fmt 는 {cn_eul}·{next}·{phrase}·{min} 자리."""
     line = PERSONA_LINES[persona_key(persona_name)].get(key) or PERSONA_LINES["Ella"][key]
     return line.format(**fmt) if fmt else line
+
+
+# (2026-11-11 P10-1) 스몰톡 예비 되물음 — 코치별 3종 × 시간대 묶음(아침·낮·저녁). LLM 되물음이 검사에서 떨어지거나 리더 답에 받을 내용이 없을 때
+#   재생성 없이 바로 쓴다. 일·역할·팀을 묻지 않고(다음 턴 담당), 이미 지난 시간대만 말하며, 물음표로 끝난다.
+SMALLTALK_RESERVE: dict[str, dict[str, list[str]]] = {
+    "Ella": {"morning": ["오늘 아침은 여유 있게 시작하셨어요?", "오늘 아침 공기는 어땠어요?", "아침은 챙겨 드셨어요?"],
+             "midday": ["점심은 맛있게 드셨어요?", "오전은 금방 지나갔어요?", "오늘 점심에는 뭘 드셨어요?"],
+             "evening": ["오늘 하루는 금방 지나갔어요?", "저녁은 드셨어요?", "오늘 낮에 잠깐이라도 쉬는 틈이 있었어요?"]},
+    "Jessica": {"morning": ["오늘 아침은 여유 있게 시작하셨습니까?", "오늘 아침 날씨는 어땠습니까?", "아침 식사는 하셨습니까?"],
+                "midday": ["점심 식사는 하셨습니까?", "오전은 금방 지나갔습니까?", "오늘 점심에는 무엇을 드셨습니까?"],
+                "evening": ["오늘 하루는 금방 지나갔습니까?", "저녁 식사는 하셨습니까?", "오늘 낮에 잠깐 쉬는 틈이 있었습니까?"]},
+    "Olivia": {"morning": ["오늘 아침은 어떤 기분으로 시작했어요?", "아침에 창밖은 어땠어요?", "아침은 챙겨 드셨어요?"],
+               "midday": ["점심은 뭘 드셨어요?", "오전은 생각보다 금방 지나갔어요?", "점심 먹고 잠깐 걸을 틈은 있었어요?"],
+               "evening": ["오늘 하루는 생각보다 금방 지나갔어요?", "저녁은 드셨어요?", "오늘 낮에 숨 돌린 순간이 있었어요?"]},
+    "Daniel": {"morning": ["오늘 아침은 여유 있게 시작하셨습니까?", "오늘 아침 공기는 어떠셨습니까?", "아침 식사는 하셨습니까?"],
+               "midday": ["점심 식사는 하셨습니까?", "오전은 금방 지나갔습니까?", "오늘 점심에는 무엇을 드셨습니까?"],
+               "evening": ["오늘 하루는 금방 지나갔습니까?", "저녁 식사는 하셨습니까?", "오늘 낮에 잠깐 쉬실 틈이 있으셨습니까?"]},
+    "Michael": {"morning": ["오늘 아침은 가볍게 시작하셨어요?", "오늘 아침 컨디션은 어땠어요?", "아침은 든든하게 드셨어요?"],
+                "midday": ["점심은 든든하게 드셨어요?", "오전은 금방 지나갔어요?", "오늘 점심에는 뭘 드셨어요?"],
+                "evening": ["오늘 하루는 금방 지나갔어요?", "저녁은 드셨어요?", "오늘 낮에 잠깐 숨 돌릴 틈은 있었어요?"]},
+    "Lucas": {"morning": ["아침은 드셨습니까?", "오늘 아침 컨디션은 어땠습니까?", "오늘 아침은 여유가 있었습니까?"],
+              "midday": ["점심은 드셨습니까?", "오전은 금방 갔습니까?", "점심에는 뭘 드셨습니까?"],
+              "evening": ["오늘 하루는 금방 갔습니까?", "저녁은 드셨습니까?", "오늘 낮에 쉬는 틈은 있었습니까?"]},
+}
+_DAYPART_GROUP = {"오전": "morning", "오전 마무리": "morning", "점심": "midday", "오후": "midday", "저녁": "evening", "늦은 시간": "evening"}
+
+
+def smalltalk_reserve_question(persona_name: str | None, daypart: str | None, variant: int = 0) -> str:
+    """지금 시간대 묶음의 예비 되물음 하나(variant 로 3종을 돌린다)."""
+    pool = SMALLTALK_RESERVE[persona_key(persona_name)][_DAYPART_GROUP.get(daypart or "", "evening")]
+    return pool[int(variant) % len(pool)]
+
+
+def smalltalk_flat_receive(persona_name: str | None) -> str:
+    return persona_line(persona_name, "smalltalk_flat")
+
+
+def first_chapter_bridge(chapter_name: str, persona_name: str | None = None) -> str:
+    """(P10-7) 첫 영역 진입 다리 — "그럼 첫 영역인 조직관리부터 볼게요."(코치별 고정)."""
+    return persona_line(persona_name, "first_bridge", cn=chapter_name)
 
 
 FINISH_CHOICE_LINE = "남은 항목은 이어서 하시면 채워지고, 지금 마치면 최저 수준으로 기록됩니다. 이어서 할까요, 마칠까요?"   # (2026-11-06 P7-3)
@@ -563,57 +599,29 @@ _FINAL_DEFAULT = ("긴 시간 함께해 주셔서 감사합니다. 오늘 나눈
                   "'진단 완료 및 결과 보기'를 누르시면 확인하실 수 있습니다. 오늘 떠올리신 장면들이 다음 걸음에 작은 기준이 되기를 바랍니다.")
 
 
-# (2026-11-05 P4-1) 페르소나 슬롯 — 챕터당 1회·세션 5회, 문구 5종 순환(챕터 순서 인덱스에서 시작, 세션에서 쓴 것은 건너뜀).
-#   Jessica 기준 / Lucas 한 줄 / Olivia 대조 / Michael 응원 / Daniel 관찰(DANIEL_OBSERVATIONS). Ella 는 슬롯 없음.
-PERSONA_SLOT_VARIANTS: dict[str, list[str]] = {
-    "Jessica": ["그 결정의 기준은 무엇이었습니까?", "그때 무엇을 기준으로 판단하셨습니까?", "그 선택을 가른 기준 하나를 꼽으면 무엇입니까?",
-                "판단의 근거는 무엇이었습니까?", "그렇게 정하신 기준은 어디에 두셨습니까?"],
-    "Lucas": ["그 방법을 고른 이유, 한 줄로 하면요?", "그 결정의 이유, 한 줄로요?", "왜 그쪽이었는지 한 줄로 하면요?",
-              "그 선택의 근거를 한 줄로 하면요?", "그렇게 정한 이유를 한마디로 하면요?"],
-    "Olivia": ["반대로 하셨다면 어떻게 됐을까요?", "그 팀원 입장에서는 어떤 장면이었을까요?", "그때 손을 대지 않으셨다면 무엇이 달라졌을까요?",
-               "다른 쪽을 고르셨다면 어디서 막혔을까요?", "그 자리를 상대 쪽에서 보면 어떤 모습이었을까요?"],
-    "Michael": ["그 선택, 응원합니다.", "거기서 그렇게 가신 게 좋았어요.", "그 판단, 저라도 그랬을 거예요.",
-                "그 결정은 리더님다웠네요.", "그 자리에서 그 선택을 하신 게 보여요."],
+# (2026-11-11 P10-2) 페르소나 슬롯 — 고정 문장 금지. 문장은 LLM 이 그 사례의 구체 내용(리더가 고른 선택과 버린 선택)을 넣어 쓴다(services/slot_render.py).
+#   여기에는 '코치마다 무엇을 하는가'(종류)와 상한만 둔다. 챕터당 1회·세션 5회, Michael 실행 의지 질문은 세션 3회. Ella 는 슬롯 없음.
+#   Jessica 기준 / Lucas 한 줄 이유 / Olivia 버린 선택 가정·상대 자리 / Michael 응원(+다음 턴 실행 의지) / Daniel 선배 관찰.
+SLOT_KINDS: dict[str, tuple[str, ...]] = {
+    "Jessica": ("criterion",), "Lucas": ("reason",),
+    "Olivia": ("counterfactual", "other_side", "counterfactual", "counterfactual", "other_side"),
+    "Michael": ("cheer",), "Daniel": ("observation",),
 }
-# Olivia 변형이 겨냥하는 슬롯(이미 찼으면 넣지 않는다): 입장·상대 쪽 = reaction, 나머지 = criterion
-OLIVIA_SLOT_TARGETS = ["criterion", "reaction", "criterion", "criterion", "reaction"]
-# Michael 실행 의지 질문(응원 다음 턴) — 세션 3회 상한, 문구 3종
-MICHAEL_WILL_QUESTIONS = ["다음에 비슷한 상황이 오면 어떻게 하실 생각이세요?", "같은 일이 또 생기면 이번엔 뭘 먼저 하시겠어요?",
-                          "지금 다시 그 자리라면 어디서부터 손대시겠어요?"]
+# 슬롯 질문이 겨냥하는 사례 슬롯(이미 찼으면 넣지 않는다). 평서문 종류(응원·관찰)는 겨냥 슬롯 없음.
+SLOT_KIND_TARGET: dict[str, str] = {"criterion": "criterion", "reason": "criterion", "counterfactual": "criterion", "other_side": "reaction"}
 MICHAEL_WILL_SESSION_CAP = 3
 SLOT_SESSION_CAP = 5
 
 
-def slot_variants_for(persona_name: str | None) -> list[str]:
-    k = persona_key(persona_name)
-    if k == "Daniel":
-        return list(DANIEL_OBSERVATIONS)
-    return list(PERSONA_SLOT_VARIANTS.get(k) or [])
-
-
-def next_slot_sentence(persona_name: str | None, chapter_index: int, used: list[int] | None) -> tuple[int | None, str]:
-    """이 세션에서 아직 안 쓴 슬롯 문장의 (인덱스, 문장). 시작은 챕터 순서 인덱스. 전부 썼으면 시작 문장. 슬롯 없는 코치는 (None, "")."""
-    pool = slot_variants_for(persona_name)
-    if not pool:
-        return None, ""
-    n = len(pool)
-    order = [(int(chapter_index) + k) % n for k in range(n)]
-    used_set = set(used or [])
-    idx = next((i for i in order if i not in used_set), order[0])
-    return idx, pool[idx]
-
-
-def michael_will_question(count_so_far: int) -> str:
-    return MICHAEL_WILL_QUESTIONS[int(count_so_far) % len(MICHAEL_WILL_QUESTIONS)]
+def slot_kind_for(persona_name: str | None, n_used: int = 0) -> str | None:
+    """이 코치가 이번에 쓸 슬롯 종류 — 세션에서 이미 쓴 횟수로 돌린다(Olivia 만 두 종류). 슬롯 없는 코치는 None."""
+    kinds = SLOT_KINDS.get(persona_key(persona_name))
+    return kinds[int(n_used) % len(kinds)] if kinds else None
 
 
 def all_fixed_sentences() -> list[str]:
-    """린트·가드가 '고정 문장'으로 제외할 문장 전부(슬롯 5종×코치·관찰·실행 의지)."""
+    """린트·가드가 '고정 문장'으로 제외할 문장 전부 — (P10-2) 슬롯 문장은 더 이상 고정이 아니라 ALIGN 다리만 남는다."""
     out: list[str] = []
-    for v in PERSONA_SLOT_VARIANTS.values():
-        out.extend(v)
-    out.extend(DANIEL_OBSERVATIONS)
-    out.extend(MICHAEL_WILL_QUESTIONS)
     for v in ALIGN_OPEN_VARIANTS.values():
         out.extend(v)                      # '먼저 하나부터.'(Lucas) 같은 서술어 없는 고정 다리는 흉터가 아니다
     return out
@@ -656,22 +664,3 @@ def align_open_line(persona_name: str | None, variant: int = 0) -> str:
 
 def final_closing_message(persona_name: str | None) -> str:
     return FINAL_CLOSINGS.get((persona_name or "").split(" ")[0], _FINAL_DEFAULT)
-
-
-# (2026-10-29 P2-1 → 2026-11-05) Daniel 선배 관찰 문장 — 사례당 1회. 챕터 순서 인덱스에서 시작해 같은 챕터 안에서는 쓴 문장을 건너뛴다(챕터 안 중복 0)
-DANIEL_OBSERVATIONS = [
-    "그 자리, 저도 압니다. 쉽지 않지요.",
-    "그런 결정은 혼자 짊어지게 되지요. 저도 그랬습니다.",
-    "사람 문제는 늘 정답보다 무게가 먼저 오지요.",
-    "일이 몰릴 때 순서를 정하는 게 제일 어렵습니다. 저도 그 자리에 있어 봤습니다.",
-    "스스로를 돌아보는 건 리더에게 가장 늦게 오는 과제지요.",
-]
-
-
-def next_daniel_observation(chapter_index: int, used: list[int] | None) -> tuple[int, str]:
-    """(2026-11-05 3단계 소수정 3) 이 챕터에서 아직 안 쓴 관찰 문장의 (인덱스, 문장). 시작은 챕터 순서 인덱스, 전부 썼으면 시작 문장."""
-    n = len(DANIEL_OBSERVATIONS)
-    order = [(int(chapter_index) + k) % n for k in range(n)]
-    used_set = set(used or [])
-    idx = next((i for i in order if i not in used_set), order[0])
-    return idx, DANIEL_OBSERVATIONS[idx]

@@ -313,11 +313,11 @@ def _build_confirm_guide(state: dict | None) -> str:
     _scope_hint = "장을 어떻게 보고 남은 재료를 어떻게 나눠 쓰셨는지 함께 짚어볼 거예요."
     if is_first_chapter:
         opening_strategy = (
-            f"**첫 영역 시작 + 범위 1문장** — (2026-11-05 P4-1) 정의 질문은 시스템이 붙입니다. 질문을 쓰지 마세요.\n"
-            f"준비됐다는 동의를 짧게 받은 뒤(평가 리드 '좋습니다' 금지), 첫 영역 {_cn_ro} 들어가며 "
-            f"**이 영역에서 무엇을 볼지 1문장**을 리더가 쓰는 말로 씁니다 — 아래 영역 정의를 풀어서, 역량·항목 이름 나열 없이.\n"
+            f"**범위 1문장만** — (2026-11-05 P4-1 → 2026-11-11 P10-7) 첫 영역으로 들어간다는 문장과 정의 질문은 시스템이 앞뒤에 붙입니다. "
+            f"들어간다는 말·질문·평가 리드('좋습니다')를 쓰지 마세요.\n"
+            f"**이 영역에서 무엇을 볼지 1문장**만 리더가 쓰는 말로 씁니다 — 아래 영역 정의를 풀어서, 역량·항목 이름 나열 없이.\n"
             f"  영역 정의: {framework.get('description', '')}\n"
-            f"  결({EXAMPLE_LABEL}): '그럼 첫 영역인 '{chapter_name}'부터 시작할게요. 여기서는 {_scope_hint} [START_CHAPTER]'\n\n"
+            f"  결({EXAMPLE_LABEL}): '여기서는 {_scope_hint} [START_CHAPTER]'\n\n"
         )
     else:
         opening_strategy = (

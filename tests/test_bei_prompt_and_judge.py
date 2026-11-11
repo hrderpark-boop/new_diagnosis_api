@@ -1,4 +1,5 @@
 """(2026-11-04 BEI) 사례 카드·BEI 가이드·슬롯 판정/매핑 스텁·구조화 출력 스키마·리포트 세 갈래 — LLM·DB 없음."""
+import re
 import asyncio
 import os
 import sys
@@ -149,13 +150,11 @@ def test_leading_choice_question_detection():
     assert not L("다시 한다면 어떻게 하고 싶으세요?")   # 돌아보기 질문(가정형 금지 대상 아님)
 
 
-def test_daniel_observation_rotates_within_chapter():
-    from diag_project.services.intro_messages import DANIEL_OBSERVATIONS as D, next_daniel_observation as N
-    i1, t1 = N(2, [])
-    i2, t2 = N(2, [i1])
-    i3, t3 = N(2, [i1, i2])
-    assert i1 == 2 and i2 == 3 and i3 == 4 and len({t1, t2, t3}) == 3
-    assert N(4, [4, 0, 1, 2, 3]) == (4, D[4])   # 전부 썼으면 시작 문장
+def test_daniel_observation_is_rendered_not_fixed():
+    """(2026-11-11 P10-2) Daniel 선배 관찰은 고정 문장 5종이 아니라 사례 내용을 넣어 쓰는 슬롯(observation)이다."""
+    from diag_project.services import intro_messages as M
+    assert not hasattr(M, "DANIEL_OBSERVATIONS") and not hasattr(M, "next_daniel_observation")
+    assert M.slot_kind_for("Daniel", 0) == "observation" == M.slot_kind_for("Daniel", 3)
 
 
 def test_cross_chapter_evidence_tagged_with_source_chapter():
@@ -173,34 +172,31 @@ def test_cross_chapter_evidence_tagged_with_source_chapter():
 
 
 def test_p4_1_slot_variants_rotate_per_session_and_caps():
-    """슬롯 문구 5종이 세션 단위로 순환(챕터 순서 인덱스에서 시작, 쓴 것은 건너뜀) · Michael 실행 의지 3종 · 정의 질문 5종 · ALIGN 안내·다리 3종."""
+    """(P10-2 로 갱신) 슬롯은 고정 문구 풀이 아니라 종류표(코치마다 무엇을 하는가) + 상한 · 정의 질문 5종 · ALIGN 안내·다리 3종."""
+    from diag_project.services import intro_messages as M
     from diag_project.services.intro_messages import (
-        ALIGN_GUIDE_VARIANTS, ALIGN_OPEN_VARIANTS, DEFINITION_VARIANTS, MICHAEL_WILL_QUESTIONS, MICHAEL_WILL_SESSION_CAP, PERSONA_SLOT_VARIANTS,
-        SLOT_SESSION_CAP, align_guide_line, align_open_line, definition_question, definition_question_variants, michael_will_question, next_slot_sentence,
+        ALIGN_GUIDE_VARIANTS, ALIGN_OPEN_VARIANTS, DEFINITION_VARIANTS, MICHAEL_WILL_SESSION_CAP, SLOT_KIND_TARGET, SLOT_KINDS,
+        SLOT_SESSION_CAP, align_guide_line, align_open_line, definition_question, definition_question_variants, slot_kind_for,
     )
-    assert SLOT_SESSION_CAP == 5 and MICHAEL_WILL_SESSION_CAP == 3 and len(MICHAEL_WILL_QUESTIONS) == 3
-    assert PERSONA_SLOT_VARIANTS["Michael"][0] == "그 선택, 응원합니다." and len(PERSONA_SLOT_VARIANTS["Michael"]) == 5
-    for k in ("Jessica", "Lucas", "Olivia", "Michael", "Daniel"):
-        used: list[int] = []
-        seen = []
-        for ch_i in range(5):                       # 5챕터 — 같은 문장 0
-            i, txt = next_slot_sentence(k, ch_i, used)
-            assert i is not None and txt and i not in used
-            used.append(i); seen.append(txt)
-        assert len(set(seen)) == 5, (k, seen)
-    assert next_slot_sentence("Ella", 0, []) == (None, "")
-    # 사람관리(인덱스 2)에서 처음 쓰면 2번 문구, 이미 2를 썼으면 3번
-    assert next_slot_sentence("Michael", 2, [])[0] == 2 and next_slot_sentence("Michael", 2, [2])[0] == 3
-    assert michael_will_question(0) != michael_will_question(1) != michael_will_question(2) and michael_will_question(3) == michael_will_question(0)
+    assert SLOT_SESSION_CAP == 5 and MICHAEL_WILL_SESSION_CAP == 3
+    for gone in ("PERSONA_SLOT_VARIANTS", "MICHAEL_WILL_QUESTIONS", "next_slot_sentence", "michael_will_question", "slot_variants_for"):
+        assert not hasattr(M, gone), gone                       # 고정 슬롯 문장·순환 함수는 전부 삭제
+    assert set(SLOT_KINDS) == {"Jessica", "Lucas", "Olivia", "Michael", "Daniel"} and slot_kind_for("Ella", 0) is None
+    assert slot_kind_for("Jessica", 0) == "criterion" and slot_kind_for("Lucas", 2) == "reason" and slot_kind_for("Michael", 1) == "cheer"
+    assert [slot_kind_for("Olivia", i) for i in range(5)] == ["counterfactual", "other_side", "counterfactual", "counterfactual", "other_side"]
+    assert SLOT_KIND_TARGET["other_side"] == "reaction" and SLOT_KIND_TARGET["counterfactual"] == "criterion" and "cheer" not in SLOT_KIND_TARGET
     # 정의 질문 5종 — 코치마다 5개 서로 다르고 {cn_eul} 자리 포함
     for k, pool in DEFINITION_VARIANTS.items():
-        assert len(pool) == 5 == len(set(pool)) and all(("{cn_eul}" in v or "{cn_eun}" in v or "{cn}" in v) for v in pool), k
+        assert len(pool) == 5 == len(set(pool)) and all(("{cn_eul}" in v or "{cn_eun}" in v or "{cn_iga}" in v or "{cn}" in v) for v in pool), k
     vs = definition_question_variants("일관리", "Michael (마이클)")
     assert len(set(vs)) == 5 and definition_question("일관리", "Michael (마이클)", 3) == vs[3] and "'일관리'" in vs[3]
-    assert definition_question("조직관리", "Ella (엘라)", 0) == "'조직관리'를 뭐라고 생각하세요?"   # (P7-4) 5틀: 뭐라고 생각 / 무엇이라고 보세요 / 리더님 말로 풀면 / 라고 하면 뭐가 먼저 / 한 문장으로
-    assert definition_question("일관리", "Jessica", 1) == "'일관리'는 무엇이라고 보십니까?" and definition_question("자기관리", "Daniel", 3) == "'자기관리'라고 하면 무엇이 먼저 떠오르십니까?"
+    # (2026-11-11 P10-2) 완결 문장 5종 — 생략형('~풀면요?', '~하면요?', '뭐가 먼저 떠올라요?') 폐기
+    assert definition_question("조직관리", "Ella (엘라)", 0) == "'조직관리'를 리더님은 어떤 일이라고 생각하세요?"
+    assert definition_question("일관리", "Jessica", 1) == "리더님이 보시기에 '일관리'는 무엇을 하는 일입니까?"
+    assert definition_question("자기관리", "Daniel", 4) == "리더님께 '자기관리'는 어떤 의미입니까?"
     for pool in DEFINITION_VARIANTS.values():
-        assert not any(("챙긴다" in v or "어떤 일" in v) for v in pool)
+        assert not any(re.search(r"(풀면요|하면요|떠올라요|떠오르세요|한 문장으로)", v) or "챙긴다" in v for v in pool)
+        assert all(re.search(r"(세요|나요|가요|어요|예요|니까)\?$", v) for v in pool)        # 서술어로 끝나는 완결 문장
     for k in ALIGN_GUIDE_VARIANTS:
         assert len(ALIGN_GUIDE_VARIANTS[k]) == 3 and len(ALIGN_OPEN_VARIANTS[k]) == 3
         assert len({align_guide_line("네", k, i) for i in range(3)}) == 3 and len({align_open_line(k, i) for i in range(3)}) == 3
@@ -211,7 +207,7 @@ def test_p4_2_praise_lead_detected_and_regenerated_not_capped():
     """'좋습니다/좋은 방향/좋은 흐름/잘하셨/인상적' 류는 상한이 아니라 전면 제거 — find_praise 가 잡고 8-i 재생성 키에 들어 있다. 문두 리드만 있는 문장은 리드만 뗀다."""
     import inspect
     from diag_project.services.output_guard import find_praise, strip_praise
-    from diag_project.services.persona_voice import PERSONA_TAILS, PROBE_PREFERENCE, michael_lead_guard
+    from diag_project.services.persona_voice import PROBE_PREFERENCE, michael_lead_guard
     from diag_project.services.intro_messages import PERSONA_LINES
     from diag_project.routes import diagnoses as d
     assert find_praise("좋습니다, 참여율을 핵심으로 보셨군요.") == ["좋습니다(문두)"]
@@ -222,7 +218,7 @@ def test_p4_2_praise_lead_detected_and_regenerated_not_capped():
     assert strip_praise("좋습니다, 참여율을 핵심으로 보셨군요. 좋은 방향이에요. 그 뒤에는요?") == ("참여율을 핵심으로 보셨군요. 그 뒤에는요?", 2)
     assert '"praise"}' in inspect.getsource(d._submit_message_phase3a)
     # Michael '좋습니다' — 꼬리 풀·선호·고정 문장에서 삭제, 가드는 떼기만
-    assert "좋습니다." not in PERSONA_TAILS["Michael"] and "질문 앞에 '좋습니다,'" not in PROBE_PREFERENCE["Michael"]
+    assert "질문 앞에 '좋습니다,'" not in PROBE_PREFERENCE["Michael"]
     assert not any(v.startswith("좋습니다") for v in PERSONA_LINES["Michael"].values())
     assert michael_lead_guard("좋습니다, 그 뒤에는요?", False, add=False) == ("그 뒤에는요?", False)
 
