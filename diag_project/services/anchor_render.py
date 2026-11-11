@@ -123,6 +123,8 @@ def opener_shape_ok(text: str) -> tuple[bool, str]:
         return False, "length"
     if any(w in text for w in _OPENER_EXAMPLE_WORDS):
         return False, "example_copied"
+    if any(_OPENER_META_RE.search(x) for x in sents[:qi]):
+        return False, "instruction_echo"            # (p10b) 지시문 되읊기 — "무엇을 듣고 싶은지 말씀해 주세요: …"
     from diag_project.services.phrase_caps import is_filler_sentence
     if any(is_filler_sentence(x) for x in sents[:qi]):
         return False, "filler"                      # (P10-3) '~은 팀마다, 사람마다 다릅니다' 류 채움 문장
@@ -141,11 +143,14 @@ def _sub_material(chapter: str | None, sub_key: str | None) -> dict:
 # (2026-11-10 P9-7 → 2026-11-11 P10-3) 여는 문장(왜 묻는지) 틀 3종 — 세션에서 연 사례 순번으로 돌린다.
 #   P10-3: 채움 문장 틀('~하는 방식은 팀마다, 사람마다 다릅니다')은 삭제 — 어느 주제에나 붙는 일반론이었다. 대신 '주제 절 + 질문' 한 문장 틀.
 #   '이번에는 ~ 쪽 이야기' 틀은 세션 2회만(순번 1·5). 틀 설명은 어미를 싣지 않는다 — 합쇼체로 쓴 틀을 해요체 코치가 그대로 베꼈다(11/11 Olivia).
+#   (p10b) 틀 설명을 '무엇을 듣고 싶은지 말하는 한 문장' 이라고 쓰자 그 말이 출력에 그대로 나왔다("무엇을 듣고 싶은지 말씀해 주세요: …") —
+#   설명은 꼴만 보이고(따옴표 안의 꼴), 되읊은 출력은 opener_shape_ok 가 떨어뜨린다(쌍점·'말씀해 주세요'·틀 낱말).
 OPENER_FRAMES = (
-    "무엇을 듣고 싶은지 말하는 한 문장('~을 어떻게 하시는지 듣고 싶다'는 뜻). 그 다음 문장이 질문.",
-    "주제를 바꾸는 짧은 한 문장('이번에는 ~ 쪽 이야기'라는 뜻). 그 다음 문장이 질문.",
-    "평서문을 따로 두지 않고 질문 한 문장으로만 쓴다 — 무엇에 관한 것인지를 앞 절에 넣고 쉼표로 이어서 묻는다('~에 관한 건데요, 최근에 ~ 있으셨어요?' 꼴).",
+    "①을 '~을 어떻게 하시는지 듣고 싶다' 꼴의 문장 하나로 쓴다. 그 다음 문장이 ②.",
+    "①을 '이번에는 ~ 쪽 이야기' 꼴의 짧은 문장 하나로 쓴다. 그 다음 문장이 ②.",
+    "①과 ②를 한 문장으로 쓴다 — ①을 앞 절에 넣고 쉼표로 이어서 묻는다('~에 관한 건데요, 최근에 ~ 있으셨어요?' 꼴).",
 )
+_OPENER_META_RE = re.compile(r"(:|：|무엇을 듣고 싶은지|말씀해\s*주세요|말씀해\s*주십시오|꼴의|틀|한 문장|①|②)")
 OPENER_FRAME_EXAMPLES = (
     "장을 볼 때 무엇부터 담으시는지 듣고 싶어요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
     "이번에는 장을 보는 쪽 이야기예요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",

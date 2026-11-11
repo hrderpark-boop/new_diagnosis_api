@@ -2763,7 +2763,7 @@ async def _submit_message_phase3a(
                 _sk = [x for x in _sk if not re.search(r"(첫\s*(번째\s*)?영역|부터\s*(시작|볼|보겠|가\s*볼|여쭙|들어))", x)] or [chapter_scope_line(chapter)]
             else:
                 # (P10 p10a) 전환 영역: 직전 턴의 고정 다리("이제 '성과관리' 쪽으로 …")가 이미 넘어간다고 말했다 — LLM 이 다시 쓴 진입 문장은 걷어낸다
-                _mv_k = re.compile(re.escape(_cn_k) + r"['’”\"]?\s*(쪽으로|으로|로|영역으로)\s*(가|넘어|이어|옮겨|들어|바꿔)")
+                _mv_k = re.compile(re.escape(_cn_k) + r"['’”\"]?\s*(쪽|영역)?\s*(으로|로|에서|을|를|부터)?\s*[^.?!]{0,12}(가\s*볼|가볼|넘어|이어|옮겨|들어가|바꿔|시작해|시작하|볼게요|보겠)")   # (p10b) '성과관리 쪽에서 이야기를 시작해 볼게요'도
                 _sk = [x for x in _sk if not _mv_k.search(x)] or [chapter_scope_line(chapter)]
             _scope_k, _n_reg_k, _left_k = _areg_k(_pn_k, _sk[-1], scope="strict")   # (P10-4) 범위 문장은 코치 어미 강제
             if _left_k:
@@ -2936,6 +2936,13 @@ async def _submit_message_phase3a(
                 if _n_rq_y and _c_rq_y.strip():
                     clean_reply = _c_rq_y
                     _tm["request_cut"] = _n_rq_y
+            if _is_probe:
+                # (P10 p10b) 8-i 뒤 재생성(8-w)이 다시 들여온 질문 뒤 권유문('…태도 같은 것도 괜찮아요.')을 한 번 더 걷어낸다
+                from diag_project.services.output_guard import strip_suggestion_statements as _sss_y
+                _c_sg_y, _n_sg_y = _sss_y(clean_reply)
+                if _n_sg_y and _c_sg_y.strip():
+                    clean_reply = _c_sg_y
+                    _tm["suggestion_cut"] = int(_tm.get("suggestion_cut") or 0) + _n_sg_y
             if "사건" in clean_reply:   # (p2f) 8-i 뒤 재생성 출력(8-j·8-n·8-h)에도 '사건' 치환
                 clean_reply, _n_riw_y = _riw_y(clean_reply)
                 if _n_riw_y:

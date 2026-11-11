@@ -19,7 +19,7 @@ import re
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK
 from diag_project.services.intro_messages import align_guide_line, align_open_line, persona_line
 from diag_project.services.korean import with_josa
-from diag_project.services.output_guard import is_question, key_noun_phrase, split_sentences, count_questions
+from diag_project.services.output_guard import find_praise, is_question, key_noun_phrase, split_sentences, count_questions
 from diag_project.services.receive_check import quote_phrase
 
 RECEIVE_MAX_SENTENCES = 3
@@ -78,6 +78,8 @@ def receive_sentences(llm_text: str, *, chapter: str, sub_names: list[str], user
                 continue
             if _CHOICE_RE.search(s):
                 continue
+            if find_praise(s):
+                continue                                              # (p10b) '…말씀이 인상적이네요.' — 뒤 단계 재생성이 다시 들여온 평가 말투
             if re.search(r"(가지를|가지로|가지 영역|가지 항목)", s) and re.search(r"(살펴|들여다|여쭤|볼게요|보겠습니다)", s):
                 continue                                              # 안내문은 시스템이 붙인다
             out.append(s)

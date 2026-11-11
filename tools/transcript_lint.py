@@ -220,6 +220,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
         "fixed_receive": 0, "fixed_receive_issues": [], "receive_fallback_turns": 0, "slot_generic": 0, "slot_issues": [],
         "smalltalk": None, "smalltalk_total_s": None, "smalltalk_regen": None, "short_bare_q": 0, "short_bare_issues": [],
         "summary_eval": 0, "summary_eval_issues": [], "empty_receive": 0, "empty_receive_issues": [],
+        "instruction_echo": 0, "instruction_echo_issues": [],
         # (BEI) 사례 단계
         "episodes": {}, "episode_turns": [], "episode_turns_out_of_range": 0, "episodes_six_slots": 0, "episodes_closed": 0,
         "chapter_leader_turns": {}, "chapter_leader_turns_max": 0, "coverage": {}, "coverage_ratio": None,
@@ -441,6 +442,12 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
                 if _qs_sb and _isbq_l(_qs_sb[-1], [prev_user or ""]):
                     res["short_bare_q"] += 1
                     res["short_bare_issues"].append({"t": t, "instr": instr, "sentence": _qs_sb[-1][:90]})
+        if chapter and instr in ("EPISODE_OPEN", "COMPETENCY_ALIGN"):
+            # (P10 p10b) 여는 문장이 지시문을 되읊었는가 — "무엇을 듣고 싶은지 말씀해 주세요: …"
+            _echo_l = [x.strip() for x in split_sentences(_plain_l if instr != "DIAGNOSIS_INTRO" else "") if re.search(r"(무엇을 듣고 싶은지|말씀해\s*주세요\s*[:：]|꼴의 문장|①|②)", x)]
+            if _echo_l:
+                res["instruction_echo"] += 1
+                res["instruction_echo_issues"].append({"t": t, "instr": instr, "sentence": _echo_l[0][:110]})
         if chapter and instr == "CHAPTER_READY_TO_END":
             # (P10 p10a) 종료 요약의 총평·해석 문장 — "…직접 쓰셨다는 점에서, 저희는 리더가 … 힘을 봐요."
             from diag_project.services.output_guard import _SUMMARY_INTERP_RE as _sir_l
@@ -461,7 +468,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
             from diag_project.services.slot_render import slot_sentence_ok as _sso_l
             _ok_s, _why_s = _sso_l(g.get("slot_kind") or "", g.get("slot_text"), _leader_by_ep.get((chapter, g.get("ep_kind", "episode"), int(g.get("episode") or 0))) or [prev_user or ""],
                                    persona_name=coach_name)
-            if not _ok_s and _why_s in ("no_case_words", "example_copied", "shape"):
+            if not _ok_s and _why_s in ("no_case_words", "example_copied", "shape", "garbled_choice"):
                 res["slot_generic"] += 1
                 res["slot_issues"].append({"t": t, "instr": instr, "why": _why_s, "sentence": str(g.get("slot_text"))[:90]})
         if g.get("smalltalk"):
@@ -584,8 +591,8 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
     L: list[str] = []
     L.append("## 코치 재생 전문 린트 요약")
     L.append("")
-    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN | 잘림 | 미감지 a/b | 사례당 리더 턴(5~8 밖) | 6슬롯/종료 사례 | 챕터 리더 턴 최대 | 커버리지 | 미확인/미탐색 | 되받기 없음/미인용(대상) | 형식 재생성/미해결 | 고정문장 반복 꼬리/슬롯/앵커재사용 | 슬롯 사례(보존/턴) | 슬롯/챕터 최대 | 평가 말투 | 흉터 | 고정문장≥3회 | 좋습니다 최대 | 동일앵커 | 말투 섞임(여는·범위/전체) | 닫는 턴 질문 | 주어 없는 질문 | 입버릇 초과(궁금/쪽 이야기/채움) | 질문 2개+ 턴 | 고정 받기(반복/미인용/내용 없음) | 슬롯 일반문 | 짧은 질문 | 요약 총평 |")
-    L.append("|---|---|---:|---:|---:|---:|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    L.append("| 코치 | 파일 | 누설(전체/엄격) | 8-y | ALIGN | 잘림 | 미감지 a/b | 사례당 리더 턴(5~8 밖) | 6슬롯/종료 사례 | 챕터 리더 턴 최대 | 커버리지 | 미확인/미탐색 | 되받기 없음/미인용(대상) | 형식 재생성/미해결 | 고정문장 반복 꼬리/슬롯/앵커재사용 | 슬롯 사례(보존/턴) | 슬롯/챕터 최대 | 평가 말투 | 흉터 | 고정문장≥3회 | 좋습니다 최대 | 동일앵커 | 말투 섞임(여는·범위/전체) | 닫는 턴 질문 | 주어 없는 질문 | 입버릇 초과(궁금/쪽 이야기/채움) | 질문 2개+ 턴 | 고정 받기(반복/미인용/내용 없음) | 슬롯 일반문 | 짧은 질문 | 요약 총평 | 지시문 되읊기 |")
+    L.append("|---|---|---:|---:|---:|---:|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for r in results:
         same = cross["per_coach"].get(r["coach"], 0)
         ep_s = ",".join(str(n) for n in r["episode_turns"]) or "-"
@@ -598,7 +605,7 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
                  f"{r['format_regen_turns']}/{r['receive_miss_turns']} | {r['tail_repeat']}/{r['slot_repeat']}/{r['anchor_reuse']} | {r['slot_episodes']}({r['slot_kept']}/{r['slot_turns']}) | "
                  f"{r['slot_per_chapter_max']} | {r['praise_turns']} | {r['broken_turns']} | {len(r['repeat3'])} | {r['good_lead_max']} | {same} | {r['register_mix_open']}/{r['register_mix']} | {r['close_side_q']} | {r['no_referent_q']} | "
                  f"{r['phrase_over']['gunggeum']}/{r['phrase_over']['side_story']}/{r['phrase_over']['filler']} | {r['multi_q_turns']} | "
-                 f"{r['fixed_receive']}/{r['receive_no_quote_turns']}/{r['empty_receive']} | {r['slot_generic']} | {r['short_bare_q']} | {r['summary_eval']} |")
+                 f"{r['fixed_receive']}/{r['receive_no_quote_turns']}/{r['empty_receive']} | {r['slot_generic']} | {r['short_bare_q']} | {r['summary_eval']} | {r['instruction_echo']} |")
     L.append("")
     L.append("- 미감지 a/b: (직전 사용자 턴 반복 미감지/발생) · (코치 질문 붙여넣기 미감지/발생)")
     L.append("- 사례당 리더 턴: 종료된 사례별 리더 턴 수(괄호는 5~8 밖 사례 수). 6슬롯/종료 사례: 6/6 로 닫힌 사례 수 / 종료 사례 수.")
@@ -608,7 +615,7 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
              "닫는 턴 질문 = 사례를 닫고 새 사례를 여는 턴의 받기 쪽에 질문·예고·조언·가정이 남은 턴, 주어 없는 질문 = 대상 낱말이 없는 탐침 질문 — 셋 다 0 목표.")
     L.append("- (2026-11-11 P10) 입버릇 초과 = '궁금해요/궁금합니다' 챕터 1회 초과 / '이번에는 ~쪽 이야기' 세션 2회 초과 / 채움 문장('~마다 다릅니다') 턴. "
              "질문 2개+ 턴 = 한 턴에 질문 표지가 둘 이상(쉼표로 이은 의문사 나열 포함). 고정 받기 = 같은 받는 문장이 세션에서 되풀이된 수 / 리더 낱말이 없는 받기 턴 / 받을 낱말이 없는 답 뒤에 붙은 받는 문장. 요약 총평 = 챕터 종료 요약의 해석·평가 문장. "
-             "슬롯 일반문 = 사례 낱말이 없는 슬롯 문장. 짧은 질문 = 대상·장면 없이 15자 이하인 탐침 질문 — 전부 0 목표. 말투 섞임은 여는 문장·범위 문장·다리를 코치 어미로 본다(받는 문장만 자유).")
+             "슬롯 일반문 = 사례 낱말이 없거나 고른 쪽·버린 쪽이 뒤섞인 슬롯 문장. 지시문 되읊기 = 여는 문장에 틀 설명이 그대로 나온 턴. 짧은 질문 = 대상·장면 없이 15자 이하인 탐침 질문 — 전부 0 목표. 말투 섞임은 여는 문장·범위 문장·다리를 코치 어미로 본다(받는 문장만 자유).")
     L.append("- (2026-11-05 P4) 슬롯/챕터 최대 ≤1 · 평가 말투('좋습니다/좋은 방향/잘하셨/인상적' 류, 고정 문장 제외) 0 · 흉터(서술어 없음·호칭만·조사 끝) 0 · "
              "같은 고정 문장 세션 ≥3회 0 — 넷 다 P4 통과 기준.")
     if any(r["mapping_accuracy"] is not None for r in results):
@@ -624,7 +631,8 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
         for it in r.get("phrase_issues") or []:
             L.append(f"- [P10 입버릇 — {it['kind']}] {r['coach_name']} t{it['t']} {it['instr']}: {it['sentence']}")
         for key, title in (("multi_q_issues", "질문 2개+"), ("fixed_receive_issues", "고정 받기(반복)"), ("empty_receive_issues", "고정 받기(내용 없음)"),
-                           ("slot_issues", "슬롯 일반문"), ("short_bare_issues", "짧은 질문"), ("summary_eval_issues", "요약 총평")):
+                           ("slot_issues", "슬롯 일반문"), ("short_bare_issues", "짧은 질문"), ("summary_eval_issues", "요약 총평"),
+                           ("instruction_echo_issues", "지시문 되읊기")):
             for it in r.get(key) or []:
                 L.append(f"- [P10 {title}] {r['coach_name']} t{it['t']} {it['instr']}: {it['sentence']}")
         if r.get("smalltalk"):

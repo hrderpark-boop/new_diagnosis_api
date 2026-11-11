@@ -35,8 +35,8 @@ _SPEC: dict[str, tuple[str, str]] = {
                   "전세 대신 월세로 정하실 때 무엇을 기준으로 삼으셨습니까?"),
     "reason": ("리더가 고른 쪽과 버린 쪽을 리더의 낱말로 짚고, 그쪽을 고른 이유를 한 줄로 청하는 짧은 질문 한 문장.",
                "전세 말고 월세를 고른 이유, 한 줄로 하면 무엇입니까?"),
-    "counterfactual": ("리더가 고르지 않은 쪽(버린 선택, 또는 실제로 한 일을 하지 않았을 경우)을 리더의 낱말로 짚고, 그랬다면 그 자리의 사람들이 "
-                       "어떻게 움직였을지 묻는 가정 질문 한 문장.",
+    "counterfactual": ("리더가 실제로 고른 쪽 대신 '고르지 않은 쪽'을 했다고 가정하고, 그랬다면 그 자리의 사람들이 어떻게 움직였을지 묻는 질문 한 문장. "
+                       "꼴: '[고른 쪽] 대신(없이) [고르지 않은 쪽]을 하셨다면, [사람]은 어떻게 …했을까요?' — 가정하는 것은 반드시 '고르지 않은 쪽'이다.",
                        "월세 대신 전세로 무리해서 들어가셨다면 식구들은 어떻게 움직였을까요?"),
     "other_side": ("리더가 말한 그 장면의 상대(사람)를 리더의 낱말로 짚고, 그 사람 자리에서는 그 장면이 어떻게 보였을지 묻는 질문 한 문장.",
                    "이사 날짜를 갑자기 들은 집주인 자리에서는 그 전화가 어떤 장면이었을까요?"),
@@ -61,6 +61,9 @@ _KIND_SHAPE: dict[str, re.Pattern] = {
     "will": re.compile(r"(다시|다음에|또)[^?]*\?"),
 }
 _ADVICE_RE = re.compile(r"(하시면 좋|해 보시|하셔야|하는 게 좋|권합니다|추천)")
+# (p10b) "2명 먼저 쓰자고 버리셨다면" — 지시문의 '버린 선택'이 문장에 들어와 고른 쪽과 버린 쪽이 뒤섞였다. 선택을 '버렸다'고 가정하는 꼴은 불합격.
+_GARBLED_CF_RE = re.compile(r"(버리셨다면|버렸다면|버리셨더라면|버렸더라면|고 버리|를 버리셨|을 버리셨)")
+_CHOICE_KINDS = frozenset({"counterfactual", "reason", "criterion"})
 
 
 def slot_sentence_ok(kind: str, text: str | None, leader_texts: list[str] | None, *, persona_name: str | None = None,
@@ -90,6 +93,8 @@ def slot_sentence_ok(kind: str, text: str | None, leader_texts: list[str] | None
         return False, "no_case_words"            # 리더가 쓴 낱말이 2개는 들어가야 '그 사례의 문장'이다
     if find_praise(t) or find_state_leak(t) or _ADVICE_RE.search(t):
         return False, "praise_or_advice"
+    if kind == "counterfactual" and _GARBLED_CF_RE.search(t):
+        return False, "garbled_choice"
     if register_violations(persona_name, t, scope="strict"):
         return False, "register"
     norm = re.sub(r"\s+", "", t)
@@ -104,6 +109,19 @@ def _stub_sentence(kind: str, leader_texts: list[str], persona_name: str | None)
     if not np_:
         return None
     return f"'{np_}' 이야기에 붙는 {kind} 자리입니다." if kind in STATEMENT_KINDS else f"'{np_}' 이야기에 붙는 {kind} 질문입니까?"
+
+
+def _pick_sentence(raw: str | None) -> str:
+    """LLM 출력에서 슬롯 문장만 꺼낸다 — '문장:' 줄이 있으면 그 줄, 없으면 마지막 줄(앞의 '고른 쪽/고르지 않은 쪽' 줄은 버린다)."""
+    lines = [ln.strip().strip('"“”') for ln in (raw or "").strip().split("\n") if ln.strip()]
+    if not lines:
+        return ""
+    for ln in lines:
+        m = re.match(r"^문장\s*[:：]\s*(.+)$", ln)
+        if m:
+            return m.group(1).strip().strip('"“”')
+    body = [ln for ln in lines if not re.match(r"^(고른 쪽|고르지 않은 쪽)\s*[:：]", ln)]
+    return (body[-1] if body else "").strip()
 
 
 async def render_slot(llm, *, kind: str, persona_name: str | None, transcript: list[tuple[str, str]], used: list[str] | None = None,
@@ -129,16 +147,18 @@ async def render_slot(llm, *, kind: str, persona_name: str | None, transcript: l
         "- 리더가 하지 않은 말·없는 사실을 만들지 않는다. '그 선택', '그 일', '반대로' 처럼 가리키기만 하는 말로 때우지 않는다.\n"
         "- 역량·항목 이름, 평가·칭찬·조언은 쓰지 않는다.\n"
         f"- 말투: {register_hint(persona_name)}\n\n"
-        f"[결 참고 — 다른 분야의 예. 낱말을 가져오지 말 것] {example}\n\n출력: 문장만. 따옴표·설명 없이."
+        f"[결 참고 — 다른 분야의 예. 낱말을 가져오지 말 것] {example}\n\n"
+        + ("출력은 세 줄입니다(앞 두 줄은 리더의 낱말로 짧게).\n고른 쪽: …\n고르지 않은 쪽: …\n문장: …" if kind in _CHOICE_KINDS
+           else "출력: 문장만. 따옴표·설명 없이.")
     )
     prompt, mode, why = base, "llm", ""
     for attempt in range(max(1, rounds)):
         try:
-            out = await llm._generate_with_retry(prompt=prompt, max_tokens=160, thinking_budget=0, call_type="slot_render", temperature=0.5)
+            out = await llm._generate_with_retry(prompt=prompt, max_tokens=220, thinking_budget=0, call_type="slot_render", temperature=0.5)
         except Exception as e:  # noqa: BLE001
             logger.warning("슬롯 문장 렌더링 실패: %s", e)
             return None, "miss:error"
-        cand = re.sub(r"\s*\n+\s*", " ", (out or "").strip().strip('"“”'))
+        cand = _pick_sentence(out)
         cand = apply_register(persona_name, cand, scope="strict")[0]
         ok, why = slot_sentence_ok(kind, cand, leader, persona_name=persona_name, used=used)
         if ok:

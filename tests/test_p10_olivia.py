@@ -357,3 +357,38 @@ def test_p10a_followups_from_confirm_sim():
     # 8) 한 문장 틀에서는 리더의 직전 말을 프롬프트에 주지 않는다(직전 답을 되묻는 여는 문장 방지)
     from diag_project.services import anchor_render
     assert "if (lead and not one_sentence)" in inspect.getsource(anchor_render.render_opener)
+
+
+# ── 확인 시뮬 p10b(고친 코드로 한 번 더)에서 본 것 — 결정론 수정 ──────────────────────────────────────────────
+def test_p10b_followups_from_second_confirm_sim():
+    from diag_project.services.align_render import receive_sentences
+    from diag_project.services.anchor_render import OPENER_FRAMES, opener_shape_ok
+    from diag_project.services.output_guard import attach_referent, key_person, strip_suggestion_statements
+    from diag_project.services.slot_render import _pick_sentence, slot_sentence_ok
+    # 1) 여는 문장이 틀 설명을 되읊었다
+    echo = ("무엇을 듣고 싶은지 말씀해 주세요: 문제가 생겼을 때 원인을 어떻게 짚고 어떤 해결 방법들을 비교해 보셨는지 듣고 싶어요. "
+            "최근에 일이 진행되다가 예상과 다르게 막히는 일이 있으셨어요?")
+    assert opener_shape_ok(echo) == (False, "instruction_echo")
+    assert opener_shape_ok("문제가 생겼을 때 원인을 어떻게 짚으시는지 듣고 싶어요. 최근에 일이 진행되다가 예상과 다르게 막히는 일이 있으셨어요?") == (True, "")
+    assert not any("무엇을 듣고 싶은지" in f for f in OPENER_FRAMES)
+    # 2) 슬롯 문장에서 고른 쪽과 버린 쪽이 뒤섞였다 — "2명 먼저 쓰자고 버리셨다면"
+    ans = ["제가 대표님께 올해는 운영팀 2명만 먼저 써 보고 전면 도입은 내년으로 미루자는 안을 숫자와 함께 가져갔어요. "
+           "그리고 운영 보고서를 그 도구로 자동으로 만드는 방법을 제가 먼저 만들어서 보여드렸고, 매주 한 시간씩 사용법을 직접 가르쳤습니다."]
+    bad = "대표님께 전면 도입 대신 2명 먼저 쓰자고 버리셨다면, 운영팀 사람들은 매주 한 시간씩 직접 배우는 자리에 나왔을까요?"
+    assert slot_sentence_ok("counterfactual", bad, ans, persona_name="Olivia") == (False, "garbled_choice")
+    good = "운영팀 2명 먼저 대신 바로 전면 도입을 하셨다면, 운영팀 사람들은 매주 한 시간씩 배우는 자리에 어떻게 나왔을까요?"
+    assert slot_sentence_ok("counterfactual", good, ans, persona_name="Olivia") == (True, "")
+    assert _pick_sentence(f"고른 쪽: 운영팀 2명 먼저\n고르지 않은 쪽: 전면 도입\n문장: {good}") == good and _pick_sentence("그 선택, 응원해요.") == "그 선택, 응원해요."
+    # 3) "그리고 운영의 말이나 표정" — 앞 어절까지 삼킨 인물 판정
+    assert key_person(ans[0]) == "대표님" and key_person("운영 보고서를 만들었어요") == "" and key_person("최운영 씨가 바꿨어요") == "최운영 씨"
+    assert key_person("박선임과 김책임 두 분이 부딪혔어요") == "두 분" and key_person("이기획에게 낮은 등급을 줬어요") == "이기획"
+    assert attach_referent("그리고 말이나 표정, 혹은 쓰는 태도가 달라진 게 눈에 띄셨는지 궁금해요.", ans[0]).startswith("대표님의 말이나 표정")
+    # 4) ALIGN 받기의 평가 말투(뒤 단계 재생성이 다시 들여온 것)는 버린다 — 정의 구절 인용 폴백으로 간다
+    assert receive_sentences("목표를 함께 정하고 중간에 점검하면서 끝까지 가게 한다는 말씀이 인상적이네요.", chapter="performance_management", sub_names=[],
+                             user_text="성과관리는 목표를 같이 정하고 중간에 점검해서 끝까지 가게 하는 일이라고 봐요.") == []
+    # 5) 질문 뒤에 붙는 범위 안내 — "…달라진 태도 같은 것도 괜찮아요."
+    t = "표를 보여 주셨군요. 그때 이기획님이 어떤 반응을 보였는지 떠오르는 장면이 있으셨어요? 말씀이나 표정, 혹은 목표를 같이 쓰는 과정에서 달라진 태도 같은 것도 괜찮아요."
+    assert strip_suggestion_statements(t) == ("표를 보여 주셨군요. 그때 이기획님이 어떤 반응을 보였는지 떠오르는 장면이 있으셨어요?", 1)
+    # 6) 전환 영역의 진입 문장 꼴 보강 + 8-y 에서 권유문 한 번 더
+    src = _route_src()
+    assert "시작해|시작하|볼게요|보겠" in src and "strip_suggestion_statements as _sss_y" in src

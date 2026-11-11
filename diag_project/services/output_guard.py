@@ -405,7 +405,9 @@ def count_questions(text: str) -> int:
 _COPULA_ALONE = {"이에요", "예요", "이네요", "입니다", "이죠", "이군요", "이시네요", "이었어요", "이었습니다", "이고요", "이라서요", "인데요", "이에요.", "입니다."}
 _PARTICLE_END_RE = re.compile(r"[가-힣]+(이|가|은|는|을|를|의|에|에서|에게|으로|로|과|와|도|까지|부터)$")
 _SUGGESTION_RE = re.compile(r"((주|보|하|해\s*보|떠올려\s*보|생각해\s*보)셔도\s*(좋아요|좋습니다|괜찮아요|괜찮습니다|돼요|됩니다|좋겠어요|좋겠습니다)|"
-                            r"(떠올려|생각해|돌아봐|짚어)\s*보(세요|셔요|시죠|시지요)|주셔도\s*(좋|괜찮)[가-힣]*)[.!…]?$")
+                            r"(떠올려|생각해|돌아봐|짚어)\s*보(세요|셔요|시죠|시지요)|주셔도\s*(좋|괜찮)[가-힣]*|"
+                            # (p10b) "말씀이나 표정, 혹은 … 달라진 태도 같은 것도 괜찮아요." — 질문 뒤에 붙는 범위 안내도 권유문이다
+                            r"(것|거|일|장면|이야기|얘기)(도|이라도|라도)\s*(괜찮아요|괜찮습니다|좋아요|좋습니다|돼요|됩니다))[.!…]?$")
 
 
 # (2026-11-05 P4-3) 흉터 규칙 — 가드가 구절을 떼고 남긴 문장: (a) 서술어 없음('…게 인데요', '그 결정의 기준.') (b) 호칭만('리더님.')
@@ -1123,13 +1125,28 @@ _PERSON_CORE = (r"(?:[가-힣A-Za-z]{1,6}\s?(?:님|씨|선임|책임|수석|대�
 _PERSON_RE = re.compile(_PERSON_CORE)
 
 
+_PERSON_LEAD_STOP = {"제가", "저는", "저도", "저희", "우리", "그리고", "그래서", "그런데", "올해", "작년", "내년", "이번", "지난", "먼저", "다시", "그때", "당시"}
+_BARE_TITLE_RE = re.compile(r"^(선임|책임|수석|대리|과장|차장|부장|팀장|실장|본부장|대표|사원|주임|매니저|강사|기획|운영)$")
+
+
+def _clean_person(match: str) -> str:
+    """(p10b) 정규식이 앞 어절까지 삼킨 것을 걸러낸다 — '제가 대표님' → '대표님', '그리고 운영'·'올해는 운영' → 사람 아님."""
+    toks = match.split()
+    if len(toks) >= 2 and (toks[0] in _PERSON_LEAD_STOP or re.search(r"(는|은|가|이|를|을|고|에|도|께|서|로|와|과|만)$", toks[0])):
+        toks = toks[1:]
+    out = " ".join(toks).strip()
+    if not out or _BARE_TITLE_RE.match(out) or out in ("리더님",):
+        return ""                                   # 이름도 '님/씨'도 없는 직함 낱말('운영', '기획')은 사람이 아니다(운영팀·기획안)
+    return out
+
+
 def key_person(user_text: str | None) -> str:
     """리더 답에 나온 인물 표현 하나 — 여럿이면 묶음 표현('두 분')을 먼저, 없으면 마지막에 나온 사람. 없으면 빈 문자열."""
     t = user_text or ""
     m = re.search(r"(?:두|세|네|몇|여러)\s?(?:분|사람|명)", t)
     if m:
         return re.sub(r"(사람|명)$", "분", m.group(0))
-    found = [x.group(0).strip() for x in _PERSON_RE.finditer(t) if x.group(0).strip() not in ("리더님",)]
+    found = [c for c in (_clean_person(x.group(0).strip()) for x in _PERSON_RE.finditer(t)) if c]
     return found[-1] if found else ""
 
 
@@ -1154,6 +1171,7 @@ def attach_referent(question: str, context_text: str | None) -> str:
     core0 = _REF_NOISE_RE.sub("", (question or "").strip())
     if _REACTION_RE.search(core0) and not _PERSON_RE.search(core0):
         who = key_person(context_text)
+        core0 = re.sub(r"^(그리고|또|그래서)\s+", "", core0)            # (p10b) 질문 머리의 접속사는 뗀다 — '그리고 …의 말이나 표정'
         return f"{who}의 {core0}" if who else f"상대분의 {core0}"
     if _TALK_RE.search(core0) and not _PERSON_RE.search(core0):
         who = key_person(context_text)                     # (P10-2) 오간 이야기는 사람과의 일 — 리더 답에 나온 사람을 붙인다
