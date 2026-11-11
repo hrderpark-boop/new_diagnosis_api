@@ -145,33 +145,89 @@ def quote_phrase(user_text: str | None) -> str | None:
 
 
 
-QUOTE_RECEIVE_MAX = 42
+QUOTE_RECEIVE_MAX = 28           # 핵심 구절 길이 상한(자)
+QUOTE_RECEIVE_MAX_EOJEOL = 7
+_BOUND_LEAD_RE = re.compile(r"^(쪽|것|거|수|때|뒤|적|데|분|중|등)(은|는|이|가|을|를|에|에야|에는|도|만)?$")   # 앞을 잘랐을 때 구절 머리에 남으면 안 되는 의존명사
+_ADJ_STEMS = set("좋많싫작적높낮깊넓좁짧같")
 _CLAUSE_CUT_RE = re.compile(r"(,\s|고\s|며\s|서\s|는데\s|지만\s|니까\s)")
+_QUOTE_LEAD_STOP = {"제가", "저는", "저도", "저희는", "저희가", "우리는", "우리가", "그때", "그래서", "그리고", "그런데", "그다음", "그다음에", "다음", "그러고",
+                    "사실", "일단", "결국", "나중에", "그", "이", "좀", "조금", "약간", "아마", "거의"}
+# '…다는 걸 (그때) 배웠습니다' — 안은문장의 내용 절이 핵심이다
+_EMBEDDED_RE = re.compile(r"^(?P<core>.{6,}?다)는\s*(?:걸|것을|것이|점을|점이|사실을|생각이|생각을|판단이|걸로)\b")
+# 종결 어미 → 인용에 쓰는 평서 꼴('…다'). 아는 꼴만 — 모르면 폴백을 쓰지 않는다.
+_PLAIN_END: list[tuple[str, str]] = [
+    (r"(았|었|였|했|셨|겠|됐|갔|왔|봤|줬|썼|짰|냈|났|뒀|섰)(습니다|어요|아요|죠|지요|네요|거든요|고요|더라고요)$", r"\1다"),
+    (r"(합니다|해요|하죠|하거든요)$", "한다"), (r"(됩니다|돼요|되죠)$", "된다"),
+    (r"(있습니다|있어요|있죠|있거든요)$", "있다"), (r"(없습니다|없어요|없죠|없거든요)$", "없다"), (r"(같습니다|같아요)$", "같다"),
+    (r"(입니다|이에요|이죠)$", "이다"), (r"(예요|죠)$", "다"),
+]
 
 
-def quote_receive(user_text: str | None) -> str:
-    """(2026-11-11 P10-5) 받기 폴백 1문장 — 리더가 방금 한 말의 마지막 절을 그대로 받는다("'분담표를 다시 짰습니다'라고 하셨군요.").
-    '흥미로운 지점이에요' 처럼 어느 답에나 붙는 고정 문구는 쓰지 않는다. 받을 절(3어절 이상)이 없으면 빈 문자열 — 호출자는 받기 없이 내보낸다."""
+def _plain_ending(clause: str) -> str | None:
+    """'…짰습니다' → '…짰다', '…봅니다' → '…본다'. 못 바꾸면 None."""
+    for pat, repl in _PLAIN_END:
+        new = re.sub(pat, repl, clause)
+        if new != clause:
+            return new
+    if clause.endswith("습니다") and len(clause) >= 4 and "가" <= clause[-4] <= "힣":
+        stem = clause[:-3]
+        if stem.endswith(("않", "싶")):
+            return None                                       # '~지 않습니다'(동사·형용사 부정)·'싶습니다'는 꼴을 정할 수 없다 — 폴백을 쓰지 않는다
+        return stem + ("다" if stem[-1] in _ADJ_STEMS or stem.endswith(("어렵", "쉽", "가깝", "무겁", "괜찮")) else "는다")   # 좋습니다 → 좋다, 받습니다 → 받는다
+    if clause.endswith("니다") and len(clause) >= 3 and "가" <= clause[-3] <= "힣":
+        code = ord(clause[-3]) - 0xAC00
+        if code % 28 == 17:                                   # 모음 어간 + ㅂ니다 → ㄴ다(봅니다 → 본다)
+            return clause[:-3] + chr(0xAC00 + code - 17 + 4) + "다"
+    return clause if clause.endswith("다") else None
+
+
+def key_clause(user_text: str | None) -> str:
+    """리더 답의 핵심 구절(평서 꼴 '…다', 28자·6어절 안쪽) — 마지막 문장의 안은 내용 절, 없으면 마지막 절. 없으면 빈 문자열."""
     from diag_project.services.bei_engine import is_no_case_text
     from diag_project.services.output_guard import strip_leading_conjunction
     ut = re.sub(r"\s+", " ", (user_text or "").strip())
     if not ut or is_no_case_text(ut):
         return ""
     cands = [strip_leading_conjunction(x.strip()).strip(" .!?…~\"'“”‘’") for x in split_sentences(ut) if x.strip() and not x.strip().endswith("?")]
-    cands = [c for c in cands if len(c.split()) >= 3]
+    cands = [re.sub(r"['‘’\"“”]", "", c).strip() for c in cands if len(c.split()) >= 3]
     if not cands:
         return ""
     t = cands[-1]
-    if len(t) > QUOTE_RECEIVE_MAX:
-        cuts = [m.end() for m in _CLAUSE_CUT_RE.finditer(t)]
-        tail = next((t[c:].strip() for c in cuts if len(t) - c <= QUOTE_RECEIVE_MAX and len(t[c:].split()) >= 3), "")
-        if not tail:
+    m = _EMBEDDED_RE.match(t)
+    if m:
+        core = m.group("core").strip()
+    else:
+        # 뒤에서부터 절을 넓혀 가며 2어절 이상·상한 안쪽인 가장 긴 꼬리 절을 고른다
+        starts = [0] + [c.end() for c in _CLAUSE_CUT_RE.finditer(t)]
+        core = ""
+        for st in starts:
+            tail = t[st:].strip()
+            if len(tail.split()) >= 2 and len(tail) <= QUOTE_RECEIVE_MAX + 8:
+                core = tail
+                break
+        if not core:
             return ""
-        t = tail
-    t = re.sub(r"['‘’\"“”]", "", t).strip()            # 리더 말 안의 따옴표는 뗀다 — 겉 따옴표와 겹친다
-    ch = t[-1]
-    rago = "이라고" if ("가" <= ch <= "힣" and (ord(ch) - 0xAC00) % 28) else "라고"
-    return f"'{t}'{rago} 하셨군요."
+        plain = _plain_ending(core)
+        if not plain:
+            return ""
+        core = plain
+    toks = core.split()
+    while toks and toks[0] in _QUOTE_LEAD_STOP:
+        toks = toks[1:]
+    while len(toks) > 2 and (len(" ".join(toks)) > QUOTE_RECEIVE_MAX or len(toks) > QUOTE_RECEIVE_MAX_EOJEOL):
+        toks = toks[1:]
+    while len(toks) > 2 and (_BOUND_LEAD_RE.match(toks[0]) or toks[0] in _QUOTE_LEAD_STOP):
+        toks = toks[1:]                                       # 잘린 머리에 의존명사('쪽은')·군말이 남지 않게
+    core = " ".join(toks)
+    return core if len(toks) >= 2 and core.endswith("다") else ""
+
+
+def quote_receive(user_text: str | None) -> str:
+    """(2026-11-11 P10-5 → 같은 날 검토 반영) 받기 폴백 1문장 — 리더가 방금 한 말의 **핵심 구절만** 줄여 받는다
+    ("'분담표를 다시 짰다'는 말씀이셨군요."). 문장 전체를 그대로 인용하면 기계적으로 읽힌다("'…그때 배웠습니다'라고 하셨군요.").
+    '흥미로운 지점이에요' 처럼 어느 답에나 붙는 고정 문구는 쓰지 않는다. 받을 구절이 없으면 빈 문자열 — 호출자는 받기 없이 내보낸다."""
+    core = key_clause(user_text)
+    return f"'{core}'는 말씀이셨군요." if core else ""
 
 
 def receive_has_content(sentence: str | None, user_text: str | None) -> bool:

@@ -216,8 +216,9 @@ def test_p10_5_no_fixed_receive_lines_and_quote_fallback():
     src = _route_src()
     assert "tails_for" not in src and "quote_receive as _qrcv_w2" in src and '_tm["receive_fallback"] = "quote"' in src
     ans = "지난달 주간 회의에서 박선임과 김책임 두 분이 일정 문제로 부딪혔어요. 제가 따로 불러서 분담표를 다시 짰습니다."
-    assert quote_receive(ans) == "'제가 따로 불러서 분담표를 다시 짰습니다'라고 하셨군요."
-    assert quote_receive("김선임이 '지금도 잘 돌아가는데 왜 바꾸냐'고 반대했습니다") == "'김선임이 지금도 잘 돌아가는데 왜 바꾸냐고 반대했습니다'라고 하셨군요."
+    # (2026-11-11 검토 반영) 문장 전체가 아니라 핵심 구절만 — 평서 꼴로 줄여 받는다
+    assert quote_receive(ans) == "'따로 불러서 분담표를 다시 짰다'는 말씀이셨군요."
+    assert quote_receive("김선임이 '지금도 잘 돌아가는데 왜 바꾸냐'고 반대했습니다") == "'김선임이 지금도 잘 돌아가는데 왜 바꾸냐고 반대했다'는 말씀이셨군요."
     for empty in ("네 그랬어요", "글쎄요, 특별히 없었어요.", "", None):
         assert quote_receive(empty) == "", empty                   # 받을 절이 없으면 받기 없이 내보낸다(고정 문구로 메우지 않음)
     assert receive_has_content("분담표를 다시 짜셨군요.", ans) and not receive_has_content("흥미로운 지점이에요.", ans)
@@ -232,7 +233,7 @@ def test_p10_5_last_receive_requires_quote():
     assert last_receive_ok("그 선택이 궤도를 바꿨군요.", ans) == (False, "no_quote")
     assert last_receive_ok("일정표를 같이 보신다니, 다음에는 어떻게 하실 건가요?", ans)[0] is False
     # LLM 없음(스텁·실패): 리더 절 인용, 받을 내용이 없으면 받기 없이 종료
-    assert asyncio.run(render_last_receive(None, user_text=ans, persona_name="Olivia")) == ("'그 뒤로는 분기마다 강사 두 분과 일정표를 같이 봅니다'라고 하셨군요.", "quote")
+    assert asyncio.run(render_last_receive(None, user_text=ans, persona_name="Olivia")) == ("'분기마다 강사 두 분과 일정표를 같이 본다'는 말씀이셨군요.", "quote")
     assert asyncio.run(render_last_receive(None, user_text="네", persona_name="Olivia")) == ("", "none")
     assert asyncio.run(render_last_receive(None, user_text="글쎄요, 특별히 없었어요.", persona_name="Olivia")) == ("", "none")
 
@@ -392,3 +393,50 @@ def test_p10b_followups_from_second_confirm_sim():
     # 6) 전환 영역의 진입 문장 꼴 보강 + 8-y 에서 권유문 한 번 더
     src = _route_src()
     assert "시작해|시작하|볼게요|보겠" in src and "strip_suggestion_statements as _sss_y" in src
+
+
+# ── (2026-11-11 검토 반영) 받기 폴백은 핵심 구절만 — 문장 전체 인용은 기계적으로 읽힌다 ─────────────────────────────
+def test_quote_receive_keeps_only_key_clause():
+    from diag_project.services.receive_check import QUOTE_RECEIVE_MAX, key_clause, quote_receive as q
+    # p10b 에서 나간 문장: "'지시로 시작하면 반대부터 나온다는 걸 그때 배웠습니다'라고 하셨군요." → 안은 내용 절만
+    a = "다시 한다면 본부 지시가 내려오기 전에 제가 먼저 개편 이야기를 꺼냈을 것 같아요. 지시로 시작하면 반대부터 나온다는 걸 그때 배웠습니다."
+    assert q(a) == "'지시로 시작하면 반대부터 나온다'는 말씀이셨군요."
+    cases = {
+        "시범 운영을 먼저 해보자고 했어요": "시범 운영을 먼저 해보자고 했다",
+        "그래서 두 과정만 먼저 돌려 보자고 했고, 강사 두 분이 일정이 밀린다고 반대해서 제가 주간 회의에서 일정표를 다시 짜서 공유했어요.": "주간 회의에서 일정표를 다시 짜서 공유했다",
+        "운영팀만 먼저 붙이다 보니, 강사 쪽은 한참 뒤에야 그 변화를 따라잡았거든요.": "강사 쪽은 한참 뒤에야 그 변화를 따라잡았다",
+        "애초에 교안을 문서로 안 받아둔 게 제 실수였죠. 지금은 계약할 때 같이 받습니다.": "지금은 계약할 때 같이 받는다",
+        "이번 분기는 팀 분위기가 꽤 좋습니다.": "이번 분기는 팀 분위기가 꽤 좋다",
+        "파일럿 만족도가 기존 과정보다 높게 나와서 하반기에 전체 개편으로 넘어갔어요.": "하반기에 전체 개편으로 넘어갔다",
+    }
+    for src, core in cases.items():
+        assert key_clause(src) == core and q(src) == f"'{core}'는 말씀이셨군요.", src
+        assert len(core) <= QUOTE_RECEIVE_MAX and core.endswith("다") and "습니다" not in core and "어요" not in core
+    for none in ("네 그랬어요", "글쎄요, 특별히 없었어요.", "저는 그 방식을 좋아하지 않습니다.", "", None):
+        assert q(none) == "", none                    # 받을 구절이 없거나 꼴을 정할 수 없으면 폴백을 쓰지 않는다
+    assert "라고 하셨군요" not in q(a)
+
+
+# ── (2026-11-11 지연 단축 b) 두 질문은 재생성 없이 마지막 질문만 ────────────────────────────────────────────────
+def test_latency_b_two_questions_trimmed_without_regen():
+    from diag_project.services.output_guard import count_question_markers as c, keep_last_question, split_compound_question
+    src = _route_src()
+    i = src.index("def _trim_two(txt: str)")
+    j = src.index("while _iss and _rounds < 2:", i)
+    pre = src[i:j]
+    assert 'if _q_expected and "two_questions" in _iss:' in pre and "_timed_regen" not in pre            # 루프 앞에서 바로 자른다(LLM 호출 없음)
+    assert '_tm["two_q_trim"] = 1' in pre and "_issues_for_regen(clean_reply)" in pre
+    loop = src[j: src.index('_tm["format_regen"] = _rounds', j)]
+    assert "_cand, _n_tq2 = _trim_two(_cand)" in loop and "_iss2 = _issues_for_regen(_cand)" in loop    # 재생성 본문이 두 질문이어도 다시 돌리지 않는다
+    # P9-5(대상 없는 질문 보정)는 그대로 — 자른 턴(one_q)은 8-w3 의 대상 검사를 받는다
+    assert '_trimmed_w3 = bool(_tm.get("one_q"))' in src and src.index("# 8-w3.") > j
+    # 자르는 규칙: 문장이 둘이면 마지막 질문, 한 문장 안의 복합 질문은 뒤 질문
+    def trim(t):
+        t, _ = split_compound_question(t)
+        return keep_last_question(t)[0]
+    t1 = "분담표를 다시 짜셨군요. 그때 두 분은 뭐라고 하셨어요? 그 뒤에 일정은 어떻게 됐나요?"
+    assert trim(t1) == "분담표를 다시 짜셨군요. 그 뒤에 일정은 어떻게 됐나요?" and c(trim(t1)) == 1
+    t2 = "분담표를 다시 짜셨군요. 두 분이 어떻게 받아들였는지, 그리고 그 뒤 일정은 어떻게 됐나요?"
+    assert trim(t2) == "분담표를 다시 짜셨군요. 그 뒤 일정은 어떻게 됐나요?" and c(trim(t2)) == 1
+    t3 = "분담표를 다시 짜셨군요. 그런 일이 또 있었나요? 있었다면 언제였고, 어떤 장면이었나요?"
+    assert trim(t3) == t3                                                                                  # 조건절로 잇는 한 쌍은 한 질문으로 둔다

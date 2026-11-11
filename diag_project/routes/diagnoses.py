@@ -2523,7 +2523,25 @@ async def _submit_message_phase3a(
                 issues.append("praise")           # (P4-2) 재생성 출력에 새로 들어온 평가 말투('인상적이었어요')도 형식 위반 — 8-i 뒤 재생성은 8-i 를 다시 안 지난다
             return issues
 
+        # (2026-11-11 지연 단축 b) 두 질문은 재생성하지 않는다 — 바로 마지막 질문만 남긴다(한 문장 안의 복합 질문은 뒤 질문만). 재생성은 2회를 돌고도
+        #   절반이 못 고쳤고(p10b: 미해결 3턴) 턴마다 3초 안팎이 들었다. 남긴 질문에 대상이 없으면 아래 8-w3(P9-5)이 그대로 보정한다.
+        #   질문을 LLM 이 쓰는 턴(_q_expected)에만 — 여는 턴의 질문은 시스템 앵커라 8-w2 가 닫는 쪽을 정리한다.
+        def _trim_two(txt: str) -> tuple[str, int]:
+            from diag_project.services.output_guard import split_compound_question as _scq_t
+            _t, _n_sc_t = _scq_t(txt)
+            _t, _n_qo_t = _klq_w(_t)
+            return _t, _n_sc_t + _n_qo_t
+
+        def _issues_for_regen(txt: str) -> list[str]:
+            return [x for x in _format_issues(txt) if not (_q_expected and x == "two_questions")]
+
         _iss = _format_issues(clean_reply)
+        if _q_expected and "two_questions" in _iss:
+            clean_reply, _n_tq = _trim_two(clean_reply)
+            _tm["one_q"] = _n_tq
+            _tm["two_q_trim"] = 1
+            logger.info("✂️ 두 질문 → 재생성 없이 마지막 질문만 남김(%d개 삭제)", _n_tq)
+            _iss = _issues_for_regen(clean_reply)
         _rounds = 0
         _ph = _qp_r(_llm_user_text)
         while _iss and _rounds < 2:
@@ -2553,9 +2571,15 @@ async def _submit_message_phase3a(
                 continue
             # 질문부가 시스템 문장인 턴(앵커·슬롯)은 되받기만 바꾼다. LLM 질문 턴은 재생성 본문 전체를 후보로.
             _cand = _spl_r(clean_reply, _r_txt, 3, keep_fixed=_fixed_w) if (_fixed_w or not _q_expected) else _r_txt
-            _iss2 = _format_issues(_cand)
+            _n_tq2 = 0
+            if _q_expected and "two_questions" in _format_issues(_cand):
+                _cand, _n_tq2 = _trim_two(_cand)          # (b) 다른 사유로 재생성한 본문이 두 질문이어도 다시 돌리지 않고 자른다
+            _iss2 = _issues_for_regen(_cand)
             if len(_iss2) < len(_iss):
                 clean_reply, _iss = _cand, _iss2
+                if _n_tq2:
+                    _tm["one_q"] = int(_tm.get("one_q") or 0) + _n_tq2
+                    _tm["two_q_trim"] = 1
         _tm["format_regen"] = _rounds
         if _iss:
             _tm["format_miss"] = list(_iss)
@@ -3267,6 +3291,7 @@ async def _submit_message_phase3a(
             "slot_text": (str(_tm.get("slot_text"))[:120] if _tm.get("slot") and _tm.get("slot_text") else None),
             "slot_render": _tm.get("slot_render"), "receive_fallback": _tm.get("receive_fallback"), "first_bridge": int(_tm.get("first_bridge") or 0),
             "final_receive_mode": _tm.get("final_receive_mode"),
+            "two_q_trim": int(_tm.get("two_q_trim") or 0),   # (지연 단축 b) 두 질문을 재생성 없이 잘랐다
             "anchor_attached": int(_tm.get("anchor_attached") or 0), "format_regen": int(_tm.get("format_regen") or 0),
             "format_miss": _tm.get("format_miss"), "receive_miss": int(_tm.get("receive_miss") or 0), "receive_phrase": _tm.get("receive_phrase"),
             # (2026-11-06 P7-1) incident 슬롯 판정의 사례 유무 · stall 연속 무진전 턴 수
