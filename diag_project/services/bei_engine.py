@@ -414,6 +414,48 @@ def sweep_followup_allowed(store: dict | None, chapter: str | None, all_subs: li
     return remaining(store, chapter) > len(unasked(store, chapter, all_subs))
 
 
+# ── (2026-11-12 P11b-7) 보완 질문에서 나온 사례 ─────────────────────────────
+#   11/12 운영 Daniel: 보완 질문의 답이 실제 사건(평가 불일치)이었는데 2턴(앵커 + 후속 1)에 닫혀 주제가 바뀌었다. 답이 실제 사건이면 일반 사례처럼 올려
+#   여섯 가지 중 빠진 것만 묻는다 — 리더 턴 최대 4(앵커 답 포함). 아직 묻지 않은 하위역량의 예약 턴(1턴씩)은 침범하지 않는다.
+#   예산이 모자라면 올리지 않고 종전대로 2턴에 닫는다. 어느 쪽으로 갔는지는 그 항목의 promote('promoted'|'no_budget')·promote_end(닫힌 사유)에 적는다.
+SWEEP_PROMOTE_MAX_TURNS = 4
+SWEEP_PROMOTE_MIN_ROOM = 2            # 예약을 빼고 이만큼은 남아야 올린다(1 이면 종전의 후속 1턴과 같다)
+
+
+def sweep_promote_decision(store: dict | None, chapter: str | None, all_subs: list[str], ep: dict | None, *, incident: bool | None) -> str | None:
+    """보완 질문의 첫 답을 보고 정한다 — 'promoted'(일반 사례로 올림) | 'no_budget'(사건이지만 예산 부족, 종전대로) | None(사건이 아니거나 이미 정했다)."""
+    if not ep or ep.get("kind") != "sweep" or ep.get("promote") or int(ep.get("leader_turns") or 0) != 1 or incident is not True:
+        return None
+    if len(filled_slots(ep)) >= len(SLOT_KEYS):
+        return None                                   # 한 번의 답에 여섯 가지가 다 나왔다 — 더 물을 것이 없다
+    room = remaining(store, chapter) - len(unasked(store, chapter, all_subs))
+    return "promoted" if room >= SWEEP_PROMOTE_MIN_ROOM else "no_budget"
+
+
+def promoted_done_reason(ep: dict | None, store: dict | None, chapter: str | None, all_subs: list[str] | None = None) -> str | None:
+    """올린 보완 사례의 종료 사유 — 'slots'(여섯 가지) | 'turns'(리더 턴 4) | 'budget' | 'reserve'(미질문 예약 침범) | 'stalled' | None(계속)."""
+    if not ep:
+        return None
+    if len(filled_slots(ep)) >= len(SLOT_KEYS):
+        return "slots"
+    if int(ep.get("leader_turns") or 0) >= SWEEP_PROMOTE_MAX_TURNS:
+        return "turns"
+    if remaining(store, chapter) <= 0:
+        return "budget"
+    if all_subs and remaining(store, chapter) <= len(unasked(store, chapter, all_subs)):
+        return "reserve"
+    if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS and filled_slots(ep):
+        return "stalled"
+    return None
+
+
+def is_natural_close(closed_tag: str | None) -> bool:
+    """(P11b-8) 휴식을 권해도 되는 닫힘인가 — 일반 사례가 여섯 가지를 다 채웠거나('episodeN:done') 8턴에 닿았을 때('episodeN:turns')만.
+    보완 사례(sweepN:…)·조기 종료(stalled·reserve·budget)·사례 없음(no_case)은 아니다."""
+    t = str(closed_tag or "")
+    return t.startswith("episode") and t.rsplit(":", 1)[-1] in ("done", "turns")
+
+
 # ── 스냅숏(LLM 실패·일시정지 제안 되돌림) ───────────────────────────────────
 def snapshot(store: dict | None) -> dict:
     return {k: copy.deepcopy((store or {}).get(k)) for k in LEDGER_KEYS}

@@ -165,7 +165,10 @@ _ADJ_STEMS = set("좋많싫작적높낮깊넓좁짧같")
 _CLAUSE_CUT_RE = re.compile(r"(,\s|고\s|며\s|서\s|는데\s|지만\s|니까\s)")
 _QUOTE_LEAD_STOP = {"제가", "저는", "저도", "저희는", "저희가", "우리는", "우리가", "그때", "그래서", "그리고", "그런데", "그다음", "그다음에", "다음", "그러고",
                     "사실", "일단", "결국", "나중에", "그", "이", "좀", "조금", "약간", "아마", "거의",
-                    "날", "때", "뒤", "후", "번", "쯤"}   # (P11 시뮬 p11a) 잘린 머리 — "'날 박선임이랑 …'"
+                    "날", "때", "뒤", "후", "번", "쯤",   # (P11 시뮬 p11a) 잘린 머리 — "'날 박선임이랑 …'"
+                    # (P11b-5) 앞 낱말이 잘려 나가면 뜻이 서지 않는 머리("'말고 기록으로 …'") · 리더의 1인칭 반말
+                    "말고", "대신", "보다", "없이", "아니라", "아니고", "때문에", "위해", "통해", "대해", "내가", "나는", "난", "내", "나도",
+                    "전에", "뒤에", "후에", "오기", "하기", "만에", "달", "개월"}
 # '…다는 걸 (그때) 배웠습니다' — 안은문장의 내용 절이 핵심이다
 _EMBEDDED_RE = re.compile(r"^(?P<core>.{6,}?다)는\s*(?:걸|것을|것이|점을|점이|사실을|생각이|생각을|판단이|걸로)\b")
 # 종결 어미 → 인용에 쓰는 평서 꼴('…다'). 아는 꼴만 — 모르면 폴백을 쓰지 않는다.
@@ -176,6 +179,7 @@ _PLAIN_END: list[tuple[str, str]] = [
     (r"(합니다|해요|하죠|하거든요)$", "한다"), (r"(됩니다|돼요|되죠)$", "된다"),
     (r"(있습니다|있어요|있죠|있거든요)$", "있다"), (r"(없습니다|없어요|없죠|없거든요)$", "없다"), (r"(같습니다|같아요)$", "같다"),
     (r"(입니다|이에요|이죠)$", "이다"), (r"(예요|죠)$", "다"),
+    (r"(을|를|할|될|일|[가-힣])\s거(야|예요)$", r"\1 것이다"), (r"\s겁니다$", " 것이다"),      # (P11b-5) '…꺼냈을 거야' → '…꺼냈을 것이다'
 ]
 
 
@@ -185,10 +189,16 @@ def _plain_ending(clause: str) -> str | None:
         new = re.sub(pat, repl, clause)
         if new != clause:
             return new
+    # (P11b-5) 받침 ㅆ(과거·'있'·'겠') 뒤의 종결 어미는 표의 글자 목록과 무관하게 '다' 로 — '바꿨어요/바꿨어/바꿨더라' → '바꿨다'
+    m = re.search(r"([가-힣])(어요|아요|죠|지요|네요|거든요|고요|더라고요|어|지|더라|거든|잖아|다고)$", clause)
+    if m and (ord(m.group(1)) - 0xAC00) % 28 == 20:
+        return clause[: m.start(2)] + "다"
     if clause.endswith("습니다") and len(clause) >= 4 and "가" <= clause[-4] <= "힣":
         stem = clause[:-3]
         if stem.endswith(("않", "싶")):
             return None                                       # '~지 않습니다'(동사·형용사 부정)·'싶습니다'는 꼴을 정할 수 없다 — 폴백을 쓰지 않는다
+        if (ord(stem[-1]) - 0xAC00) % 28 == 20:
+            return stem + "다"                                # (P11b-5) 과거·'있'·'겠' — 받침 ㅆ 뒤는 언제나 '다'('바꿨습니다' → '바꿨다'. 표에 없던 '꿨' 이 '바꿨는다' 로 나갔다)
         return stem + ("다" if stem[-1] in _ADJ_STEMS or stem.endswith(("어렵", "쉽", "가깝", "무겁", "괜찮")) else "는다")   # 좋습니다 → 좋다, 받습니다 → 받는다
     if clause.endswith("니다") and len(clause) >= 3 and "가" <= clause[-3] <= "힣":
         code = ord(clause[-3]) - 0xAC00
@@ -229,6 +239,8 @@ def _key_clause_of(t: str) -> str:
             if len(tail.split()) >= 2 and len(tail) <= QUOTE_RECEIVE_MAX + 8:
                 core = tail
                 break
+        if not core and len(t.split()) >= 3:
+            core = " ".join(t.split()[-QUOTE_RECEIVE_MAX_EOJEOL:])      # (P11b-5) 끊을 절이 없는 긴 문장 — 뒤 일곱 어절에서 구절을 만든다
         if not core:
             return ""
         plain = _plain_ending(core)
@@ -242,16 +254,27 @@ def _key_clause_of(t: str) -> str:
         toks = toks[1:]
     while len(toks) > 2 and (_BOUND_LEAD_RE.match(toks[0]) or toks[0] in _QUOTE_LEAD_STOP):
         toks = toks[1:]                                       # 잘린 머리에 의존명사('쪽은')·군말이 남지 않게
+    toks = [x for x in toks if x not in _FIRST_PERSON_TOKENS]      # (시뮬 p11b) "'파일럿 설계 초안은 내가 직접 썼다'는 말씀이셨군요" — 리더의 1인칭은 옮기지 않는다
     core = " ".join(toks)
     return core if len(toks) >= 2 and core.endswith("다") else ""
 
 
-def quote_receive(user_text: str | None) -> str:
+_FIRST_PERSON_TOKENS = frozenset({"내가", "제가", "나는", "저는", "난", "전", "나도", "저도", "내", "제"})
+QUOTE_RECEIVE_FORMS = ("'{core}'는 말씀이셨군요.", "'{core}'고 하셨군요.")
+
+
+def quote_receive_count(texts: list[str] | None) -> int:
+    """세션에서 구절 인용 받기를 쓴 횟수 — 다음 것의 꼴을 고르는 데 쓴다."""
+    return sum(len(re.findall(r"'는 말씀이셨군요\.|'고 하셨군요\.", t or "")) for t in (texts or []))
+
+
+def quote_receive(user_text: str | None, variant: int = 0) -> str:
     """(2026-11-11 P10-5 → 같은 날 검토 반영) 받기 폴백 1문장 — 리더가 방금 한 말의 **핵심 구절만** 줄여 받는다
     ("'분담표를 다시 짰다'는 말씀이셨군요."). 문장 전체를 그대로 인용하면 기계적으로 읽힌다("'…그때 배웠습니다'라고 하셨군요.").
     '흥미로운 지점이에요' 처럼 어느 답에나 붙는 고정 문구는 쓰지 않는다. 받을 구절이 없으면 빈 문자열 — 호출자는 받기 없이 내보낸다."""
     core = key_clause(user_text)
-    return f"'{core}'는 말씀이셨군요." if core else ""
+    # (시뮬 p11b) 한 세션에 같은 꼴('…는 말씀이셨군요.')이 5번 나왔다 — 두 꼴을 번갈아 쓴다(variant = 세션에서 쓴 횟수)
+    return QUOTE_RECEIVE_FORMS[int(variant or 0) % len(QUOTE_RECEIVE_FORMS)].format(core=core) if core else ""
 
 
 def receive_has_content(sentence: str | None, user_text: str | None) -> bool:

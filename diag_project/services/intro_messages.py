@@ -426,9 +426,12 @@ def line_register(persona_name: str | None) -> str:
     return "formal" if persona_key(persona_name) in _FORMAL_COACHES else "polite"
 
 
-def build_intro_anchor_section(persona_name: str | None = None) -> str:
-    """진단 안내 본문 (5개 영역 + 총 시간 150분 + 형식) — 코치 말투별. LLM 이 쓴 받는 문장 뒤에 시스템이 붙인다."""
-    return _INTRO_BODY[line_register(persona_name)]
+def build_intro_anchor_section(persona_name: str | None = None, *, lead: bool = True) -> str:
+    """진단 안내 본문 (5개 영역 + 총 시간 150분 + 형식) — 코치 말투별. LLM 이 쓴 받는 문장 뒤에 시스템이 붙인다.
+    (2026-11-12 P11b-2) lead=False 면 첫 문장('그러면 오늘 진단이 어떻게 진행되는지 간단히 안내드리겠습니다.')을 뺀다 — 기대 답이 없을 때 앞에 붙는
+    코치별 다리('네, 그러면 오늘 흐름부터 안내드리겠습니다.')와 같은 말이 두 번 나갔다(시뮬 p11a). 안내 예고는 한 번만."""
+    body = _INTRO_BODY[line_register(persona_name)]
+    return body if lead else body.split("\n\n", 1)[1]
 
 
 # (2026-11-12 P11-I) 같은 답이 다시 왔을 때 — 문구 3종을 돌려 쓰고(first), 세션 2회째부터는 같은 질문을 되풀이하지 않고 다른 장면을 청한다(angle, 질문 포함).

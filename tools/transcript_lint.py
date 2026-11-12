@@ -263,7 +263,7 @@ def p11_analyze(data: dict) -> dict:
             out["guard"]["q_regen"] += 1
         elif qc == "repaired":
             out["guard"]["q_repaired"] += 1
-        if g.get("opener_frame") is not None and str(g.get("opener") or "").startswith("llm"):
+        if g.get("opener_frame") is not None and str(g.get("opener") or "").startswith(("llm", "bare")):
             out["opener_frames"].append(int(g["opener_frame"]))
         if g.get("reask"):
             out["reask"].append({"t": t, "kind": g.get("reask"), "user": last_user[:30], "coach": content[:90]})
@@ -345,6 +345,128 @@ def render_p11(coach_name: str, p: dict) -> list[str]:
     top = sorted(p["overlap"], key=lambda x: -x["covered"])[:3]
     for it in top:
         L.append(f"- [P11 받기 겹침 상위] {coach_name} t{it['t']} 되풀이 {it['covered']} · 받기 기준 {it['from_user']} · 어절 {it['n']}: {it['sentence']}")
+    return L
+
+
+def p11b_analyze(data: dict) -> dict:
+    """P11b 열 — 재생성 사유별 건수 · 틀린 활용 꼴 · 내용 없는 연결 문구 · 여는 턴의 진행 해설·기대는 머리 · 관찰·응원 슬롯 턴의 꼴과 낱말 반복 ·
+    '리더님께서' 로 시작하는 받기 수 · 되풀이 받기(상한 초과) · 한 문장 안 두 질문 · 안내 중복 · 보완 사례 승격 · 휴식 제안."""
+    from diag_project.services.conjugation import bad_form
+    from diag_project.services.output_guard import is_question as _isq, split_sentences as _ss
+    from diag_project.services.receive_check import receive_statements as _rst
+    from diag_project.services.slot_render import repeated_turn_words
+    from diag_project.services.turn_checks import (
+        _LEAN_START_RE, _LINK_CLAUSE_RE, RECEIVE_REPEAT_MAX, RECEIVE_REPEAT_MIN_CHUNKS, inline_question_clauses, is_progress_commentary,
+        leader_prefix_wrong_subject, receive_overlap, starts_with_leader_prefix,
+    )
+    rows = data.get("rows") or []
+    out: dict = {"open_no_q": [], "probe_no_q": [], "near_repeat_q": [],
+                 "regen_why": Counter(), "regen_turns": 0, "bad_form": [], "link": [], "commentary": [], "lean_start": [], "slot_turn_shape": [],
+                 "slot_repeat_word": [], "leader_prefix": [], "leader_prefix_subject": [], "recv_repeat": [], "inline_two_q": [], "intro_dup": [],
+                 "promote": [], "pause": [], "pause_block": [],
+                 "guard": Counter()}
+    leader_all: list[str] = []
+    last_user = ""
+    prev_q: dict = {}
+    for row in rows:
+        content = row.get("content") or ""
+        if row.get("role") == "user":
+            leader_all.append(content); last_user = content
+            continue
+        g = _guard(row)
+        instr = row.get("instr") or g.get("instr") or ""
+        t = row.get("t")
+        why = [str(x) for x in (g.get("regen_why") or [])]
+        if why:
+            out["regen_turns"] += 1
+            for w in why:
+                out["regen_why"][w] += 1
+        for k in ("conj_fix", "intro_dup", "link_cut", "commentary_cut", "lean_start", "lead_prefix", "recv_cap", "q_clause", "reask_unsaid", "slot_turn"):
+            if g.get(k):
+                out["guard"][k] += 1
+        if str(g.get("q_complete") or "").endswith("(tail)"):
+            out["guard"]["q_tail_default"] += 1
+        if g.get("sweep_promote"):
+            out["promote"].append({"t": t, "how": g.get("sweep_promote"), "closed": g.get("closed")})
+        if g.get("pause_block"):
+            out["pause_block"].append({"t": t, "closed": g.get("pause_block")})
+        if row.get("probe") == "SUGGEST_PAUSE" or "쉬어" in content and instr in ("EPISODE_OPEN", "SWEEP_ANCHOR") and g.get("closed") is None:
+            out["pause"].append({"t": t, "instr": instr})
+        bf = bad_form(content)
+        if bf:
+            out["bad_form"].append({"t": t, "instr": instr, "why": bf, "sentence": next((x.strip()[:80] for x in _ss(content) if bad_form(x)), content[:80])})
+        sents = [x.strip() for x in _ss(content) if x.strip()]
+        if instr == "DIAGNOSIS_INTRO":
+            ann = [x for x in sents if re.search(r"안내드리겠습니다|안내드릴게요|안내해 드릴게요", x)]
+            if len(ann) >= 2:
+                out["intro_dup"].append({"t": t, "sentence": " / ".join(a[:40] for a in ann[:2])})
+        if instr not in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP", "EPISODE_OPEN", "SWEEP_ANCHOR"):
+            continue
+        slot = str(g.get("slot_text") or "")
+        fixed = {re.sub(r"\s+", "", slot)} - {""}
+        # (시뮬 p11b) 질문 없이 끝난 턴 · 같은 영역에서 직전 질문을 거의 그대로 되풀이한 턴(다시 묻기·같은 답 안내 턴 제외)
+        _qs_all = [x for x in sents if _isq(x)]
+        if not _qs_all:
+            out["open_no_q" if instr in ("EPISODE_OPEN", "SWEEP_ANCHOR") else "probe_no_q"].append({"t": t, "instr": instr, "sentence": content[:90]})
+        else:
+            import difflib as _dl
+            _nq = re.sub(r"[\s.,?!'\"]", "", _qs_all[-1])
+            if prev_q.get("ch") == _chapter_of(row) and not g.get("reask") and prev_q.get("q") and _dl.SequenceMatcher(None, prev_q["q"], _nq).ratio() >= 0.8:
+                out["near_repeat_q"].append({"t": t, "instr": instr, "sentence": _qs_all[-1][:90]})
+            prev_q.update({"ch": _chapter_of(row), "q": _nq})
+        for x in sents:
+            if re.sub(r"\s+", "", x) in fixed:
+                continue
+            if _LINK_CLAUSE_RE.search(x):
+                out["link"].append({"t": t, "instr": instr, "sentence": x[:90]})
+            if instr in ("EPISODE_OPEN", "SWEEP_ANCHOR") and is_progress_commentary(x):
+                out["commentary"].append({"t": t, "instr": instr, "sentence": x[:90]})
+        if instr in ("EPISODE_OPEN", "SWEEP_ANCHOR"):
+            for x in sents:
+                if _LEAN_START_RE.match(x) and not _isq(x):
+                    out["lean_start"].append({"t": t, "instr": instr, "sentence": x[:90]})
+        recv = [x for x in _rst(content) if re.sub(r"\s+", "", x) not in fixed]
+        if slot and g.get("slot_kind") in ("observation", "cheer"):
+            if recv:
+                out["slot_turn_shape"].append({"t": t, "sentence": " ".join(recv)[:90]})
+            rest = " ".join(x for x in sents if re.sub(r"\s+", "", x) not in fixed)
+            rw = repeated_turn_words(slot, rest, leader_all)
+            if rw:
+                out["slot_repeat_word"].append({"t": t, "words": rw[:3], "sentence": slot[:90]})
+        if recv and not g.get("reask"):
+            if starts_with_leader_prefix(recv[0]):
+                out["leader_prefix"].append({"t": t, "sentence": recv[0][:80]})
+                if leader_prefix_wrong_subject(recv[0]):
+                    out["leader_prefix_subject"].append({"t": t, "sentence": recv[0][:80]})
+            a_, b_, n_ = receive_overlap(recv[0], last_user)
+            if b_ >= RECEIVE_REPEAT_MAX and n_ >= RECEIVE_REPEAT_MIN_CHUNKS:
+                out["recv_repeat"].append({"t": t, "covered": b_, "n": n_, "sentence": recv[0][:90]})
+        if instr in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
+            qs = [x for x in sents if _isq(x) and re.sub(r"\s+", "", x) not in fixed]
+            if qs and len(inline_question_clauses(qs[-1])) >= 2:
+                out["inline_two_q"].append({"t": t, "sentence": qs[-1][:100]})
+    out["regen_why"] = dict(out["regen_why"].most_common())
+    out["guard"] = dict(out["guard"])
+    return out
+
+
+def render_p11b(coach_name: str, p: dict) -> list[str]:
+    L: list[str] = []
+    L.append(f"**P11b** 틀린 활용 꼴 {len(p['bad_form'])} · 안내 중복 {len(p['intro_dup'])} · 연결 문구 {len(p['link'])} · 여는 턴 진행 해설 {len(p['commentary'])} · "
+             f"기대는 머리 {len(p['lean_start'])} · 슬롯 턴에 받기 남음 {len(p['slot_turn_shape'])} · 슬롯 턴 낱말 반복 {len(p['slot_repeat_word'])} · "
+             f"'리더님께서' 받기 {len(p['leader_prefix'])}(주어 어긋남 {len(p['leader_prefix_subject'])}) · 되풀이 받기 {len(p['recv_repeat'])} · "
+             f"한 문장 안 두 질문 {len(p['inline_two_q'])}")
+    L.append(f"- 질문 없이 끝난 여는 턴 {len(p['open_no_q'])} · 질문 없이 끝난 탐침 턴 {len(p['probe_no_q'])} · 직전 질문을 거의 그대로 되풀이 {len(p['near_repeat_q'])}")
+    L.append(f"- 재생성 걸린 턴 {p['regen_turns']} · 사유별 {p['regen_why'] or '없음'}")
+    L.append(f"- 처리 기록(턴 수): {p['guard'] or '없음'}")
+    L.append(f"- 보완 사례 승격 {p['promote'] or '없음'} · 휴식 제안 {len(p['pause'])}회 · 자연스러운 닫힘이 아니라 내지 않음 {p['pause_block'] or '없음'}")
+    for key, title in (("open_no_q", "질문 없는 여는 턴"), ("probe_no_q", "질문 없는 탐침 턴"), ("near_repeat_q", "질문 되풀이"),
+                       ("bad_form", "틀린 활용 꼴"), ("intro_dup", "안내 중복"), ("link", "연결 문구"), ("commentary", "진행 해설"), ("lean_start", "기대는 머리"),
+                       ("slot_turn_shape", "슬롯 턴에 받기"), ("slot_repeat_word", "슬롯 턴 낱말 반복"), ("leader_prefix_subject", "'리더님께서' 주어 어긋남"),
+                       ("recv_repeat", "되풀이 받기"), ("inline_two_q", "한 문장 안 두 질문")):
+        for it in p[key][:8]:
+            extra = it.get("why") or it.get("words") or ""
+            L.append(f"- [P11b {title}] {coach_name} t{it['t']} {it.get('instr', '')} {extra}: {it.get('sentence')}")
     return L
 
 
@@ -730,6 +852,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
     res["anchor_reuse"] = sum(n - 1 for n in _seen_anchor.values() if n > 1)
     res["endings"] = dict(endings.most_common())
     res["p11"] = p11_analyze(data)
+    res["p11b"] = p11b_analyze(data)
     return res
 
 
@@ -872,6 +995,8 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
         L.append("")
         if r.get("p11"):
             L.extend(render_p11(r["coach_name"], r["p11"]))
+        if r.get("p11b"):
+            L.extend(render_p11b(r["coach_name"], r["p11b"]))
             L.append("")
         L.append("**어미 분포** " + (", ".join(f"{k} {v}" for k, v in r["endings"].items()) or "질문 없음"))
         L.append("")

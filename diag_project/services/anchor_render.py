@@ -89,7 +89,7 @@ _PRESUPPOSE_RE = re.compile(r"(하셨을 때|받으셨을 때|했을 때|겪으�
 _EXIST_RE = re.compile(r"(있으셨|있었|있으세요|있나요|있을까요|있으신가요|있습니까|있으십니까|떠오르|기억(나|에 남)|겪으신 적|하신 적|해 ?보신 적|"
                        r"들려주(세요|시겠|실래|시지요|시죠)|말씀해 주|얘기해 주|꼽으신다면|하나만)")
 _WHY_CLAUSE_RE = re.compile(r"^(.{8,}?(인데요|건데요|것인데요|거든요|보려고요|보려고 해요|궁금해서요|보는 쪽이에요|입니다만|습니다만))[,，]\s*(.{6,}\?)$")
-_OPENER_EXAMPLE_WORDS = ("장바구니", "장을 보", "장 볼", "장 보는")   # (P10) 결 참고 예시(다른 분야)의 낱말 — 출력에 들어오면 베낀 것
+_OPENER_EXAMPLE_WORDS = ("장바구니", "장을 보", "장 볼", "장 보는", "살림")   # (P10) 결 참고 예시(다른 분야)의 낱말 — 출력에 들어오면 베낀 것
 _OPENER_WHY_MAX = 2       # 질문 앞 평서문 최대 2문장
 _OPENER_TAIL_MAX = 1      # 질문 뒤 짧은 덧붙임('작은 일이어도요.') 최대 1문장
 
@@ -148,15 +148,18 @@ def _sub_material(chapter: str | None, sub_key: str | None) -> dict:
 # (2026-11-12 P11-F) 11/12 운영 Daniel: '~에 관한 것입니다만, 최근에…' 4회 · '이번에는 … 쪽 이야기입니다' 2회 — 틀이 3종뿐이고 순번표가 한 문장 틀을 세 번에 한 번 골랐다.
 #   틀을 5종으로 늘리고, 세션에서 쓴 틀을 원장(opener_frames)에 적어 직전 틀을 빼고 고른다(pick_opener_frame). 같은 틀은 세션 2회까지.
 #   '~을 어떻게 하시는지 듣고 싶다' 틀은 삭제 — 질문이 아닌 예고 문장('…듣고 싶습니다')을 지우는 규칙(P11-D)과 부딪힌다.
+# (2026-11-12 P11b-3·6) 시뮬 p11a 검토: 틀 3('~을 살펴보는 대목입니다')은 진행 해설이라 삭제 — 그 자리는 '질문만'(사전 앵커, LLM 호출 없음)으로 바꿨다.
+#   틀 0 은 '하다 보면 팀원에게 …' 처럼 앞 문맥에 기대는 말로 시작했다 — 문장이 그 일의 낱말로 시작하게 꼴을 고치고, 그래도 나오면 머리를 뗀다(strip_lean_start).
 OPENER_FRAMES = (
-    "①을 '~하다 보면 ~해야 할 때가 생긴다' 꼴의 문장 하나로 쓴다(그 일이 어떤 때 생기는지). 그 다음 문장이 ②.",
+    "①을 '팀을 이끌다 보면 ~해야 할 때가 생긴다' 꼴의 문장 하나로 쓴다(문장은 '팀을 이끌다 보면' 으로 시작한다). 그 다음 문장이 ②.",
     "①을 '이번에는 ~ 쪽 이야기' 꼴의 짧은 문장 하나로 쓴다. 그 다음 문장이 ②.",
     "①과 ②를 한 문장으로 쓴다 — ①을 앞 절에 넣고 쉼표로 이어서 묻는다('~에 관한 건데요, 최근에 ~ 있으셨어요?' 꼴).",
-    "①을 '~할 때 무엇을 하시는지 보려는 대목' 꼴의 문장 하나로 쓴다. 그 다음 문장이 ②.",
+    "(질문만 — 사전 앵커를 그대로 낸다. LLM 을 부르지 않는다.)",
     "①을 '다음은 ~에 대해서' 꼴의 짧은 문장 하나로 쓴다. 그 다음 문장이 ②.",
 )
+OPENER_BARE_FRAME = 3
 OPENER_FRAME_SESSION_MAX = 2
-_OPENER_FRAME_PREF = (0, 3, 2, 4, 1)      # 같은 횟수면 이 순서 — 세션 첫 사례가 '이번에는'·'다음은' 으로 열리지 않게
+_OPENER_FRAME_PREF = (0, 2, 3, 4, 1)      # 같은 횟수면 이 순서 — 세션 첫 사례가 '이번에는'·'다음은' 으로 열리지 않게
 
 
 def pick_opener_frame(used: list[int] | None) -> int:
@@ -172,17 +175,17 @@ def pick_opener_frame(used: list[int] | None) -> int:
     return min(cands, key=lambda i: (counts[i], _OPENER_FRAME_PREF.index(i)))
 _OPENER_META_RE = re.compile(r"(:|：|무엇을 듣고 싶은지|말씀해\s*주세요|말씀해\s*주십시오|꼴의|틀|한 문장|①|②)")
 OPENER_FRAME_EXAMPLES = (
-    "장을 보다 보면 계획에 없던 것을 담아야 할 때가 생겨요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
+    "살림을 꾸리다 보면 계획에 없던 것을 담아야 할 때가 생겨요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
     "이번에는 장을 보는 쪽 이야기예요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
     "장 볼 때 순서를 정하는 일에 관한 건데요, 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
-    "장 볼 때 무엇부터 담으시는지 보려는 대목이에요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
+    "최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
     "다음은 장 볼 때 순서를 정하는 일에 대해서예요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
 )
 OPENER_FRAME_EXAMPLES_FORMAL = (
-    "장을 보다 보면 계획에 없던 것을 담아야 할 때가 생깁니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
+    "살림을 꾸리다 보면 계획에 없던 것을 담아야 할 때가 생깁니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
     "이번에는 장을 보는 쪽 이야기입니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
     "장 볼 때 순서를 정하는 일에 관한 것입니다만, 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
-    "장 볼 때 무엇부터 담으시는지 보려는 대목입니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
+    "최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
     "다음은 장 볼 때 순서를 정하는 일에 대해서입니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
 )
 _OPENER_FRAME_SEQ = (0, 1, 2, 0, 2, 1, 0, 2)
@@ -220,6 +223,8 @@ async def render_opener(
     lead = re.sub(r"\s+", " ", (leader_text or "").strip())[-200:]
     from diag_project.services.persona_register import apply_register as _areg_r, register_hint as _rh_r, register_violations as _rv_r
     frame = int(frame) % len(OPENER_FRAMES)
+    if frame == OPENER_BARE_FRAME:
+        return fallback_question, "bare"          # (P11b-3) 여는 문장 없이 질문만 — 사전 앵커(이미 코치 어미). 해설 문장을 덧붙이지 않는다
     one_sentence = frame == 2
     base = (
         "당신은 리더십 BEI 코치입니다. 리더에게 새 사례 하나를 청하는 '여는 문장'을 만드세요. "
@@ -250,6 +255,17 @@ async def render_opener(
             return fallback_question, "fallback"
         text = re.sub(r"\s*\n+\s*", " ", (out or "").strip().strip('"“”'))
         text = _areg_r(persona_name, text, scope="strict")[0]          # (P10-4) 여는 문장은 코치 어미 강제 — 표로 고칠 수 있는 꼴은 여기서
+        # (P11b-3·6) 진행 해설('…을 살펴보는 대목입니다')은 지우고, 앞 문맥에 기대는 머리('하다 보면', '그러다 보면')는 뗀다 — 다시 쓰지 않고 그 자리에서 고친다.
+        #   해설을 지워 질문만 남으면 그대로 받는다(질문만 여는 틀과 같은 꼴).
+        from diag_project.services.turn_checks import strip_lean_start as _sls_r, strip_progress_commentary as _spc_r
+        text, _n_cm_r = _spc_r(text)
+        _sents_r = [x.strip() for x in split_sentences(text) if x.strip()]
+        if _sents_r:
+            _head_r, _cut_r = _sls_r(_sents_r[0])
+            if _cut_r:
+                text = " ".join([_head_r] + _sents_r[1:])
+        if _n_cm_r and len([x for x in split_sentences(text) if x.strip()]) == 1 and is_question(text) and _EXIST_RE.search(text) and not _PRESUPPOSE_RE.search(text):
+            return text, mode
         ok, why = opener_shape_ok(text)
         if ok and _rv_r(persona_name, text, scope="strict"):
             ok, why = False, "register"

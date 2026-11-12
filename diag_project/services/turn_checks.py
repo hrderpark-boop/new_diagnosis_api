@@ -19,12 +19,18 @@ from diag_project.services.output_guard import (
 _ASKED_BY_LEADER_RE = re.compile(r"(여쭤\s*봐|여쭈어\s*봐|물어\s*봐|질문해|질문을\s*해|되물어)\s*주(신|셔서|셨|시는|시니)")
 _SPEECH_STYLE_RE = re.compile(
     r"(편하게|편히|편안하게|짧게|간단히|간결하게|솔직하게|담백하게)\s*(말씀|얘기|이야기|답|답변)(해|을\s*해)?\s*주(셔서|신|시니|셨|시는)"
-    r"|반말|말을\s*놓|말투|말씀을\s*(편하게|짧게)|짧은\s*(답|말씀)")
+    r"|반말|말을\s*놓|말투|말씀을\s*(편하게|짧게)|짧은\s*(답|말씀)"
+    # (시뮬 p11b) '"네, 맞아요"라고 짧게 확인해 주셨는데, … 아직 잘 보이지 않습니다' — 답이 짧다고 말하거나 답이 모자란다고 평하는 문장
+    r"|짧게\s*[가-힣]{0,6}\s*주셨|라고만?\s*(짧게|간단히)|아직\s*(잘\s*)?보이지\s*않|닿았는지는")
 _INTERPRET_RE = re.compile(
     r"(으로|처럼|같이|라고|다고)\s*(들리|들립|들려|읽히|읽힙|읽혀)|(들리네요|들립니다|들려요|읽히네요|읽힙니다|읽혀요)[.!…]*$"
     r"|흥미롭|흥미로(운|워|웠)|셈이(네요|군요|에요|죠)|셈입니다|뜻(이군요|이네요|이겠네요|이겠군요)"
     # (시뮬 p11a) 리더가 말하지 않은 것을 짐작해 보태는 받기('…있었을 것 같습니다', '…고민이 있으셨을 것 같습니다') · 감상('…과정이 그려지네요')
-    r"|(을|였을|었을|셨을|했을|겠을)\s*것\s*같(습니다|아요|네요)[.!…]*$|것\s*같(습니다|아요|네요)[.!…]*$|그려지(네요|는군요)|그려집니다")
+    r"|(을|였을|었을|셨을|했을|겠을)\s*것\s*같(습니다|아요|네요)[.!…]*$|것\s*같(습니다|아요|네요)[.!…]*$|그려지(네요|는군요)|그려집니다"
+    # (시뮬 p11b) '…무겁게 보셨기 때문이겠지요' — 리더가 말하지 않은 까닭을 짐작해 붙이는 받기
+    r"|겠(지요|죠)[.!…]*$|때문이겠습니다[.!…]*$")
+# (시뮬 p11b) '…상황을 받겠습니다', '…점을 받겠습니다' — 지시문의 말('받는 문장')을 문장으로 옮긴 꼴
+_META_RECV_RE = re.compile(r"받(겠습니다|을게요|아\s*두겠습니다|고\s*가겠습니다|아\s*보겠습니다)[.!…]*$")
 
 
 def receive_ban_reason(sentence: str | None) -> str | None:
@@ -38,6 +44,8 @@ def receive_ban_reason(sentence: str | None) -> str | None:
         return "speech_style"
     if _INTERPRET_RE.search(s):
         return "interpretive"
+    if _META_RECV_RE.search(s):
+        return "meta"
     return None
 
 
@@ -202,7 +210,7 @@ def drop_premature_thanks(text: str | None, keep: set[str] | None = None) -> tup
 
 
 # ── 질문 완결성 ─────────────────────────────────────────────────────────────
-_Q_BAD_START_RE = re.compile(r"^(그리고|혹은|또는|또|그렇다면|있었다면|있으셨다면|있다면|없었다면|없으셨다면|그랬다면|그러셨다면|아니라면|아니면)[,，]?\s+")
+_Q_BAD_START_RE = re.compile(r"^(그리고|혹은|또는|또|그렇다면|있었다면|있으셨다면|있다면|없었다면|없으셨다면|그랬다면|그러셨다면|아니라면|아니면|특히|그중에서도)[,，]?\s+")
 _FRAGMENT_RE = re.compile(r"[가-힣]+(였|이었)는지(가|도|를)?\s*(궁금|알고\s*싶|듣고\s*싶)")
 # 가리키는 말 + 낱말 — 그 낱말(또는 같은 뜻의 말)이 직전 리더 답에 있어야 한다
 _DEMO_NOUN_RE = re.compile(r"그\s?(변화|과정|결정|선택|반응|대화|회의|결과|방식|갈등|피드백|면담|평가|제안|계획|목표|기준|이유|태도|표정|조치|약속|원칙|차이)")
@@ -222,11 +230,13 @@ _DEMO_ALIAS: dict[str, tuple[str, ...]] = {
 EVENT_ANSWER_MIN_CHARS = 15
 
 
-def dangling_references(question: str | None, last_user_text: str | None) -> list[str]:
-    """질문의 가리키는 말('그 변화', '그 과정', '그때') 중 직전 리더 답에 가리킬 낱말이 없는 것."""
+def dangling_references(question: str | None, last_user_text: str | None, context_texts: list[str] | None = None) -> list[str]:
+    """질문의 가리키는 말('그 변화', '그 과정', '그때') 중 가리킬 낱말이 없는 것.
+    (2026-11-12 P11b) 가리킬 낱말은 직전 리더 답만이 아니라 이 사례에서 리더가 한 말(context_texts)에서도 찾는다 — 시뮬 p11b 에서 사례 앞 답에 나온
+    낱말을 가리킨 질문('그 평가 자리에서')이 위반으로 잡혀 재생성 5회·기본 질문 3회가 났다."""
     q = question or ""
     u = last_user_text or ""
-    uc = _compact(u)
+    uc = _compact(" ".join([u] + [t or "" for t in (context_texts or [])]))
     out: list[str] = []
     for m in _DEMO_NOUN_RE.finditer(q):
         noun = m.group(1)
@@ -234,12 +244,12 @@ def dangling_references(question: str | None, last_user_text: str | None) -> lis
             out.append(m.group(0))
     if _DEMO_EVENT_RE.search(q):
         from diag_project.services.short_input import is_contentless_answer
-        if len(uc) < EVENT_ANSWER_MIN_CHARS or is_contentless_answer(u):
+        if len(uc) < EVENT_ANSWER_MIN_CHARS or (is_contentless_answer(u) and not context_texts):
             out.append(_DEMO_EVENT_RE.search(q).group(0))
     return out
 
 
-def question_issues(question: str | None, last_user_text: str | None) -> list[str]:
+def question_issues(question: str | None, last_user_text: str | None, context_texts: list[str] | None = None) -> list[str]:
     """질문 한 문장의 완결성 위반 — 'dangling_start' | 'fragment' | 'two_questions' | 'dangling_ref'."""
     q = (question or "").strip()
     if not q:
@@ -251,7 +261,7 @@ def question_issues(question: str | None, last_user_text: str | None) -> list[st
         out.append("fragment")
     if count_question_markers(q) > 1:
         out.append("two_questions")
-    if dangling_references(q, last_user_text):
+    if dangling_references(q, last_user_text, context_texts):
         out.append("dangling_ref")
     return out
 
@@ -345,3 +355,254 @@ def receive_overlap(receive: str | None, user_text: str | None) -> tuple[float, 
     from_user = sum(1 for c in rc if _hit(c, ucs))
     covered = sum(1 for c in set(ucs) if _hit(c, rc))
     return round(from_user / len(rc), 2), round(covered / len(set(ucs)), 2), len(rc)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# (2026-11-12 P11b) 재시뮬 전 추가 — 전부 삭제·치환(재생성 없음)
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── 2. 안내 중복 ────────────────────────────────────────────────────────────
+_INTRO_ANNOUNCE_RE = re.compile(r"(안내|설명|소개)(해\s*)?(드리|드릴|하겠|할게)|말씀드리겠|말씀드릴게|시작하겠|시작할게|진행하겠|넘어가겠|이어가겠|흐름부터|순서부터")
+
+
+def is_intro_announce(sentence: str | None) -> bool:
+    """진단 안내 턴의 LLM 받기가 안내를 예고하는 문장인가('네, 그러면 오늘 흐름부터 안내드리겠습니다.') — 고정 안내의 첫 문장과 겹친다."""
+    return bool(_INTRO_ANNOUNCE_RE.search((sentence or "").strip()))
+
+
+# ── 3. 내용 없는 연결 문구 ──────────────────────────────────────────────────
+# "방금 말씀하신 '자원'과도 이어지는 부분입니다만, …" — 리더가 실제로 한 말이어도 틀 자체를 지운다. 출처는 문체 제약 프롬프트의 예시였다
+# (style_tracker '연결 한 절' 규칙, 2026-09-17) — 그 규칙도 함께 뺐다.
+_LINK_CLAUSE_RE = re.compile(
+    r"(말씀하신|말씀해\s*주신|말씀하셨던|언급하신|얘기하신|이야기하신|들려주신|짚어\s*주신)[^,，.?!]{1,40}?"
+    r"(과도|와도|과|와|하고도|이랑도|에서도|에도|이|가)\s*(이어지|이어져|닿아|맞닿|연결되|연결돼|통하|통합니다|관련(이|되|돼)|겹치|맞물)"
+    r"|(그\s*)?(결|연장선|맥락|흐름)(에서|으로)\s*(이어서?\s*)?(여쭙|여쭤|묻|질문)"
+    r"|(이어서|연결해서?|연결\s*지어)\s*(여쭙|여쭤|묻겠|질문드)")
+
+
+def strip_link_frames(text: str | None, keep: set[str] | None = None) -> tuple[str, int]:
+    """리더의 말과 다음 질문을 잇기만 하는 절을 지운다 — 쉼표로 나뉜 절 단위(뒤 질문은 남긴다). 그 절뿐인 평서문은 문장째 지운다. (결과, 지운 수)"""
+    keep = keep or set()
+    n = 0
+    out_lines: list[str] = []
+    for line in (text or "").split("\n"):
+        sents = [x.strip() for x in split_sentences(line) if x.strip()]
+        if not sents:
+            out_lines.append(line)
+            continue
+        kept: list[str] = []
+        for s in sents:
+            if _norm(s) in keep or not _LINK_CLAUSE_RE.search(s):
+                kept.append(s)
+                continue
+            clauses = [c.strip() for c in re.split(r"[,，]\s*", s) if c.strip()]
+            rest = [c for c in clauses if not _LINK_CLAUSE_RE.search(c)]
+            n += 1
+            if rest and len(rest) < len(clauses) and len(_compact(" ".join(rest))) >= 8:
+                kept.append(", ".join(rest))
+        if kept:
+            out_lines.append(" ".join(kept))
+    if not n:
+        return (text or ""), 0
+    out = re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
+    return (out, n) if out else ((text or ""), 0)
+
+
+# 진행 해설 — "…을 살펴보는 대목입니다", "…을 어떻게 하시는지 살펴보겠습니다". 사례를 여는 턴(EPISODE_OPEN·SWEEP_ANCHOR)에서 지운다.
+#   영역 첫 소개 턴(정의 질문 앞의 범위 문장)은 호출자가 부르지 않는다.
+_COMMENTARY_RE = re.compile(
+    r"(살펴보|들여다보|짚어\s*보|알아보|확인하|보)(는|려는|고자\s*하는)\s*(대목|부분|자리|순서|차례|지점|쪽)(입니다|이에요|예요|이죠|입니다만|인데요)"
+    r"|(살펴보겠습니다|살펴볼게요|살펴보려고\s*(합니다|해요)|살펴보려\s*합니다|들여다보겠습니다|들여다볼게요|짚어\s*보겠습니다|짚어\s*볼게요|알아보겠습니다|알아볼게요|"
+    r"보겠습니다|볼게요|보려고\s*(합니다|해요))[.!…]*$")
+
+
+def is_progress_commentary(sentence: str | None) -> bool:
+    s = (sentence or "").strip()
+    return bool(s) and not s.endswith("?") and bool(_COMMENTARY_RE.search(s))
+
+
+def strip_progress_commentary(text: str | None) -> tuple[str, int]:
+    """진행 해설 문장을 지운다 — 질문이 남을 때만. 질문 문장 앞 절이 해설이면('…살펴보는 대목입니다만, 최근에 …?') 그 절만 뗀다. (결과, 지운 수)"""
+    src = text or ""
+    n = 0
+    out_lines: list[str] = []
+    for line in src.split("\n"):
+        sents = [x.strip() for x in split_sentences(line) if x.strip()]
+        if not sents:
+            out_lines.append(line)
+            continue
+        kept: list[str] = []
+        for s in sents:
+            if is_progress_commentary(s):
+                n += 1
+                continue
+            if s.endswith("?") and _COMMENTARY_RE.search(s):
+                clauses = [c.strip() for c in re.split(r"[,，]\s*", s) if c.strip()]
+                rest = [c for c in clauses if not _COMMENTARY_RE.search(c)]
+                if rest and len(rest) < len(clauses) and rest[-1].endswith("?"):
+                    kept.append(", ".join(rest))
+                    n += 1
+                    continue
+            kept.append(s)
+        if kept:
+            out_lines.append(" ".join(kept))
+    out = re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
+    if not n or not out or not any(is_question(x) for x in split_sentences(out)):
+        return src, 0
+    return out, n
+
+
+# ── 6. 여는 문장의 머리 — 앞 문맥에 기대는 말 ────────────────────────────────
+_LEAN_START_RE = re.compile(r"^(하다\s*보면|그러다\s*보면|이러다\s*보면|그렇게\s*하다\s*보면|그러다\s*보니|그러다가|그리고|그러면|그럼|그렇다면|또한|또|한편|아울러|"
+                            r"그\s*과정에서|그런\s*가운데|이와\s*함께|이어서)[,，]?\s+")
+
+
+def strip_lean_start(sentence: str | None) -> tuple[str, bool]:
+    """'하다 보면 팀원에게 …' → '팀원에게 …'. 남는 것이 너무 짧으면 그대로."""
+    s = (sentence or "").strip()
+    rest = _LEAN_START_RE.sub("", s, count=1).strip()
+    return (rest, True) if (rest != s and len(_compact(rest)) >= 8) else (s, False)
+
+
+# ── 5. 받는 문장의 '리더님께서' 머리 · 답 전체를 되풀이하는 받기 ─────────────
+RECEIVE_REPEAT_MAX = 0.6            # 리더 답 내용 어절 가운데 받기에 다시 나온 비율 — 이 이상이고
+RECEIVE_REPEAT_MIN_CHUNKS = 10      # 받기의 내용 어절이 이만큼 이상이면 구절 인용 받기로 바꾼다(p11a 16턴 중 4턴)
+LEADER_PREFIX_SESSION_MAX = 2
+_LEADER_PREFIX_RE = re.compile(r"^리더님께서(는|도)?\s+")
+_OTHER_SUBJECT_RE = re.compile(
+    r"(?:[가-힣A-Za-z]{1,6}\s?(?:님|씨|선임|책임|수석|대리|과장|차장|부장|팀장|실장|본부장|매니저|프로|사원|주임|기획|운영|파트장)|팀원(?:들)?|구성원(?:들)?|두\s*사람|두\s*분|"
+    r"그분(?:들)?|상대(?:방)?|강사(?:들|분)?|대표|본부|고객(?:사)?|담당자)(?:님)?(?:이|가|께서)\s")
+
+
+def starts_with_leader_prefix(sentence: str | None) -> bool:
+    return bool(_LEADER_PREFIX_RE.match((sentence or "").strip()))
+
+
+def leader_prefix_wrong_subject(sentence: str | None) -> bool:
+    """'리더님께서 억울해하던 이기획님이 표를 보고 …' — '리더님께서' 뒤의 첫 절에 다른 사람이 주어로 온다."""
+    s = (sentence or "").strip()
+    m = _LEADER_PREFIX_RE.match(s)
+    if not m:
+        return False
+    first_clause = re.split(r"[,，]", s[m.end():], maxsplit=1)[0]
+    return bool(_OTHER_SUBJECT_RE.search(first_clause + " "))
+
+
+def strip_leader_prefix(sentence: str | None) -> str:
+    return _LEADER_PREFIX_RE.sub("", (sentence or "").strip(), count=1)
+
+
+# ── 6. 한 문장 안의 두 질문 ─────────────────────────────────────────────────
+_SLOT_Q_WORDS: dict[str, re.Pattern] = {
+    "context": re.compile(r"(언제|누구와|누구랑|어디서|어떤\s*상황|계기|배경)"),
+    "action": re.compile(r"(직접|하신\s*말|하신\s*행동|꺼내신|어떻게\s*(하셨|대응|움직)|무엇을\s*(하셨|먼저)|먼저\s*하신)"),
+    "reaction": re.compile(r"(반응|받아들|태도|표정|뭐라고|어떻게\s*나왔)"),
+    "result": re.compile(r"(결과|달라|변화|바뀌|이후|그\s*뒤)"),
+    "criterion": re.compile(r"(기준|이유|왜\s|판단|근거|까닭|고르신|택하신|선택하신)"),
+    "reflection": re.compile(r"(돌아보|다시\s*(한다면|하신다면|하면)|배우신|배운|바꾸고\s*싶|아쉬)"),
+}
+_CONNECT_END_RE = re.compile(r"(고|며|으며|는지|은지|인지|었는지|였는지|했는지|셨는지)$")
+_CLAUSE_TO_Q: list[tuple[str, str, str]] = [        # (이음 어미, 합쇼체 질문, 해요체 질문)
+    (r"(셨|했|였|었|았|겠)(고|으며)$", r"\1습니까?", r"\1어요?"),
+    (r"(하시|이시|으시|시)(고|며)$", r"\1ㅂ니까?", r"\1나요?"),
+    (r"((?:는|은|인|었는|였는|했는|셨는)지)$", r"\1 말씀해 주시겠습니까?", r"\1 들려주시겠어요?"),
+]
+
+
+_DIRECT_Q_END_RE = re.compile(r"(습니까|[가-힣]니까|나요|가요|까요|어요|아요|죠)$")
+_INDIRECT_END_RE = re.compile(r"(는지|은지|인지|을지)$")
+_COND_START_RE = re.compile(r"^(있었다면|있으셨다면|있다면|그랬다면|그러셨다면|그렇다면|아니면|혹은|또는|그리고)\s")
+
+
+def inline_question_clauses(question: str | None) -> list[str]:
+    """한 문장 안에 쉼표로 이어진 질문 덩어리들. 둘 이상이면 두 질문이다. 아니면 빈 목록.
+      ① 의문사 절이 둘 이상이고 앞 절이 이음 어미로 끝난다   '무엇을 확인하려 하셨고, … 판단 기준은 무엇이었습니까?'
+      ② 앞 절이 이미 질문으로 끝났다                         '반응은 어떠했습니까, … 달라진 것이 있었습니까?'   (시뮬 p11b)
+      ③ '~는지' 절 뒤에 조건·선택어로 다시 묻는다            '…나서신 일이 있으셨는지, 있었다면 무엇을 먼저 하셨는지 …'   (시뮬 p11b)"""
+    q = (question or "").strip()
+    if not q or not is_question(q):
+        return []
+    body = re.sub(r"['‘“\"][^'’”\"\n]{0,80}['’”\"]", lambda m: m.group(0).replace(",", "‚"), q)
+    clauses = [c.strip().replace("‚", ",") for c in re.split(r"[,，]\s*", body) if c.strip()]
+    if len(clauses) < 2:
+        return []
+    wh = [i for i, c in enumerate(clauses) if _WH_RE.search(c)]
+    cut: set[int] = set()                       # 이 절 뒤에서 끊는다
+    if len(wh) >= 2:
+        for i in wh[:-1]:
+            if _CONNECT_END_RE.search(clauses[i]):
+                cut.add(i)
+    for i, c in enumerate(clauses[:-1]):
+        if _DIRECT_Q_END_RE.search(c) and len(_compact(" ".join(clauses[i + 1:]))) >= 6:
+            cut.add(i)
+        if _INDIRECT_END_RE.search(c) and _COND_START_RE.match(clauses[i + 1] + " "):
+            cut.add(i)
+    if not cut:
+        return []
+    out: list[str] = []
+    start = 0
+    for i in sorted(cut):
+        out.append(", ".join(clauses[start:i + 1]))
+        start = i + 1
+    out.append(", ".join(clauses[start:]))
+    return [p for p in out if p]
+
+
+def keep_slot_question(question: str | None, slot: str | None, *, formal: bool) -> tuple[str, bool]:
+    """한 문장 안 두 질문 → 그 턴의 슬롯에 해당하는 질문 하나만. 앞 절을 남길 때는 이음 어미를 질문 어미로 바꾸고, 표에 없는 꼴이면 마지막 절을 남긴다.
+    (결과, 잘랐는가)"""
+    q = (question or "").strip()
+    parts = inline_question_clauses(q)
+    if len(parts) < 2:
+        return q, False
+    pat = _SLOT_Q_WORDS.get(slot or "")
+    pick = next((i for i, p in enumerate(parts) if pat is not None and pat.search(p)), len(parts) - 1)
+    if any(_COND_START_RE.match(p + " ") for p in parts[1:]):
+        pick = len(parts) - 1                    # '…있으셨는지, 있었다면 무엇을 …' — 앞 절은 있었는지 확인일 뿐, 묻는 것은 뒤 절이다
+    if pick != len(parts) - 1:
+        from diag_project.services.conjugation import attach_b, bad_form
+        cand = None
+        p = parts[pick].rstrip(" ,")
+        if _DIRECT_Q_END_RE.search(p):
+            cand = p + "?"                      # 앞 절이 이미 질문 어미로 끝났다 — 물음표만 붙인다
+        for pat_c, rep_f, rep_p in ([] if cand else _CLAUSE_TO_Q):
+            m = re.search(pat_c, p)
+            if not m:
+                continue
+            if "ㅂ니까" in rep_f:
+                stem = p[: m.start()] + m.group(1)
+                cand = (attach_b(stem, "니까") + "?") if formal else (stem + "나요?")
+            else:
+                cand = re.sub(pat_c, rep_f if formal else rep_p, p)
+            break
+        if cand and not bad_form(cand):
+            return cand, True
+        pick = len(parts) - 1
+    last = re.sub(r"^(그리고|또는|또|그래서|혹은|아니면|있었다면|있으셨다면|있다면|그랬다면|그러셨다면|그렇다면)[,，]?\s+", "", parts[pick].strip())
+    return (last if (last.endswith("?") or is_question(last)) else last + "?"), True
+
+
+_GENERIC_Q_WORDS = ("말씀", "리더님", "리더", "들려", "주시", "주실", "이야기", "얘기", "무엇", "어떻게", "어떤", "언제", "누구", "있었", "있으셨", "있습", "궁금",
+                    "하셨", "했는", "그때", "자리", "장면", "직접", "먼저", "처음", "가장", "하나", "한 가지", "부분", "점이", "떠오르", "기억", "혹시", "당시", "그날")
+
+
+def _q_chunks(text: str | None) -> set[str]:
+    return {c for c in _content_chunks(text or "") if len(c) >= 2 and not c.startswith(_GENERIC_Q_WORDS)}
+
+
+def _shares(a: str, pool: set[str]) -> bool:
+    return any(a == b or a.startswith(b) or b.startswith(a) or a[:2] == b[:2] for b in pool)
+
+
+def question_shares_words(question: str | None, user_text: str | None) -> bool:
+    """질문이 직전 리더 답과 내용 낱말을 하나라도 나누는가(어간 앞 두 글자까지 같으면 같은 낱말로 본다 — '놓쳤어' ↔ '놓치신')."""
+    qc, uc = _q_chunks(question), {c for c in _content_chunks(user_text or "") if len(c) >= 2}
+    return bool(qc) and bool(uc) and any(_shares(a, uc) for a in qc)
+
+
+def unsaid_fact_words(candidate: str | None, sources: list[str] | None) -> list[str]:
+    """다시 묻는 질문에 새로 들어온 내용 낱말 — 직전 질문에도, 이 사례의 리더 말에도 없는 것. 리더가 말하지 않은 사실('팀원들을 불러 모아')을 잡는다."""
+    pool: set[str] = set()
+    for s in sources or []:
+        pool |= {c for c in _content_chunks(s or "") if len(c) >= 2}
+    return sorted(c for c in _q_chunks(candidate) if not _shares(c, pool))

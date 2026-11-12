@@ -1,0 +1,445 @@
+"""(2026-11-12 P11b) Daniel 재시뮬 전 추가 수정 — 어미 변환(불규칙 용언 표)·안내 중복·연결 문구·관찰 슬롯 턴·받는 문장·질문·보완 사례 승격·휴식 제안."""
+import pytest
+
+from diag_project.services import conjugation as C
+from diag_project.services import persona_register as R
+from diag_project.services import persona_voice as V
+
+# ── 1. 어미 변환: 불규칙 용언 표 ────────────────────────────────────────────
+# 용언마다 (해요체 꼴, 합쇼체 꼴) — 코드가 쓰는 어미 전부: 질문 '~나요/~세요/~시나요/~어요/~었어요/~셨어요', 평서 '~어요/~네요/~는군요(군요)/~시네요/~ㄹ게요/~었어요'.
+# 합쇼체 꼴이 None 이면 '표에 없는 꼴 — 바꾸지 않고 원문 유지'가 기대값이다.
+VERBS: dict[str, dict[str, list[tuple[str, str | None]]]] = {
+    "이끌다(ㄹ)": {
+        "q": [("이끄나요?", "이끕니까?"), ("이끄세요?", "이끄십니까?"), ("이끄시나요?", "이끄십니까?"), ("이끌어요?", "이끕니까?"),
+              ("이끌었어요?", "이끌었습니까?"), ("이끄셨어요?", "이끄셨습니까?")],
+        "s": [("이끌어요.", "이끕니다."), ("이끄네요.", "이끕니다."), ("이끄는군요.", "이끕니다."), ("이끄시네요.", "이끄십니다."),
+              ("이끌게요.", "이끌겠습니다."), ("이끌었어요.", "이끌었습니다.")]},
+    "만들다(ㄹ)": {
+        "q": [("만드나요?", "만듭니까?"), ("만드세요?", "만드십니까?"), ("만드시나요?", "만드십니까?"), ("만들어요?", "만듭니까?"),
+              ("만들었어요?", "만들었습니까?"), ("만드셨어요?", "만드셨습니까?")],
+        "s": [("만들어요.", "만듭니다."), ("만드네요.", "만듭니다."), ("만드는군요.", "만듭니다."), ("만드시네요.", "만드십니다."),
+              ("만들게요.", "만들겠습니다."), ("만들었어요.", "만들었습니다.")]},
+    "알다(ㄹ)": {
+        "q": [("아나요?", "압니까?"), ("아세요?", "아십니까?"), ("아시나요?", "아십니까?"), ("알아요?", "압니까?"),
+              ("알았어요?", "알았습니까?"), ("아셨어요?", "아셨습니까?")],
+        "s": [("알아요.", "압니다."), ("아네요.", "압니다."), ("아는군요.", "압니다."), ("아시네요.", "아십니다."),
+              ("알게요.", "알겠습니다."), ("알았어요.", "알았습니다.")]},
+    "들다(ㄹ)": {
+        "q": [("드나요?", "듭니까?"), ("드세요?", "드십니까?"), ("드시나요?", "드십니까?"), ("들어요?", None),     # '들어요' 는 듣다·들다 어느 쪽인지 모른다
+              ("들었어요?", "들었습니까?"), ("드셨어요?", "드셨습니까?")],
+        "s": [("들어요.", None), ("드네요.", "듭니다."), ("드는군요.", "듭니다."), ("드시네요.", "드십니다."),
+              ("들게요.", None), ("들었어요.", "들었습니다.")]},
+    "힘들다(ㄹ)": {
+        "q": [("힘든가요?", "힘듭니까?"), ("힘드세요?", "힘드십니까?"), ("힘드셨어요?", "힘드셨습니까?"), ("힘들어요?", "힘듭니까?"),
+              ("힘들었어요?", "힘들었습니까?")],
+        "s": [("힘들어요.", "힘듭니다."), ("힘드네요.", "힘듭니다."), ("힘들군요.", "힘듭니다."), ("힘드시네요.", "힘드십니다."), ("힘들었어요.", "힘들었습니다.")]},
+    "떠오르다(르)": {
+        "q": [("떠오르나요?", "떠오릅니까?"), ("떠오르세요?", "떠오르십니까?"), ("떠오르시나요?", "떠오르십니까?"), ("떠올라요?", None),
+              ("떠올랐어요?", "떠올랐습니까?"), ("떠오르셨어요?", "떠오르셨습니까?")],
+        "s": [("떠올라요.", "떠오릅니다."), ("떠오르네요.", "떠오릅니다."), ("떠오르는군요.", "떠오릅니다."), ("떠오르시네요.", "떠오르십니다."),
+              ("떠올랐어요.", "떠올랐습니다.")]},
+    "고르다(르)": {
+        "q": [("고르나요?", "고릅니까?"), ("고르세요?", "고르십니까?"), ("고르시나요?", "고르십니까?"), ("골라요?", None),
+              ("골랐어요?", "골랐습니까?"), ("고르셨어요?", "고르셨습니까?")],
+        "s": [("골라요.", "고릅니다."), ("고르네요.", "고릅니다."), ("고르는군요.", "고릅니다."), ("고르시네요.", "고르십니다."),
+              ("고를게요.", "고르겠습니다."), ("골랐어요.", "골랐습니다.")]},
+    "어렵다(ㅂ)": {
+        "q": [("어려운가요?", "어렵습니까?"), ("어려우세요?", "어려우십니까?"), ("어려워요?", None), ("어려웠어요?", "어려웠습니까?"),
+              ("어려우셨어요?", "어려우셨습니까?"), ("어렵나요?", "어렵습니까?")],
+        "s": [("어려워요.", "어렵습니다."), ("어렵네요.", "어렵습니다."), ("어렵군요.", "어렵습니다."), ("어려우시네요.", "어려우십니다."),
+              ("어려웠어요.", "어려웠습니다.")]},
+    "쉽다(ㅂ)": {
+        "q": [("쉬운가요?", "쉽습니까?"), ("쉬웠어요?", "쉬웠습니까?"), ("쉽나요?", "쉽습니까?")],
+        "s": [("쉬워요.", "쉽습니다."), ("쉽네요.", "쉽습니다."), ("쉽군요.", "쉽습니다."), ("쉬웠어요.", "쉬웠습니다.")]},
+    "돕다(ㅂ)": {
+        "q": [("돕나요?", "돕습니까?"), ("도우세요?", "도우십니까?"), ("도우시나요?", "도우십니까?"), ("도와요?", None),
+              ("도왔어요?", "도왔습니까?"), ("도우셨어요?", "도우셨습니까?")],
+        "s": [("도와요.", "돕습니다."), ("돕네요.", "돕습니다."), ("돕는군요.", "돕습니다."), ("도우시네요.", "도우십니다."),
+              ("도울게요.", "돕겠습니다."), ("도왔어요.", "도왔습니다.")]},
+    "쓰다(ㅡ)": {
+        "q": [("쓰나요?", "씁니까?"), ("쓰세요?", "쓰십니까?"), ("쓰시나요?", "쓰십니까?"), ("써요?", None),
+              ("썼어요?", "썼습니까?"), ("쓰셨어요?", "쓰셨습니까?")],
+        "s": [("써요.", "씁니다."), ("쓰네요.", "씁니다."), ("쓰는군요.", "씁니다."), ("쓰시네요.", "쓰십니다."), ("쓸게요.", "쓰겠습니다."), ("썼어요.", "썼습니다.")]},
+    "크다(ㅡ)": {
+        "q": [("큰가요?", "큽니까?"), ("크세요?", "크십니까?"), ("컸어요?", "컸습니까?")],
+        "s": [("커요.", "큽니다."), ("크네요.", "큽니다."), ("크군요.", "큽니다."), ("컸어요.", "컸습니다.")]},
+    "바쁘다(ㅡ)": {
+        "q": [("바쁜가요?", "바쁩니까?"), ("바쁘세요?", "바쁘십니까?"), ("바빴어요?", "바빴습니까?"), ("바쁘셨어요?", "바쁘셨습니까?")],
+        "s": [("바빠요.", "바쁩니다."), ("바쁘네요.", "바쁩니다."), ("바쁘군요.", "바쁩니다."), ("바쁘시네요.", "바쁘십니다."), ("바빴어요.", "바빴습니다.")]},
+    "하다": {
+        "q": [("하나요?", "합니까?"), ("하세요?", "하십니까?"), ("하시나요?", "하십니까?"), ("해요?", "합니까?"),
+              ("했어요?", "했습니까?"), ("하셨어요?", "하셨습니까?")],
+        "s": [("해요.", "합니다."), ("하네요.", "합니다."), ("하는군요.", "합니다."), ("하시네요.", "하십니다."), ("할게요.", "하겠습니다."), ("했어요.", "했습니다.")]},
+    "생각하다": {
+        "q": [("생각하나요?", "생각합니까?"), ("생각하세요?", "생각하십니까?"), ("생각하시나요?", "생각하십니까?"), ("생각해요?", "생각합니까?"),
+              ("생각했어요?", "생각했습니까?"), ("생각하셨어요?", "생각하셨습니까?")],
+        "s": [("생각해요.", "생각합니다."), ("생각하네요.", "생각합니다."), ("생각하는군요.", "생각합니다."), ("생각하시네요.", "생각하십니다."),
+              ("생각할게요.", "생각하겠습니다."), ("생각했어요.", "생각했습니다.")]},
+    "먹다(규칙)": {
+        "q": [("먹나요?", "먹습니까?"), ("먹어요?", "먹습니까?"), ("먹었어요?", "먹었습니까?")],
+        "s": [("먹어요.", "먹습니다."), ("먹네요.", "먹습니다."), ("먹는군요.", "먹습니다."), ("먹었어요.", "먹었습니다.")]},
+    "좋다(규칙)": {
+        "q": [("좋은가요?", "좋습니까?"), ("좋아요?", "좋습니까?"), ("좋았어요?", "좋았습니까?"), ("좋을까요?", "좋습니까?")],
+        "s": [("좋아요.", "좋습니다."), ("좋네요.", "좋습니다."), ("좋군요.", "좋습니다."), ("좋았어요.", "좋았습니다.")]},
+}
+_PAIRS = [(v, kind, src, dst) for v, d in VERBS.items() for kind, rows in d.items() for src, dst in rows]
+
+
+@pytest.mark.parametrize("verb,kind,src,dst", _PAIRS)
+def test_p11b_1_polite_to_formal_table(verb, kind, src, dst):
+    out = R._formalize_sentence("그 일을 " + src)
+    got = out[len("그 일을 "):]
+    assert got == (dst if dst is not None else src), (verb, src, got)
+    assert C.bad_form(out) is None, (verb, out)
+    # apply_register 로 돌려도 같다(Jessica = 합쇼체, 범위 전체)
+    assert R.apply_register("Jessica", "그 일을 " + src, scope="strict")[0] == out, (verb, src)
+
+
+# 합쇼체 → 해요체(해요체 코치의 여는 문장·범위 문장·질문). None = 바꾸지 않는다.
+FORMAL_TO_POLITE = [
+    ("이끕니다.", "이끌어요."), ("만듭니다.", "만들어요."), ("압니다.", "알아요."), ("힘듭니다.", "힘들어요."), ("듭니다.", "들어요."),
+    ("떠오릅니다.", "떠올라요."), ("고릅니다.", "골라요."), ("다릅니다.", "달라요."), ("모릅니다.", "몰라요."), ("부릅니다.", "불러요."),
+    ("어렵습니다.", "어려워요."), ("쉽습니다.", "쉬워요."), ("돕습니다.", "도와요."), ("고맙습니다.", "고마워요."),
+    ("씁니다.", "써요."), ("큽니다.", "커요."), ("바쁩니다.", "바빠요."), ("아픕니다.", "아파요."), ("기쁩니다.", "기뻐요."), ("슬픕니다.", "슬퍼요."), ("모읍니다.", "모아요."),
+    ("합니다.", "해요."), ("생각합니다.", "생각해요."), ("됩니다.", "돼요."), ("했습니다.", "했어요."), ("하겠습니다.", "할게요."),
+    ("먹습니다.", "먹어요."), ("좋습니다.", "좋아요."), ("많습니다.", "많아요."), ("갑니다.", "가요."), ("봅니다.", "봐요."), ("줍니다.", "줘요."),
+    ("마십니다.", "마셔요."), ("하십니다.", "하세요."), ("따릅니다.", "따라요."), ("치릅니다.", "치러요."),
+    ("합니까?", "하나요?"), ("이끕니까?", "이끄나요?"), ("만듭니까?", "만드나요?"), ("떠오릅니까?", "떠오르나요?"), ("씁니까?", "쓰나요?"),
+    ("먹습니까?", "먹나요?"), ("어렵습니까?", "어렵나요?"), ("하십니까?", "하세요?"), ("했습니까?", "했어요?"), ("무엇입니까?", "무엇인가요?"),
+    ("이릅니다.", None),
+]
+
+
+@pytest.mark.parametrize("src,dst", FORMAL_TO_POLITE)
+def test_p11b_1_formal_to_polite_table(src, dst):
+    out = R._politen_sentence("그 일을 " + src)
+    assert out[len("그 일을 "):] == (dst if dst is not None else src), (src, out)
+    assert C.bad_form(out) is None
+
+
+def test_p11b_1_bad_forms_and_repair():
+    # 틀린 꼴은 잡고, 맞는 꼴은 잡지 않는다
+    for bad in ("떠오르시습니까?", "떠오르습니까?", "만들습니다.", "하습니다.", "이끄고 계시는군요.", "만드지 않았습니다.", "만들나요?", "만들세요.",
+                "떠오르어요.", "고르었습니다.", "어렵어요.", "쉽었습니다.", "쓰어요.", "바뻐요.", "하았습니다.", "좋는지요?", "어떻는지 말씀해 주시겠습니까?",
+                "하을까요?", "만들으셨습니까?", "알습니다."):
+        assert C.bad_form(bad), bad
+    for good in ("이끌고 계시는군요.", "이끄시는군요.", "이끕니다.", "만드는 일", "만들지 않았습니다.", "떠오르십니까?", "차이입니다.", "돕는지요?", "들으셨습니까?",
+                 "힘드셨겠습니다.", "했는지 말씀해 주시겠습니까?", "어려운지요?", "좋은지요?", "알겠습니다.", "살펴보겠습니다.", "있으셨습니까?", "만들었습니다."):
+        assert C.bad_form(good) is None, good
+    assert C.repair_l_stem("교육팀을 이끄고 계시는군요.") == ("교육팀을 이끌고 계시는군요.", 1)
+    assert C.repair_l_stem("표를 만드게 된 계기") == ("표를 만들게 된 계기", 1)
+    assert C.repair_l_stem("표를 만들셨군요.") == ("표를 만드셨군요.", 1)
+    assert C.repair_l_stem("팀을 이끄시는군요. 표를 만드는 일, 힘드셨겠습니다.")[1] == 0
+    # 변환 결과가 틀린 꼴이면 원문 유지
+    assert C.safe("만들어요?", "만들을까요?") == "만들어요?"
+    assert C.safe("했어요?", "했습니까?") == "했습니까?"
+
+
+def test_p11b_1_daniel_tail_and_register():
+    # Daniel 꼬리 변주 — 형용사에 '~는지' 를 붙이지 않는다
+    assert V.voice_question("Daniel", "그 방식이 팀에 좋았어요?", variant=0).endswith("좋았는지 말씀해 주시겠습니까?")
+    assert V._daniel("그 방식이 지금도 좋습니까?", 1) == "그 방식이 지금도 좋은지요?"
+    assert V._daniel("그 일이 어렵습니까?", 0) == "그 일이 어려운지 말씀해 주시겠습니까?"
+    assert V._daniel("그때 분위기는 어떻습니까?", 1) == "그때 분위기는 어떤지요?"
+    assert V._daniel("그 기준을 뚫습니까?", 0) == "그 기준을 뚫습니까?"          # 표에 없는 어간 — 원문 유지
+    # 시뮬 p11a 의 두 꼴
+    assert R.apply_register("Daniel", "그때 처음 꺼내신 말이 무엇이었는지 떠오르시나요?", scope="questions")[0].endswith("떠오르십니까?")
+    assert R.apply_register("Daniel", "그 장면이 지금도 떠오르나요?", scope="questions")[0].endswith("떠오릅니까?")
+    assert R.apply_register("Jessica", "그 표는 누가 만들어요?", scope="questions")[0].endswith("만듭니까?")
+    assert R.apply_register("Jessica", "그 기준이 무엇이에요?", scope="questions")[0].endswith("무엇입니까?")
+    # 해요체 코치: '합니까?' 도 섞임으로 본다(종전 식은 낱자 'ㅂ니까' 라 걸리지 않았다)
+    assert R.register_violations("Ella", "그 뒤에는 어떻게 합니까?") and R.apply_register("Ella", "그 뒤에는 어떻게 합니까?")[0].endswith("하나요?")
+    assert R.apply_register("Olivia", "팀을 어떻게 이끕니까?")[0].endswith("이끄나요?")
+
+
+def test_p11b_1_dictionary_anchors_have_no_bad_forms():
+    """사전 앵커 전부 × 코치 6명 × 변주 3 — 어미 변환 결과에 틀린 활용 꼴이 없다."""
+    from diag_project.services import anchor_render as AR
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK as CF
+    n = 0
+    for ch, cv in CF.items():
+        if ch == "supplementary":
+            continue
+        for key in (cv.get("indicators") or {}):
+            for pos in range(3):
+                q = AR.dict_anchor(key, pos)
+                if not q:
+                    continue
+                for p in ("Ella", "Olivia", "Michael", "Jessica", "Daniel", "Lucas"):
+                    for v in range(3):
+                        out = V.voice_question(p, q, variant=v)
+                        assert C.bad_form(out) is None, (p, v, q, out)
+                        n += 1
+    assert n > 300
+
+
+# ── 2. 안내 중복 ────────────────────────────────────────────────────────────
+def test_p11b_2_intro_announce_ack_dropped():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import turn_checks as T
+    from diag_project.services.intro_messages import build_intro_anchor_section
+    assert T.is_intro_announce("네, 그러면 오늘 흐름부터 안내드리겠습니다.")
+    assert T.is_intro_announce("그럼 진행 순서를 설명해 드릴게요.")
+    assert not T.is_intro_announce("특별히 바라시는 것 없이 오셨군요.")
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "_iia_a(llm_acknowledgment)" in src and '_tm["intro_dup"] = 1' in src
+    from diag_project.services.intro_messages import PERSONA_LINES
+    for p in ("Ella", "Jessica", "Olivia", "Daniel", "Michael", "Lucas"):
+        # 기대 답이 없을 때: 코치별 다리 + 본문(첫 문장 뺌) — 안내 예고는 다리 한 번뿐. 기대 답이 있을 때: 받는 문장 + 본문 — 예고는 본문 첫 문장 한 번뿐
+        full, tail = build_intro_anchor_section(p), build_intro_anchor_section(p, lead=False)
+        assert T.is_intro_announce(PERSONA_LINES[p]["intro_bridge"]), p
+        assert len([x for x in full.split("\n") if T.is_intro_announce(x)]) == 1 and not [x for x in tail.split("\n") if T.is_intro_announce(x)]
+        assert tail.startswith("진단은 5개 영역") and full.endswith(tail)
+    assert "lead=False)}" in src
+
+
+# ── 3. 내용 없는 연결 문구 · 진행 해설 ──────────────────────────────────────
+def test_p11b_3_link_frames_and_commentary():
+    from diag_project.services import turn_checks as T
+    from diag_project.services.style_tracker import format_style_constraints
+    said = '방금 말씀하신 "자원"과도 이어지는 부분입니다만, 설계 초안을 쓰면서 무엇을 확인하려 하셨습니까?'
+    out, n = T.strip_link_frames("TF에 자원했다는 말씀이셨군요. " + said)
+    assert n == 1 and out == "TF에 자원했다는 말씀이셨군요. 설계 초안을 쓰면서 무엇을 확인하려 하셨습니까?"     # 리더가 실제로 한 말이어도 틀을 지운다
+    assert T.strip_link_frames("앞서 말씀하신 납기 이야기와도 닿아 있는 대목입니다. 그 뒤 무엇이 달라졌습니까?") == ("그 뒤 무엇이 달라졌습니까?", 1)
+    assert T.strip_link_frames("그 결에서 이어 여쭙니다만, 그때 무엇을 먼저 하셨습니까?")[0] == "그때 무엇을 먼저 하셨습니까?"
+    assert T.strip_link_frames("표로 정리해 보여주셨군요. 그 표를 본 팀원은 뭐라고 했습니까?")[1] == 0
+    # 진행 해설 — 사례 여는 턴
+    op = "본부 지시가 먼저 내려오는 상황에서 중장기 흐름을 어떻게 보고 결정을 내리시는지 살펴보는 대목입니다. 최근에 내년 이후를 내다보고 내리신 결정이 있었습니까?"
+    assert T.strip_progress_commentary(op) == ("최근에 내년 이후를 내다보고 내리신 결정이 있었습니까?", 1)
+    assert T.strip_progress_commentary("팀원에게 일을 어떻게 맡기시는지 살펴보겠습니다. 최근에 일을 통째로 맡기신 적이 있었습니까?")[1] == 1
+    assert T.strip_progress_commentary("일을 맡기는 장면을 살펴보는 대목입니다만, 최근에 일을 통째로 맡기신 적이 있었습니까?")[0] == "최근에 일을 통째로 맡기신 적이 있었습니까?"
+    assert T.strip_progress_commentary("이번에는 일을 맡기는 쪽 이야기입니다. 최근에 일을 통째로 맡기신 적이 있었습니까?")[1] == 0
+    assert T.strip_progress_commentary("그 부분을 살펴보겠습니다.")[1] == 0                        # 질문이 남지 않으면 지우지 않는다
+    # 프롬프트에서 틀 예시가 빠졌다
+    for n_ in ("Daniel (다니엘)", "Ella (엘라)", "Michael (마이클)"):
+        t = format_style_constraints({}, n_)
+        assert "이어지는" not in t and "닿아 있" not in t and "쉽지 않은 자리" not in t and "연결 문구는 쓰지 않습니다" in t
+
+
+def test_p11b_3_6_opener_frames():
+    from diag_project.services import anchor_render as AR
+    from diag_project.services import turn_checks as T
+    assert len(AR.OPENER_FRAMES) == 5 and not any("대목" in f for f in AR.OPENER_FRAMES)
+    assert not any("대목" in e or e.startswith("장을 보다 보면") for e in AR.OPENER_FRAME_EXAMPLES + AR.OPENER_FRAME_EXAMPLES_FORMAL)
+    used: list[int] = []
+    for _ in range(10):
+        f = AR.pick_opener_frame(used)
+        assert not used or f != used[-1]
+        used.append(f)
+    assert all(used.count(i) == 2 for i in range(5))                                             # 같은 틀은 세션 2회까지, 직전 틀 제외
+    assert T.strip_lean_start("하다 보면 팀원에게 큰 방향을 설명하고 함께 움직이도록 설득해야 할 때가 생깁니다.") == (
+        "팀원에게 큰 방향을 설명하고 함께 움직이도록 설득해야 할 때가 생깁니다.", True)
+    assert T.strip_lean_start("그러다 보면 일정이 밀려 우선순위를 다시 정해야 할 때가 생깁니다.")[1] is True
+    assert T.strip_lean_start("팀을 맡다 보면 방향을 다시 설명해야 할 때가 생깁니다.")[1] is False
+
+
+@pytest.mark.asyncio
+async def test_p11b_3_opener_render_bare_and_commentary(monkeypatch):
+    from diag_project.services import anchor_render as AR
+    monkeypatch.delenv("FM_LLM_STUB", raising=False)
+
+    class _LLM:
+        def __init__(self, outs):
+            self.outs, self.n = list(outs), 0
+
+        async def _generate_with_retry(self, **kw):
+            self.n += 1
+            return self.outs.pop(0)
+    fb = "최근에 내년 이후를 내다보고 내리신 결정이 있었습니까?"
+    llm = _LLM([])
+    assert await AR.render_opener(llm, chapter="organization_management", sub_key="strategic_thinking", persona_name="Daniel", leader_text="",
+                                  fallback_question=fb, frame=AR.OPENER_BARE_FRAME) == (fb, "bare") and llm.n == 0
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK as CF
+    key = next(iter(CF["organization_management"]["indicators"]))
+    llm = _LLM(["하다 보면 중장기 흐름을 어떻게 보는지 살펴보는 대목입니다. 최근에 내년 이후를 내다보고 내리신 결정이 있었습니까?"])
+    txt, mode = await AR.render_opener(llm, chapter="organization_management", sub_key=key, persona_name="Daniel", leader_text="", fallback_question=fb, frame=0)
+    assert txt == "최근에 내년 이후를 내다보고 내리신 결정이 있었습니까?" and mode == "llm" and llm.n == 1          # 해설은 지우고 다시 쓰지 않는다
+    llm = _LLM(["하다 보면 팀원에게 방향을 다시 설명해야 할 때가 생깁니다. 최근에 방향을 다시 설명하신 일이 있었습니까?"])
+    txt, mode = await AR.render_opener(llm, chapter="organization_management", sub_key=key, persona_name="Daniel", leader_text="", fallback_question=fb, frame=0)
+    assert txt.startswith("팀원에게 방향을") and mode == "llm" and llm.n == 1
+
+
+# ── 4. 관찰 슬롯이 들어간 턴 ────────────────────────────────────────────────
+def test_p11b_4_slot_turn_shape_and_repeat_word():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import slot_render as SR
+    leader = ["김선임이랑 박선임이 반대했어. 전체 개편 대신 한 과정만 파일럿으로 돌려보자고 제안했고 파일럿 설계 초안은 내가 직접 썼어.",
+              "파일럿 만족도가 높게 나와서 하반기에 전체 개편으로 넘어갔어. 김선임이랑 박선임이 개편 TF에 자원했어."]
+    slot = "김선임과 박선임이 반대하는 가운데 전체 개편 대신 파일럿을 제안하며 쉽지 않은 자리를 지키셨습니다."
+    q = "파일럿 설계 초안을 직접 쓰면서 쉽지 않은 대목은 무엇이었습니까?"
+    assert SR.repeated_turn_words(slot, q, leader) == ["쉽지"]
+    assert SR.slot_sentence_ok("observation", slot, leader, persona_name="Daniel", avoid_text=q) == (False, "repeat_word")
+    assert SR.slot_sentence_ok("observation", slot, leader, persona_name="Daniel", avoid_text="파일럿 설계 초안을 직접 쓰면서 무엇을 확인하려 하셨습니까?")[0]
+    assert SR.slot_sentence_ok("observation", slot, leader, persona_name="Daniel")[0]
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert 'clean_reply = " ".join([_slot_txt] + ([_q_now_s] if _q_now_s else [])).strip()' in src          # 관찰·응원 슬롯 턴 = 슬롯 + 질문(받기 없음)
+    assert 'avoid_text=(_q_now_s if _stmt_slot else None)' in src
+
+
+# ── 5. 받는 문장 ────────────────────────────────────────────────────────────
+def test_p11b_5_leader_prefix_and_repeat_cap():
+    from diag_project.services import turn_checks as T
+    from diag_project.services.receive_check import quote_receive
+    bad = '리더님께서 억울해하던 이기획님이 표를 보고 "제가 몰랐네요"라고 하셨고, 월간 점검도 먼저 맡겠다고 나섰다는 거군요.'
+    assert T.starts_with_leader_prefix(bad) and T.leader_prefix_wrong_subject(bad)
+    assert T.strip_leader_prefix(bad).startswith("억울해하던 이기획님이")
+    ok = "리더님께서 면담 전에 분기별 지연 건을 표로 정리해 보여주셨고, 다음 분기 목표는 두 분이 함께 다시 쓰셨군요."
+    assert T.starts_with_leader_prefix(ok) and not T.leader_prefix_wrong_subject(ok)
+    assert not T.starts_with_leader_prefix("표로 정리해 보여주셨군요.") and T.LEADER_PREFIX_SESSION_MAX == 2
+    # 답 전체를 되풀이한 받기 — 상한(리더 답 어절 60% 이상 + 받기 내용 어절 10개 이상)
+    u = "그날 저녁에 원인부터 쪼갰어. 강사 공백보다 교안이 그분 머릿속에만 있던 게 문제라서, 다음 날 박선임이랑 교안부터 문서로 복원했어."
+    long_recv = "그날 저녁에 원인부터 쪼개셨고, 강사 공백보다 교안이 그분 머릿속에만 있던 게 문제라서 다음 날 박선임과 교안부터 문서로 복원하셨군요."
+    a, b, n = T.receive_overlap(long_recv, u)
+    assert b >= T.RECEIVE_REPEAT_MAX and n >= T.RECEIVE_REPEAT_MIN_CHUNKS
+    a, b, n = T.receive_overlap("교안부터 문서로 복원하셨군요.", u)
+    assert not (b >= T.RECEIVE_REPEAT_MAX and n >= T.RECEIVE_REPEAT_MIN_CHUNKS)
+    # 반말 답에서도 구절 인용 받기가 만들어진다(시뮬 p11a 에서 받기가 빠진 두 턴 + 머리가 잘린 꼴)
+    assert quote_receive("그 자리에선 말 안 했어. 첫 지연 때 바로 앉았어야 했는데, 평가 때까지 미뤘어.") == "'바로 앉았어야 했는데, 평가 때까지 미뤘다'는 말씀이셨군요."
+    assert quote_receive(u + " 첫 회차는 내가 직접 맡기로 하고, 일정표도 날짜 단위로 다시 짜서 그 주 안에 팀에 공유했어.").endswith("팀에 공유했다'는 말씀이셨군요.")
+    assert quote_receive("감정 말고 기록으로 봐야 다음 행동이 바뀐다고 봤어.") == "'기록으로 봐야 다음 행동이 바뀐다고 봤다'는 말씀이셨군요."
+    assert quote_receive("다시 하면 본부 지시 오기 전에 내가 먼저 개편 얘기를 꺼냈을 거야. 지시로 시작하니까 반대부터 나오더라.") == "'먼저 개편 얘기를 꺼냈을 것이다'는 말씀이셨군요."
+    assert "내가" not in quote_receive("그래서 내가 직접 첫 회차를 맡았어.")
+
+
+# ── 6. 질문 ─────────────────────────────────────────────────────────────────
+def test_p11b_6_inline_two_questions_and_tail():
+    from diag_project.services import turn_checks as T
+    q = "파일럿 설계 초안을 직접 쓰면서 두 달 동안 무엇을 확인하려 하셨고, 다른 과정이 아니라 그 과정을 고르신 판단 기준은 무엇이었습니까?"
+    assert len(T.inline_question_clauses(q)) == 2
+    assert T.keep_slot_question(q, "criterion", formal=True) == ("다른 과정이 아니라 그 과정을 고르신 판단 기준은 무엇이었습니까?", True)
+    assert T.keep_slot_question(q, "action", formal=True) == ("파일럿 설계 초안을 직접 쓰면서 두 달 동안 무엇을 확인하려 하셨습니까?", True)
+    assert T.keep_slot_question(q, "action", formal=False)[0].endswith("확인하려 하셨어요?")
+    assert T.keep_slot_question("그때 팀원은 뭐라고 했는지, 그 뒤 무엇이 달라졌는지 들려주시겠어요?", "reaction", formal=False) == (
+        "그때 팀원은 뭐라고 했는지 들려주시겠어요?", True)
+    one = "면담 전에 표로 정리해 보여주셨을 때, 이기획님은 뭐라고 했습니까?"
+    assert T.keep_slot_question(one, "reaction", formal=True) == (one, False)                    # 의문사 절이 하나면 그대로
+    assert T.keep_slot_question("누가 언제 무엇을 했는지 말씀해 주시겠습니까?", "context", formal=True)[1] is False
+    # 자른 꼬리가 직전 답과 낱말을 나누는가
+    u = '처음엔 억울해했는데, 표 보고는 "제가 몰랐네요" 하더라. 월간 점검도 자기가 먼저 하겠다고 하고.'
+    assert not T.question_shares_words("다른 자료는 일부러 빼셨는지 말씀해 주시겠습니까?", u)
+    assert T.question_shares_words("월간 점검은 그 뒤에 어떻게 이어졌습니까?", u)
+    assert T.question_shares_words("납기를 놓치신 뒤에는 무엇을 하셨습니까?", "올해 상반기는 납기 한 번도 안 놓쳤어.")
+    # 다시 묻는 질문에 리더가 말하지 않은 사실
+    orig = "그때 리더님께서 직접 팀원들에게 하신 말이나 결정 가운데 가장 먼저 떠오르는 것이 무엇이었습니까?"
+    lead = ["올해 1월에 대표가 교육 운영에 AI 도구를 바로 전면 도입하자고 했어. 근데 팀에 그걸 쓸 줄 아는 사람이 나 말고는 없었어."]
+    assert len(T.unsaid_fact_words("1월에 AI 도구 도입이 정해졌을 때, 팀원들을 불러 모아 무엇을 먼저 말씀하셨습니까?", [orig] + lead)) >= 2
+    assert len(T.unsaid_fact_words("AI 도구를 전면 도입하자는 말이 나왔을 때, 팀원들에게 처음 하신 말은 무엇이었습니까?", [orig] + lead)) < 2
+
+
+# ── 7. 보완 질문에서 나온 사례 · 8. 휴식 제안 ───────────────────────────────
+def _sweep_store(budget_left: int, unasked_n: int):
+    from diag_project.services import bei_engine as B
+    ch = "performance_management"
+    subs = ["목표설정 및 공유", "성과지표 관리(KPI)", "성과평가 및 피드백", "문제해결", "실행력"]
+    asked = subs[: len(subs) - unasked_n]
+    store = {"bei_turns": {ch: B.chapter_budget(ch) - budget_left}, "asked_subs": {ch: list(asked)}, "sweep_asked": {ch: [asked[-1]]}}
+    store, ep = B.new_episode(store, ch, asked[-1], "k", kind="sweep")
+    store, ep = B.record_leader_turn(store, ch, ep)
+    return B, ch, subs, store, ep
+
+
+def test_p11b_7_sweep_promotion():
+    B, ch, subs, store, ep = _sweep_store(budget_left=7, unasked_n=1)       # 방금 1턴 썼으니 남은 6, 미질문 1 → 여유 5
+    assert B.sweep_promote_decision(store, ch, subs, ep, incident=True) == "promoted"
+    assert B.sweep_promote_decision(store, ch, subs, ep, incident=False) is None                  # 사건이 아니면 종전대로
+    assert B.sweep_promote_decision(store, ch, subs, ep, incident=None) is None
+    B2, ch2, subs2, store2, ep2 = _sweep_store(budget_left=3, unasked_n=1)  # 남은 2, 미질문 1 → 여유 1 → 올리지 않는다
+    assert B2.sweep_promote_decision(store2, ch2, subs2, ep2, incident=True) == "no_budget"
+    ep_done = dict(ep, promote="promoted")
+    assert B.sweep_promote_decision(store, ch, subs, ep_done, incident=True) is None             # 이미 정했다
+    # 올린 사례: 여섯 가지가 차면 닫고, 리더 턴 4 에서 닫고, 미질문 예약을 침범하면 닫는다
+    assert B.promoted_done_reason(ep_done, store, ch, subs) is None
+    full = dict(ep_done, slots={k: {"status": "filled", "quote": "x"} for k in B.SLOT_KEYS})
+    assert B.promoted_done_reason(full, store, ch, subs) == "slots"
+    assert B.promoted_done_reason(dict(ep_done, leader_turns=4), store, ch, subs) == "turns"
+    tight = dict(store, bei_turns={ch: B.chapter_budget(ch) - 1})                                  # 남은 1 = 미질문 1 → 예약 침범
+    assert B.promoted_done_reason(dict(ep_done, leader_turns=2), tight, ch, subs) == "reserve"
+    assert B.SWEEP_PROMOTE_MAX_TURNS == 4
+
+
+def test_p11b_8_pause_only_on_natural_close():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B
+    assert B.is_natural_close("episode2:done") and B.is_natural_close("episode1:turns")
+    for tag in ("sweep1:sweep_done", "sweep2:no_case", "episode2:stalled", "episode1:reserve", "episode3:budget", "episode1:no_case", None, ""):
+        assert not B.is_natural_close(tag), tag
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "case_closed=_natural_close" in src and '_tm["pause_block"]' in src
+
+
+def test_p11b_5_plain_ending_after_past_tense():
+    """받침 ㅆ(과거) 뒤의 종결 어미는 '다' — 스텁 점검에서 '바꿨습니다' 가 '바꿨는다' 로 인용됐다."""
+    from diag_project.services.receive_check import _plain_ending, quote_receive
+    for src, dst in (("그 도구로 바꿨습니다", "그 도구로 바꿨다"), ("그 도구로 바꿨더라", "그 도구로 바꿨다"), ("일을 맡겼어요", "일을 맡겼다"),
+                     ("직접 가르쳤지", "직접 가르쳤다"), ("표를 받습니다", "표를 받는다"), ("그게 좋습니다", "그게 좋다")):
+        assert _plain_ending(src) == dst, src
+    assert "바꿨는다" not in quote_receive("최운영은 석 달 만에 자기 업무 절반을 그 도구로 바꿨습니다.")
+
+
+# ── 재시뮬 p11b 전문에서 찾아 고친 것(재시뮬 없음 — 단위 시험만) ──────────────
+def test_p11b_after_sim_question_forms():
+    from diag_project.services import output_guard as G
+    from diag_project.services import turn_checks as T
+    from diag_project.services.input_anomaly import last_question_of
+    # '짚어 주십시오' 도 질문 — 입버릇 대체 표현이 질문으로 읽히지 않아 그 뒤의 '네, 맞아요' 가 다시 묻기로 가지 못했다
+    q = "그 첫 지연이 났던 날, 어떤 일이었고 누구와 함께 있었는지 조금 더 짚어 주십시오."
+    assert G.is_question(q) and last_question_of("첫 지연 때 바로 앉으셨어야 했다는 말씀이군요. " + q) == q
+    # '전면 도입을 …' 의 '전면' 은 조건절이 아니다 — 두 질문이면 마지막 하나만
+    t = ("대표님이 월별 계획을 보고 받아들이셨군요. 그 판단은 무엇을 기준으로 하셨습니까? "
+         "전면 도입을 미루고 운영팀 두 명부터 가자고 정하실 때, 어떤 점을 가장 무겁게 따져 보셨는지 궁금합니다.")
+    out, n = G.keep_last_question(t)
+    assert n == 1 and "무엇을 기준으로" not in out and G.count_question_markers(out) == 1
+    assert G.starts_without_main_clause("있었다면 언제였는지 말씀해 주시겠습니까?") and not G.starts_without_main_clause("전면 도입을 미루실 때 무엇을 보셨습니까?")
+    # 한 문장 안 두 질문 — 앞 절이 이미 질문으로 끝난 꼴 · '~는지, 있었다면 ~는지'
+    q1 = "그때 이기획 님의 반응은 어떠했습니까, 말이나 표정, 혹은 이후 일하는 태도에서 달라진 것이 있었습니까?"
+    assert T.keep_slot_question(q1, "reaction", formal=True) == ("그때 이기획 님의 반응은 어떠했습니까?", True)
+    q2 = "그럴 때 5점 설문을 바꿔 보자고 직접 나서셨던 일이 있으셨는지, 있었다면 그때 리더님께서 무엇을 먼저 하셨는지 말씀해 주시겠습니까?"
+    assert T.keep_slot_question(q2, "action", formal=True) == ("그때 리더님께서 무엇을 먼저 하셨는지 말씀해 주시겠습니까?", True)
+    assert T.keep_slot_question("언제쯤이었고 누구와 함께 있었는지 짚어 주시겠습니까?", "context", formal=True)[1] is False
+    assert T.strip_question_start("특히 과정을 맡은 강사분들이 어떤 말로 받아들였는지 들려주시겠습니까?").startswith("과정을 맡은")
+    # 가리키는 말의 대상은 이 사례에서 리더가 한 말 전체에서 찾는다
+    ctx = ["작년 12월 평가 때 이기획한테 낮은 등급을 줘야 했어.", "올해 상반기엔 납기 한 번도 안 놓쳤어."]
+    assert "dangling_ref" in T.question_issues("그 평가 자리에서 무엇을 먼저 말씀하셨습니까?", ctx[-1])
+    assert "dangling_ref" not in T.question_issues("그 평가 자리에서 무엇을 먼저 말씀하셨습니까?", ctx[-1], ctx)
+
+
+def test_p11b_after_sim_receive_and_slot_forms():
+    from diag_project.services import slot_render as SR
+    from diag_project.services import turn_checks as T
+    from diag_project.services.phrase_caps import enforce_phrase_caps
+    from diag_project.services.receive_check import quote_receive, quote_receive_count
+    from diag_project.services.style_tracker import format_style_constraints
+    assert T.receive_ban_reason("우선 대표님 지시 앞에서 쓸 줄 아는 사람이 리더님 한 분뿐이었다는 상황을 받겠습니다.") == "meta"
+    assert T.receive_ban_reason("낮은 등급을 주셔야 했던 건, 그 간극을 리더님께서 무겁게 보셨기 때문이겠지요.") == "interpretive"
+    assert T.receive_ban_reason('"네, 맞아요"라고 짧게 확인해 주셨는데, 그 답이 어떻게 받아들여졌는지까지 닿았는지는 아직 잘 보이지 않습니다.') == "speech_style"
+    assert T.receive_ban_reason("표로 정리해 보여주셨군요.") is None
+    assert "받겠" not in format_style_constraints({}, "Daniel (다니엘)") and "받는 문장" not in format_style_constraints({}, "Daniel (다니엘)")
+    # 구절 인용 받기 — 리더의 1인칭을 옮기지 않고, 두 꼴을 번갈아 쓴다
+    u = "전체 대신 한 과정만 두 달 파일럿으로 해보자고 제안했어. 파일럿 설계 초안은 내가 직접 썼어."
+    assert quote_receive(u) == "'파일럿 설계 초안은 직접 썼다'는 말씀이셨군요." and quote_receive(u, 1) == "'파일럿 설계 초안은 직접 썼다'고 하셨군요."
+    assert quote_receive_count([quote_receive(u), "다른 문장입니다.", quote_receive(u, 1) + " 그 뒤 무엇이 달라졌습니까?"]) == 2
+    # 관찰 슬롯 — 지시문의 말을 옮긴 문장은 불합격
+    leader = ["작년 3월에 본부에서 교육 체계 바꾸라고 했을 때, 김선임이랑 박선임이 반대했어.", "전체 대신 한 과정만 파일럿으로 해보자고 제안했어."]
+    bad = "작년 3월 본부 지시와 김선임·박선임의 반대 사이에서 개편의 순서를 직접 정하셨던 그 무게를 알아주셨습니다."
+    assert SR.slot_sentence_ok("observation", bad, leader, persona_name="Daniel") == (False, "instruction_echo")
+    assert "알아주" not in SR._SPEC["observation"][0] and "선배로서" not in SR._SPEC["observation"][0]
+    # 입버릇 대체 표현 — 영역 안에서 돌려 쓴다(같은 대체 표현만 되풀이하지 않는다)
+    ch: list[str] = []
+    for _ in range(6):
+        out, _n = enforce_phrase_caps("그 장면을 말씀해 주시겠습니까?", session_texts=ch, chapter_texts=ch, formal=True)
+        ch.append(out)
+    assert ch[0] == ch[1] == "그 장면을 말씀해 주시겠습니까?" and len(set(ch[2:])) == 4
+
+
+def test_p11b_after_sim_handler_guards():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert '_tm["opener_restored"] = 1' in src and '_tm["opener_restored"] = 2' in src                # 여는 턴의 질문 유실 → 다시 조립 · 마지막 안전망
+    assert 'if "two_questions" in _iss and _q_expected:' in src                                         # 여는 턴의 시스템 질문은 8-w 가 자르지 않는다
+    assert "_align_ctx is None and not _reask_kind):   # (시뮬 p11b) 다시 묻기 턴은 8-w0 가 조립한 그대로" in src   # 8-w3 는 다시 묻기 턴을 건너뛴다
+    assert 'not _reask_kind and instruction_used != "NO_CASE_REFRAME"):' in src                         # 8-w4 는 사례 없음 재질문 턴을 건너뛴다
+    assert "_qrcv_w0(_llm_user_text, _qr_variant)" in src                                              # 금지 꼴 삭제 뒤에는 재생성 대신 구절 인용 받기

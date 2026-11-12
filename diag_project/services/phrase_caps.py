@@ -18,7 +18,8 @@ from diag_project.services.output_guard import is_question, split_sentences
 _SALPYEO_RE = re.compile(r"살펴보려(?:고)?(?=\s*(?:합니다|해요|하는데요|합니다만|고요|요))")
 _SALPYEO_ALTS = ("들어보려고", "짚어보려고", "여쭤보려고")
 _MALSSEUM_RE = re.compile(r"말씀해\s*주시겠습니까\?")
-_MALSSEUM_ALTS = ("말씀해 주십시오.", "들려주십시오.", "짚어 주십시오.")
+# (시뮬 p11b) 종전에는 상한을 넘은 뒤 턴마다 같은 대체 표현('짚어 주십시오.')만 골라 한 영역에 7번 나왔다 — 영역 안에서 가장 덜 쓴 것을 고른다
+_MALSSEUM_ALTS = ("들려주시겠습니까?", "말씀해 주십시오.", "들려주십시오.", "짚어 주시겠습니까?")
 _GUNGGEUM_RE = re.compile(r"궁금(?:해요|합니다|하네요|한데요|해지네요|해집니다|했어요|했습니다|해서요)")
 _GUNGGEUM_TAIL_RE = re.compile(r"((?:는|은|인|을|ㄹ|던|였는|었는|했는|셨는)지)(?:가|도|는|를)?\s*(?:더\s*|좀\s*|정말\s*|참\s*)?궁금(?P<end>해요|합니다|하네요|한데요|해지네요|해집니다)[.!…]*$")
 _SIDE_STORY_RE = re.compile(r"이번(?:에는|엔|에)\s[^.?!]{1,40}?쪽\s*(?:이야기|얘기)")
@@ -55,13 +56,17 @@ def enforce_phrase_caps(text: str | None, *, session_texts: list[str], chapter_t
     sess, chap = count_phrases(session_texts), count_phrases(chapter_texts)
     used = {"salpyeo": sess["salpyeo"], "malsseum": chap["malsseum"], "gunggeum": chap["gunggeum"], "side_story": sess["side_story"]}
     done = {"salpyeo": 0, "malsseum": 0, "gunggeum": 0, "side_story": 0, "filler": 0}
+    picked: list[str] = []
 
     def _sub(key: str, alts: tuple[str, ...]):
         def _f(m):
             if used[key] < CAPS[key][1]:
                 used[key] += 1
                 return m.group(0)
-            rep = alts[(used[key] + done[key]) % len(alts)]
+            joined = "\n".join(chapter_texts or [])
+            counts = [joined.count(a) + sum(1 for x in picked if x == a) for a in alts]
+            rep = alts[counts.index(min(counts))]            # 이 영역에서 가장 덜 쓴 대체 표현(같으면 앞의 것)
+            picked.append(rep)
             done[key] += 1
             return rep
         return _f

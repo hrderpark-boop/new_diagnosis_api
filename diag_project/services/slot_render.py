@@ -43,8 +43,8 @@ _SPEC: dict[str, tuple[str, str]] = {
     "cheer": ("리더가 실제로 한 선택을 리더의 낱말로 짚고, 그 선택을 응원한다고 말하는 평서문 한 문장. 질문이 아니다. "
               "'좋다·훌륭하다·대단하다·잘하셨다' 같은 평가어 없이 '응원'이라는 말로만.",
               "돌아가는 길인 줄 알면서 월세로 정하신 그 선택, 응원해요."),
-    "observation": ("리더가 놓였던 처지(누구 사이에서, 무엇을 두고 정해야 했는지)를 리더의 낱말로 짚고, 그때 리더가 감당한 것을 선배로서 한마디로 알아주는 "
-                    "평서문 한 문장. 질문·조언·평가가 아니다. 끝맺음은 아래 예와 다르게, 이 사례에 맞는 말로 쓴다.",
+    "observation": ("리더가 놓였던 처지(누구 사이에서, 무엇을 두고 정해야 했는지)를 리더의 낱말로 짚고, 그때 리더가 감당했을 것을 헤아려 말하는 "
+                    "평서문 한 문장. 질문·조언·평가가 아니다. 끝맺음은 아래 예와 다르게, 이 사례에 맞는 말로 쓴다. 문장의 주어는 리더다.",
                     "식구들 뜻이 갈린 채로 이사 날짜를 혼자 정하셨으니 마음이 쓰이셨겠습니다."),
     "will": ("리더가 겪은 그 상황을 리더의 낱말로 짚고, 같은 상황이 다시 오면 무엇부터 할지 묻는 질문 한 문장.",
              "다음에 또 이사 날짜가 겹치면 무엇부터 정하시겠어요?"),
@@ -100,13 +100,29 @@ _KIND_SHAPE: dict[str, re.Pattern] = {
     "will": re.compile(r"(다시|다음에|또)[^?]*\?"),
 }
 _ADVICE_RE = re.compile(r"(하시면 좋|해 보시|하셔야|하는 게 좋|권합니다|추천)")
+_SPEC_ECHO_RE = re.compile(r"(알아주(셨|시|었|십|는)|알아\s*드|한마디로|선배로서|짚어\s*드)")
 # (p10b) "2명 먼저 쓰자고 버리셨다면" — 지시문의 '버린 선택'이 문장에 들어와 고른 쪽과 버린 쪽이 뒤섞였다. 선택을 '버렸다'고 가정하는 꼴은 불합격.
 _GARBLED_CF_RE = re.compile(r"(버리셨다면|버렸다면|버리셨더라면|버렸더라면|고 버리|를 버리셨|을 버리셨)")
 _CHOICE_KINDS = frozenset({"counterfactual", "reason", "criterion"})
 
 
+# (2026-11-12 P11b-4) 같은 턴 안에서 같은 낱말 반복 금지 — 슬롯 문장이 그 턴의 질문에 쓰인 코치의 낱말('쉽지 않은')을 되풀이하면 불합격.
+#   리더가 쓴 낱말(사람·일의 이름)은 두 문장에 다 나와도 된다.
+_REPEAT_IGNORE = ("리더님", "리더", "말씀", "그때", "있었", "하셨", "무엇", "어떻게", "어떤", "주시", "들려")
+
+
+def repeated_turn_words(slot_text: str | None, other_text: str | None, leader_texts: list[str] | None) -> list[str]:
+    theirs = {c for x in (leader_texts or []) for c in _content_chunks(x or "") if len(c) >= 2}
+
+    def _own(t: str | None) -> set[str]:
+        return {c for c in _content_chunks(t or "") if len(c) >= 2 and not c.startswith(_REPEAT_IGNORE)
+                and not any(c == o or c.startswith(o) or o.startswith(c) for o in theirs)}
+    a, b = _own(slot_text), _own(other_text)
+    return sorted(c for c in a if any(c == o or c[:2] == o[:2] for o in b))
+
+
 def slot_sentence_ok(kind: str, text: str | None, leader_texts: list[str] | None, *, persona_name: str | None = None,
-                     used: list[str] | None = None) -> tuple[bool, str]:
+                     used: list[str] | None = None, avoid_text: str | None = None) -> tuple[bool, str]:
     """슬롯 문장 형식 검사 — (통과, 사유). 한 문장 · 종류에 맞는 꼴 · 리더가 쓴 낱말 2개 이상 · 예시 베낌 없음 · 평가·조언 없음 · 코치 어미."""
     from diag_project.services.persona_register import register_violations
     t = re.sub(r"\s+", " ", (text or "").strip())
@@ -145,6 +161,10 @@ def slot_sentence_ok(kind: str, text: str | None, leader_texts: list[str] | None
     _rs = repeats_used_shape(t, used)
     if _rs:
         return False, _rs
+    if avoid_text and repeated_turn_words(t, avoid_text, leader_texts):
+        return False, "repeat_word"
+    if _SPEC_ECHO_RE.search(t):
+        return False, "instruction_echo"         # (시뮬 p11b) '…그 무게를 알아주셨습니다' — [쓸 문장]의 말('알아주는')을 문장에 옮겼다
     return True, ""
 
 
@@ -170,7 +190,7 @@ def _pick_sentence(raw: str | None) -> str:
 
 
 async def render_slot(llm, *, kind: str, persona_name: str | None, transcript: list[tuple[str, str]], used: list[str] | None = None,
-                      rounds: int = 2) -> tuple[str | None, str]:
+                      rounds: int = 2, avoid_text: str | None = None) -> tuple[str | None, str]:
     """(슬롯 문장 | None, 모드). 모드 'llm' | 'llm_regen' | 'stub' | 'miss:<사유>'."""
     from diag_project.services.persona_register import apply_register, register_hint
     leader = [t for r, t in (transcript or []) if r == "user" and (t or "").strip()]
@@ -199,8 +219,9 @@ async def render_slot(llm, *, kind: str, persona_name: str | None, transcript: l
         "- 역량·항목 이름, 평가·칭찬·조언은 쓰지 않는다.\n"
         "- 리더가 자기를 가리킨 말('제가', '저희')은 옮기지 않는다 — 코치의 자리에서 '리더님'으로 쓰거나 주어를 뺀다.\n"
         f"- 말투: {register_hint(persona_name)}\n\n"
-        + used_block +
-        f"[결 참고 — 다른 분야의 예. 낱말을 가져오지 말 것] {example}\n\n"
+        + used_block
+        + (f"[이 문장 바로 뒤에 붙을 질문 — 이 질문에 쓰인 꾸밈말·서술어를 되풀이하지 않는다]\n- {re.sub(r'\\s+', ' ', avoid_text.strip())[:160]}\n\n" if avoid_text else "")
+        + f"[결 참고 — 다른 분야의 예. 낱말을 가져오지 말 것] {example}\n\n"
         + ("출력은 세 줄입니다(앞 두 줄은 리더의 낱말로 짧게).\n고른 쪽: …\n고르지 않은 쪽: …\n문장: …" if kind in _CHOICE_KINDS
            else "출력: 문장만. 따옴표·설명 없이.")
     )
@@ -213,7 +234,7 @@ async def render_slot(llm, *, kind: str, persona_name: str | None, transcript: l
             return None, "miss:error"
         cand = _pick_sentence(out)
         cand = apply_register(persona_name, cand, scope="strict")[0]
-        ok, why = slot_sentence_ok(kind, cand, leader, persona_name=persona_name, used=used)
+        ok, why = slot_sentence_ok(kind, cand, leader, persona_name=persona_name, used=used, avoid_text=avoid_text)
         if ok:
             return cand, mode
         if why == "first_person":

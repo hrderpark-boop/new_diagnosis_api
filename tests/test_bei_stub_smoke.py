@@ -91,6 +91,16 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
     # 파생 원장: 분석이 읽는 asked_subs = covered ∪ SWEEP 앵커 하위역량
     assert set(store["asked_subs"][CH]) == {"비전 제시 및 공유", "전략적 사고", "변화관리(변화지향)", "혁신적 사고"}
     assert "SWEEP_FOLLOWUP" in instrs or "SWEEP_ANCHOR" in instrs
+    # (2026-11-12 P11b-7) 보완 질문의 답이 실제 사례(E7)면 일반 사례로 올릴지(promoted)·예산이 모자라 종전대로 닫을지(no_budget)를 그 항목에 적는다.
+    #   올렸으면 리더 턴 4 안에서 닫히고 닫힌 사유가 남는다. 미질문 예약은 침범하지 않는다(챕터 리더 턴 ≤ 예산은 위에서 확인).
+    _sw_p = [e for e in B.episodes(store, CH) if e.get("kind") == "sweep" and e.get("promote")]
+    assert _sw_p and all(e["promote"] in ("promoted", "no_budget") for e in _sw_p), B.episodes(store, CH)
+    for e in _sw_p:
+        if e["promote"] == "promoted":
+            assert e["status"] == "sweep_done" and 2 <= int(e["leader_turns"]) <= B.SWEEP_PROMOTE_MAX_TURNS and e.get("promote_end"), e
+        else:
+            assert int(e["leader_turns"]) <= 2, e
+    assert [g.get("sweep_promote") for g in (store.get("guard_log") or []) if g.get("sweep_promote")]
     # 사례 행(Event) 2건 — 분석 입력 '[수집된 핵심 사건]' 블록의 재료
     from diag_project.database import async_session
     from diag_project.models.event import Event

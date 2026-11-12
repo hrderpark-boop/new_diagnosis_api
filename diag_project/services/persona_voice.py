@@ -82,17 +82,13 @@ _ENDINGS: list[tuple[str, str, str]] = [
     (r"어땠나요\?$",          "어땠습니까?",            "어떠하셨는지 말씀해 주시겠습니까?"),
     (r"했어요\?$",            "했습니까?",              "했는지 말씀해 주시겠습니까?"),
     (r"됐어요\?$",            "됐습니까?",              "되었는지 말씀해 주시겠습니까?"),
-    (r"에요\?$",              "입니까?",                "인지 말씀해 주시겠습니까?"),
-    (r"예요\?$",              "입니까?",                "인지 말씀해 주시겠습니까?"),
-    (r"어요\?$",              "습니까?",                "는지 말씀해 주시겠습니까?"),
-    (r"나요\?$",              "습니까?",                "는지 말씀해 주시겠습니까?"),
+    # (2026-11-12 P11b-1) '에요·예요·어요·나요·을까요' 의 일반 치환 줄은 삭제 — 받침 없는 어간('떠오르나요' → '떠오르습니까')·ㄹ 어간('만들어요' →
+    #   '만들습니까')·'이에요'('무엇이입니까')에서 틀린 꼴이 나왔다. 표에 없는 꼴은 conjugation.polite_question_to_formal 이 어간을 보고 바꾼다.
     (r"있으신가요\?$",        "있으십니까?",            "있으십니까?"),
     (r"신가요\?$",            "십니까?",                "십니까?"),
     (r"있으실까요\?$",        "있으십니까?",            "있으십니까?"),
     (r"실까요\?$",            "십니까?",                "십니까?"),
     (r"었을까요\?$",          "었습니까?",              "었습니까?"),
-    (r"을까요\?$",            "습니까?",                "습니까?"),
-    (r"까요\?$",              "까요?",                  "을지 말씀해 주시겠습니까?"),
 ]
 _LUCAS_CUTS = [(r"^(그때|그 당시|최근에|요즘|그중)\s+", ""), (r"\b리더님(은|이|께서|께서는)?\s*", ""), (r"\b직접\s+", ""),
                (r"\s*같이\s+", " "), (r",\s*최근에\s+", " 최근 "), (r"^(혹시|조금|한번|한 번)\s+", ""),
@@ -115,7 +111,7 @@ _OLIVIA_ENDINGS = [
     (r"하셨어요\?$", "하셨을까요?"), (r"하셨나요\?$", "하셨을까요?"), (r"셨어요\?$", "셨을까요?"),
     (r"이었어요\?$", "이었을까요?"), (r"였어요\?$", "였을까요?"), (r"였나요\?$", "였을까요?"),
     (r"어땠어요\?$", "어땠을까요?"), (r"어땠나요\?$", "어땠을까요?"), (r"했어요\?$", "했을까요?"),
-    (r"됐어요\?$", "됐을까요?"), (r"에요\?$", "일까요?"), (r"예요\?$", "일까요?"), (r"어요\?$", "을까요?"),
+    (r"됐어요\?$", "됐을까요?"), (r"이에요\?$", "일까요?"), (r"에요\?$", "일까요?"), (r"예요\?$", "일까요?"), (r"어요\?$", "을까요?"),
     (r"나요\?$", "을까요?"), (r"신가요\?$", "실까요?"), (r"습니까\?$", "을까요?"),
     # 사전 문장이 이미 '~을까요?' 면 '~나요?' 로(Ella 기본형과 같은 문장이 나가지 않게).
     #   (2026-11-11 P10-4) 종전 '~을지요?'('어떤 일이었을지요?')는 Olivia 의 해요체 결과 맞지 않아 폐기.
@@ -130,7 +126,7 @@ _MICHAEL_ENDINGS = [
     (r"(있으셨|있었|없었|없으셨)(어요|나요|습니까|을까요)\?$", "\\1는지 들려주세요."),
     (r"(있으세요|있으신가요|있으실까요|있을까요|있나요|있어요|있습니까)\?$", "있었는지 들려주세요."),
     (r"(셨|했|됐|였)(어요|나요|습니까|을까요)\?$", "\\1는지 들려주세요."),
-    (r"(입니까|예요|에요|인가요|일까요)\?$", "인지 들려주세요."),
+    (r"(입니까|이에요|예요|에요|인가요|일까요)\?$", "인지 들려주세요."),
     (r"(세요|십니까|신가요|실까요)\?$", "신지 들려주세요."),
 ]
 _MQ_TIME = r"(?:최근에|근래에|요즘|올해 들어|지난 몇 달 사이에|최근|작년에|이번 달에)"
@@ -210,7 +206,19 @@ def _apply_endings(text: str, col: int) -> str:
     for pat, jes, dan in _ENDINGS:
         if re.search(pat, text):
             return re.sub(pat, jes if col == 1 else dan, text)
+    if col == 1 and text.endswith("?"):
+        from diag_project.services.conjugation import polite_question_to_formal
+        new = polite_question_to_formal(text[:-1])
+        if new:
+            return new + "?"
     return text
+
+
+def _nunji(base: str, tail: str) -> str:
+    """(P11b-1) '…습니까?' → '…는지/은지' + tail. 동사·형용사를 표로 가린다('좋습니까' → '좋은지', '좋는지' 아님). 모르는 어간이면 base 그대로."""
+    from diag_project.services.conjugation import formal_q_to_nunji
+    stem = formal_q_to_nunji(base)
+    return (stem + tail) if stem else base
 
 
 DANIEL_VARIANTS = 3
@@ -223,19 +231,26 @@ def _daniel(t: str, variant: int) -> str:
     if v == 0:
         out = re.sub(r"입니까\?$", "인지 말씀해 주시겠습니까?", base)
         out = re.sub(r"십니까\?$", "신지 말씀해 주시겠습니까?", out) if out == base else out   # (2026-10-28) '있으십니까?' 도 변주
-        out = re.sub(r"습니까\?$", "는지 말씀해 주시겠습니까?", out) if out == base else out
+        out = _nunji(base, " 말씀해 주시겠습니까?") if out == base else out
         return out if out != base else base
     if v == 1:
         out = re.sub(r"입니까\?$", "인지요?", base)
         out = re.sub(r"십니까\?$", "신지요?", out) if out == base else out
-        out = re.sub(r"습니까\?$", "는지요?", out) if out == base else out
+        out = _nunji(base, "요?") if out == base else out
         return out
     return base if "리더님" in base else re.sub(r"^", "리더님께서는 ", base, count=1)
 
 
 def voice_question(persona_name: str | None, text: str, *, variant: int = 0) -> str:
     """사전 질문 한 문장을 페르소나 어미로. 내용 불변, 물음표 1개 유지. 모르는 페르소나·빈 문장은 그대로.
-    variant: Daniel 꼬리 변주 인덱스(호출자가 턴마다 돌린다)."""
+    variant: Daniel 꼬리 변주 인덱스(호출자가 턴마다 돌린다).
+    (2026-11-12 P11b-1) 변환 결과가 틀린 활용 꼴이면('하을까요', '만들나요') 변환하지 않고 원문을 돌려준다."""
+    from diag_project.services.conjugation import safe
+    out = _voice_question_raw(persona_name, text, variant=variant)
+    return safe(text, out) if isinstance(out, str) and isinstance(text, str) else out
+
+
+def _voice_question_raw(persona_name: str | None, text: str, *, variant: int = 0) -> str:
     t = (text or "").strip()
     if not t or t.count("?") != 1 or not t.endswith("?"):
         return text
