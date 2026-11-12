@@ -979,6 +979,7 @@ async def _submit_message_phase3a(
     #   종류: 직전 입력 반복 / 세션 앞 답변·기존 사건과 중복 / 코치 질문 되돌아옴 / 일시정지 문구 오입력 /
     #   안내 뒤 비실질 입력 / 정의 답 10자 미만 / 질문 뒤 '네·sp·??'. 판정은 services/input_anomaly.detect(순수 함수).
     _anomaly_override_text = None
+    _reask_final = None  # (2026-11-12 P11d-1) 다시 묻기 턴의 완성 문장(사과 + 질문 / 질문) — 전용 호출이 만들고, 뒤 단계가 바꾸지 못하게 끝에서 다시 놓는다
     _reask_kind = None  # (2026-11-12 P11-A3·H) 'clarify'(되묻기) | 'contentless'(받을 내용 없는 답) — 사례 턴에서 원장·슬롯 판정 없이 직전 질문만 다시 쓴다
     _align_ctx = None   # (2026-10-28 P0-1) ALIGN 조립 재료 — 후처리 끝에 render_align 으로 조립
     try:
@@ -1296,6 +1297,7 @@ async def _submit_message_phase3a(
                 _store = _bei.update_episode(_store, chapter, _ep)
                 _tm["slot_judge"] = "stub" if _jd.get("stub") else ("error" if _jd.get("error") else "ok")
                 _tm["slots_filled"] = len(_bei.filled_slots(_ep))
+                _tm["slot_ctx"] = ((_ep.get("slots") or {}).get("context") or {}).get("status")      # (P11d-3) 상황 칸 판정 상태 — 시점·인물을 말했는데 안 찬 턴을 찾는 기록
                 if _ep.get("kind") == "sweep":
                     # SWEEP 항목: 앵커 답 1턴 → (허용되면) 후속 1턴 → 매핑 → 다음
                     if _no_case and int(_ep.get("leader_turns") or 0) <= 1:
@@ -1376,12 +1378,6 @@ async def _submit_message_phase3a(
                 _signal = (_signal + " / " if _signal else "") + "리더가 다른 사례로 넘어간 듯하다 — 한 번은 따라가되 질문은 지금 사례로 돌아온다"
             if state.get("bei_anomaly_reask"):
                 _signal = "리더가 짧게 수긍만 했고 직전 질문은 형식이 어긋나 되묻지 않는다 — 질문만 짧게, 같은 것을 장면 하나로 좁힌 새 질문 하나"
-            if state.get("bei_reask_only") == "clarify":
-                _signal = ("리더가 직전 질문이 무슨 말인지 모르겠다고 했다 — 질문 한 문장만 쓴다(사과는 시스템이 붙이니 쓰지 않는다). "
-                           "직전 질문과 같은 것을 더 쉬운 일상어로, 낱말을 풀어서 다시 묻는다. 새 주제·새 장면으로 가지 않는다")
-            elif state.get("bei_reask_only") == "contentless":
-                _signal = ("리더가 짧게 수긍만 했다 — 질문 한 문장만 쓴다. "
-                           "직전 질문을 장면 하나(그날 그 자리에서 처음 한 말·한 행동)로 좁혀 다시 묻고, 직전 질문 문장을 그대로 되풀이하지 않는다")
         _weak_hint = None
         if instruction_used == "SWEEP_ANCHOR" and current_target_sub:
             _w_eps = [x for x in (_bei.weak_map(_store, chapter).get(current_target_sub) or []) if isinstance(x, int)]
@@ -1608,6 +1604,31 @@ async def _submit_message_phase3a(
             #   마지막 챕터는 받기 1문장 + 고정 종료 문구, 사례 0 챕터는 고정 문장). 종전에는 본 호출 1회 + 요약 재생성 2회가 먼저 돌았다(p10a·p10b·lb1 전부 집중 호출로 끝남).
             llm_output = {"reply": ""}
             _tm["close_main_skipped"] = 1
+        elif _reask_kind and chapter and _bei_ep is not None:
+            # (2026-11-12 P11d-1) 다시 묻기 턴은 코치 본 호출 대신 전용 호출 1회로 끝낸다 — 되묻기에는 직전 질문을 더 쉬운 낱말·더 짧은 문장으로,
+            #   내용 없는 답에는 직전 질문을 한 가지로 좁혀 다시 묻는다. 직전 질문과 글자가 같거나 질문을 못 썼을 때만 그 칸의 기본 질문으로 바꾼다.
+            #   (p11c: 본 호출 + 뒤 단계의 고르기 방식에서는 4턴 모두 직전 질문이 그대로 나갔다.) 다른 검사·재생성은 끼어들지 않는다(no_regen).
+            from diag_project.services.input_anomaly import last_question_of as _lqo_rq
+            from diag_project.services.intro_messages import line_register as _lreg_rq, persona_line as _pline_rq
+            from diag_project.services.reask_render import render_reask as _rr_rq, same_text as _same_rq
+            from diag_project.services.turn_checks import default_slot_question as _dsq_rq
+            _pn_rq = (state.get('coach_persona') or {}).get('name')
+            _orig_rq = _lqo_rq(_prev_coach_text) or ""
+            _lead_rq = [t for r, t in _ep_transcript(_bei_ep) if r == "user"][:-1]      # 이번 입력('뭔소리야'·'네')은 뺀다
+            _q_rq, _mode_rq = await _rr_rq(llm, kind=_reask_kind, prev_question=_orig_rq, leader_texts=_lead_rq, persona_name=_pn_rq)
+            if not _q_rq:
+                _un_rq = (_bei.unfilled_slots(_bei_ep) or ["reflection"])
+                _topic_rq = ((_bei_ep.get("slots") or {}).get("context") or {}).get("quote") or (_lead_rq[-1] if _lead_rq else "")
+                _formal_rq = _lreg_rq(_pn_rq) == "formal"
+                _cands_rq = [_dsq_rq(_un_rq[0], formal=_formal_rq, topic_text=_topic_rq), _dsq_rq(_un_rq[0], formal=_formal_rq, topic_text=None)] \
+                    + [_dsq_rq(sl, formal=_formal_rq, topic_text=_topic_rq) for sl in _un_rq[1:]]
+                _q_rq = next((c for c in _cands_rq if not _same_rq(c, _orig_rq)), _cands_rq[0])
+                _mode_rq = f"{_mode_rq}→default:{_un_rq[0]}"
+            _sorry_rq = _pline_rq(_pn_rq, "clarify_sorry") if _reask_kind == "clarify" else ""
+            _reask_final = f"{_sorry_rq} {_q_rq}".strip()
+            llm_output = {"reply": _reask_final}
+            _tm["reask"] = f"{_reask_kind}:{_mode_rq}"
+            logger.info("🔁 다시 묻기(%s): %r ← %r", _tm["reask"], _reask_final[:80], _orig_rq[:60])
         else:
             # (2026-11-11 호출 순서) 조직관리 정의 잇기 턴(ALIGN)의 사례 1 여는 문장도 본 호출과 병렬로
             if instruction_used == "COMPETENCY_ALIGN" and chapter and current_target_sub and _opener_task is None:
@@ -2599,35 +2620,10 @@ async def _submit_message_phase3a(
     from diag_project.services.receive_check import QUOTE_RECEIVE_SESSION_MAX, quote_receive_count as _qrc_v
     _qr_variant = _qrc_v([m.content or "" for m in history_messages if (m.role == MessageRole.MODEL or m.role == "model")])
 
-    # 8-w0. (2026-11-12 P11-A3·H) 다시 묻기만 하는 턴 — 질문 한 문장만 남긴다. 되묻기('뭔소리야')에는 코치별 짧은 사과를 앞에 붙이고,
-    #   내용 없는 답('네, 맞아요') 뒤에는 받기 없이 좁힌 질문만 낸다. LLM 이 질문을 못 쓰면 직전 질문을 그대로 다시 낸다.
-    if _reask_kind and system_override_text is None and not _llm_error and (clean_reply or "").strip():
-        from diag_project.services.input_anomaly import last_question_of as _lqo_rk
-        from diag_project.services.intro_messages import persona_line as _pline_rk
-        _qs_rk = [x.strip() for x in split_sentences(clean_reply) if x.strip() and is_question_sentence(x)]
-        import os as _os_rk
-        if _os_rk.getenv("FM_LLM_STUB"):
-            _qs_rk = []                      # 스텁(스모크·pytest)의 코치 문장은 직전 질문을 다시 쓴 것이 아니다 — 직전 질문을 그대로 낸다
-        from diag_project.services.turn_checks import reask_candidate_ok as _rco_rk
-        _orig_rk = _lqo_rk(_prev_coach_text) or ""
-        # (시뮬 p11a) 다시 쓴 질문이 '…알아들으셨는지, 아니면 …나누지 않으셨는지' 처럼 고르게 하는 질문이거나 직전 질문과 낱말을 나누지 않으면 버린다
-        _qs_rk = [x for x in _qs_rk if _rco_rk(x, _orig_rk)]
-        # (2026-11-12 P11b-6) 다시 쓴 질문에 리더가 말하지 않은 사실이 들어오면 버린다('팀원들을 불러 모아 무엇을 먼저 말씀하셨습니까?' — 불러 모았다는 말은 없었다).
-        #   직전 질문과 이 사례에서 리더가 한 말에 없는 내용 낱말이 내용 없는 답 뒤에는 2개 이상, 되묻기(쉬운 말로 풀어 쓰는 턴) 뒤에는 3개 이상이면 직전 질문을 그대로 낸다.
-        from diag_project.services.turn_checks import unsaid_fact_words as _ufw_rk
-        _src_rk = [_orig_rk] + [t for r, t in (_ep_transcript(_bei_ep) if _bei_ep else []) if r == "user"]
-        _lim_rk = 3 if _reask_kind == "clarify" else 2
-        _unsaid_rk = {x: _ufw_rk(x, _src_rk) for x in _qs_rk}
-        if any(len(v) >= _lim_rk for v in _unsaid_rk.values()):
-            _tm["reask_unsaid"] = [w for v in _unsaid_rk.values() if len(v) >= _lim_rk for w in v][:5]
-        _qs_rk = [x for x in _qs_rk if len(_unsaid_rk.get(x) or []) < _lim_rk]
-        _q_rk = _qs_rk[-1] if _qs_rk else _orig_rk
-        # (2026-11-12 P11c-2) 한 문장짜리 질문은 자르지 않는다 — 직전 질문 그대로
-        if _q_rk:
-            _sorry_rk = _pline_rk((state.get('coach_persona') or {}).get('name'), "clarify_sorry") if _reask_kind == "clarify" else ""
-            clean_reply = f"{_sorry_rk} {_q_rk}".strip()
-        _tm["reask"] = _reask_kind if _qs_rk else f"{_reask_kind}:same_q"
-        logger.info("🔁 다시 묻기(%s): %r", _tm["reask"], clean_reply[:80])
+    # 8-w0. (2026-11-12 P11-A3·H → P11d-1) 다시 묻기 턴 — 전용 호출이 만든 문장(되묻기: 사과 1문장 + 질문 1개 / 내용 없는 답: 질문 1개)을 그대로 놓는다.
+    #   앞 단계(가드)가 손댄 것이 있어도 되돌린다. 직전 질문을 골라내던 검사(딴 질문·말하지 않은 사실 판정)는 삭제했다.
+    if _reask_kind and _reask_final and system_override_text is None and not _llm_error:
+        clean_reply = _reask_final
 
     # 8-w00. (2026-11-12 P11-A1·A4·H) 받는 문장 금지 꼴 — 리더가 질문한 것처럼 쓰는 말('여쭤봐 주신')·리더의 말투를 언급하는 말('편하게 말씀해 주셔서')·
     #   해석형 받기('…뜻으로 들리네요', '흥미롭습니다'). 그 문장을 지우고, 받기가 없어지면 아래 8-w 가 재생성 1회 → 구절 인용 받기로 메운다.
@@ -2682,8 +2678,7 @@ async def _submit_message_phase3a(
                 issues.append("no_question")
             if _nq > 1:
                 issues.append("two_questions")
-            if _ilc_w(" ".join(x for x in split_sentences(txt) if _cpt_w(x) not in _fixed_wc)):
-                issues.append("leading_choice")   # (2026-11-05) 유도형 이지선다·가정형(LLM 문장만; 시스템 앵커·슬롯 제외) — 열린 질문으로 재생성
+            # (2026-11-12 P11d-2) 선택지 질문 재생성은 삭제 — 다시 써도 남았다(p11c). 프롬프트 규칙만 둔다.
             if _fp_w(" ".join(x for x in split_sentences(txt) if _cpt_w(x) not in _fixed_wc)):
                 issues.append("praise")           # (P4-2) 재생성 출력에 새로 들어온 평가 말투('인상적이었어요')도 형식 위반 — 8-i 뒤 재생성은 8-i 를 다시 안 지난다
             return issues
@@ -2746,8 +2741,6 @@ async def _submit_message_phase3a(
                 _notes_w.append("- 질문이 없습니다. 마지막은 리더님께 묻는 질문 한 문장이어야 합니다.")
             if "two_questions" in _iss:
                 _notes_w.append("- 질문이 두 개 이상입니다. 질문은 하나만 남기세요.")
-            if "leading_choice" in _iss:
-                _notes_w.append("- 선택지를 늘어놓거나 가정을 거는 질문입니다. 리더가 스스로 말하게 열린 질문 하나로 바꾸세요.")
             if "praise" in _iss:
                 _notes_w.append("- 평가·칭찬 표현이 있습니다. 질문 앞 평서문은 리더님이 한 일의 사실만 말하세요.")
             try:
@@ -2881,7 +2874,6 @@ async def _submit_message_phase3a(
     #   ('언제 누구와 있었던 일인지')으로 바뀌었다. 가리키는 말의 대상은 직전 답만이 아니라 이 사례에서 리더가 한 말 전체에서 찾는다(재생성·기본 질문 줄임).
     if (_is_probe and system_override_text is None and not _llm_error and not needs_user_decision and chapter
             and (clean_reply or "").strip() and _align_ctx is None and not _reask_kind and instruction_used != "NO_CASE_REFRAME"):
-        _ctx_c = [t for r, t in (_ep_transcript(_bei_ep) if _bei_ep else []) if r == "user"]
         from diag_project.services.intro_messages import line_register as _lreg_c
         from diag_project.services.turn_checks import default_slot_question as _dsq_c, question_issues as _qi_c, strip_question_start as _sqs_c
 
@@ -2894,7 +2886,7 @@ async def _submit_message_phase3a(
         _fixed_c = {re.sub(r"\s+", "", x) for x in ([str(_tm.get("slot_text") or "")] + split_sentences(_bei_anchor_text or "")) if x}
         # (2026-11-12 P11c-2·5) 한 문장 안 두 질문 자르기(P11b-6)와 꼬리 규칙(자른 뒤 남은 질문을 기본 질문으로)은 삭제 — 한 문장짜리 질문은 그대로 둔다
         def _qi2_c(q: str) -> list[str]:
-            return [x for x in _qi_c(q, _llm_user_text, _ctx_c) if x != "two_questions"]
+            return [x for x in _qi_c(q) if x != "two_questions"]
         _iss_c = _qi2_c(_q_c) if (_q_c and re.sub(r"\s+", "", _q_c) not in _fixed_c) else []
         if _iss_c:
             _tm["q_issues"] = list(_iss_c)
@@ -3380,8 +3372,9 @@ async def _submit_message_phase3a(
         _qs_q = [x.strip() for x in split_sentences(clean_reply) if x.strip() and is_question_sentence(x)]
         _un_q = (_bei.unfilled_slots(_bei_ep) or ["reflection"]) if _bei_ep else ["action"]
         _topic_q = (((_bei_ep or {}).get("slots") or {}).get("context") or {}).get("quote") or _llm_user_text
-        if instruction_used == "NO_CASE_REFRAME" and _qs_q and not _rqo_q(_qs_q[-1]) and current_target_sub:
-            _alt_q = _anchor_for_sub(current_target_sub, alt=True)
+        _tgt_q = current_target_sub or (_bei_ep or {}).get("opener_sub")      # 재질문 턴에는 여는 하위역량이 사례에만 적혀 있다
+        if instruction_used == "NO_CASE_REFRAME" and _qs_q and not _rqo_q(_qs_q[-1]) and _tgt_q:
+            _alt_q = _anchor_for_sub(_tgt_q, alt=True)
             if _alt_q:
                 clean_reply = clean_reply.replace(_qs_q[-1], _alt_q, 1)
                 _tm["q_added"] = "reframe_alt"
@@ -3402,8 +3395,8 @@ async def _submit_message_phase3a(
         if not _qs_q:
             if _is_open and _bei_anchor_text:
                 _add_q = _bei_anchor_text
-            elif instruction_used == "NO_CASE_REFRAME" and current_target_sub:
-                _add_q = _anchor_for_sub(current_target_sub, alt=True)
+            elif instruction_used == "NO_CASE_REFRAME" and _tgt_q:
+                _add_q = _anchor_for_sub(_tgt_q, alt=True)
             else:
                 _add_q = _dsq_q(_un_q[0], formal=_formal_q, topic_text=_topic_q)
             if _add_q:
@@ -3466,6 +3459,9 @@ async def _submit_message_phase3a(
                 _tm["conj_fix"] = _n_cj_z
         except Exception as _e_rg:   # noqa: BLE001
             logger.warning("말투 교정 실패 — 건너뜀: %s", _e_rg)
+
+    if _reask_kind and _reask_final and system_override_text is None and not _llm_error and not needs_user_decision:
+        clean_reply = _reask_final          # (P11d-1) 다시 묻기 턴은 사과 1문장 + 질문 1개(또는 질문 1개)로 고정
 
     # 9. 사례 행(Event) 저장 + AI 메시지 저장
     #   (2026-11-04 BEI) 탐침 종류는 instruction 으로만: 여는 턴·SWEEP 앵커·ALIGN = INCIDENT, 사례 탐침 = SPECIFICATION, META = META.
@@ -3742,7 +3738,7 @@ async def _submit_message_phase3a(
             "link_cut": int(_tm.get("link_cut") or 0), "commentary_cut": int(_tm.get("commentary_cut") or 0), "slot_turn": _tm.get("slot_turn"),
             "lead_prefix": _tm.get("lead_prefix"), "recv_cap": _tm.get("recv_cap"), "q_clause": _tm.get("q_clause"),
             "reask_unsaid": _tm.get("reask_unsaid"), "sweep_promote": _tm.get("sweep_promote"), "pause_block": _tm.get("pause_block"),
-            "lean_start": int(_tm.get("lean_start") or 0), "opener_restored": int(_tm.get("opener_restored") or 0), "q_added": _tm.get("q_added"),
+            "lean_start": int(_tm.get("lean_start") or 0), "opener_restored": int(_tm.get("opener_restored") or 0), "q_added": _tm.get("q_added"), "slot_ctx": _tm.get("slot_ctx"),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

@@ -1,0 +1,43 @@
+{
+ "extends": "edu_team_lead.json",
+ "name": "사례 없는 팀장(시뮬 리더) — 여는 질문에 없다고 답하고, 재질문에는 알맹이 없는 말·'없어'로 답한다(사례 없음 재질문·무진전 닫기·같은 질문 상한 확인용)",
+ "seed": 20261113,
+ "short_every": 0,
+ "injections": [
+  {
+   "when": "open",
+   "nth": 1,
+   "text": "그런 일은 딱히 없었어요."
+  },
+  {
+   "when": "reframe",
+   "nth": 1,
+   "text": "음, 그런 건 팀이 알아서 잘 해 주는 편입니다."
+  },
+  {
+   "when": "open",
+   "nth": 2,
+   "text": "놉"
+  },
+  {
+   "when": "reframe",
+   "nth": 2,
+   "text": "없어."
+  },
+  {
+   "when": "probe",
+   "nth": 6,
+   "text": "그냥 그랬습니다."
+  },
+  {
+   "when": "probe",
+   "nth": 7,
+   "text": "뭐, 평소대로였죠."
+  },
+  {
+   "when": "probe",
+   "nth": 8,
+   "text": "그냥 그랬습니다."
+  }
+ ]
+}

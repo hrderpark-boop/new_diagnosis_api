@@ -5,7 +5,7 @@
   예고 문장   질문이 아닌데 다음에 무엇을 할지만 알리는 문장
   귀속       따옴표 인용이나 '방금·앞서 말씀하신 ○○' 의 ○○ 이 이번 세션 리더 말에 없다
   감사       사례를 닫는 턴이 아닌데 사례를 들려줘서 고맙다고 한다
-  질문       접속·조건어로 시작 / 무엇을 묻는지 없는 조각 / 두 질문 / 가리키는 말의 대상이 직전 답에 없다
+  질문       접속·조건어로 시작 / 무엇을 묻는지 없는 조각 / 두 질문
 """
 from __future__ import annotations
 
@@ -212,45 +212,12 @@ def drop_premature_thanks(text: str | None, keep: set[str] | None = None) -> tup
 # ── 질문 완결성 ─────────────────────────────────────────────────────────────
 _Q_BAD_START_RE = re.compile(r"^(그리고|혹은|또는|또|그렇다면|있었다면|있으셨다면|있다면|없었다면|없으셨다면|그랬다면|그러셨다면|아니라면|아니면|특히|그중에서도)[,，]?\s+")
 _FRAGMENT_RE = re.compile(r"[가-힣]+(였|이었)는지(가|도|를)?\s*(궁금|알고\s*싶|듣고\s*싶)")
-# 가리키는 말 + 낱말 — 그 낱말(또는 같은 뜻의 말)이 직전 리더 답에 있어야 한다
-_DEMO_NOUN_RE = re.compile(r"그\s?(변화|과정|결정|선택|반응|대화|회의|결과|방식|갈등|피드백|면담|평가|제안|계획|목표|기준|이유|태도|표정|조치|약속|원칙|차이)")
-_DEMO_EVENT_RE = re.compile(r"(그때|그\s?당시|그날|그\s?시점|그\s?자리|그\s?순간|그\s?장면|그\s?일(?![가-힣])|그\s?상황|그\s?뒤|그\s?후|그\s?이후)")
-_DEMO_ALIAS: dict[str, tuple[str, ...]] = {
-    "변화": ("변화", "바뀌", "바꾸", "바꿨", "달라", "변했", "변하", "줄였", "늘렸", "없앴", "도입", "새로", "개편", "전환"), "과정": ("과정", "단계", "하면서", "동안", "고 나서", "다음에", "먼저", "차례"),
-    "결정": ("결정", "정했", "정하", "하기로", "결론"), "선택": ("선택", "골랐", "고르", "택했", "하기로"),
-    "반응": ("반응", "했어요", "했습니다", "하더", "라고", "말했", "표정", "받아들"), "대화": ("대화", "이야기", "얘기", "말했", "면담", "물었", "라고"),
-    "회의": ("회의", "미팅", "모여", "모였"), "결과": ("결과", "됐", "되었", "늘었", "줄었", "달라", "끝났", "마무리"),
-    "방식": ("방식", "방법", "식으로", "하는 식"), "갈등": ("갈등", "부딪", "다퉜", "반대", "싸", "충돌", "불만"),
-    "피드백": ("피드백", "말해 줬", "지적", "조언", "짚어"), "면담": ("면담", "1:1", "일대일", "따로 만나", "따로 불러"),
-    "평가": ("평가", "등급", "고과", "점수"), "제안": ("제안", "하자고", "건의", "제시"), "계획": ("계획", "일정", "로드맵", "플랜"),
-    "목표": ("목표", "KPI", "타깃", "지표"), "기준": ("기준", "원칙", "잣대"), "이유": ("이유", "때문", "라서", "해서"),
-    "태도": ("태도", "자세", "표정", "말투"), "표정": ("표정", "얼굴", "눈빛"), "조치": ("조치", "대응", "처리"), "약속": ("약속", "하기로"),
-    "원칙": ("원칙", "기준", "룰", "규칙"), "차이": ("차이", "달랐", "다르", "불일치", "안 맞"),
-}
-EVENT_ANSWER_MIN_CHARS = 15
+# (2026-11-12 P11d-2) '가리키는 말의 대상 없음' 검사(그 변화·그 과정·그때 → 직전 답에 낱말이 있어야 한다)는 삭제 — p11c 재생성 9턴 중 4턴이
+#   이 검사였고 3턴은 다시 써도 안 풀려 기본 질문으로 끝났다. 가리키는 말을 쓰지 말라는 것은 프롬프트 규칙으로만 둔다.
 
 
-def dangling_references(question: str | None, last_user_text: str | None, context_texts: list[str] | None = None) -> list[str]:
-    """질문의 가리키는 말('그 변화', '그 과정', '그때') 중 가리킬 낱말이 없는 것.
-    (2026-11-12 P11b) 가리킬 낱말은 직전 리더 답만이 아니라 이 사례에서 리더가 한 말(context_texts)에서도 찾는다 — 시뮬 p11b 에서 사례 앞 답에 나온
-    낱말을 가리킨 질문('그 평가 자리에서')이 위반으로 잡혀 재생성 5회·기본 질문 3회가 났다."""
-    q = question or ""
-    u = last_user_text or ""
-    uc = _compact(" ".join([u] + [t or "" for t in (context_texts or [])]))
-    out: list[str] = []
-    for m in _DEMO_NOUN_RE.finditer(q):
-        noun = m.group(1)
-        if not any(_compact(a) in uc for a in _DEMO_ALIAS.get(noun, (noun,))):
-            out.append(m.group(0))
-    if _DEMO_EVENT_RE.search(q):
-        from diag_project.services.short_input import is_contentless_answer
-        if len(uc) < EVENT_ANSWER_MIN_CHARS or (is_contentless_answer(u) and not context_texts):
-            out.append(_DEMO_EVENT_RE.search(q).group(0))
-    return out
-
-
-def question_issues(question: str | None, last_user_text: str | None, context_texts: list[str] | None = None) -> list[str]:
-    """질문 한 문장의 완결성 위반 — 'dangling_start' | 'fragment' | 'two_questions' | 'dangling_ref'."""
+def question_issues(question: str | None, last_user_text: str | None = None) -> list[str]:
+    """질문 한 문장의 완결성 위반 — 'dangling_start' | 'fragment' | 'two_questions'. (last_user_text 는 호환용 — 쓰지 않는다)"""
     q = (question or "").strip()
     if not q:
         return []
@@ -261,8 +228,6 @@ def question_issues(question: str | None, last_user_text: str | None, context_te
         out.append("fragment")
     if count_question_markers(q) > 1:
         out.append("two_questions")
-    if dangling_references(q, last_user_text, context_texts):
-        out.append("dangling_ref")
     return out
 
 
@@ -326,19 +291,6 @@ def request_to_question(sentence: str | None, *, formal: bool) -> str | None:
     if not m:
         return None
     return s[: m.start()] + m.group(1) + (" 말씀해 주시겠습니까?" if formal else " 들려주시겠어요?")
-
-
-def reask_candidate_ok(candidate: str | None, original: str | None) -> bool:
-    """다시 묻기 턴의 새 질문이 직전 질문을 다시 물은 것인가 — 직전 질문과 내용 낱말을 하나는 나누고, 고르게 하는 질문('…인지, 아니면 …')이 아니다."""
-    c = (candidate or "").strip()
-    if not c or not is_question(c) or _ALT_Q_RE.search(c) or count_question_markers(c) > 1:
-        return False
-    if re.search(r"(지\s*않으셨|지\s*않았|안\s*하셨|못\s*하셨)(는지|습니까|나요|어요)", c):
-        return False                                   # '…나누지 않으셨는지' — 직전 질문을 뒤집어 예·아니오로 묻는 꼴
-    generic = ("말씀", "리더님", "리더", "들려", "주시", "이야기", "얘기", "그때", "자리", "무엇", "어떻게", "어떤")
-    cc = {x for x in _content_chunks(c) if len(x) >= 2 and not x.startswith(generic)}
-    oc = {x for x in _content_chunks(original or "") if len(x) >= 2 and not x.startswith(generic)}
-    return bool(oc) and any(a == b or a.startswith(b) or b.startswith(a) for a in cc for b in oc)
 
 
 # ── 받기 겹침 ───────────────────────────────────────────────────────────────
@@ -622,11 +574,3 @@ def same_question(a: str | None, b: str | None) -> bool:
     if len(ca) < 2 or len(cb) < 2:
         return False
     return len(ca & cb) / len(ca | cb) >= 0.7
-
-
-def unsaid_fact_words(candidate: str | None, sources: list[str] | None) -> list[str]:
-    """다시 묻는 질문에 새로 들어온 내용 낱말 — 직전 질문에도, 이 사례의 리더 말에도 없는 것. 리더가 말하지 않은 사실('팀원들을 불러 모아')을 잡는다."""
-    pool: set[str] = set()
-    for s in sources or []:
-        pool |= {c for c in _content_chunks(s or "") if len(c) >= 2}
-    return sorted(c for c in _q_chunks(candidate) if not _shares(c, pool))

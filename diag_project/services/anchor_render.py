@@ -157,6 +157,9 @@ OPENER_FRAMES = (
     "(질문만 — 사전 앵커를 그대로 낸다. LLM 을 부르지 않는다.)",
     "①을 '다음은 ~에 대해서' 꼴의 짧은 문장 하나로 쓴다. 그 다음 문장이 ②.",
 )
+# (2026-11-12 P11d-4) 합쇼체 코치(Jessica·Daniel)의 틀 2 는 '~에 관한 것입니다' + 질문 두 문장 — 한 문장 틀('~에 관한 건데요, …?')은 해요체 꼴이라
+#   p11c 에서 Daniel 의 여는 문장에 '…관한 건데요' 가 그대로 나왔다. 나머지 네 틀은 말투와 무관한 꼴이다(어미는 예시와 말투 교정이 맞춘다).
+OPENER_FRAME_2_FORMAL = "①을 '~에 관한 것입니다' 꼴의 짧은 문장 하나로 쓴다. 그 다음 문장이 ②."
 OPENER_BARE_FRAME = 3
 OPENER_FRAME_SESSION_MAX = 2
 _OPENER_FRAME_PREF = (0, 2, 3, 4, 1)      # 같은 횟수면 이 순서 — 세션 첫 사례가 '이번에는'·'다음은' 으로 열리지 않게
@@ -184,7 +187,7 @@ OPENER_FRAME_EXAMPLES = (
 OPENER_FRAME_EXAMPLES_FORMAL = (
     "살림을 꾸리다 보면 계획에 없던 것을 담아야 할 때가 생깁니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
     "이번에는 장을 보는 쪽 이야기입니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
-    "장 볼 때 순서를 정하는 일에 관한 것입니다만, 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
+    "장 볼 때 순서를 정하는 일에 관한 것입니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
     "최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
     "다음은 장 볼 때 순서를 정하는 일에 대해서입니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
 )
@@ -207,7 +210,7 @@ def _frame_example(persona_name: str | None, frame: int) -> str:
         return OPENER_FRAME_EXAMPLES_FORMAL[i]      # (P11-F) 합쇼체 예시는 따로 쓴다 — 어미표가 못 바꾸는 꼴('생겨요')이 해요체로 남았다
     ex = OPENER_FRAME_EXAMPLES[i]
     out = apply_register(persona_name, ex, scope="strict")[0]
-    return out.replace("건데요,", "것입니다만,") if out != ex or "습니까" in out else out
+    return out
 
 
 async def render_opener(
@@ -225,12 +228,15 @@ async def render_opener(
     frame = int(frame) % len(OPENER_FRAMES)
     if frame == OPENER_BARE_FRAME:
         return fallback_question, "bare"          # (P11b-3) 여는 문장 없이 질문만 — 사전 앵커(이미 코치 어미). 해설 문장을 덧붙이지 않는다
-    one_sentence = frame == 2
+    from diag_project.services.persona_register import register_of as _rof_r
+    _formal_r = _rof_r(persona_name) == "formal"
+    one_sentence = frame == 2 and not _formal_r
+    frame_text = OPENER_FRAME_2_FORMAL if (frame == 2 and _formal_r) else OPENER_FRAMES[frame]
     base = (
         "당신은 리더십 BEI 코치입니다. 리더에게 새 사례 하나를 청하는 '여는 문장'을 만드세요. "
         + ("출력은 정확히 한 문장(질문)입니다.\n\n" if one_sentence else "출력은 정확히 두 문장입니다.\n\n")
         + "① 왜 묻는지 — 아래 [무엇을 보는지]를 리더가 쓰는 일상어로 풀어 씁니다. 역량·하위역량 이름, '역량'·'항목'·'지표' 같은 말은 쓰지 않습니다.\n"
-        f"   이번 틀: {OPENER_FRAMES[frame]} '살펴보려고'·'궁금'·'듣고 싶'·'여쭤보겠'이라는 말은 쓰지 않습니다. "
+        f"   이번 틀: {frame_text} '살펴보려고'·'궁금'·'듣고 싶'·'여쭤보겠'이라는 말은 쓰지 않습니다. "
         "'~은 팀마다, 사람마다 다르다' 같은 누구에게나 맞는 일반론은 쓰지 않습니다.\n"
         "② 있었는지 묻는 질문 — '최근에 ~한 일이 있으셨어요?' 처럼 그런 일이 있었는지 여는 질문. "
         "있었음을 전제하는 문형('~받으셨을 때 어떻게', '~하셨을 때 무엇을')은 금지합니다. 선택지·가정형 금지. 은유 금지. 평가·칭찬 금지.\n"

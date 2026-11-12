@@ -156,7 +156,7 @@ def test_a5_lint_flags_mixed_register_turn_but_keeps_receive_exception():
 
 # ── B: 슬롯 문장 ────────────────────────────────────────────────────────────
 def test_b_slot_sentence_no_repeated_ending_no_first_person():
-    from diag_project.services.slot_render import _OBSERVATION_EXAMPLES, has_leader_first_person, repeats_used_shape, slot_sentence_ok
+    from diag_project.services.slot_render import has_leader_first_person, repeats_used_shape, slot_sentence_ok
     u = ["교육 체계 개편을 두고 김선임과 박선임 사이에서 제가 먼저 따로 이야기를 꺼내야 했습니다", "본부 지시라 미룰 수가 없었어요"]
     used = ["두 선임 사이에서 개편을 밀어야 했던 자리, 가볍지 않으셨겠습니다."]
     assert slot_sentence_ok("observation", "김선임과 박선임 사이에서 제가 먼저 따로 이야기를 꺼내야 했던 자리, 가볍지 않으셨겠습니다.", u, persona_name="Daniel") == (False, "first_person")
@@ -169,7 +169,10 @@ def test_b_slot_sentence_no_repeated_ending_no_first_person():
     used2 = ["운영팀 두 명 없이 바로 전면 도입을 하셨다면 팀원들은 어떻게 움직였을까요?"]
     assert slot_sentence_ok("counterfactual", "전면 도입을 내년으로 미루지 않으셨다면 운영팀 두 명은 어떻게 움직였을까요?", u2, persona_name="Olivia", used=used2)[1] == "same_ending"
     assert repeats_used_shape("전면 도입을 미루지 않으셨다면 운영팀은 무엇부터 막혔을까요?", used2) is None
-    assert len(_OBSERVATION_EXAMPLES) == 5 and len({x.split()[-1] for x in _OBSERVATION_EXAMPLES}) == 5   # 예시 끝맺음이 전부 다르다
+    # (2026-11-12 P11d-3) 관찰 문장 예시 5종·꼴 검사는 삭제 — 'A와 B 사이에서 … 혼자 …셨겠습니다' 틀의 출처였다
+    import diag_project.services.slot_render as _SR
+    assert not hasattr(_SR, "_OBSERVATION_EXAMPLES") and "observation" not in _SR._KIND_SHAPE and _SR._SPEC["observation"][1] == ""
+    assert "사이에서" not in _SR._SPEC["observation"][0] and "혼자" not in _SR._SPEC["observation"][0] and "겠습니다" not in _SR._SPEC["observation"][0]
     src = _src("diag_project/services/slot_render.py")
     assert "이번 세션에서 이미 쓴 문장" in src and 'return None, "miss:first_person"' in src
 
@@ -177,16 +180,16 @@ def test_b_slot_sentence_no_repeated_ending_no_first_person():
 # ── C: 질문 완결성 ──────────────────────────────────────────────────────────
 def test_c_question_completeness_real_cases():
     from diag_project.services.output_guard import count_question_markers, split_compound_question
-    from diag_project.services.turn_checks import dangling_references, default_slot_question, question_issues, strip_question_start
+    from diag_project.services.turn_checks import default_slot_question, question_issues, strip_question_start
     assert "dangling_start" in question_issues("있었다면 누가 어떤 이야기를 하셨는지 짚어 주십시오", "네")
     assert strip_question_start("있었다면 누가 어떤 이야기를 하셨는지 짚어 주십시오") == "누가 어떤 이야기를 하셨는지 짚어 주십시오"
     assert "fragment" in question_issues("팀원들이 그 과정에서 보인 태도였는지 궁금합니다", "평가 결과를 메일로 보냈어요")
     q2 = "어떤 장면이 떠오르셨는지, 혹시 기억나는 장면은 언제였습니까?"
     assert count_question_markers(q2) == 2 and "two_questions" in question_issues(q2, "작년 일이에요")
     assert split_compound_question(q2)[0] == "혹시 기억나는 장면은 언제였습니까?"
-    assert dangling_references("그 변화를 팀원들은 어떻게 받아들였습니까?", "평가 결과를 메일로 보냈어요") == ["그 변화"]
-    assert dangling_references("그 변화를 팀원들은 어떻게 받아들였습니까?", "회의 방식을 바꿨어요") == []
-    assert dangling_references("그때 김과장은 뭐라고 했습니까?", "네") == ["그때"]
+    # (2026-11-12 P11d-2) '가리키는 말의 대상 없음' 검사는 삭제 — 재생성·기본 질문 대체의 주된 원인이었다
+    import diag_project.services.turn_checks as _TC
+    assert not hasattr(_TC, "dangling_references") and question_issues("그 변화를 팀원들은 어떻게 받아들였습니까?", "평가 결과를 메일로 보냈어요") == []
     assert question_issues("김과장은 그 회의에서 처음에 뭐라고 했습니까?", "주간 회의에서 김과장이 반대했습니다") == []
     for slot in ("context", "action", "reaction", "result", "criterion", "reflection"):
         for formal in (True, False):
@@ -330,9 +333,8 @@ def test_p11a_followups_from_sim_transcript():
     assert T.request_to_question("두 분을 따로 부르셨군요.", formal=True) is None
     # ④ 다시 묻기 — 직전 질문을 뒤집어 고르게 하는 질문은 쓰지 않는다(직전 질문을 그대로 낸다)
     orig = "그 판단을 이기획님께 어떻게 전하셨는지 말씀해 주시겠습니까?"
-    assert not T.reask_candidate_ok("이기획님이 판단을 알아들으셨는지, 아니면 그 자리에서는 말씀을 나누지 않으셨는지 들려주시겠습니까?", orig)
-    assert not T.reask_candidate_ok("그 자리에서는 말씀을 나누지 않으셨는지 들려주시겠습니까?", orig)
-    assert T.reask_candidate_ok("기록으로 보겠다는 판단을 이기획님께 어떤 말로 알려 주셨습니까?", orig)
+    #   (2026-11-12 P11d-1) 다시 묻기는 전용 호출이 쓴다 — 직전 질문을 골라내던 후보 검사는 삭제
+    assert not hasattr(T, "reask_candidate_ok") and orig
     # ⑤ 짐작·감상 받기
     for s in ("팀 안에서도 그 결과를 함께 확인하는 순간이 있었을 것 같습니다.", "리더님께서 대표를 설득해 나가신 과정이 그려지네요.", "그 일로 고민이 있으셨을 것 같습니다."):
         assert T.receive_ban_reason(s) == "interpretive", s
@@ -343,4 +345,4 @@ def test_p11a_followups_from_sim_transcript():
     # ⑦ 기본 질문의 머리
     assert T.default_slot_question("criterion", formal=True, topic_text="작년 12월 평가 때 이기획한테 낮은 등급을 줘야 했어").startswith("말씀하신 '")
     src = _src("diag_project/routes/diagnoses.py")
-    assert "_poq_t(txt)" in src and "_rco_rk(x, _orig_rk)" in src and '_tm["request_q"] = 1' in src
+    assert "_poq_t(txt)" in src and "_rco_rk" not in src and '_tm["request_q"] = 1' in src      # (P11d-1) 다시 묻기 후보 검사 삭제

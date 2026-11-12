@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 SLOT_JUDGE_PROMPT_VERSION = "2026-11-04.v1"
 _SLOT_RULES = (
-    "context: 시점(연·분기·'지난달' 같은 상대 표현 포함)과 상대 또는 대상이 둘 다 있으면 filled, 하나만 있으면 partial.\n"
+    "context: 시점(연·월·분기·'지난달' 같은 상대 표현 포함)과 상대(사람 이름·직함) 또는 대상(무슨 일인지)이 둘 다 있으면 filled — "
+    "한 문장에 짧게 함께 나와도 채운 것이다. 하나만 있으면 partial.\n"
     "action: 리더가 1인칭으로 직접 한 말·결정·행동('제가 …했다')이 있으면 filled. 팀이 한 일·방침·생각만이면 partial.\n"
     "reaction: 상대(팀원·상사·고객)의 말·행동·태도 변화가 하나라도 있으면 filled.\n"
     "result: 그 뒤 달라진 것이 하나 있으면 filled(정성적 변화도 결과). '잘 됐다'만이면 partial.\n"

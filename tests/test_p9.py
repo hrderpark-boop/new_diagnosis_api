@@ -248,7 +248,7 @@ def test_p9_followups_from_second_sim():
     # (2026-11-11 P10-3·4) 틀 설명은 어미를 싣지 않고(합쇼체 틀을 해요체 코치가 베꼈다), 채움 문장 틀은 삭제 — 예시는 코치 말투로 바꿔 준다
     assert not any(("다릅니다" in f or "입니다" in f or "습니다" in f) for f in OPENER_FRAMES) and "마다" not in _frame_example("Jessica", 2)
     assert register_violations("Jessica", _frame_example("Jessica", 0), scope="strict") == [] and register_violations("Ella", _frame_example("Ella", 1), scope="strict") == []
-    assert _frame_example("Jessica", 2).endswith("있으셨습니까?") and "것입니다만," in _frame_example("Jessica", 2)
+    assert _frame_example("Jessica", 2).endswith("있으셨습니까?") and "관한 것입니다. " in _frame_example("Jessica", 2) and "건데요" not in _frame_example("Jessica", 2)   # (P11d-4)
     cut = "합동 리뷰를 만드셨고, 같은 문제로 회의가 없었습니다. 같은 해 7월 신규 리더십 과정 운영"
     assert drop_unfinished_tail(cut) == ("합동 리뷰를 만드셨고, 같은 문제로 회의가 없었습니다.", 1) and "과정 운영" not in clean_close_summary(cut, 3)
     assert drop_unfinished_tail("끝난 문장입니다.") == ("끝난 문장입니다.", 0)

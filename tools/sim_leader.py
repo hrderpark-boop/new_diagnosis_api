@@ -156,7 +156,7 @@ class Leader:
         when: probe = 사례 탐침(EPISODE_PROBE·SWEEP_FOLLOWUP, 다시 묻기 제외) / open = 여는 질문(EPISODE_OPEN·SWEEP_ANCHOR) / reask = 코치가 다시 물은 턴.
         paste = 앞서 한 긴 답을 그대로 붙여넣는다(같은 답 1회)."""
         kind = ("reask" if bei == "reask" else "probe" if instr in ("EPISODE_PROBE", "SWEEP_FOLLOWUP")
-                else "open" if instr in ("EPISODE_OPEN", "SWEEP_ANCHOR") else None)
+                else "open" if instr in ("EPISODE_OPEN", "SWEEP_ANCHOR") else "reframe" if instr == "NO_CASE_REFRAME" else None)   # reframe = 사례 없음 뒤 재질문 턴(P11d)
         if kind is None:
             return None
         self._kind_n = getattr(self, "_kind_n", {})

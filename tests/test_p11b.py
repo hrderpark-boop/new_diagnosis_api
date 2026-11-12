@@ -321,8 +321,7 @@ def test_p11b_6_inline_two_questions_and_tail():
     # 다시 묻는 질문에 리더가 말하지 않은 사실
     orig = "그때 리더님께서 직접 팀원들에게 하신 말이나 결정 가운데 가장 먼저 떠오르는 것이 무엇이었습니까?"
     lead = ["올해 1월에 대표가 교육 운영에 AI 도구를 바로 전면 도입하자고 했어. 근데 팀에 그걸 쓸 줄 아는 사람이 나 말고는 없었어."]
-    assert len(T.unsaid_fact_words("1월에 AI 도구 도입이 정해졌을 때, 팀원들을 불러 모아 무엇을 먼저 말씀하셨습니까?", [orig] + lead)) >= 2
-    assert len(T.unsaid_fact_words("AI 도구를 전면 도입하자는 말이 나왔을 때, 팀원들에게 처음 하신 말은 무엇이었습니까?", [orig] + lead)) < 2
+    assert not hasattr(T, "unsaid_fact_words") and orig and lead      # (P11d-1) 다시 묻기 후보 검사 삭제 — 전용 호출의 지시문이 맡는다
 
 
 # ── 7. 보완 질문에서 나온 사례 · 8. 휴식 제안 ───────────────────────────────
@@ -399,8 +398,7 @@ def test_p11b_after_sim_question_forms():
     assert T.strip_question_start("특히 과정을 맡은 강사분들이 어떤 말로 받아들였는지 들려주시겠습니까?").startswith("과정을 맡은")
     # 가리키는 말의 대상은 이 사례에서 리더가 한 말 전체에서 찾는다
     ctx = ["작년 12월 평가 때 이기획한테 낮은 등급을 줘야 했어.", "올해 상반기엔 납기 한 번도 안 놓쳤어."]
-    assert "dangling_ref" in T.question_issues("그 평가 자리에서 무엇을 먼저 말씀하셨습니까?", ctx[-1])
-    assert "dangling_ref" not in T.question_issues("그 평가 자리에서 무엇을 먼저 말씀하셨습니까?", ctx[-1], ctx)
+    assert T.question_issues("그 평가 자리에서 무엇을 먼저 말씀하셨습니까?", ctx[-1]) == []      # (P11d-2) 가리키는 말 검사 삭제
 
 
 def test_p11b_after_sim_receive_and_slot_forms():
@@ -502,4 +500,70 @@ def test_p11c_prompts_have_no_copyable_sentences_or_inner_terms():
         for w in ("되받기", "받는 문장", "받기", "슬롯", "다리", "무게", "알아주", "예시 발화"):
             assert w not in txt, (name, w)
     for w in ("받겠습니다", "알아주셨습니다", "짧게 확인해 주셨는데"):
+        assert w in BANNED_STATE_LEAK
+
+
+# ── P11d ────────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_p11d_1_reask_is_one_dedicated_call(monkeypatch):
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import reask_render as RR
+    monkeypatch.delenv("FM_LLM_STUB", raising=False)
+
+    class _LLM:
+        def __init__(self, out):
+            self.out, self.n, self.prompt = out, 0, ""
+
+        async def _generate_with_retry(self, **kw):
+            self.n += 1
+            self.prompt = kw.get("prompt") or ""
+            return self.out
+    prev = "두 달 파일럿을 마친 뒤 교육팀에는 무엇이 달라졌습니까?"
+    lead = ["전면 개편 대신 한 과정만 두 달 파일럿으로 해보자고 했어."]
+    llm = _LLM("파일럿이 끝나고 나서 팀에서 바뀐 것이 있었습니까?")
+    assert await RR.render_reask(llm, kind="clarify", prev_question=prev, leader_texts=lead, persona_name="Daniel") == ("파일럿이 끝나고 나서 팀에서 바뀐 것이 있었습니까?", "llm")
+    assert llm.n == 1 and "더 쉬운 낱말" in llm.prompt and "같은 문장을 쓰지 않는다" in llm.prompt and prev in llm.prompt
+    llm = _LLM(prev)                                                                    # 직전 질문과 글자가 같으면 불합격(다시 쓰지 않는다)
+    assert await RR.render_reask(llm, kind="clarify", prev_question=prev, leader_texts=lead, persona_name="Daniel") == (None, "miss:same") and llm.n == 1
+    llm = _LLM("제 질문이 어려웠습니다.")
+    assert (await RR.render_reask(llm, kind="contentless", prev_question=prev, leader_texts=lead, persona_name="Daniel"))[1] == "miss:no_question"
+    llm = _LLM("파일럿 뒤에 가장 먼저 바뀐 한 가지는 뭐였어요?")                        # 합쇼체 코치의 어미로
+    q, mode = await RR.render_reask(llm, kind="contentless", prev_question=prev, leader_texts=lead, persona_name="Daniel")
+    assert mode == "llm" and q.endswith("습니까?") and "한 가지로 좁혀" in llm.prompt
+    assert RR.same_text("그 뒤 무엇이 달라졌습니까?", "그 뒤  무엇이 달라졌습니까 ?") and not RR.same_text("a?", "")
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "elif _reask_kind and chapter and _bei_ep is not None:" in src and "_rr_rq(llm, kind=_reask_kind" in src      # 본 호출 대신 전용 호출
+    assert src.count("clean_reply = _reask_final") == 2 and "reask_candidate_ok" not in src and "unsaid_fact_words" not in src
+
+
+def test_p11d_2_3_4_deletions_prompts_and_fixed_lines():
+    import inspect
+    from diag_project.prompts.phase3a.episode_card import TURN_FORMAT_RULES, build_episode_card
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import anchor_render as AR
+    from diag_project.services import close_render as CR
+    from diag_project.services import persona_register as R
+    from diag_project.services import slot_render as SR
+    from diag_project.services.output_guard import BANNED_STATE_LEAK
+    src = inspect.getsource(D._submit_message_phase3a)
+    # 2. 삭제 — 가리키는 말 검사 · 선택지 질문 재생성 · 관찰 문장 길이 초과 다시 쓰기
+    assert "dangling_ref" not in src and 'issues.append("leading_choice")' not in src
+    assert 'if why == "length" and kind == "observation":' in inspect.getsource(SR.render_slot)
+    # 3. 프롬프트 — 행위자·이미 말한 때와 사람·요약의 주어
+    assert "누가 한 일인지를 바꾸지 않는다" in TURN_FORMAT_RULES and "이미 말한 때·사람·일은 다시 묻지 않는다" in TURN_FORMAT_RULES
+    assert "그 사람의 이름을 주어로 쓴다" in inspect.getsource(CR.render_close_summary)
+    ep = {"idx": 1, "leader_turns": 1, "slots": {**{k: {"status": "empty", "quote": ""} for k in ("action", "reaction", "result", "criterion", "reflection")},
+                                                "context": {"status": "partial", "quote": "작년 12월에 이기획 평가가"}}}
+    card = build_episode_card(instruction="EPISODE_PROBE", chapter="performance_management", ep=ep, bei_turns=1, budget=18)
+    assert "이미 말한 때·사람은 다시 묻지 않고, 빠진 것만 묻는다" in card
+    # 4. 합쇼체 코치의 여는 문형 — '건데요' 없음 · 말투별 예시 5종
+    for i in range(5):
+        for p, bad in (("Daniel", r"(요|죠)[.?,]"), ("Jessica", r"(요|죠)[.?,]"), ("Ella", r"(습니다|습니까|입니다)[.?]"), ("Olivia", r"(습니다|습니까|입니다)[.?]")):
+            import re as _re
+            assert not _re.search(bad, AR._frame_example(p, i)), (p, i, AR._frame_example(p, i))
+    assert "건데요" not in AR.OPENER_FRAME_2_FORMAL and "관한 것입니다" in AR.OPENER_FRAME_2_FORMAL
+    fixed = R.apply_register("Daniel", "이번 질문은 앞으로 몇 년을 내다보는 판단에 관한 건데요, 최근에 내년 이후를 보고 내리신 결정이 있으셨습니까?", scope="strict")
+    assert fixed[0] == "이번 질문은 앞으로 몇 년을 내다보는 판단에 관한 것입니다. 최근에 내년 이후를 보고 내리신 결정이 있으셨습니까?" and fixed[2] == []
+    for w in ("사례의 결", "분명하게 들립니다", "분명해졌습니다"):
         assert w in BANNED_STATE_LEAK

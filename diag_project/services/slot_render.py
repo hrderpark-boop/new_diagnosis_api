@@ -43,22 +43,16 @@ _SPEC: dict[str, tuple[str, str]] = {
     "cheer": ("리더가 실제로 한 선택을 리더의 낱말로 짚고, 그 선택을 응원한다고 말하는 평서문 한 문장. 질문이 아니다. "
               "'좋다·훌륭하다·대단하다·잘하셨다' 같은 평가어 없이 '응원'이라는 말로만.",
               "돌아가는 길인 줄 알면서 월세로 정하신 그 선택, 응원해요."),
-    "observation": ("리더가 놓였던 처지(누구 사이에서, 무엇을 두고 정해야 했는지)를 리더의 낱말로 짚고, 그때 리더가 감당했을 것을 헤아려 말하는 "
-                    "평서문 한 문장. 질문·조언·평가가 아니다. 끝맺음은 아래 예와 다르게, 이 사례에 맞는 말로 쓴다. 문장의 주어는 리더다.",
-                    "식구들 뜻이 갈린 채로 이사 날짜를 혼자 정하셨으니 마음이 쓰이셨겠습니다."),
+    # (2026-11-12 P11d-3) 'A와 B 사이에서 … 혼자 …셨겠습니다' 틀의 출처를 지웠다 — 지시문의 '누구 사이에서'·'감당했을 것', 예시 5종의 '사이에서'·'혼자'·
+    #   '~셨겠습니다', 그리고 그 낱말이 있어야 통과시키던 꼴 검사. 예시는 주지 않는다.
+    "observation": ("리더가 그 일에서 떠안았던 것(결정·책임·부담 가운데 리더가 말한 것)을 리더의 낱말로 짚어 말하는 평서문 한 문장. "
+                    "질문·조언·평가가 아니다. 문장의 주어는 리더다. 문장의 뼈대와 끝맺음은 사례마다 다르게 쓴다.",
+                    ""),
     "will": ("리더가 겪은 그 상황을 리더의 낱말로 짚고, 같은 상황이 다시 오면 무엇부터 할지 묻는 질문 한 문장.",
              "다음에 또 이사 날짜가 겹치면 무엇부터 정하시겠어요?"),
 }
 # 예시(다른 분야)의 낱말이 출력에 들어오면 베낀 것 — 불합격
 _EXAMPLE_WORDS = ("전세", "월세", "이사", "집주인", "식구")
-# (2026-11-12 P11-B) 선배 관찰 예시 5종 — 세션에서 쓴 슬롯 수로 돌린다. 11/12 운영 Daniel: 예시 하나('…자리, 가볍지 않으셨겠습니다.')의 꼴이 5회 그대로 나왔다.
-_OBSERVATION_EXAMPLES = (
-    "식구들 뜻이 갈린 채로 이사 날짜를 혼자 정하셨으니 마음이 쓰이셨겠습니다.",
-    "집주인과 식구들 사이에서 날짜를 맞추느라 여러 번 망설이셨겠습니다.",
-    "월세로 돌리자는 말을 식구들에게 먼저 꺼내기까지 오래 고민하셨겠습니다.",
-    "이사 날짜가 겹친 것을 혼자 풀어야 했던 그 며칠은 쉽지 않으셨겠습니다.",
-    "전세를 접자는 결정은 누구에게도 넘길 수 없는 일이었겠습니다.",
-)
 # 리더의 1인칭을 코치 문장에 옮긴 꼴("…제가 먼저 따로 이야기를 꺼내야 했던 자리") — 수선하지 않고 그 슬롯 문장을 버린다
 _FIRST_PERSON_RE = re.compile(r"(^|[\s'‘“\"(,])(제가|제|저는|저도|저의|저를|저에게|저한테|저희[가-힣]*|내가|나는|우리\s*팀)(?=[\s,.]|$)")
 
@@ -96,7 +90,6 @@ _KIND_SHAPE: dict[str, re.Pattern] = {
     "counterfactual": re.compile(r"(다면|더라면|았으면|었으면|없이|대신|않고|말고)[^?]*\?"),
     "other_side": re.compile(r"(입장|자리에서|쪽에서|눈에는|보기에는|편에서)"),
     "cheer": re.compile(r"응원"),
-    "observation": re.compile(r"(자리|무게|쉽지 않|가볍지 않|만만치 않|어려우셨|힘드셨|고민|마음이 쓰|망설|부담|버거|조심스러|넘길 수 없|혼자|애쓰|감당)"),
     "will": re.compile(r"(다시|다음에|또)[^?]*\?"),
 }
 _ADVICE_RE = re.compile(r"(하시면 좋|해 보시|하셔야|하는 게 좋|권합니다|추천)")
@@ -202,9 +195,7 @@ async def render_slot(llm, *, kind: str, persona_name: str | None, transcript: l
     if llm is None:
         return None, "miss:no_llm"
     spec, example = _SPEC[kind]
-    if kind == "observation":
-        example = _OBSERVATION_EXAMPLES[len(used or []) % len(_OBSERVATION_EXAMPLES)]
-    example = apply_register(persona_name, example, scope="strict")[0]
+    example = apply_register(persona_name, example, scope="strict")[0] if example else ""
     used_block = ""
     if used:
         used_block = ("[이번 세션에서 이미 쓴 문장 — 같은 끝맺음·같은 문형을 다시 쓰지 않는다]\n"
@@ -215,13 +206,13 @@ async def render_slot(llm, *, kind: str, persona_name: str | None, transcript: l
         f"[이 사례에서 리더가 한 말 — 그대로]\n{said}\n\n"
         f"[쓸 문장] {spec}\n\n"
         "[규칙]\n- 정확히 한 문장, 70자 안쪽.\n- 리더가 위에서 실제로 쓴 낱말을 두 개 이상 넣는다(무엇을 고르고 무엇을 버렸는지, 누구와의 일인지가 문장에 보여야 한다).\n"
-        "- 리더가 하지 않은 말·없는 사실을 만들지 않는다. '그 선택', '그 일', '반대로' 처럼 가리키기만 하는 말로 때우지 않는다.\n"
+        "- 리더가 하지 않은 말·없는 사실을 만들지 않는다. 누가 한 일인지를 바꾸지 않는다. 가리키기만 하는 말로 때우지 않는다.\n"
         "- 역량·항목 이름, 평가·칭찬·조언은 쓰지 않는다.\n"
         "- 리더가 자기를 가리킨 말('제가', '저희')은 옮기지 않는다 — 코치의 자리에서 '리더님'으로 쓰거나 주어를 뺀다.\n"
         f"- 말투: {register_hint(persona_name)}\n\n"
         + used_block
         + (f"[이 문장 바로 뒤에 붙을 질문 — 이 질문에 쓰인 꾸밈말·서술어를 되풀이하지 않는다]\n- {re.sub(r'\\s+', ' ', avoid_text.strip())[:160]}\n\n" if avoid_text else "")
-        + f"[결 참고 — 다른 분야의 예. 낱말을 가져오지 말 것] {example}\n\n"
+        + (f"[결 참고 — 다른 분야의 예. 낱말을 가져오지 말 것] {example}\n\n" if example else "")
         + ("출력은 세 줄입니다(앞 두 줄은 리더의 낱말로 짧게).\n고른 쪽: …\n고르지 않은 쪽: …\n문장: …" if kind in _CHOICE_KINDS
            else "출력: 문장만. 따옴표·설명 없이.")
     )
@@ -237,6 +228,10 @@ async def render_slot(llm, *, kind: str, persona_name: str | None, transcript: l
         ok, why = slot_sentence_ok(kind, cand, leader, persona_name=persona_name, used=used, avoid_text=avoid_text)
         if ok:
             return cand, mode
+        if why == "length" and kind == "observation":
+            # (2026-11-12 P11d-2) 관찰 문장이 길면 다시 쓰지 않는다 — 이번 턴은 관찰 없이
+            logger.info("관찰 문장 길이 초과 → 넣지 않음: %r", cand[:90])
+            return None, "miss:length"
         if why == "first_person":
             # (P11-B) 리더의 1인칭을 옮긴 문장은 고쳐 쓰지 않는다 — 이번 턴은 슬롯을 넣지 않는다
             logger.info("슬롯 문장에 리더의 1인칭(%s) → 넣지 않음: %r", kind, cand[:90])
