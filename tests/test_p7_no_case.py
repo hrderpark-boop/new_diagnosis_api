@@ -119,7 +119,9 @@ def test_p7_3_finish_choice_line_and_route_wiring():
     from diag_project.services.intro_messages import FINISH_CHOICE_LINE, finish_choice_line
     from diag_project.routes import diagnoses as d
     from diag_project.prompts.phase3a.layer3_state import _get_instruction_guide
-    assert finish_choice_line("Michael") == FINISH_CHOICE_LINE == "남은 항목은 이어서 하시면 채워지고, 지금 마치면 최저 수준으로 기록됩니다. 이어서 할까요, 마칠까요?"
+    assert finish_choice_line() == FINISH_CHOICE_LINE == "남은 항목은 이어서 하시면 채워지고, 지금 마치면 최저 수준으로 기록됩니다. 이어서 할까요, 마칠까요?"
+    # (P11-A5) 코치 말투별 — 해요체 코치는 '기록돼요', 합쇼체 코치는 '기록됩니다 … 하시겠습니까'
+    assert "기록돼요" in finish_choice_line("Michael") and finish_choice_line("Daniel").endswith("이어서 하시겠습니까, 마치시겠습니까?")
     src = inspect.getsource(d._submit_message_phase3a)
     assert '_decision_kind = "finish_or_continue"' in src and '"kind": "user_pause"' in src and '"decision_kind": _decision_kind' in src
     assert "_user_pause_resume" in src and "continue_ack" in src

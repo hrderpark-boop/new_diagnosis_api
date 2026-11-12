@@ -166,7 +166,7 @@ def test_p10_3_phrase_caps_gunggeum_side_story_filler():
 def test_p10_3_opener_frames_drop_filler_and_cap_side_story():
     from diag_project.services.anchor_render import OPENER_FRAME_EXAMPLES, OPENER_FRAMES, opener_frame_for, opener_shape_ok
     from diag_project.services.phrase_caps import is_filler_sentence
-    assert len(OPENER_FRAMES) == 3 == len(OPENER_FRAME_EXAMPLES)
+    assert len(OPENER_FRAMES) == 5 == len(OPENER_FRAME_EXAMPLES)   # (P11-F) 3종 → 5종
     assert not any("마다" in f for f in OPENER_FRAMES) and not any(is_filler_sentence(x) for ex in OPENER_FRAME_EXAMPLES for x in ex.split(". "))
     seq = [opener_frame_for(i) for i in range(26)]                 # 5챕터 세션의 여는 사례 수를 넉넉히
     assert seq.count(1) == 2 and seq[:3] == [0, 1, 2] and all(a != b for a, b in zip(seq, seq[1:]))    # '이번에는 ~쪽 이야기' 틀은 세션 2회, 같은 틀 연속 없음
@@ -333,7 +333,9 @@ def test_p10a_followups_from_confirm_sim():
     from diag_project.services.receive_check import leader_nouns
     src = _route_src()
     # 1) 세션 첫 사례가 '이번에는 ~ 이야기예요' 로 열렸다 — 틀 순번은 '앞서 연 사례 수'(이번 것 제외)
-    assert "- 1))" in src[src.index("_frame_op = _off("): src.index("_frame_op = _off(") + 220] and opener_frame_for(0) == 0
+    # (P11-F) 틀은 순번표가 아니라 세션 원장(opener_frames)을 보고 고른다 — 첫 사례는 여전히 0번 틀
+    from diag_project.services.anchor_render import pick_opener_frame
+    assert "_frame_op = _pof(" in src and pick_opener_frame([]) == 0 and opener_frame_for(0) == 0
     # 2) 받을 낱말이 없는 답('네, 맞아요') 뒤의 여는 턴에 "그럼 이 사례를 조금 더 펼쳐 볼게요." 가 붙었다 — 받기가 아니다
     assert leader_nouns("네, 맞아요.") == [] and close_side_violation("그럼 이 사례를 조금 더 펼쳐 볼게요.")
     assert '_tm["receive_dropped"] = 1' in src and "_recv_optional = _is_open and not _ln_w(_llm_user_text)" in src

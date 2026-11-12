@@ -177,7 +177,7 @@ def test_p9_6_register_per_persona():
 def test_p9_7_phrase_caps_and_opener_frames():
     from diag_project.services.anchor_render import OPENER_FRAME_EXAMPLES, OPENER_FRAMES
     from diag_project.services.phrase_caps import count_phrases, enforce_phrase_caps
-    assert len(OPENER_FRAMES) == 3 and len(OPENER_FRAME_EXAMPLES) == 3 and not any("살펴보려" in x for x in OPENER_FRAME_EXAMPLES)
+    assert len(OPENER_FRAMES) == 5 and len(OPENER_FRAME_EXAMPLES) == 5 and not any("살펴보려" in x for x in OPENER_FRAME_EXAMPLES)   # (P11-F) 5종
     t = "목표를 어떻게 나누셨는지 살펴보려고 합니다. 그 기준을 말씀해 주시겠습니까?"
     assert enforce_phrase_caps(t, session_texts=["살펴보려고 합니다."], chapter_texts=["말씀해 주시겠습니까?"]) == (t, {})
     out, done = enforce_phrase_caps(t, session_texts=["살펴보려고 합니다. 살펴보려고 해요."], chapter_texts=["말씀해 주시겠습니까? 말씀해 주시겠습니까?"])

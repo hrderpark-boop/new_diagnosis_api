@@ -145,16 +145,45 @@ def _sub_material(chapter: str | None, sub_key: str | None) -> dict:
 #   '이번에는 ~ 쪽 이야기' 틀은 세션 2회만(순번 1·5). 틀 설명은 어미를 싣지 않는다 — 합쇼체로 쓴 틀을 해요체 코치가 그대로 베꼈다(11/11 Olivia).
 #   (p10b) 틀 설명을 '무엇을 듣고 싶은지 말하는 한 문장' 이라고 쓰자 그 말이 출력에 그대로 나왔다("무엇을 듣고 싶은지 말씀해 주세요: …") —
 #   설명은 꼴만 보이고(따옴표 안의 꼴), 되읊은 출력은 opener_shape_ok 가 떨어뜨린다(쌍점·'말씀해 주세요'·틀 낱말).
+# (2026-11-12 P11-F) 11/12 운영 Daniel: '~에 관한 것입니다만, 최근에…' 4회 · '이번에는 … 쪽 이야기입니다' 2회 — 틀이 3종뿐이고 순번표가 한 문장 틀을 세 번에 한 번 골랐다.
+#   틀을 5종으로 늘리고, 세션에서 쓴 틀을 원장(opener_frames)에 적어 직전 틀을 빼고 고른다(pick_opener_frame). 같은 틀은 세션 2회까지.
+#   '~을 어떻게 하시는지 듣고 싶다' 틀은 삭제 — 질문이 아닌 예고 문장('…듣고 싶습니다')을 지우는 규칙(P11-D)과 부딪힌다.
 OPENER_FRAMES = (
-    "①을 '~을 어떻게 하시는지 듣고 싶다' 꼴의 문장 하나로 쓴다. 그 다음 문장이 ②.",
+    "①을 '~하다 보면 ~해야 할 때가 생긴다' 꼴의 문장 하나로 쓴다(그 일이 어떤 때 생기는지). 그 다음 문장이 ②.",
     "①을 '이번에는 ~ 쪽 이야기' 꼴의 짧은 문장 하나로 쓴다. 그 다음 문장이 ②.",
     "①과 ②를 한 문장으로 쓴다 — ①을 앞 절에 넣고 쉼표로 이어서 묻는다('~에 관한 건데요, 최근에 ~ 있으셨어요?' 꼴).",
+    "①을 '~할 때 무엇을 하시는지 보려는 대목' 꼴의 문장 하나로 쓴다. 그 다음 문장이 ②.",
+    "①을 '다음은 ~에 대해서' 꼴의 짧은 문장 하나로 쓴다. 그 다음 문장이 ②.",
 )
+OPENER_FRAME_SESSION_MAX = 2
+_OPENER_FRAME_PREF = (0, 3, 2, 4, 1)      # 같은 횟수면 이 순서 — 세션 첫 사례가 '이번에는'·'다음은' 으로 열리지 않게
+
+
+def pick_opener_frame(used: list[int] | None) -> int:
+    """이번 여는 문장의 틀 — 직전에 쓴 틀은 빼고, 세션에서 2회 쓴 틀도 뺀다. 남은 것 중 가장 적게 쓴 틀(같으면 선호 순서).
+    다섯 틀을 모두 2회씩 쓴 뒤(여는 사례 11번째부터)에는 직전 틀만 빼고 가장 적게 쓴 틀을 한 번 더 쓴다."""
+    seq = [int(x) for x in (used or []) if isinstance(x, int) or str(x).isdigit()]
+    n = len(OPENER_FRAMES)
+    counts = {i: seq.count(i) for i in range(n)}
+    last = seq[-1] if seq else None
+    cands = [i for i in range(n) if i != last and counts[i] < OPENER_FRAME_SESSION_MAX]
+    if not cands:
+        cands = [i for i in range(n) if i != last]
+    return min(cands, key=lambda i: (counts[i], _OPENER_FRAME_PREF.index(i)))
 _OPENER_META_RE = re.compile(r"(:|：|무엇을 듣고 싶은지|말씀해\s*주세요|말씀해\s*주십시오|꼴의|틀|한 문장|①|②)")
 OPENER_FRAME_EXAMPLES = (
-    "장을 볼 때 무엇부터 담으시는지 듣고 싶어요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
+    "장을 보다 보면 계획에 없던 것을 담아야 할 때가 생겨요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
     "이번에는 장을 보는 쪽 이야기예요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
     "장 볼 때 순서를 정하는 일에 관한 건데요, 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
+    "장 볼 때 무엇부터 담으시는지 보려는 대목이에요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
+    "다음은 장 볼 때 순서를 정하는 일에 대해서예요. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨어요?",
+)
+OPENER_FRAME_EXAMPLES_FORMAL = (
+    "장을 보다 보면 계획에 없던 것을 담아야 할 때가 생깁니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
+    "이번에는 장을 보는 쪽 이야기입니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
+    "장 볼 때 순서를 정하는 일에 관한 것입니다만, 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
+    "장 볼 때 무엇부터 담으시는지 보려는 대목입니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
+    "다음은 장 볼 때 순서를 정하는 일에 대해서입니다. 최근에 계획에 없던 것을 장바구니에 담으신 적 있으셨습니까?",
 )
 _OPENER_FRAME_SEQ = (0, 1, 2, 0, 2, 1, 0, 2)
 
@@ -169,8 +198,11 @@ def opener_frame_for(n_opened: int) -> int:
 
 def _frame_example(persona_name: str | None, frame: int) -> str:
     """틀 예시를 그 페르소나의 말투로 — 해요체 예시를 합쇼체 코치에게 주면 어미가 섞인다."""
-    from diag_project.services.persona_register import apply_register
-    ex = OPENER_FRAME_EXAMPLES[int(frame) % len(OPENER_FRAME_EXAMPLES)]
+    from diag_project.services.persona_register import apply_register, register_of
+    i = int(frame) % len(OPENER_FRAME_EXAMPLES)
+    if register_of(persona_name) == "formal":
+        return OPENER_FRAME_EXAMPLES_FORMAL[i]      # (P11-F) 합쇼체 예시는 따로 쓴다 — 어미표가 못 바꾸는 꼴('생겨요')이 해요체로 남았다
+    ex = OPENER_FRAME_EXAMPLES[i]
     out = apply_register(persona_name, ex, scope="strict")[0]
     return out.replace("건데요,", "것입니다만,") if out != ex or "습니까" in out else out
 
@@ -193,7 +225,7 @@ async def render_opener(
         "당신은 리더십 BEI 코치입니다. 리더에게 새 사례 하나를 청하는 '여는 문장'을 만드세요. "
         + ("출력은 정확히 한 문장(질문)입니다.\n\n" if one_sentence else "출력은 정확히 두 문장입니다.\n\n")
         + "① 왜 묻는지 — 아래 [무엇을 보는지]를 리더가 쓰는 일상어로 풀어 씁니다. 역량·하위역량 이름, '역량'·'항목'·'지표' 같은 말은 쓰지 않습니다.\n"
-        f"   이번 틀: {OPENER_FRAMES[frame]} '살펴보려고'·'궁금'이라는 말은 쓰지 않습니다. "
+        f"   이번 틀: {OPENER_FRAMES[frame]} '살펴보려고'·'궁금'·'듣고 싶'·'여쭤보겠'이라는 말은 쓰지 않습니다. "
         "'~은 팀마다, 사람마다 다르다' 같은 누구에게나 맞는 일반론은 쓰지 않습니다.\n"
         "② 있었는지 묻는 질문 — '최근에 ~한 일이 있으셨어요?' 처럼 그런 일이 있었는지 여는 질문. "
         "있었음을 전제하는 문형('~받으셨을 때 어떻게', '~하셨을 때 무엇을')은 금지합니다. 선택지·가정형 금지. 은유 금지. 평가·칭찬 금지.\n"

@@ -518,3 +518,28 @@ b 단독으로는 목표(p50 ≤ 4초·p95 ≤ 8초)에 못 미쳐 아래를 묶
 - **통계 주의**: 종전 시뮬 결과 파일의 행·guard 짝짓기가 챕터 종료 턴에서 어긋나 있었다(메시지가 다음 챕터로 태깅, t 가 챕터마다 겹침) — `sim_leader` 가 순서대로 잇도록 고쳤고,
   위 표는 전부 DB 의 guard_log 에서 직접 뽑았다(`.fm_work/p10/turn_stats.py`).
 
+
+## §25. P11 — 11/12 운영 Daniel 세션(반말·초단답 리더) 검토 반영 (2026-11-12)
+
+원인을 코드에서 먼저 확인하고 고쳤다. 추정과 달랐던 것은 A1·A5·G·E 넷이다.
+
+| 항목 | 원인(코드) | 처리 | 위치 |
+|---|---|---|---|
+| A1 스몰톡 '밥' | 고정 받기는 라포 1턴에만 있었다. 예비 되물음의 답은 라포 2턴(담당 업무 질문 턴)에 오고 거기는 LLM 받기였다 | 라포 2턴도 10자 이하·내용 없는 답이면 LLM 없이 고정 받기 + 역할 질문. 받는 문장 금지 꼴(리더가 질문한 것처럼·말투 언급·해석형) 검사 | `routes/diagnoses.py`(7단계·8-0·8-w00), `services/turn_checks.receive_ban_reason` |
+| A2 동의·거절 | 동의 판정식이 5곳에 따로 있었고 자모·반말을 몰랐다. 'ㅇㅋ'는 의미 없는 입력으로도 읽혔다 | 사전 한 곳(`services/short_input`)을 5곳이 함께 읽는다. 안내 뒤 거절은 재촉 없는 고정 문장(`confirm_decline`) | `input_anomaly`·`instruction_decider`·`layer3_state`·`avoidance_detector`·`bei_engine` |
+| A3 되묻기 | '뭔소리야'는 답으로 읽혀 슬롯 판정으로 갔다 | 이상 종류 `clarify` — 사례 턴은 원장 그대로(리더 턴·슬롯 판정 없음) 코치가 질문만 다시 쓰고 고정 사과 한 마디를 붙인다. 사례 밖은 사과 + 같은 질문 | `input_anomaly.detect`, `diagnoses.py`(입력 이상·사례 단계 `bei_reask_only`·8-w0) |
+| A4 반말 | — | 프롬프트 규칙(말씨 유지·언급 금지) + 받는 문장 금지 꼴. 반말 답도 구절 인용 받기가 되게 어미 처리 | `prompts/phase3a/episode_card.TURN_FORMAT_RULES`, `receive_check._PLAIN_END` |
+| A5 고정 문장 말투 | 말투 교정(8-zz)은 있었으나 시스템 고정 턴에서 `split_sentences` 지역 import 때문에 UnboundLocalError 로 조용히 건너뛰었다 | import 를 모듈 수준으로 올리고, 안내 본문·시스템 문장을 말투별 두 벌로 따로 쓴다 | `diagnoses.py` 머리, `intro_messages._INTRO_BODY`, `services/system_lines.py` |
+| B 슬롯 문장 | 관찰 예시 하나('…자리, 가볍지 않으셨겠습니다')의 꼴을 그대로 베꼈다 | 예시 5종 순환, 쓴 문장을 프롬프트에 넘김, 같은 끝맺음·문형 불합격, 1인칭 옮김은 수선 없이 버림(6명 공통) | `services/slot_render` |
+| C 질문 완결성 | 두 질문을 자를 때 뒤 질문의 끝 절만 남았다 | 수선(머리말 떼기·열린 질문 남기기) → 재생성 1회(예산) → 슬롯 기본 질문 | `turn_checks.question_issues`·`prefer_open_question`, `diagnoses.py` 8-w·8-w4 |
+| D 예고·귀속·감사 | 허위 귀속 정규식에 합쇼체 꼴('이어지는 부분입니다만')이 없었다 | 예고 문장 삭제(유일한 질문이면 묻는 꼴로), 인용·'말씀하신 ○○'은 세션 리더 발화와 문자열 대조, 감사는 닫는 턴만 | `turn_checks`, `diagnoses.py` 8-y |
+| F 여는 문장 | 틀 3종 + 순번표가 한 문장 틀을 세 번에 한 번 골랐다 | 틀 5종, 원장 `opener_frames` 로 직전 틀 제외·세션 2회 상한 | `anchor_render.pick_opener_frame` |
+| H 받는 문장 | — | 탐침 턴 받기 1문장(결정론 자르기), 내용 없는 답 뒤는 받기 없이 좁혀 묻기, 해석·짐작형 금지. 겹침 비율은 기록만(`recv_overlap`) | `diagnoses.py` 8-w, `turn_checks.receive_overlap` |
+| I 같은 답 | 문구 1종 | 1회째 안내 + 같은 질문, 2회째부터 다른 장면을 청하는 3종 순환 | `intro_messages.duplicate_answer_line` |
+
+보고만(수정 없음): E 사례 2턴 종료 — 최소 4턴 규칙은 사례(kind=episode)의 6슬롯 종료에만 걸린다. 보완 질문(kind=sweep)은 설계상 앵커 1턴 + 후속 1턴이고,
+`reserve`·`stalled`·`no_case` 종료도 4턴 전에 닫는다. G 휴식 제안 — 제안은 이미 사례가 닫힌 턴에서만 나가고 직전 답은 보관·재판정된다(P9-8). 재개 지시문만 '그 답을 한 문장으로 받는다'로 고쳤다.
+
+검증 시뮬 p11a(Daniel × `tools/sim_profiles/banmal_short_lead.json`, 2챕터, $0.0445): p50 4.0s · p95 6.6s · 재생성 턴 11/31(2회 이상 0).
+전문에서 읽어 찾은 후속 7건(어미 변환 '시나요→시습니까', 주어 없는 질문 조각, 예고 꼴 질문, 다시 묻기의 딴 질문, 짐작·감상 받기, 반말 답 인용 실패, 기본 질문 머리)은
+결정론으로 고치고 단위 테스트만 했다(재시뮬 없음).

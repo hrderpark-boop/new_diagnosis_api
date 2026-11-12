@@ -11,6 +11,10 @@
   confirm_reask 안내(DIAGNOSIS_INTRO) 뒤 '네' 외 비실질 입력(sp·오타)       → 안내 확인 재요청(정의 질문으로 넘어가지 않음)
   def_reask     정의 질문 답이 10자 미만·물음표만                          → 정의 질문 1회 재요청
   ack_reask     질문 뒤 비실질 입력(네/넵/네?/??/sp)                        → "그럼 여쭤볼게요. [앵커]"
+(2026-11-12 P11-A)
+  clarify         되묻기('뭔소리야'·'무슨 말이야'·'?')                       → 짧은 사과 + 직전 질문을 쉬운 말로 1회(사례 턴은 LLM 이 다시 쓴다)
+  decline_confirm 안내(DIAGNOSIS_INTRO) 뒤 거절('놉'·'ㄴㄴ'·'아니')            → 재촉 없이 기다린다는 고정 문장("'네'라고 답해 주십시오" 아님)
+  동의·거절 낱말은 services/short_input 사전 하나로 읽는다('ㅇㅋ'·'넵'·'콜'·'고' = 동의).
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ import re
 from dataclasses import dataclass
 
 from diag_project.services.output_guard import is_question, split_sentences
+from diag_project.services.short_input import is_clarify_request, is_consent_word, is_contentless_answer, is_decline_word
 
 _HANGUL_RE = re.compile(r"[가-힣]")
 _VAGUE_RE = re.compile(r"(모르겠|글쎄|기억(이|은)?\s*(잘\s*)?(안\s*나|않|나지\s*않)|그\s*정도였|딱히|특별히\s*(그런|기억))")   # (2026-11-06 P7) 모호 답 — 중복 입력 검사에서 제외
@@ -81,7 +86,7 @@ def is_ack_only(text: str | None) -> bool:
     t = (text or "").strip()
     if not t:
         return True
-    if _ACK_RE.match(t):
+    if _ACK_RE.match(t) or is_contentless_answer(t):   # (P11) 'ㅇㅋ'·'맞아요'·'그냥 그럼' — 받을 내용이 없는 답
         return True
     if not _HANGUL_RE.search(t):
         return len(_norm(t)) <= 6          # 'sp', '??', 'ok?' 류. 긴 영문 답은 제외
@@ -90,7 +95,7 @@ def is_ack_only(text: str | None) -> bool:
 
 def is_consent(text: str | None) -> bool:
     t = (text or "").strip()
-    return bool(t) and bool(_CONSENT_OPENER_RE.match(t))
+    return bool(t) and (bool(_CONSENT_OPENER_RE.match(t)) or is_consent_word(t))   # (P11-A2) 'ㅇㅋ'·'콜'·'고' 도 동의
 
 
 # (2026-11-11 P10-1) 스몰톡 답에 받을 내용이 없는가 — 10자 이하이거나 '그냥 그래요'·'별로요' 류. 이런 답은 LLM 없이 고정 받기 + 예비 되물음으로 간다.
@@ -161,7 +166,7 @@ def returned_question(cur: str | None, prev_coach_text: str | None) -> bool:
 
 @dataclass
 class Anomaly:
-    kind: str               # repeat_prev | repeat_any | returned_q | pause_phrase | confirm_reask | def_reask | ack_reask
+    kind: str               # repeat_prev | repeat_any | returned_q | pause_phrase | confirm_reask | def_reask | ack_reask | clarify | decline_confirm
     question: str = ""      # 다시 낼 질문(있으면)
     detail: str = ""        # 로그용
 
@@ -192,6 +197,11 @@ def detect(
     if is_pause_continue_phrase(t) and not pause_pending and q:
         return Anomaly("pause_phrase", q, "일시정지 문구(계속 진행)가 일반 턴에 입력")
 
+    # (2026-11-12 P11-A3) 되묻기('뭔소리야'·'무슨 말이야'·'?') — 무시하지 않고 직전 질문을 쉬운 말로 다시 묻는다. 선택 대기·일시정지 대기 턴은 제외
+    #   정의 질문 뒤의 되묻기는 아래 5)의 정의 재요청('짧게라도 괜찮다 … 한 문장만')이 받는다 — 1회만, 그 뒤로는 되풀이하지 않는다
+    if is_clarify_request(t) and q and not awaiting_choice and not pause_pending and prev_instr not in ("COMPETENCY_ASK", "DEFINITION_REASK"):
+        return Anomaly("clarify", q, "직전 질문을 되묻는 입력")
+
     # (2026-11-06 P7-1) '없어요·글쎄요·딱히' 류 짧은 답은 되풀이돼도 중복 입력이 아니다 — 사례 단계가 incident=no 로 받아 다음 하위역량으로 간다
     from diag_project.services.bei_engine import is_no_case_text as _is_no_case
     _no_case_like = _is_no_case(t) or bool(_VAGUE_RE.search(t))   # (2026-11-06 P7 p7c) '글쎄요, 그건 잘 모르겠어요' 가 같은 문장으로 반복돼도 '같은 사례' 안내는 틀린 말
@@ -203,16 +213,20 @@ def detect(
     if returned_question(t, prev_coach_text) and q:
         return Anomaly("returned_q", q, "직전 코치 질문을 그대로 붙여넣음")
 
-    # 4) 안내 뒤 비실질 입력(sp·오타) — 동의도 질문도 아니면 안내 확인 재요청
+    # 4) 안내 뒤 비실질 입력(sp·오타) — 동의도 거절도 질문도 아니어서 판정할 수 없을 때만 안내 확인 재요청
+    #    (P11-A2) 거절('놉'·'ㄴㄴ'·'아니')은 판정된 답이다 — "'네'라고 답해 주십시오" 로 재촉하지 않고 기다린다는 문장으로
+    if prev_instr in ("DIAGNOSIS_INTRO", "CONFIRM_REASK") and is_decline_word(t):
+        return Anomaly("decline_confirm", "", "안내 뒤 거절")
     if prev_instr == "DIAGNOSIS_INTRO" and not is_consent(t) and is_ack_only(t) and not _ACK_RE.match(t):
         return Anomaly("confirm_reask", "", "안내 뒤 '네' 외 비실질 입력")
 
     # 5) 정의 답이 너무 짧음 — 1회만 재요청
-    if prev_instr == "COMPETENCY_ASK" and definition_too_short(t) and not definition_reasked:
+    if prev_instr == "COMPETENCY_ASK" and (definition_too_short(t) or is_clarify_request(t)) and not definition_reasked:
         return Anomaly("def_reask", q, "정의 답 10자 미만·물음표만")
 
     # 6) 질문 뒤 비실질 입력(네/넵/네?/??/sp) → 앵커 재발화. 동의가 정상인 턴은 제외
-    if q and is_ack_only(t) and not awaiting_choice and not pause_pending \
+    #    (P11-A2) 거절 낱말('놉'·'ㄴㄴ')은 비실질 입력이 아니라 '없다'는 답 — 사례 단계가 사례 없음으로 받는다
+    if q and is_ack_only(t) and not is_decline_word(t) and not awaiting_choice and not pause_pending \
             and prev_instr not in ("DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "COMPETENCY_ASK",
                                    "CHAPTER_READY_TO_END", "AWAIT_NEXT_CHAPTER_CHOICE", "RAPPORT_BUILDING",
                                    "USER_REQUESTS_PAUSE", "SUGGEST_PAUSE", "CHAPTER_ONE_MORE_ASK", "NAME_RECONFIRM"):

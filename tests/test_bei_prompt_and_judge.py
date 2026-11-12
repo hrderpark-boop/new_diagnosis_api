@@ -59,7 +59,7 @@ def test_bei_turn_text_has_persona_card_guide_and_rules():
              "bei_card": "# 지금 듣고 있는 사례 (1번째)"}
     txt = format_turn_state_for_llm(state)
     assert txt.index("[🎭 페르소나 유지] 당신은 Jessica") < txt.index("# 지금 듣고 있는 사례") < txt.index("[Instruction for this turn]\nEPISODE_PROBE")
-    assert "되받기 1~3문장 + 질문 1개" in txt and "[금지]" in txt and "[Turn State]" not in txt
+    assert "되받기 1문장 + 질문 1개" in txt and "[금지]" in txt and "[Turn State]" not in txt
     for instr in EC.BEI_GUIDES:
         assert EC.is_bei_instruction(instr)
     assert not EC.is_bei_instruction("COMPETENCY_ALIGN")

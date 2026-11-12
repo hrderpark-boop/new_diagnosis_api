@@ -50,7 +50,16 @@ _NO_CASE_RE = re.compile(r"(없었|없어요|딱히|기억이 안)")
 
 
 def _load_profile(path: str) -> dict:
-    return json.load(open(path, encoding="utf-8"))
+    """프로필 JSON. "extends": "<같은 폴더의 파일>" 이 있으면 그 프로필 위에 덮어쓴다(사례·정의는 물려받고 말씨·주입 답만 바꾸는 프로필용)."""
+    prof = json.load(open(path, encoding="utf-8"))
+    base = prof.pop("extends", None)
+    if base:
+        parent = _load_profile(str(Path(path).resolve().parent / base))
+        merged = {**parent, **prof}
+        merged["persona"] = {**(parent.get("persona") or {}), **(prof.get("persona") or {})}
+        merged["onboarding"] = {**(parent.get("onboarding") or {}), **(prof.get("onboarding") or {})}
+        return merged
+    return prof
 
 
 class Leader:
@@ -96,8 +105,13 @@ class Leader:
 
     # ── 답 생성 ──────────────────────────────────────────────────────────────
     async def answer(self, coach_text: str, *, chapter: str | None, instr: str | None, target_sub: str | None, bei_state: str | None,
-                     probe: str | None = None) -> str:
+                     probe: str | None = None, bei: str | None = None) -> str:
         self.n_answers += 1
+        # (2026-11-12 P11) 주입 답 — 프로필 injections: 되묻기('뭔소리야')·동의('ㅇㅋ')·거절('놉')·같은 답 붙여넣기. 코치 턴 종류별 n번째에 한 번씩 낸다.
+        _inj = self._injection(instr, bei)
+        if _inj is not None:
+            return _inj
+        _reask = bei == "reask"          # 코치가 직전 질문을 다시 물은 턴 — 이번에는 짧은 답을 내지 않고 내용으로 답한다
         if instr == "RAPPORT_BUILDING":
             # 온보딩은 위치가 아니라 코치 턴의 종류로 답한다(스몰톡 → 역할 질문(ROLE_ASK) → 기대 질문)
             ob = self.p.get("onboarding") or {}
@@ -110,7 +124,7 @@ class Leader:
                 return ob.get("smalltalk", "바쁜 쪽이에요.")
             return ob.get("smalltalk_more", "네, 그 정도예요.")
         if instr == "DIAGNOSIS_INTRO":
-            return "네, 시작하겠습니다."
+            return (self.p.get("onboarding") or {}).get("intro_reply", "네, 시작하겠습니다.")
         if instr in ("COMPETENCY_ASK", "DIAGNOSIS_CONFIRM") and chapter:
             return self.p["definitions"].get(chapter, "글쎄요, 팀이 잘 돌아가게 하는 일이요.")
         if instr in ("COMPETENCY_ALIGN", "EPISODE_OPEN", "SWEEP_ANCHOR"):
@@ -123,7 +137,7 @@ class Leader:
                 self.said.add("context")
                 return await self._say("action", coach_text, reopening=True)
             return await self._say("context", coach_text, opening=True)
-        if self.short_every and self.n_answers % self.short_every == 0:
+        if self.short_every and self.n_answers % self.short_every == 0 and not _reask:
             return self.rng.choice(self.short_answers)
         # (2026-11-06 P7 검증) 사례 없는 리더 — 사례 안에서도 vague_rate 확률로 모호한 2문장('글쎄요…')을 낸다(슬롯 진전 0 → 조기 종료 검증)
         _vr = float(self.p.get("vague_rate") or 0)
@@ -136,6 +150,24 @@ class Leader:
                 return self._no_case_reply()
         slot = self._slot_for(coach_text)
         return await self._say(slot, coach_text)
+
+    def _injection(self, instr: str | None, bei: str | None) -> str | None:
+        """프로필 injections = [{"when": "probe"|"open"|"reask", "nth": n, "text": "…"} | {"when": …, "nth": n, "paste": true}] — 해당 종류의 n번째 코치 턴에 한 번.
+        when: probe = 사례 탐침(EPISODE_PROBE·SWEEP_FOLLOWUP, 다시 묻기 제외) / open = 여는 질문(EPISODE_OPEN·SWEEP_ANCHOR) / reask = 코치가 다시 물은 턴.
+        paste = 앞서 한 긴 답을 그대로 붙여넣는다(같은 답 1회)."""
+        kind = ("reask" if bei == "reask" else "probe" if instr in ("EPISODE_PROBE", "SWEEP_FOLLOWUP")
+                else "open" if instr in ("EPISODE_OPEN", "SWEEP_ANCHOR") else None)
+        if kind is None:
+            return None
+        self._kind_n = getattr(self, "_kind_n", {})
+        self._kind_n[kind] = self._kind_n.get(kind, 0) + 1
+        for it in self.p.get("injections") or []:
+            if it.get("when") == kind and int(it.get("nth") or 0) == self._kind_n[kind]:
+                if it.get("paste"):
+                    long_prev = [t for r, t in self.history if r == "user" and len(t.replace(" ", "")) >= 25]
+                    return long_prev[-1] if long_prev else "앞에서 말한 그대로야."
+                return str(it.get("text") or "")
+        return None
 
     _NO_CASE_REPLIES = ["딱히 그런 일은 없었던 것 같아요.", "음, 그건 바로 떠오르는 게 없네요.", "그쪽은 기억이 잘 안 나요.", "그런 적은 없었어요.",
                         "글쎄요, 특별히 그런 건 없었어요.", "보통은 그냥 평소대로 하는 편이라서요. 딱히 떠오르는 일은 없네요."]
@@ -174,7 +206,7 @@ class Leader:
             "규칙: 아래 [이번에 말할 사실]만 자기 말로 답한다. 사실에 있는 내용은 한 가지도 빠뜨리지 않는다"
             + (f"(최대 {self.p['max_sentences']}문장, 짧게)" if self.p.get("max_sentences") else "(문장 수는 사실의 길이에 맞춘다, 2~5문장)")
             + ". 사실에 없는 내용을 지어내지 않는다. 다른 슬롯(결과·기준·배운 점 등)을 먼저 꺼내지 않는다. "
-            "코치의 말을 되풀이하지 않는다. 존댓말, 구어체. 질문하지 않는다. '음,'·'네,'·'그랬죠' 같은 추임새로 문장을 시작하지 않는다. "
+            f"코치의 말을 되풀이하지 않는다. {self.p.get('speech') or '존댓말, 구어체'}. 질문하지 않는다. '음,'·'네,'·'그랬죠' 같은 추임새로 문장을 시작하지 않는다. "
             "코치 질문과 [이번에 말할 사실]이 어긋나도 '질문은 ~인데', '그 답이 아니라', '이번에 말할 사실' 같은 설명 없이 사실만 자연스럽게 말한다."
         )
         recent = "\n".join(f"{'코치' if r == 'model' else '나'}: {t}" for r, t in self.history[-6:])
@@ -314,7 +346,7 @@ async def run_session(tag: str, coach: str, port: int, out_dir: Path, profile: d
                 u = queue.pop(0)
             else:
                 u = await leader.answer(coach_text, chapter=meta.get("chapter"), instr=meta.get("instruction_used"),
-                                        target_sub=meta.get("target"), bei_state=meta.get("bei_state"), probe=meta.get("probe_type_used"))
+                                        target_sub=meta.get("target"), bei_state=meta.get("bei_state"), probe=meta.get("probe_type_used"), bei=meta.get("bei"))
             leader.history.append(("user", u))
             r = await c.post(f"{base}/diagnoses/submit_message", json={"session_id": sid, "diagnosis_id": sid, "content": u}, headers=hdr)
             turns += 1

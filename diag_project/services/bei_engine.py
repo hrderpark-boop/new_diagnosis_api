@@ -130,6 +130,9 @@ def unfilled_slots(ep: dict | None) -> list[str]:
 def is_no_case_text(text: str | None) -> bool:
     """결정론 보조 판정 — 짧은 답에 '없다·기억 안 난다' 표지. 슬롯 판정(LLM)의 no_case 와 OR."""
     t = (text or "").strip()
+    from diag_project.services.short_input import is_decline_word as _idw_b
+    if _idw_b(t):                         # (2026-11-12 P11-A2) '놉'·'ㄴㄴ'·'아니' — 있었느냐는 질문에 없다는 답
+        return True
     return bool(t) and len(t.replace(" ", "")) <= 40 and bool(_NO_CASE_RE.search(t))
 
 

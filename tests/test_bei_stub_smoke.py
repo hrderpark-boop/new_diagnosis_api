@@ -60,7 +60,7 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
     assert client.get(f"/api/v1/diagnoses/{sid}/turn_stage").status_code in (401, 403)
     for i in range(1, 45):
         u = queue.pop(0) if queue else asyncio.run(leader.answer(coach_text, chapter=meta.get("chapter"), instr=meta.get("instruction_used"),
-                                                                 target_sub=meta.get("target"), bei_state=meta.get("bei_state"), probe=meta.get("probe_type_used")))
+                                                                 target_sub=meta.get("target"), bei_state=meta.get("bei_state"), probe=meta.get("probe_type_used"), bei=meta.get("bei")))
         r = client.post("/api/v1/diagnoses/submit_message", json={"session_id": sid, "diagnosis_id": sid, "content": u}, headers=hdr)
         assert r.status_code in (200, 201), f"코치 {coach_key} 턴 {i} HTTP {r.status_code}: {r.text[:300]}"
         body = r.json()
@@ -82,8 +82,12 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
     eps = [e for e in B.episodes(store, CH) if e.get("kind") == "episode"]
     assert len(eps) == 2 and all(e["status"] == "done" and len(B.filled_slots(e)) == 6 for e in eps), eps
     cov = B.coverage_summary(store, CH, [v["name"] for v in __import__("diag_project.data.competencies", fromlist=["COMPETENCY_FRAMEWORK"]).COMPETENCY_FRAMEWORK[CH]["indicators"].values()])
-    # 사례 2개(비전·전략 여는 질문) + SWEEP 변화관리는 리더가 사례 1(E1)을 다시 꺼내 strong, SWEEP 혁신은 남은 사례(E7) → 4/4, 미확인 없음
-    assert cov["covered"] == ["변화관리(변화지향)", "비전 제시 및 공유", "전략적 사고", "혁신적 사고"] and cov["not_explored"] == [] and cov["unconfirmed"] == []
+    # 사례 2개(비전·전략 여는 질문) + SWEEP 혁신은 남은 사례(E7). SWEEP 변화관리는 리더가 사례 1(E1)을 다시 꺼내 '같은 사례' 안내를 받는다.
+    # (2026-11-12 P11-H) 그 뒤의 '네, 맞아요'는 받을 내용이 없는 답이라 리더 턴으로 세지 않고 질문만 다시 낸다(종전에는 이 답이 보완 1턴을 차지해
+    #   뒤따른 같은 사례 반복이 보완 완료로 닫혔다). 리더가 같은 사례를 한 번 더 말하면 그 항목은 미확인으로 남는다 → 3/4 + 미확인 1.
+    assert cov["covered"] == ["비전 제시 및 공유", "전략적 사고", "혁신적 사고"] and cov["not_explored"] == [] and cov["unconfirmed"] == ["변화관리(변화지향)"]
+    _gl_p11 = [g for g in (store.get("guard_log") or []) if g.get("reask")]
+    assert _gl_p11 and all(g.get("bei") == "reask" and g.get("slot_judge") is None for g in _gl_p11)   # 다시 묻기 턴은 슬롯 판정·리더 턴을 쓰지 않는다
     # 파생 원장: 분석이 읽는 asked_subs = covered ∪ SWEEP 앵커 하위역량
     assert set(store["asked_subs"][CH]) == {"비전 제시 및 공유", "전략적 사고", "변화관리(변화지향)", "혁신적 사고"}
     assert "SWEEP_FOLLOWUP" in instrs or "SWEEP_ANCHOR" in instrs
@@ -96,7 +100,7 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
         async with async_session() as db:
             return (await db.execute(select(Event).where(Event.session_id == uuid.UUID(sid)))).scalars().all()
     evs = client.portal.call(_events)
-    assert len(evs) == 4 and all(e.situation and e.mapped_subcompetency for e in evs)   # 사례 2 + SWEEP 보완 2
+    assert len(evs) == 3 and all(e.situation and e.mapped_subcompetency for e in evs)   # 사례 2 + SWEEP 보완 1(변화관리는 미확인 — 위 P11-H 주석)
     # (2026-11-05 P4-1) 페르소나 슬롯은 챕터당 1회(Ella 없음) — 세션 원장 slot_chapters·slot_used_idx 에 기록, 문구 인덱스 = 챕터 순서(조직관리 0)
     slot_turns = [g for g in store.get("guard_log", []) if g.get("slot") and g.get("slot") != "Michael_q"]
     assert len(slot_turns) == (0 if coach_key == "1" else 1), [(g.get("episode"), g.get("slot")) for g in slot_turns]

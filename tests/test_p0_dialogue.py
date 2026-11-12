@@ -95,7 +95,7 @@ def _detect(user, prev_user="", earlier=(), prev_instr="STAR_INCOMPLETE", coach=
 
 
 def test_ack_after_anchor_reasks_anchor():
-    for u in ("네", "넵", "네?", "??", "sp", "ㅇㅇ"):
+    for u in ("네", "넵", "sp", "ㅇㅇ"):   # (P11-A3) '네?'·'??' 는 되묻기(clarify)로 따로 받는다 — tests/test_p11.py
         a = _detect(u, prev_instr="COMPETENCY_ALIGN")
         assert a and a.kind == "ack_reask" and a.question.endswith("있었어요?"), u
 

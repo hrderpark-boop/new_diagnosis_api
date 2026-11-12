@@ -158,6 +158,8 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "confirm_reask": "시작해도 괜찮으시면 '네'라고 답해 주세요. 궁금한 점이 있으면 먼저 물어보셔도 돼요.",
         "definition_reask": "짧게라도 괜찮아요. {cn_eul} 평소 어떻게 생각하시는지 한 문장만 들려주시겠어요?",
         "continue_ack": "네, 이어갈게요.",
+        # (2026-11-12 P11-A2·A3) 되묻기에 붙이는 짧은 사과 · 안내 뒤 거절에 재촉 없이 기다린다는 문장
+        "clarify_sorry": "제 질문이 분명하지 않았네요.", "confirm_decline": "알겠어요. 준비되시면 편하실 때 말씀해 주세요. 궁금한 점이 있으면 먼저 물어보셔도 돼요.",
     },
     "Jessica": {
         # (2026-11-11 P10-7) 첫 영역 진입 다리(고정) · (P10-1) 내용 없는 스몰톡 답을 받는 고정 1문장
@@ -184,6 +186,8 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "confirm_reask": "시작해도 괜찮으시면 '네'라고 답해 주십시오. 궁금한 점이 있으면 먼저 물어보셔도 됩니다.",
         "definition_reask": "짧게라도 괜찮습니다. {cn_eul} 평소 어떻게 보시는지 한 문장만 말씀해 주시겠습니까?",
         "continue_ack": "알겠습니다, 이어가겠습니다.",
+        # (2026-11-12 P11-A2·A3) 되묻기에 붙이는 짧은 사과 · 안내 뒤 거절에 재촉 없이 기다린다는 문장
+        "clarify_sorry": "제 질문이 분명하지 않았습니다.", "confirm_decline": "알겠습니다. 준비되시면 말씀해 주십시오. 궁금한 점이 있으면 먼저 물어보셔도 됩니다.",
     },
     "Olivia": {
         # (2026-11-11 P10-7) 첫 영역 진입 다리(고정) · (P10-1) 내용 없는 스몰톡 답을 받는 고정 1문장
@@ -210,6 +214,8 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "confirm_reask": "시작해도 괜찮으면 '네'라고 답해 주세요. 궁금한 게 있으면 먼저 물어봐도 돼요.",
         "definition_reask": "짧아도 괜찮아요. {cn_eul} 평소 어떻게 생각하는지 한 문장만 들려줄래요?",
         "continue_ack": "좋아요, 이어갈게요.",
+        # (2026-11-12 P11-A2·A3) 되묻기에 붙이는 짧은 사과 · 안내 뒤 거절에 재촉 없이 기다린다는 문장
+        "clarify_sorry": "제가 어렵게 물었네요.", "confirm_decline": "알겠어요. 준비되면 편할 때 말씀해 주세요. 궁금한 게 있으면 먼저 물어봐도 돼요.",
     },
     "Daniel": {
         # (2026-11-11 P10-7) 첫 영역 진입 다리(고정) · (P10-1) 내용 없는 스몰톡 답을 받는 고정 1문장
@@ -236,6 +242,8 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "confirm_reask": "시작해도 괜찮으시면 '네'라고 답해 주십시오. 궁금한 점이 있으면 먼저 물어보셔도 됩니다.",
         "definition_reask": "짧게라도 괜찮습니다. {cn_eul} 평소 어떻게 생각하시는지 한 문장만 들려주시겠습니까?",
         "continue_ack": "네, 이어가겠습니다.",
+        # (2026-11-12 P11-A2·A3) 되묻기에 붙이는 짧은 사과 · 안내 뒤 거절에 재촉 없이 기다린다는 문장
+        "clarify_sorry": "제 질문이 분명하지 않았습니다.", "confirm_decline": "알겠습니다. 준비되시면 말씀해 주십시오. 궁금한 점이 있으면 먼저 물어보셔도 됩니다.",
     },
     "Michael": {
         # (2026-11-11 P10-7) 첫 영역 진입 다리(고정) · (P10-1) 내용 없는 스몰톡 답을 받는 고정 1문장
@@ -262,6 +270,8 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "confirm_reask": "시작해도 괜찮으시면 '네'라고 답해 주세요. 궁금한 점이 있으면 먼저 물어보셔도 돼요.",
         "definition_reask": "짧게라도 괜찮아요. {cn_eul} 평소 어떻게 생각하시는지 한 문장만 들려주시겠어요?",
         "continue_ack": "네, 바로 이어갈게요.",
+        # (2026-11-12 P11-A2·A3) 되묻기에 붙이는 짧은 사과 · 안내 뒤 거절에 재촉 없이 기다린다는 문장
+        "clarify_sorry": "제 질문이 헷갈렸네요.", "confirm_decline": "알겠어요. 준비되시면 말씀해 주세요. 궁금한 점이 있으면 먼저 물어보셔도 돼요.",
     },
     "Lucas": {
         # (2026-11-11 P10-7) 첫 영역 진입 다리(고정) · (P10-1) 내용 없는 스몰톡 답을 받는 고정 1문장
@@ -288,6 +298,8 @@ PERSONA_LINES: dict[str, dict[str, str]] = {
         "confirm_reask": "시작해도 되면 '네'라고 답해 주십시오. 궁금한 점은 먼저 물어보셔도 됩니다.",
         "definition_reask": "짧아도 됩니다. {cn_eul} 평소 어떻게 보시는지 한 문장만요?",
         "continue_ack": "네, 이어갑니다.",
+        # (2026-11-12 P11-A2·A3) 되묻기에 붙이는 짧은 사과 · 안내 뒤 거절에 재촉 없이 기다린다는 문장
+        "clarify_sorry": "질문이 분명하지 않았습니다.", "confirm_decline": "알겠습니다. 준비되면 말씀해 주십시오. 궁금한 점은 먼저 물어보셔도 됩니다.",
     },
 }
 # 하위호환 상수(Ella 기본값) — 테스트·도구가 참조
@@ -343,6 +355,15 @@ def smalltalk_flat_receive(persona_name: str | None) -> str:
     return persona_line(persona_name, "smalltalk_flat")
 
 
+# (2026-11-12 P11-A1) 스몰톡 짧은 답이 두 턴 이어질 때(예비 되물음의 답도 짧다) 같은 고정 받기가 연달아 나가지 않게 둘째 턴은 다른 한마디로 받는다
+SMALLTALK_FLAT2: dict[str, str] = {"Ella": "네, 그렇군요.", "Jessica": "알겠습니다.", "Olivia": "그렇군요.", "Daniel": "알겠습니다.",
+                                   "Michael": "네, 그렇군요.", "Lucas": "네."}
+
+
+def smalltalk_flat_receive2(persona_name: str | None) -> str:
+    return SMALLTALK_FLAT2[persona_key(persona_name)]
+
+
 def first_chapter_bridge(chapter_name: str, persona_name: str | None = None) -> str:
     """(P10-7) 첫 영역 진입 다리 — "그럼 첫 영역인 조직관리부터 볼게요."(코치별 고정)."""
     return persona_line(persona_name, "first_bridge", cn=chapter_name)
@@ -352,8 +373,11 @@ FINISH_CHOICE_LINE = "남은 항목은 이어서 하시면 채워지고, 지금 
 
 
 def finish_choice_line(persona_name: str | None = None) -> str:
-    """(P7-3) 리더가 그만하겠다고 할 때 코치가 덧붙이는 안내 — 선택 버튼(이어서 하기 / 지금 마치기)은 프론트."""
-    return FINISH_CHOICE_LINE
+    """(P7-3) 리더가 그만하겠다고 할 때 코치가 덧붙이는 안내 — 선택 버튼(이어서 하기 / 지금 마치기)은 프론트. (P11-A5) 코치 말투별."""
+    if not persona_name:
+        return FINISH_CHOICE_LINE
+    from diag_project.services.system_lines import system_line
+    return system_line("finish_choice", persona_name)
 
 
 def chapter_end_bridge(next_topic: str, persona_name: str | None = None) -> str:
@@ -374,23 +398,59 @@ def build_diagnosis_intro_message(user_name: str = "리더님") -> str:
     return f"{user_name}, " + build_intro_anchor_section()
 
 
-def build_intro_anchor_section() -> str:
-    """진단 안내 본문 (5개 영역 + 총 시간 150분 + 형식).
-
-    하이브리드 INTRO 흐름에서 시스템이 직접 출력하는 부분.
-    LLM 이 생성하는 호응 2-3문장 뒤에 이어 붙음.
-    """
-    return (
+# (2026-11-12 P11-A5) 진단 안내 본문은 말투별로 따로 쓴다. 종전에는 해요체·합쇼체가 섞인 공용 문장 하나를 어미표로 고쳐 썼는데,
+#   그 교정이 시스템 고정 턴에서 조용히 건너뛰어(턴 핸들러의 지역 import 버그) Daniel 에게 '안내드릴게요·이루어져 있어요·시작해볼까요?' 가 나갔다.
+_INTRO_BODY: dict[str, str] = {
+    "polite": (
         "그럼 오늘 진단이 어떻게 진행되는지 간단히 안내드릴게요.\n\n"
-        "진단은 5개 영역으로 이루어져 있어요 — 조직관리, 성과관리, "
-        "사람관리, 일관리, 자기관리.\n\n"
-        "각 역량마다 약 30분 정도 소요되고 전체 150분 이상 예상됩니다. "
-        "다만, 한 번에 다 진행하면 긴 시간이 소요되니 중간에 저장하고 "
-        "시간되실 때마다 이어 참여하셔도 괜찮습니다.\n\n"
-        "본 과정은 평가가 아니라 리더십의 경험을 함께 공유하는 시간이라 "
-        "생각해주시고, 정답 걱정 없이 편하게 말씀해 주시기 바랍니다.\n\n"
+        "진단은 5개 영역으로 이루어져 있어요 — 조직관리, 성과관리, 사람관리, 일관리, 자기관리.\n\n"
+        "영역마다 30분 정도 걸리고, 전체로는 150분 이상을 예상해요. "
+        "한 번에 다 하기에는 긴 시간이라, 중간에 저장하고 시간 되실 때 이어서 참여하셔도 괜찮아요.\n\n"
+        "이 과정은 평가가 아니라 리더십 경험을 함께 나누는 시간이에요. 정답 걱정 없이 편하게 말씀해 주세요.\n\n"
         "그럼 시작해볼까요?"
-    )
+    ),
+    "formal": (
+        "그러면 오늘 진단이 어떻게 진행되는지 간단히 안내드리겠습니다.\n\n"
+        "진단은 5개 영역으로 이루어져 있습니다 — 조직관리, 성과관리, 사람관리, 일관리, 자기관리.\n\n"
+        "영역마다 30분 정도 걸리고, 전체로는 150분 이상을 예상합니다. "
+        "한 번에 다 하기에는 긴 시간이라, 중간에 저장하고 시간 되실 때 이어서 참여하셔도 괜찮습니다.\n\n"
+        "이 과정은 평가가 아니라 리더십 경험을 함께 나누는 시간입니다. 정답 걱정 없이 편하게 말씀해 주십시오.\n\n"
+        "그러면 시작해도 되겠습니까?"
+    ),
+}
+_FORMAL_COACHES = frozenset({"Jessica", "Daniel", "Lucas"})
+
+
+def line_register(persona_name: str | None) -> str:
+    """고정 문장을 고를 말투 — 합쇼체 코치(Jessica·Daniel·Lucas)는 'formal', 나머지는 'polite'."""
+    return "formal" if persona_key(persona_name) in _FORMAL_COACHES else "polite"
+
+
+def build_intro_anchor_section(persona_name: str | None = None) -> str:
+    """진단 안내 본문 (5개 영역 + 총 시간 150분 + 형식) — 코치 말투별. LLM 이 쓴 받는 문장 뒤에 시스템이 붙인다."""
+    return _INTRO_BODY[line_register(persona_name)]
+
+
+# (2026-11-12 P11-I) 같은 답이 다시 왔을 때 — 문구 3종을 돌려 쓰고(first), 세션 2회째부터는 같은 질문을 되풀이하지 않고 다른 장면을 청한다(angle, 질문 포함).
+DUPLICATE_LINES: dict[str, dict[str, list[str]]] = {
+    "polite": {"first": ["앞서 말씀하신 내용과 같네요.", "같은 답이 한 번 더 왔어요.", "방금 답은 앞의 답과 같아요."],
+               "angle": ["같은 답을 한 번 더 주셨어요. 그 일 말고 다른 장면이 있으면 그 이야기를 들려주시겠어요?",
+                         "방금 답은 앞서 주신 것과 같아요. 다른 날에 있었던 일이 떠오르면 그쪽을 들려주시겠어요?",
+                         "같은 내용이 다시 왔어요. 다른 사람과 있었던 장면이 있으면 그 이야기를 해 주시겠어요?"]},
+    "formal": {"first": ["앞서 말씀하신 내용과 같습니다.", "같은 답이 한 번 더 왔습니다.", "방금 답은 앞의 답과 같습니다."],
+               "angle": ["같은 답을 한 번 더 주셨습니다. 그 일 말고 다른 장면이 있으면 그 이야기를 들려주시겠습니까?",
+                         "방금 답은 앞서 주신 것과 같습니다. 다른 날에 있었던 일이 떠오르면 그쪽을 말씀해 주시겠습니까?",
+                         "같은 내용이 다시 왔습니다. 다른 사람과 있었던 장면이 있으면 그 이야기를 해 주시겠습니까?"]},
+}
+
+
+def duplicate_answer_line(persona_name: str | None, nth: int) -> tuple[str, bool]:
+    """세션에서 nth 번째(1부터) 같은 답 안내. (문장, 질문이 들어 있는가) — 1회째는 안내만(호출자가 직전 질문을 붙인다), 2회째부터는 각도를 바꾼 요청."""
+    pool = DUPLICATE_LINES[line_register(persona_name)]
+    n = max(1, int(nth))
+    if n == 1:
+        return pool["first"][0], False
+    return pool["angle"][(n - 2) % len(pool["angle"])], True
 
 
 def build_align_framework_section(chapter: str) -> str:

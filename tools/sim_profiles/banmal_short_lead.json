@@ -1,0 +1,26 @@
+{
+  "extends": "edu_team_lead.json",
+  "name": "반말·초단답 팀장(시뮬 리더) — 반말, 한두 문장, 스몰톡 '밥', 동의 'ㅇㅋ', 거절 '놉', 되묻기 '뭔소리야', 같은 답 1회 붙여넣기",
+  "seed": 20261112,
+  "persona": {
+    "style": "반말로 아주 짧게 말한다. 한 문장, 길어야 두 문장. 군더더기 없이 사실만 툭 던진다."
+  },
+  "speech": "반말, 구어체, 아주 짧게",
+  "max_sentences": 2,
+  "short_every": 0,
+  "onboarding": {
+    "smalltalk": "그냥 그래",
+    "smalltalk_more": "밥",
+    "role": "교육팀장. 팀원 넷.",
+    "expectation": "딱히 없어",
+    "intro_reply": "ㅇㅋ"
+  },
+  "injections": [
+    {"when": "probe", "nth": 2, "text": "뭔소리야"},
+    {"when": "probe", "nth": 5, "text": "ㅇㅋ"},
+    {"when": "probe", "nth": 9, "paste": true},
+    {"when": "probe", "nth": 13, "text": "무슨 말이야"},
+    {"when": "probe", "nth": 16, "text": "네, 맞아요"},
+    {"when": "open", "nth": 3, "text": "놉"}
+  ]
+}

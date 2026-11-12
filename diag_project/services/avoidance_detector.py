@@ -522,6 +522,11 @@ def is_invalid_input(text: str | None) -> bool:
     if not stripped:
         return True
 
+    # (2026-11-12 P11-A2) 자모로 쓴 동의·거절('ㅇㅋ'·'ㅇㅇ'·'ㄴㄴ')은 의미 없는 입력이 아니다
+    from diag_project.services.short_input import is_consent_word, is_decline_word
+    if is_consent_word(stripped) or is_decline_word(stripped):
+        return False
+
     # 한국어 자음/모음만 (ㅁㅁ, ㅋㅋ 등)
     if all(0x3131 <= ord(c) <= 0x3163 for c in stripped if not c.isspace()):
         return True

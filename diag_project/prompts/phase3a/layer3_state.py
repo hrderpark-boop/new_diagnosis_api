@@ -33,7 +33,8 @@ _NO_EXPECTATION_RE = re.compile(
 def is_consent_only(text: str | None) -> bool:
     """'네/좋아요/시작하죠' 처럼 동의·추임새만 있는 말."""
     t = (text or "").strip()
-    return bool(t) and bool(_CONSENT_ONLY_RE.match(t))
+    from diag_project.services.short_input import is_consent_word as _icw_l
+    return bool(t) and (bool(_CONSENT_ONLY_RE.match(t)) or _icw_l(t))   # (P11-A2) 'ㅇㅋ'·'콜' 도 동의만 한 말
 
 
 def leader_definition_present(text: str | None) -> bool:

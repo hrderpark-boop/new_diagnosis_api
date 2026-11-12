@@ -164,7 +164,8 @@ def is_next_chapter_consent(text: str | None) -> bool:
     if not text:
         return False
     t = text.strip()
-    if any(n in t for n in _NEXT_CONSENT_NEG):
+    from diag_project.services.short_input import is_decline_word as _idw_n
+    if any(n in t for n in _NEXT_CONSENT_NEG) or _idw_n(t):   # (P11-A2) '놉'·'ㄴㄴ'·'싫어'
         return False
     if is_user_consent(t) or _NEXT_CONSENT_OPENER.match(t):
         return True
@@ -242,6 +243,9 @@ def is_user_consent(text: str | None) -> bool:
     """
     if not text:
         return False
+    from diag_project.services.short_input import is_consent_word as _icw_u
+    if _icw_u(text):                      # (2026-11-12 P11-A2) 동의 사전 — 'ㅇㅋ'·'넵'·'콜'·'고'
+        return True
     stripped = text.strip().rstrip(".,!?~")
     consent_words = {
         "네", "예", "응", "좋아요", "괜찮아요", "그래요", "알겠어요",

@@ -192,6 +192,162 @@ def _is_anchor_turn(row: dict) -> str | None:
 # ══════════════════════════════════════════════════════════════════════════════
 # 파일 단위 분석
 # ══════════════════════════════════════════════════════════════════════════════
+# ── (2026-11-12 P11) 11/12 운영 Daniel 세션 검토 항목 ─────────────────────────────────────────────
+_POLITE_END_L = re.compile(r"(요|죠)[.?!…~\"'”’]*$")
+_FORMAL_END_L = re.compile(r"(니다|니까|십시오|시오)[.?!…~\"'”’]*$")
+_RECV_END_L = re.compile(r"(군요|네요)[.?!…~\"'”’]*$")
+
+
+def mixed_register_sentences(text: str) -> tuple[list[str], list[str]]:
+    """한 턴 안의 (해요체 문장, 합쇼체 문장). 받는 문장의 '~군요/~네요' 는 어느 쪽으로도 세지 않는다(예외 유지).
+    둘 다 비어 있지 않으면 그 턴은 말투가 섞인 턴이다. 목록 줄('· …')과 따옴표 안의 인용은 보지 않는다."""
+    from diag_project.services.output_guard import split_sentences as _ss
+    polite, formal = [], []
+    for line in (text or "").split("\n"):
+        if line.strip().startswith("·"):
+            continue
+        for s in _ss(line):
+            s = s.strip()
+            if not s:
+                continue
+            bare = re.sub(r"['‘“\"][^'’”\"\n]{0,80}['’”\"]", "", s).strip()
+            if _RECV_END_L.search(bare) and not bare.endswith("?"):
+                continue
+            if re.search(r"(는지요|은지요|인지요|신지요|을지요|지요)[.?!…~]*$", bare):
+                continue                      # '~는지요?' 는 합쇼체 코치(Daniel)에게 허용된 질문 변주(P9) — 어느 쪽으로도 세지 않는다
+            if _FORMAL_END_L.search(bare):
+                formal.append(s)
+            elif _POLITE_END_L.search(bare):
+                polite.append(s)
+    return polite, formal
+
+
+def p11_analyze(data: dict) -> dict:
+    """P11 열 — 말투 혼용 턴 · 받는 문장 금지 꼴 · 예고 문장 · 리더가 하지 않은 말 귀속 · 때 이른 감사 · 질문 완결성 · 받기 2문장 이상 ·
+    받기 겹침 분포 · 슬롯 끝맺음 반복·1인칭 · 여는 문장 틀 분포 · 같은 답 안내 반복 · 다시 묻기 턴."""
+    from statistics import median
+    from diag_project.services.output_guard import is_question as _isq, split_sentences as _ss
+    from diag_project.services.receive_check import receive_statements as _rst
+    from diag_project.services.slot_render import _ending_key, has_leader_first_person
+    from diag_project.services.turn_checks import (
+        is_announcement, is_thanks_sentence, question_issues, receive_ban_reason, receive_overlap, unsaid_spans,
+    )
+    rows = data.get("rows") or []
+    out: dict = {"mixed_turns": [], "recv_ban": [], "announce": [], "unsaid": [], "thanks": [], "q_issues": [], "recv_multi": [],
+                 "overlap": [], "slot_endings": [], "slot_first_person": [], "opener_frames": [], "dup_lines": [], "reask": [],
+                 "guard": {"recv_ban": 0, "recv_trim": 0, "q_default": 0, "q_regen": 0, "q_repaired": 0, "announce_cut": 0, "thanks_cut": 0, "unsaid_attr": 0}}
+    leader_all: list[str] = []
+    last_user = ""
+    names = [v.get("name") for v in COMPETENCY_FRAMEWORK.values() if v.get("name")] + ["네"]
+    for row in rows:
+        content = row.get("content") or ""
+        if row.get("role") == "user":
+            leader_all.append(content); last_user = content
+            continue
+        g = _guard(row)
+        instr = row.get("instr") or g.get("instr") or ""
+        t = row.get("t")
+        pol, frm = mixed_register_sentences(content)
+        if pol and frm:
+            out["mixed_turns"].append({"t": t, "instr": instr, "polite": pol[0][:60], "formal": frm[0][:60]})
+        for k in ("recv_ban", "unsaid_attr"):
+            if g.get(k):
+                out["guard"][k] += 1
+        for k in ("recv_trim", "announce_cut", "thanks_cut"):
+            if g.get(k):
+                out["guard"][k] += 1
+        qc = str(g.get("q_complete") or "")
+        if qc.startswith("default"):
+            out["guard"]["q_default"] += 1
+        elif qc == "regen":
+            out["guard"]["q_regen"] += 1
+        elif qc == "repaired":
+            out["guard"]["q_repaired"] += 1
+        if g.get("opener_frame") is not None and str(g.get("opener") or "").startswith("llm"):
+            out["opener_frames"].append(int(g["opener_frame"]))
+        if g.get("reask"):
+            out["reask"].append({"t": t, "kind": g.get("reask"), "user": last_user[:30], "coach": content[:90]})
+        if instr == "INPUT_REPEATED":
+            out["dup_lines"].append(content[:60])
+        if g.get("slot_text"):
+            st = str(g["slot_text"])
+            out["slot_endings"].append(_ending_key(st))
+            if has_leader_first_person(st):
+                out["slot_first_person"].append({"t": t, "sentence": st[:80]})
+        if instr not in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP", "EPISODE_OPEN", "SWEEP_ANCHOR"):
+            continue
+        fixed = {re.sub(r"\s+", "", str(g.get("slot_text") or ""))}
+        sents = [x.strip() for x in _ss(content) if x.strip()]
+        has_real_q = any(_isq(x) and not is_announcement(x) for x in sents)
+        closing = bool(g.get("closed"))
+        for s in sents:
+            if re.sub(r"\s+", "", s) in fixed:
+                continue
+            r = receive_ban_reason(s)
+            if r:
+                out["recv_ban"].append({"t": t, "instr": instr, "why": r, "sentence": s[:80]})
+            if has_real_q and is_announcement(s) and instr in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
+                out["announce"].append({"t": t, "instr": instr, "sentence": s[:80]})
+            if is_thanks_sentence(s) and not closing:
+                out["thanks"].append({"t": t, "instr": instr, "sentence": s[:80]})
+            if instr in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
+                bad = unsaid_spans(s, leader_all, names)
+                if bad:
+                    out["unsaid"].append({"t": t, "instr": instr, "words": bad[:3], "sentence": s[:80]})
+        if instr in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP") and not g.get("reask"):
+            qs = [x for x in sents if _isq(x)]
+            if qs:
+                iss = question_issues(qs[-1], last_user)
+                if iss and not str(g.get("q_complete") or "").startswith("default"):
+                    out["q_issues"].append({"t": t, "instr": instr, "why": iss, "sentence": qs[-1][:80]})
+            recv = [x for x in _rst(content) if re.sub(r"\s+", "", x) not in fixed]
+            if len(recv) > 1:
+                out["recv_multi"].append({"t": t, "n": len(recv), "sentence": " ".join(recv)[:100]})
+            if recv:
+                a, b, n = receive_overlap(recv[0], last_user)
+                out["overlap"].append({"t": t, "from_user": a, "covered": b, "n": n, "sentence": recv[0][:80]})
+    ov = out["overlap"]
+    out["overlap_stats"] = ({"n": len(ov), "from_user_p50": round(median(x["from_user"] for x in ov), 2), "from_user_max": max(x["from_user"] for x in ov),
+                             "covered_p50": round(median(x["covered"] for x in ov), 2), "covered_p90": sorted(x["covered"] for x in ov)[int(len(ov) * 0.9) - 1 if len(ov) >= 2 else 0],
+                             "covered_max": max(x["covered"] for x in ov)} if ov else {})
+    ends = Counter(e for e in out["slot_endings"] if e)
+    out["slot_ending_repeat"] = {k: v for k, v in ends.items() if v > 1}
+    fr = Counter(out["opener_frames"])
+    out["opener_frame_counts"] = dict(sorted(fr.items()))
+    out["opener_frame_over"] = {k: v for k, v in fr.items() if v > 2}
+    out["opener_frame_adjacent"] = sum(1 for a, b in zip(out["opener_frames"], out["opener_frames"][1:]) if a == b)
+    dl = Counter(out["dup_lines"])
+    out["dup_line_repeat"] = {k: v for k, v in dl.items() if v > 1}
+    return out
+
+
+def render_p11(coach_name: str, p: dict) -> list[str]:
+    L: list[str] = []
+    g = p["guard"]
+    L.append(f"**P11** 말투 혼용 턴 {len(p['mixed_turns'])} · 받는 문장 금지 꼴 {len(p['recv_ban'])} · 예고 문장 {len(p['announce'])} · 하지 않은 말 귀속 {len(p['unsaid'])} · "
+             f"때 이른 감사 {len(p['thanks'])} · 질문 완결성 위반 {len(p['q_issues'])} · 받기 2문장 이상 {len(p['recv_multi'])} · 슬롯 끝맺음 반복 {p['slot_ending_repeat'] or 0} · "
+             f"슬롯 1인칭 {len(p['slot_first_person'])} · 여는 문장 틀 {p['opener_frame_counts']}(3회 이상 {p['opener_frame_over'] or 0}, 연속 같은 틀 {p['opener_frame_adjacent']}) · "
+             f"같은 답 안내 반복 {p['dup_line_repeat'] or 0} · 다시 묻기 턴 {len(p['reask'])}")
+    L.append(f"- 처리 기록: 금지 꼴 삭제 {g['recv_ban']}턴 · 받기 줄임 {g['recv_trim']}턴 · 질문 수선 {g['q_repaired']} / 재생성 {g['q_regen']} / 기본 질문 {g['q_default']} · "
+             f"예고 삭제 {g['announce_cut']}턴 · 감사 삭제 {g['thanks_cut']}턴 · 귀속 삭제 {g['unsaid_attr']}턴")
+    if p.get("overlap_stats"):
+        s = p["overlap_stats"]
+        L.append(f"- 받기 겹침({s['n']}턴): 받기 어절 중 리더 답에서 온 비율 중앙값 {s['from_user_p50']}·최대 {s['from_user_max']} / "
+                 f"리더 답 어절 중 받기에 다시 나온 비율 중앙값 {s['covered_p50']}·90% {s['covered_p90']}·최대 {s['covered_max']}")
+    for key, title in (("mixed_turns", "말투 혼용"), ("recv_ban", "받는 문장 금지 꼴"), ("announce", "예고 문장"), ("unsaid", "하지 않은 말 귀속"),
+                       ("thanks", "때 이른 감사"), ("q_issues", "질문 완결성"), ("recv_multi", "받기 2문장 이상"), ("slot_first_person", "슬롯 1인칭")):
+        for it in p[key][:8]:
+            extra = it.get("why") or it.get("words") or ""
+            body = it.get("sentence") or f"해요체 '{it.get('polite')}' / 합쇼체 '{it.get('formal')}'"
+            L.append(f"- [P11 {title}] {coach_name} t{it['t']} {it.get('instr', '')} {extra}: {body}")
+    for it in p["reask"][:8]:
+        L.append(f"- [P11 다시 묻기 {it['kind']}] {coach_name} t{it['t']}: 리더 \"{it['user']}\" → 코치 \"{it['coach']}\"")
+    top = sorted(p["overlap"], key=lambda x: -x["covered"])[:3]
+    for it in top:
+        L.append(f"- [P11 받기 겹침 상위] {coach_name} t{it['t']} 되풀이 {it['covered']} · 받기 기준 {it['from_user']} · 어절 {it['n']}: {it['sentence']}")
+    return L
+
+
 def analyze(data: dict, lex: dict, label: str = "") -> dict:
     rows = data.get("rows") or []
     coach_key = str(data.get("coach") or "")
@@ -573,6 +729,7 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
     _seen_anchor: Counter = Counter(a["norm"] for a in res["anchors"])
     res["anchor_reuse"] = sum(n - 1 for n in _seen_anchor.values() if n > 1)
     res["endings"] = dict(endings.most_common())
+    res["p11"] = p11_analyze(data)
     return res
 
 
@@ -713,6 +870,9 @@ def render_markdown(results: list[dict], cross: dict, lex: dict) -> str:
         for x in r["repeat3"][:8]:
             L.append(f"- 고정문장 {x['n']}회: {x['sentence']}")
         L.append("")
+        if r.get("p11"):
+            L.extend(render_p11(r["coach_name"], r["p11"]))
+            L.append("")
         L.append("**어미 분포** " + (", ".join(f"{k} {v}" for k, v in r["endings"].items()) or "질문 없음"))
         L.append("")
     L.append("---")
