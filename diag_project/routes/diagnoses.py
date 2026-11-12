@@ -1017,7 +1017,10 @@ async def _submit_message_phase3a(
             #   '이 항목은 여기까지 듣고 넘어간다' — 미확인(unconfirmed) 기록 + 타겟 전진(turns 상한). 전진 턴의 본문은 8-j 가 skip_bridge 로 쓴다.
             _ep_an = _bei.current_episode(_store_a, chapter) if chapter else None
             _tgt_an = ((_ep_an or {}).get("opener_sub") or "-") if chapter else "-"
-            _ac_all = dict(_store_a.get("anomaly_counts") or {}); _ac_key = f"{chapter}|{_tgt_an}|{_anomaly.kind}"
+            _ac_all = dict(_store_a.get("anomaly_counts") or {})
+            # (2026-11-12 P11e-1) 같은 답(직전 답 반복·앞 답 중복)은 한 사례에서 종류를 합쳐 센다 — 안내는 한 번, 두 번째에는 직전 질문을 다시 붙이지 않고 그 사례를 닫는다
+            _ac_kind = "repeat" if _anomaly.kind in ("repeat_prev", "repeat_any") else _anomaly.kind
+            _ac_key = f"{chapter}|{_tgt_an}|{_ac_kind}"
             _ac_n = int(_ac_all.get(_ac_key, 0) or 0) + 1
             if _anomaly.kind in ("repeat_any", "ack_reask", "clarify"):
                 _ac_all[_ac_key] = _ac_n; _store_a["anomaly_counts"] = _ac_all
@@ -1030,7 +1033,17 @@ async def _submit_message_phase3a(
                 session.self_assessment_data = _store_a
                 from sqlalchemy.orm.attributes import flag_modified as _fm_ac2
                 _fm_ac2(session, "self_assessment_data")
-            _skip_an = _anomaly.kind in ("repeat_any", "ack_reask", "repeat_prev", "clarify") and _ac_n >= 2 and chapter and _tgt_an != "-"
+            # (P11e-1) 같은 질문 2회 상한에 안내 턴이 다시 붙이는 질문도 넣는다 — 그 질문이 이 영역에서 이미 두 번 나갔으면 안내로 한 번 더 붙이지 않고 사례를 닫는 길로
+            _q_seen_an = 0
+            if _anomaly.kind in ("repeat_prev", "repeat_any") and _q_a and chapter:
+                from diag_project.services.turn_checks import same_question as _sq_an
+                for _m_an in history_messages:
+                    if (_m_an.role == MessageRole.MODEL or _m_an.role == "model") and _m_an.chapter == chapter:
+                        _lq_an = [x.strip() for x in split_sentences(_m_an.content or "") if x.strip() and is_question_sentence(x)]
+                        if _lq_an and _sq_an(_lq_an[-1], _q_a):
+                            _q_seen_an += 1
+            _skip_an = (_anomaly.kind in ("repeat_any", "ack_reask", "repeat_prev", "clarify") and (_ac_n >= 2 or _q_seen_an >= 2)
+                        and chapter and _tgt_an != "-")
             _in_case_an = bool(chapter and _ep_an is not None and _ep_an.get("status") == "open" and _tgt_an != "-")
             if _skip_an:
                 state["bei_anomaly_repeat"] = _anomaly.kind
@@ -1287,6 +1300,43 @@ async def _submit_message_phase3a(
                 _opening_turn = int(_ep.get("leader_turns") or 0) <= 1 + int(_ep.get("retry") or 0)
                 _no_incident = (_jd.get("incident") is False) and _opening_turn and not _bei.filled_slots(_ep)
                 _no_case = bool(_jd.get("no_case")) or _no_incident or _bei.is_no_case_text(_bei_user_text) or bool(state.get("bei_anomaly_repeat"))
+                # (2026-11-12 P11e-2) 여는 답이 이번 영역에서 이미 닫힌 사례와 같은 사건이면 새 사례·보완 사례로 올리지 않는다(사례 없음과 같은 길로 간다).
+                #   그 답에 새로 나온 사실은 원래 사례의 근거로만 덧붙이고(addenda), 덧붙인 칸과 인용을 그 사례에 따로 적는다.
+                if _opening_turn and not _no_case:
+                    from diag_project.services.turn_checks import is_new_fact as _newfact_r, same_incident as _same_inc
+                    _all_eps_r = _bei.episodes(_store, chapter)
+                    _closed_r: dict = {}
+                    for _i_r, _e_r in enumerate(_all_eps_r):
+                        if _e_r.get("status") not in ("done", "turns", "budget", "stalled", "reserve", "switched", "sweep_done"):
+                            continue
+                        _a_r = int(_e_r.get("opened_at") or 0)
+                        _b_r = next((int(x.get("opened_at") or 0) for x in _all_eps_r[_i_r + 1:] if x.get("opened_at") is not None), len(_ch_msgs_b))
+                        _tag_r = _e_r.get("idx") if _e_r.get("kind", "episode") == "episode" else f"sweep{_e_r.get('idx')}"
+                        _closed_r[_tag_r] = " ".join((m.content or "") for m in _ch_msgs_b[_a_r:_b_r] if not (m.role == MessageRole.MODEL or m.role == "model"))
+                    _rep_tag = _same_inc(_bei_user_text, _closed_r)
+                    if _rep_tag is not None:
+                        _orig_r = next((e for e in _all_eps_r if (e.get("idx") if e.get("kind", "episode") == "episode" else f"sweep{e.get('idx')}") == _rep_tag), None)
+                        _added_r = []
+                        if _orig_r is not None:
+                            _orig_r = dict(_orig_r); _osl_r = {k: dict(v) for k, v in (_orig_r.get("slots") or {}).items()}
+                            for _k_r in _bei.SLOT_KEYS:
+                                _j_r = ((_jd.get("slots") or {}).get(_k_r) or {})
+                                _q_r = str(_j_r.get("quote") or "").strip()[:160]
+                                if str(_j_r.get("status") or "").lower() != "filled" or not _q_r or not _bei.quote_in_text(_q_r, _bei_user_text):
+                                    continue
+                                if not _newfact_r(_q_r, _closed_r.get(_rep_tag) or ""):
+                                    continue                         # 원래 사례에서 이미 한 말 — 새 사실이 아니다
+                                _added_r.append({"slot": _k_r, "quote": _q_r, "from": f"{_ep.get('kind', 'episode')}{_ep.get('idx')}", "turn": _turn_index_b})
+                                if (_osl_r.get(_k_r) or {}).get("status") != "filled":
+                                    _osl_r[_k_r] = {"status": "filled", "quote": _q_r, "added": True}
+                            if _added_r:
+                                _orig_r["slots"] = _osl_r
+                                _orig_r["addenda"] = list(_orig_r.get("addenda") or []) + _added_r
+                                _store = _bei.update_episode(_store, chapter, _orig_r)
+                        _ep["repeat_of"] = _rep_tag
+                        _no_case = True
+                        _tm["repeat_case"] = {"of": _rep_tag, "added": [x["slot"] for x in _added_r]}
+                        state["bei_repeat_case"] = True
                 state["bei_last_no_case"] = _no_case
                 _tm["incident"] = _jd.get("incident")
                 if not (_no_case and _opening_turn):
@@ -1298,7 +1348,12 @@ async def _submit_message_phase3a(
                 _tm["slot_judge"] = "stub" if _jd.get("stub") else ("error" if _jd.get("error") else "ok")
                 _tm["slots_filled"] = len(_bei.filled_slots(_ep))
                 _tm["slot_ctx"] = ((_ep.get("slots") or {}).get("context") or {}).get("status")      # (P11d-3) 상황 칸 판정 상태 — 시점·인물을 말했는데 안 찬 턴을 찾는 기록
-                if _ep.get("kind") == "sweep":
+                if state.get("bei_anomaly_repeat") in ("repeat_prev", "repeat_any"):
+                    # (2026-11-12 P11e-1) 같은 답이 또 들어왔다(안내는 이미 한 번 했다) — 직전 질문을 다시 붙이지 않고 이 사례를 닫고 다음 칸으로
+                    _tm["dup_close"] = 1
+                    await _close_and_map(_ep, "no_case" if not _bei.filled_slots(_ep) else ("sweep_done" if _ep.get("kind") == "sweep" else "stalled"))
+                    _next_after_close()
+                elif _ep.get("kind") == "sweep":
                     # SWEEP 항목: 앵커 답 1턴 → (허용되면) 후속 1턴 → 매핑 → 다음
                     if _no_case and int(_ep.get("leader_turns") or 0) <= 1:
                         await _close_and_map(_ep, "no_case")
@@ -1376,6 +1431,8 @@ async def _submit_message_phase3a(
                 _signal = "직전 답이 길고 구체적 — 질문 앞 평서문은 쓰더라도 1문장, 가장 또렷한 장면 하나의 낱말 한두 개만 넣는다(답 전체를 다시 읊지 않는다)"
             if state.get("bei_switched"):
                 _signal = (_signal + " / " if _signal else "") + "리더가 다른 사례로 넘어간 듯하다 — 한 번은 따라가되 질문은 지금 사례로 돌아온다"
+            if state.get("bei_repeat_case") and instruction_used == "NO_CASE_REFRAME":
+                _signal = "리더가 앞에서 이미 들은 이야기를 다시 말했다 — 그 이야기는 다시 묻지 않는다. 그것 말고 다른 일이 있었는지를 묻는다"
             if state.get("bei_anomaly_reask"):
                 _signal = "리더가 짧게 수긍만 했고 직전 질문은 형식이 어긋나 되묻지 않는다 — 질문만 짧게, 같은 것을 장면 하나로 좁힌 새 질문 하나"
         _weak_hint = None
@@ -1618,7 +1675,7 @@ async def _submit_message_phase3a(
             _q_rq, _mode_rq = await _rr_rq(llm, kind=_reask_kind, prev_question=_orig_rq, leader_texts=_lead_rq, persona_name=_pn_rq)
             if not _q_rq:
                 _un_rq = (_bei.unfilled_slots(_bei_ep) or ["reflection"])
-                _topic_rq = ((_bei_ep.get("slots") or {}).get("context") or {}).get("quote") or (_lead_rq[-1] if _lead_rq else "")
+                _topic_rq = ((_bei_ep.get("slots") or {}).get("context") or {}).get("quote") or ""
                 _formal_rq = _lreg_rq(_pn_rq) == "formal"
                 _cands_rq = [_dsq_rq(_un_rq[0], formal=_formal_rq, topic_text=_topic_rq), _dsq_rq(_un_rq[0], formal=_formal_rq, topic_text=None)] \
                     + [_dsq_rq(sl, formal=_formal_rq, topic_text=_topic_rq) for sl in _un_rq[1:]]
@@ -2918,7 +2975,7 @@ async def _submit_message_phase3a(
                         logger.error("질문 완결성 재생성 실패: %s", _e_c)
                 if not _done_c:
                     _slot_c = (_bei.unfilled_slots(_bei_ep) or ["reflection"])[0] if _bei_ep else "action"
-                    _topic_c = (((_bei_ep or {}).get("slots") or {}).get("context") or {}).get("quote") or _llm_user_text
+                    _topic_c = (((_bei_ep or {}).get("slots") or {}).get("context") or {}).get("quote") or ""      # (P11e-6) 머리 낱말은 사례의 상황 인용에서만 — 없으면 머리 없이
                     _dq_c = _dsq_c(_slot_c, formal=(_lreg_c((state.get('coach_persona') or {}).get('name')) == "formal"), topic_text=_topic_c)
                     clean_reply = clean_reply.replace(_new_q_c, _dq_c, 1)
                     _tm["q_complete"] = f"default:{_slot_c}"
@@ -2931,7 +2988,7 @@ async def _submit_message_phase3a(
             and _align_ctx is None and not _reask_kind and not needs_user_decision):
         from diag_project.services.receive_check import is_quote_receive as _iqr_5
         from diag_project.services.turn_checks import (
-            LEADER_PREFIX_SESSION_MAX as _lp_max, RECEIVE_REPEAT_MAX, RECEIVE_REPEAT_MIN_CHUNKS, leader_prefix_wrong_subject as _lpws_5, receive_overlap as _rov_5,
+            LEADER_PREFIX_SESSION_MAX as _lp_max, RECEIVE_MAX_EOJEOL, RECEIVE_REPEAT_MAX, RECEIVE_REPEAT_MIN_CHUNKS, leader_prefix_wrong_subject as _lpws_5, receive_overlap as _rov_5,
             starts_with_leader_prefix as _swlp_5, strip_leader_prefix as _slp_5,
         )
         _fx_5 = {re.sub(r"\s+", "", x) for x in (split_sentences(_bei_anchor_text or "") + [str(_tm.get("slot_text") or "")]) if x}
@@ -2943,6 +3000,11 @@ async def _submit_message_phase3a(
                 _drop_5 = "repeat"
             elif _is_probe and _iqr_5(_recv_5) and _qr_variant >= QUOTE_RECEIVE_SESSION_MAX:
                 _drop_5 = "quote_cap"
+            elif _is_probe and len(_recv_5.split()) > RECEIVE_MAX_EOJEOL:
+                _drop_5 = "long"                 # (2026-11-12 P11e-5) 12어절을 넘는 문장은 삭제(재생성 없음) — 되풀이 비율 60% 아래로 통과하던 긴 문장
+            from diag_project.services.slot_render import has_leader_first_person as _hlfp_5
+            if _hlfp_5(re.sub(r"['‘“\"][^'’”\"\n]{0,80}['’”\"]", "", _recv_5)):
+                _drop_5 = "first_person"         # (P11e-5) 코치 문장에 리더의 1인칭('저 혼자', '제가', '내가') — 따옴표 안의 인용은 보지 않는다
             if _drop_5 and any(is_question_sentence(x) for x in split_sentences(clean_reply)):
                 clean_reply = re.sub(r"[ \t]{2,}", " ", clean_reply.replace(_recv_5, "", 1)).strip()
                 _tm["recv_cap"] = [_drop_5, _ov_5[1], _ov_5[2]]
@@ -3311,7 +3373,7 @@ async def _submit_message_phase3a(
                     _tm["unsaid_attr"] = _hits_d[:4]
                     if _lost_d and _is_probe:
                         _slot_d = (_bei.unfilled_slots(_bei_ep) or ["reflection"])[0] if _bei_ep else "action"
-                        clean_reply = f"{clean_reply} {_dsq_d(_slot_d, formal=(_lreg_d((state.get('coach_persona') or {}).get('name')) == 'formal'), topic_text=_llm_user_text)}".strip()
+                        clean_reply = f"{clean_reply} {_dsq_d(_slot_d, formal=(_lreg_d((state.get('coach_persona') or {}).get('name')) == 'formal'), topic_text=((((_bei_ep or {}).get('slots') or {}).get('context') or {}).get('quote') or ''))}".strip()
                         _tm["q_complete"] = f"default:{_slot_d}(attr)"
                     logger.info("🔒 리더가 하지 않은 말 귀속 삭제 %s", _hits_d)
             if _is_probe:
@@ -3371,9 +3433,18 @@ async def _submit_message_phase3a(
         _formal_q = _lreg_q((state.get('coach_persona') or {}).get('name')) == "formal"
         _qs_q = [x.strip() for x in split_sentences(clean_reply) if x.strip() and is_question_sentence(x)]
         _un_q = (_bei.unfilled_slots(_bei_ep) or ["reflection"]) if _bei_ep else ["action"]
-        _topic_q = (((_bei_ep or {}).get("slots") or {}).get("context") or {}).get("quote") or _llm_user_text
+        _topic_q = (((_bei_ep or {}).get("slots") or {}).get("context") or {}).get("quote") or ""
         _tgt_q = current_target_sub or (_bei_ep or {}).get("opener_sub")      # 재질문 턴에는 여는 하위역량이 사례에만 적혀 있다
-        if instruction_used == "NO_CASE_REFRAME" and _qs_q and not _rqo_q(_qs_q[-1]) and _tgt_q:
+        _drag_q = None
+        if instruction_used == "NO_CASE_REFRAME" and _qs_q:
+            # (2026-11-12 P11e-1) 재질문이 앞에서 닫힌 사례를 끌어오면('교육 체계 개편처럼 …') 같은 주제의 사전 질문으로 바꾼다
+            from diag_project.services.turn_checks import mentions_closed_case as _mcc_q
+            _ctx_q = [((e.get("slots") or {}).get("context") or {}).get("quote") or "" for e in _bei.episodes(session.self_assessment_data or {}, chapter)
+                      if e.get("status") not in ("open",)]
+            _drag_q = _mcc_q(" ".join(_qs_q), [x for x in _ctx_q if x])
+            if _drag_q:
+                _tm["reframe_drag"] = _drag_q
+        if instruction_used == "NO_CASE_REFRAME" and _qs_q and (_drag_q or not _rqo_q(_qs_q[-1])) and _tgt_q:
             _alt_q = _anchor_for_sub(_tgt_q, alt=True)
             if _alt_q:
                 clean_reply = clean_reply.replace(_qs_q[-1], _alt_q, 1)
@@ -3739,6 +3810,8 @@ async def _submit_message_phase3a(
             "lead_prefix": _tm.get("lead_prefix"), "recv_cap": _tm.get("recv_cap"), "q_clause": _tm.get("q_clause"),
             "reask_unsaid": _tm.get("reask_unsaid"), "sweep_promote": _tm.get("sweep_promote"), "pause_block": _tm.get("pause_block"),
             "lean_start": int(_tm.get("lean_start") or 0), "opener_restored": int(_tm.get("opener_restored") or 0), "q_added": _tm.get("q_added"), "slot_ctx": _tm.get("slot_ctx"),
+            # (2026-11-12 P11e) repeat_case 이미 닫힌 사례를 다시 말한 답(원래 사례·덧붙인 칸) · dup_close 같은 답 두 번째에 사례 닫음 · reframe_drag 재질문이 끌어온 닫힌 사례의 낱말
+            "repeat_case": _tm.get("repeat_case"), "dup_close": int(_tm.get("dup_close") or 0), "reframe_drag": _tm.get("reframe_drag"),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

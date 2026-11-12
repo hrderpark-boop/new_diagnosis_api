@@ -530,7 +530,7 @@ async def test_p11d_1_reask_is_one_dedicated_call(monkeypatch):
     assert (await RR.render_reask(llm, kind="contentless", prev_question=prev, leader_texts=lead, persona_name="Daniel"))[1] == "miss:no_question"
     llm = _LLM("파일럿 뒤에 가장 먼저 바뀐 한 가지는 뭐였어요?")                        # 합쇼체 코치의 어미로
     q, mode = await RR.render_reask(llm, kind="contentless", prev_question=prev, leader_texts=lead, persona_name="Daniel")
-    assert mode == "llm" and q.endswith("습니까?") and "한 가지로 좁혀" in llm.prompt
+    assert mode == "llm" and q.endswith("습니까?") and "가장 답하기 쉬운 부분만" in llm.prompt and "한 가지" not in llm.prompt   # (P11e-6) 지시문 낱말 교체
     assert RR.same_text("그 뒤 무엇이 달라졌습니까?", "그 뒤  무엇이 달라졌습니까 ?") and not RR.same_text("a?", "")
     src = inspect.getsource(D._submit_message_phase3a)
     assert "elif _reask_kind and chapter and _bei_ep is not None:" in src and "_rr_rq(llm, kind=_reask_kind" in src      # 본 호출 대신 전용 호출
@@ -552,7 +552,7 @@ def test_p11d_2_3_4_deletions_prompts_and_fixed_lines():
     assert 'if why == "length" and kind == "observation":' in inspect.getsource(SR.render_slot)
     # 3. 프롬프트 — 행위자·이미 말한 때와 사람·요약의 주어
     assert "누가 한 일인지를 바꾸지 않는다" in TURN_FORMAT_RULES and "이미 말한 때·사람·일은 다시 묻지 않는다" in TURN_FORMAT_RULES
-    assert "그 사람의 이름을 주어로 쓴다" in inspect.getsource(CR.render_close_summary)
+    assert "그 사람의 이름을 주어로 쓴다" not in inspect.getsource(CR.render_close_summary)      # (P11e-4) 되돌림 — 주어는 언제나 리더님
     ep = {"idx": 1, "leader_turns": 1, "slots": {**{k: {"status": "empty", "quote": ""} for k in ("action", "reaction", "result", "criterion", "reflection")},
                                                 "context": {"status": "partial", "quote": "작년 12월에 이기획 평가가"}}}
     card = build_episode_card(instruction="EPISODE_PROBE", chapter="performance_management", ep=ep, bei_turns=1, budget=18)
@@ -567,3 +567,85 @@ def test_p11d_2_3_4_deletions_prompts_and_fixed_lines():
     assert fixed[0] == "이번 질문은 앞으로 몇 년을 내다보는 판단에 관한 것입니다. 최근에 내년 이후를 보고 내리신 결정이 있으셨습니까?" and fixed[2] == []
     for w in ("사례의 결", "분명하게 들립니다", "분명해졌습니다"):
         assert w in BANNED_STATE_LEAK
+
+
+# ───────────────────────── P11e (2026-11-12) 사례 없음 경로 · 닫힌 사례 다시 말하기 · 요약 주어 · 받는 문장 길이 ─────────────────────────
+
+def test_p11e_1_decline_after_reframe_and_dragged_case():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import input_anomaly as IA
+    from diag_project.services.bei_engine import is_no_case_text
+    from diag_project.services.short_input import is_decline_word
+    from diag_project.services.turn_checks import mentions_closed_case
+    # 재질문 뒤의 거절은 '없다'는 답이다 — 내용 없는 답(다시 묻기)으로 읽지 않는다
+    for t in ("없어.", "없어요", "없습니다.", "놉", "딱히", "별로", "글쎄요"):
+        assert is_decline_word(t), t
+        a = IA.detect(user_text=t, prev_user_text="그런 일은 드물어요.", earlier_user_texts=[], prev_coach_text="요즘 주간 점검 때 순서를 바꿔 본 적이 있었습니까?",
+                      prev_instruction="NO_CASE_REFRAME", event_texts=[], pause_pending=False, awaiting_choice=False, definition_reasked=False)
+        assert a is None or a.kind != "ack_reask", (t, a)
+    assert is_no_case_text("없어.") and is_no_case_text("없습니다")
+    assert not is_decline_word("창고에 재고가 없어서 발주를 다시 냈어요.")
+    # 재질문이 닫힌 사례를 끌어오면 걸린다 — 상황 인용의 낱말 3개 이상, 또는 '…처럼' 과 함께 2개 이상
+    ctx = ["재작년 가을에 물류센터 이전 일정이 석 달 당겨졌다는 통보를 받았을 때였어요"]
+    assert mentions_closed_case("물류센터 이전 일정처럼 급하게 바뀐 일을 두고 누군가와 이야기한 적이 있습니까?", ctx)
+    assert mentions_closed_case("이전 통보 때처럼 갑자기 정해진 일이 또 있었습니까?", ctx)
+    assert mentions_closed_case("요즘 아침 점검 자리에서 순서를 바꿔 보자고 말한 적이 있습니까?", ctx) is None
+    assert mentions_closed_case("평소 일정이 밀릴 때 누구와 먼저 상의하십니까?", ctx) is None
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert '_tm["reframe_drag"] = _drag_q' in src and "(_drag_q or not _rqo_q(_qs_q[-1]))" in src
+    # 같은 답: 종류를 합쳐 세고, 두 번째(또는 그 질문이 이미 두 번 나갔으면)에는 사례를 닫는다
+    assert '_ac_kind = "repeat" if _anomaly.kind in ("repeat_prev", "repeat_any")' in src and "_q_seen_an >= 2" in src
+    assert '_tm["dup_close"] = 1' in src
+
+
+def test_p11e_2_same_incident_is_not_a_new_case():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services.turn_checks import is_new_fact, same_incident
+    closed = {1: "재작년 가을에 물류센터 이전 일정이 석 달 당겨졌다는 통보를 받았어요. 저는 반장 세 명을 먼저 불러 인력 배치표를 다시 짰습니다. "
+                 "그 뒤로 출고 지연이 하루도 없었습니다.", "sweep1": "분기마다 협력사 단가표를 직접 다시 봅니다."}
+    assert same_incident("아까 말씀드린 그 이전 건에서요, 반장 세 명을 불러 배치표를 다시 짰고 야간조 수당도 제가 올리자고 했습니다.", closed) == 1
+    assert same_incident("재작년 가을 물류센터 이전 일정이 석 달 당겨졌을 때 반장 세 명을 먼저 불러 인력 배치표를 다시 짰어요.", closed) == 1
+    assert same_incident("지난달에 신규 거래처 반품이 몰려서 검수 인원을 하루 늘렸습니다.", closed) is None
+    assert same_incident("그냥 그랬습니다.", closed) is None
+    assert is_new_fact("야간조 수당도 제가 올리자고 했습니다", closed[1]) and not is_new_fact("반장 세 명을 먼저 불러 인력 배치표를 다시 짰습니다", closed[1])
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert '_ep["repeat_of"] = _rep_tag' in src and '_orig_r["addenda"]' in src and '"repeat_case": _tm.get("repeat_case")' in src
+
+
+def test_p11e_3_4_no_judging_the_answer_and_summary_subject():
+    import inspect
+    from diag_project.prompts.phase3a.episode_card import TURN_FORMAT_RULES
+    from diag_project.services import close_render as CR
+    from diag_project.services.turn_checks import receive_ban_reason
+    assert "그렇다는 말을 하지 않는다" in TURN_FORMAT_RULES
+    for t in ("그 말씀만으로는 그날 모습이 잘 그려지지 않습니다.", "답이 한 줄로만 남아 있는 것이 조금 걸립니다."):
+        assert receive_ban_reason(t) == "judges_answer", t
+    assert receive_ban_reason("납품 날짜를 사흘 앞당기셨군요.") is None
+    out, n = CR.drop_non_leader_subject("상무님은 납품 날짜를 사흘 앞당기라고 하셨습니다. 리더님은 검수 순서를 바꾸셨습니다. 한 대리 님이 야간 검수를 맡았습니다.")
+    assert (out, n) == ("리더님은 검수 순서를 바꾸셨습니다.", 2)
+    assert CR.drop_non_leader_subject("리더님은 한 대리 님께 검수표를 넘기셨습니다. 그 결과 출고가 하루 빨라졌습니다.")[1] == 0      # 받는 사람으로 나온 이름은 주어가 아니다
+    src = inspect.getsource(CR.render_close_summary)
+    assert "문장의 주어는 언제나" in src and "drop_non_leader_subject" in src
+
+
+def test_p11e_5_6_receive_length_first_person_and_words():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import reask_render as RR
+    from diag_project.services.output_guard import BANNED_STATE_LEAK
+    from diag_project.services.slot_render import has_leader_first_person
+    from diag_project.services.turn_checks import RECEIVE_MAX_EOJEOL, default_slot_question
+    assert RECEIVE_MAX_EOJEOL == 12
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "len(_recv_5.split()) > RECEIVE_MAX_EOJEOL" in src and '_drop_5 = "first_person"' in src
+    assert has_leader_first_person("이 일을 저 혼자 끌고 간 것은 아니셨군요.") and has_leader_first_person("제가 먼저 나섰다고 하셨군요.")
+    assert not has_leader_first_person("검수 순서를 먼저 바꾸셨군요.")
+    for w in ("어떤 한 가지", "한 가지 말씀이나", "떠안으셨"):
+        assert w in BANNED_STATE_LEAK
+    assert "한 가지" not in RR._KIND_TASK["contentless"]
+    # 기본 질문 머리: 낱말을 못 고르면 머리 없이 질문만
+    q0 = default_slot_question("action", formal=True, topic_text="")
+    assert q0 and "건에서" not in q0 and q0.endswith("?")
+    assert "'상태'" not in default_slot_question("action", formal=True, topic_text="그때는 상태가 좀 그랬어요")

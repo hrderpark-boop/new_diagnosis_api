@@ -673,6 +673,8 @@ BANNED_STATE_LEAK = [
     "받겠습니다", "알아주셨습니다", "짧게 확인해 주셨는데",
     # (2026-11-12 P11d-4) p11c: '사례의 결이 분명해졌습니다' · '…말씀이 분명하게 들립니다'
     "사례의 결", "분명하게 들립니다", "분명해졌습니다",
+    # (2026-11-12 P11e-6) p11d: 다시 묻기 지시문의 '한 가지' · 관찰 문장 지시문의 '떠안'
+    "어떤 한 가지", "한 가지 말씀이나", "떠안으셨",
 ]
 _STATE_LEAK_RE = re.compile(
     "|".join(re.escape(p) for p in sorted(set(BANNED_STATE_LEAK), key=len, reverse=True))

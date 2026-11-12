@@ -33,6 +33,11 @@ _INTERPRET_RE = re.compile(
 _META_RECV_RE = re.compile(r"받(겠습니다|을게요|아\s*두겠습니다|고\s*가겠습니다|아\s*보겠습니다)[.!…]*$")
 
 
+# (2026-11-12 P11e-3) 리더의 답이 모자라다고 평하는 말 — p11d(나): '그렇게 말씀하시면 그때 상황이 잘 그려지지 않습니다', '…로만 남아 있는 것이 조금 걸립니다'
+_JUDGES_ANSWER_RE = re.compile(r"(그려지지\s*않|보이지\s*않|조금\s*걸립|걸리네요|걸리는군요|(으|)로만\s*남아|만으로는\s*(알기|부족|어렵)|충분하지\s*않|모자라|"
+                               r"그렇게\s*(말씀|답)하시면|구체적이지\s*않|막연하|두루뭉술)")
+
+
 def receive_ban_reason(sentence: str | None) -> str | None:
     """받는 문장(평서문)에 쓰면 안 되는 꼴 — 'asked_by_leader' | 'speech_style' | 'interpretive' | None. 질문 문장은 보지 않는다."""
     s = (sentence or "").strip()
@@ -46,6 +51,8 @@ def receive_ban_reason(sentence: str | None) -> str | None:
         return "interpretive"
     if _META_RECV_RE.search(s):
         return "meta"
+    if _JUDGES_ANSWER_RE.search(s):
+        return "judges_answer"
     return None
 
 
@@ -254,10 +261,17 @@ _DEFAULT_Q: dict[str, tuple[str, str]] = {
 }
 
 
+_WEAK_TOPIC_HEADS = frozenset({"상태", "상황", "일", "것", "때", "부분", "경우", "정도", "생각", "문제", "방식", "결과", "과정", "이유", "기준", "점", "쪽", "말",
+                                "이야기", "얘기", "사람", "팀", "팀원", "자리", "내용", "방향", "변화", "효과", "먼저", "다음", "처음"})
+
+
 def default_slot_question(slot: str | None, *, formal: bool, topic_text: str | None = None) -> str:
     """그 슬롯의 기본 질문. topic_text(사례의 상황 인용 또는 직전 리더 답)에서 핵심 명사구를 뽑아 머리에 붙인다 — 없으면 머리 없이."""
     pair = _DEFAULT_Q.get(slot or "") or _DEFAULT_Q["action"]
     np_ = key_noun_phrase(topic_text or "")
+    # (2026-11-12 P11e-6) 머리 낱말을 못 고르면 머리 없이 질문만 — p11d: "말씀하신 '상태' 건에서 …". 뜻이 넓은 한 낱말은 머리로 쓰지 않는다
+    if np_ and (len(np_.replace(" ", "")) < 2 or np_.strip() in _WEAK_TOPIC_HEADS):
+        np_ = ""
     topic = f"말씀하신 '{np_}' 건에서 " if np_ else ""       # (시뮬 p11a) "'등급' 일에서 …" 는 어색했다
     return pair[0 if formal else 1].format(topic=topic)
 
@@ -419,6 +433,7 @@ def strip_lean_start(sentence: str | None) -> tuple[str, bool]:
 # ── 5. 받는 문장의 '리더님께서' 머리 · 답 전체를 되풀이하는 받기 ─────────────
 RECEIVE_REPEAT_MAX = 0.6            # 리더 답 내용 어절 가운데 받기에 다시 나온 비율 — 이 이상이고
 RECEIVE_REPEAT_MIN_CHUNKS = 10      # 받기의 내용 어절이 이만큼 이상이면 구절 인용 받기로 바꾼다(p11a 16턴 중 4턴)
+RECEIVE_MAX_EOJEOL = 12             # (P11e-5) 탐침 턴의 질문 앞 평서문이 이 어절 수를 넘으면 삭제
 LEADER_PREFIX_SESSION_MAX = 2
 _LEADER_PREFIX_RE = re.compile(r"^리더님께서(는|도)?\s+")
 _OTHER_SUBJECT_RE = re.compile(
@@ -574,3 +589,51 @@ def same_question(a: str | None, b: str | None) -> bool:
     if len(ca) < 2 or len(cb) < 2:
         return False
     return len(ca & cb) / len(ca | cb) >= 0.7
+
+
+# ── (2026-11-12 P11e) 사례 없음 뒤 재질문·이미 닫힌 사례 ─────────────────────
+_CASE_GENERIC = frozenset(("팀원", "팀장", "회의", "최근", "올해", "작년", "지난", "이번", "리더", "사람", "그때", "직접", "먼저", "이유", "설명", "자리", "구성", "조직", "방향", "우리", "상황", "경우", "때였"))
+_LIKE_CASE_RE = re.compile(r"(처럼|때처럼|같은|같이|당시|그때)")
+
+
+def mentions_closed_case(question: str | None, case_contexts: list[str] | None) -> str | None:
+    """재질문 문장이 앞에서 닫힌 사례를 끌어왔으면 겹친 낱말들('교육 체계 개편처럼 …' → '교육·체계·개편'). 아니면 None.
+    case_contexts = 닫힌 사례마다 리더가 말한 상황 인용. 그 인용의 내용 낱말(앞 두 글자, 때를 가리키는 말·흔한 말 제외)이 질문에 3개 이상 나오거나,
+    '…처럼'·'그때' 같은 말과 함께 2개 이상 나올 때."""
+    q = {c[:2] for c in _content_chunks(question or "") if len(c) >= 2}
+    like = bool(_LIKE_CASE_RE.search(question or ""))
+    for ctx in case_contexts or []:
+        c = {x[:2] for x in _content_chunks(ctx or "") if len(x) >= 2 and not re.match(r"\d", x)} - _CASE_GENERIC
+        hit = sorted(q & c)
+        if len(hit) >= 3 or (like and len(hit) >= 2):
+            return "·".join(hit)
+    return None
+
+
+def is_new_fact(quote: str | None, original_text: str | None) -> bool:
+    """(P11e-2) 다시 말한 답에서 나온 인용이 원래 사례에 없던 사실인가 — 인용의 내용 낱말(앞 두 글자) 가운데 원래 사례에서 리더가 한 말에 있는 것이 60% 미만일 때."""
+    a = {c[:2] for c in _content_chunks(quote or "") if len(c) >= 2}
+    if len(a) < 2:
+        return False
+    e = {c[:2] for c in _content_chunks(original_text or "") if len(c) >= 2}
+    return len(a & e) / len(a) < 0.6
+
+
+_BACKREF_RE = re.compile(r"(아까|앞서|앞에서|방금|이미)\s*(말씀드린|말씀드렸|말한|말했|얘기한|이야기한)|같은\s*(일|사례|건)|그\s*일(에서|이요|인데)")
+
+
+def same_incident(answer: str | None, closed_texts: dict | None) -> object | None:
+    """리더 답이 이번 영역에서 이미 닫힌 사례와 같은 사건이면 그 사례의 표지(사례 번호 또는 'sweepN'). 아니면 None.
+    답의 내용 낱말(어간 앞 두 글자) 가운데 그 사례에서 리더가 한 말과 겹치는 비율이 60% 이상이고 5개 이상 겹치거나,
+    '아까 말씀드린 그 일' 처럼 앞 이야기를 가리키면서 3개 이상 겹칠 때."""
+    a = {c[:2] for c in _content_chunks(answer or "") if len(c) >= 2}
+    if len(a) < 3:
+        return None
+    backref = bool(_BACKREF_RE.search(answer or ""))
+    best, best_n = None, 0
+    for tag, txt in (closed_texts or {}).items():
+        e = {c[:2] for c in _content_chunks(txt or "") if len(c) >= 2}
+        n = len(a & e)
+        if ((n >= 5 and n / len(a) >= 0.6) or (backref and n >= 3)) and n > best_n:
+            best, best_n = tag, n
+    return best

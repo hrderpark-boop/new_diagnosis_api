@@ -47,6 +47,22 @@ def episodes_matched(text: str, episodes: list[dict]) -> int:
     return n
 
 
+_HON_SUBJECT_RE = re.compile(r"([가-힣A-Za-z]{1,6})\s?님(?:은|는|이|가|께서|께서는)(?=\s)")
+
+
+def _has_other_subject(sentence: str) -> bool:
+    return any(not m.group(1).endswith("리더") for m in _HON_SUBJECT_RE.finditer(sentence or ""))
+
+
+def drop_non_leader_subject(text: str | None) -> tuple[str, int]:
+    """(P11e-4) 요약 문장의 주어 호칭이 '리더님'이 아닌 사람(대표님·○○ 님)이면 그 문장을 지운다. (결과, 지운 수) — 전부 걸리면 빈 문자열(호출자가 다시 쓰거나 요약 없이 간다)."""
+    sents = [x.strip() for x in split_sentences(text or "") if x.strip()]
+    kept = [x for x in sents if not _has_other_subject(x + " ")]
+    if len(kept) == len(sents):
+        return (text or ""), 0
+    return " ".join(kept), len(sents) - len(kept)
+
+
 def _material(episodes: list[dict]) -> str:
     lines = []
     for e in episodes:
@@ -70,7 +86,9 @@ async def render_close_summary(llm, *, episodes: list[dict], persona_name: str |
         f"[규칙]\n- 아래 이야기들을 합쳐 2~{n_sum}문장으로. 어떻게 썼는지 설명하지 말고 문장만 쓴다. 각 문장은 행동(없으면 상황·결과)을 리더가 쓴 말을 살려 과거 사실로 쓴다('~하셨고 …했습니다' 꼴, 존댓말).\n"
         "- 한 문장은 70자 안쪽으로 짧게. 따옴표 인용 나열이 아니라 코치의 문장으로. '사례 1에서는', '첫 사례에서는', '다음 사례에서는' 같은 번호·순서 매기기 금지.\n"
         "- 문장 첫머리 접속사('그래서', '그리고') 금지. 평가·칭찬('좋은', '인상적', '잘') 금지. 질문·예고·전환('이제 …로') 금지. 재료에 없는 사실 금지.\n"
-        "- 누가 한 일인지를 바꾸지 않는다: 리더가 아닌 사람이 한 말·행동은 그 사람의 이름을 주어로 쓴다(리더가 한 것처럼 쓰지 않는다).\n"
+        # (2026-11-12 P11e-4) '리더가 아닌 사람은 이름을 주어로' 규칙(P11d)은 되돌렸다 — 두 시뮬 모두에서 사람이 뒤바뀌었다(박선임 → 이기획, 리더 → 대표님).
+        "- 리더 본인이 한 행동과 그 결과만 쓴다. 다른 사람이 한 말·행동은 넣지 않는다. 문장의 주어는 언제나 '리더님'이다(다른 사람을 주어로 세우지 않는다).\n"
+        "- 리더가 말하지 않은 사실을 쓰지 않는다.\n"
         + (f"- 말투: {register_hint}\n" if register_hint else "")
         + "\n출력: 문장만."
     )
@@ -85,6 +103,7 @@ async def render_close_summary(llm, *, episodes: list[dict], persona_name: str |
         cand = clean_close_summary(re.sub(r"\s*\n+\s*", " ", (out or "").strip().strip('"“”')), n)
         if find_praise(cand):
             cand, _ = strip_praise(cand)
+        cand, _n_subj = drop_non_leader_subject(cand)
         m = episodes_matched(cand, eps) if cand else 0
         if n >= 2 and len([x for x in split_sentences(cand) if x.strip()]) < 2:
             m = min(m, need - 1)                       # (p9c) 한 문장짜리는 요건 미달로 — 다시 쓴다
