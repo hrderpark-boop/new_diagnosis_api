@@ -106,7 +106,8 @@ def test_a1_h_contentless_and_receive_bans():
     assert 'state.get("rapport_turn_count", 0) == 2 and system_override_text is None' in src and '_tm["smalltalk"] = "fixed2"' in src
     assert "if _n_st > (1 if _q_expected else 3):" in src                         # 탐침 턴의 받는 문장은 1문장
     from diag_project.prompts.phase3a.episode_card import BEI_GUIDES, TURN_FORMAT_RULES
-    assert "되받기 1문장 + 질문 1개" in BEI_GUIDES["EPISODE_PROBE"] and "되받기 1문장 + 질문 1개" in TURN_FORMAT_RULES
+    assert "질문 1개로 끝냅니다" in BEI_GUIDES["EPISODE_PROBE"] and "없어도 됩니다" in BEI_GUIDES["EPISODE_PROBE"] and "질문 1개로 끝낸다" in TURN_FORMAT_RULES   # (P11c-1)
+    assert "되받기" not in TURN_FORMAT_RULES and "받는 문장" not in TURN_FORMAT_RULES and not any("되받기" in g or "슬롯" in g for g in BEI_GUIDES.values())   # (P11c-3)
     assert "말씨는 그대로" in TURN_FORMAT_RULES                                    # A4 반말에도 코치 말투 유지
 
 

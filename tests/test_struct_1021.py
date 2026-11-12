@@ -39,7 +39,7 @@ def test_smalltalk_guide_allows_one_followup_from_leader_words():
 def test_expectation_turn_reacts_to_role():
     g = L._get_instruction_guide("RAPPORT_BUILDING", {"instruction_for_this_turn": "RAPPORT_BUILDING", "forced_rapport_category": "기대",
                                                        "current_hour_text": "오후 4시", "current_time_tone": "활기찬 오후", "last_user_response": "교육팀장이고 5명이에요"})
-    assert "역할에 대한 반응 한 문장" in g and "하나를 집어서" in g
+    assert "역할에 대한 평서문 한 문장" in g and "하나만 집어" in g
 
 
 def test_receive_sentences_and_fixed_bridge():

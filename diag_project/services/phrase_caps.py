@@ -18,8 +18,6 @@ from diag_project.services.output_guard import is_question, split_sentences
 _SALPYEO_RE = re.compile(r"살펴보려(?:고)?(?=\s*(?:합니다|해요|하는데요|합니다만|고요|요))")
 _SALPYEO_ALTS = ("들어보려고", "짚어보려고", "여쭤보려고")
 _MALSSEUM_RE = re.compile(r"말씀해\s*주시겠습니까\?")
-# (시뮬 p11b) 종전에는 상한을 넘은 뒤 턴마다 같은 대체 표현('짚어 주십시오.')만 골라 한 영역에 7번 나왔다 — 영역 안에서 가장 덜 쓴 것을 고른다
-_MALSSEUM_ALTS = ("들려주시겠습니까?", "말씀해 주십시오.", "들려주십시오.", "짚어 주시겠습니까?")
 _GUNGGEUM_RE = re.compile(r"궁금(?:해요|합니다|하네요|한데요|해지네요|해집니다|했어요|했습니다|해서요)")
 _GUNGGEUM_TAIL_RE = re.compile(r"((?:는|은|인|을|ㄹ|던|였는|었는|했는|셨는)지)(?:가|도|는|를)?\s*(?:더\s*|좀\s*|정말\s*|참\s*)?궁금(?P<end>해요|합니다|하네요|한데요|해지네요|해집니다)[.!…]*$")
 _SIDE_STORY_RE = re.compile(r"이번(?:에는|엔|에)\s[^.?!]{1,40}?쪽\s*(?:이야기|얘기)")
@@ -72,7 +70,8 @@ def enforce_phrase_caps(text: str | None, *, session_texts: list[str], chapter_t
         return _f
 
     out = _SALPYEO_RE.sub(_sub("salpyeo", _SALPYEO_ALTS), out)
-    out = _MALSSEUM_RE.sub(_sub("malsseum", _MALSSEUM_ALTS), out)
+    # (2026-11-12 P11c-5) '말씀해 주시겠습니까?' 는 상한을 넘어도 바꾸지 않는다(원문 유지) — 대체 표현으로 바꾸자 같은 대체 표현('짚어 주십시오.')이
+    #   한 영역에 7번 나왔고, 그 표현을 질문으로 읽지 못해 뒤 단계가 어긋났다. 지우면 질문이 끊기므로 지우지도 않는다. 횟수는 계속 센다(린트).
 
     # 문장 단위 — 줄 구조(목록·문단)는 그대로 두고 줄 안의 문장만 다룬다
     lines_out: list[str] = []

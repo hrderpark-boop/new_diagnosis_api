@@ -28,7 +28,8 @@ def test_final_closing_distinct_and_no_praise():
 
 def test_layer1_heavy_has_listening_rule_and_budget():
     from diag_project.prompts.phase3a.layer1_system import LAYER1_SYSTEM_PROMPT, LAYER1_LIGHT
-    assert "따라가기" in LAYER1_SYSTEM_PROMPT and "그 서운함을 팀원들에게" in LAYER1_SYSTEM_PROMPT
+    assert "따라가기" in LAYER1_SYSTEM_PROMPT and "그 서운함을 팀원들에게" not in LAYER1_SYSTEM_PROMPT      # (P11c-3) 완성 문장 예시(선택지 질문을 좋은 예로 들었다)는 삭제
+    assert "선택지를 늘어놓아 고르게 하지 않는다" in LAYER1_SYSTEM_PROMPT
     assert "따라가기" not in LAYER1_LIGHT
     assert len(LAYER1_SYSTEM_PROMPT) < 4500
 

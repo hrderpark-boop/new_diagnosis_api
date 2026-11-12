@@ -445,6 +445,13 @@ def p11b_analyze(data: dict) -> dict:
             qs = [x for x in sents if _isq(x) and re.sub(r"\s+", "", x) not in fixed]
             if qs and len(inline_question_clauses(qs[-1])) >= 2:
                 out["inline_two_q"].append({"t": t, "sentence": qs[-1][:100]})
+    from diag_project.services.receive_check import is_quote_receive as _iqr
+    probe = [r for r in rows if r.get("role") != "user" and (r.get("instr") or _guard(r).get("instr")) in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP")]
+    out["probe_turns"] = len(probe)
+    out["probe_with_statement"] = sum(1 for r in probe if any(not _isq(x) for x in _ss(r.get("content") or "") if x.strip()))
+    out["quote_receives"] = [{"t": r.get("t"), "sentence": x.strip()[:80]} for r in rows if r.get("role") != "user"
+                             for x in _ss(r.get("content") or "") if _iqr(x)]
+    out["format_miss"] = [{"t": r.get("t"), "miss": _guard(r).get("format_miss")} for r in rows if r.get("role") != "user" and _guard(r).get("format_miss")]
     out["regen_why"] = dict(out["regen_why"].most_common())
     out["guard"] = dict(out["guard"])
     return out
@@ -456,6 +463,8 @@ def render_p11b(coach_name: str, p: dict) -> list[str]:
              f"기대는 머리 {len(p['lean_start'])} · 슬롯 턴에 받기 남음 {len(p['slot_turn_shape'])} · 슬롯 턴 낱말 반복 {len(p['slot_repeat_word'])} · "
              f"'리더님께서' 받기 {len(p['leader_prefix'])}(주어 어긋남 {len(p['leader_prefix_subject'])}) · 되풀이 받기 {len(p['recv_repeat'])} · "
              f"한 문장 안 두 질문 {len(p['inline_two_q'])}")
+    L.append(f"- (P11c) 탐침 턴 {p.get('probe_turns')}개 중 질문 앞에 평서문이 있는 턴 {p.get('probe_with_statement')} · 구절 인용 꼴 받기 {len(p.get('quote_receives') or [])}회(세션 2회까지) · "
+             f"형식미해결 {p.get('format_miss') or 0}")
     L.append(f"- 질문 없이 끝난 여는 턴 {len(p['open_no_q'])} · 질문 없이 끝난 탐침 턴 {len(p['probe_no_q'])} · 직전 질문을 거의 그대로 되풀이 {len(p['near_repeat_q'])}")
     L.append(f"- 재생성 걸린 턴 {p['regen_turns']} · 사유별 {p['regen_why'] or '없음'}")
     L.append(f"- 처리 기록(턴 수): {p['guard'] or '없음'}")
@@ -611,9 +620,13 @@ def analyze(data: dict, lex: dict, label: str = "") -> dict:
             res["parrot_turns"] += 1
         # 6. 되받기·형식
         if chapter and instr in _RECV_INSTR:
-            res["receive_turns"] += 1
+            # (2026-11-12 P11c-1) 받는 문장이 꼭 있어야 하는 턴은 닫고 넘어가는 턴(여는·보완 앵커)뿐 — 탐침 턴은 질문만 나가도 정상이라 세지 않는다
+            _recv_req = instr in ("EPISODE_OPEN", "SWEEP_ANCHOR")
+            res["receive_turns"] += 1 if _recv_req else 0
             _has_r, _quoted_r = check_receive(content, prev_user)
-            if not _has_r:
+            if not _recv_req:
+                pass
+            elif not _has_r:
                 res["no_receive_turns"] += 1
                 res["receive_issues"].append({"t": t, "kind": "none", "instr": instr, "coach": content[:90], "user": (prev_user or "")[:60]})
             elif not _quoted_r and not _is_no_case_text(prev_user):   # (2026-11-06 P7) 사례 아님 답에는 인용 요구 없음(8-w 와 같은 기준)

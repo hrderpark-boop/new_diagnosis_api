@@ -169,7 +169,8 @@ def test_bei_aggregation(lex):
     assert r["episode_turns"] == [3] and r["episode_turns_out_of_range"] == 1 and r["episodes_six_slots"] == 1
     assert r["chapter_leader_turns"] == {"organization_management": 4}     # ALIGN 답 + 사례 턴 3
     assert r["coverage"]["organization_management"]["covered"] == 1 and r["coverage_ratio"] == 0.25
-    assert r["receive_turns"] == 4 and r["no_receive_turns"] == 1            # t9 는 질문만
+    # (2026-11-12 P11c-1) 받는 문장이 꼭 있어야 하는 턴은 닫고 넘어가는 턴(여는·보완 앵커)뿐 — 탐침 턴 t9 의 '질문만'은 정상이라 세지 않는다
+    assert r["receive_turns"] == 1 and r["no_receive_turns"] == 0
     assert r["format_regen_turns"] == 1 and r["receive_miss_turns"] == 1 and r["format_miss"] == {"no_receive": 1}
     assert r["open_turns"] == 1 and r["slot_turns"] == 1 and r["slot_episodes"] == 1
     assert [a["kind"] for a in r["anchors"]] == ["ALIGN", "앵커"]

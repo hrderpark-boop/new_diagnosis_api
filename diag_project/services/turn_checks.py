@@ -594,10 +594,34 @@ def _shares(a: str, pool: set[str]) -> bool:
     return any(a == b or a.startswith(b) or b.startswith(a) or a[:2] == b[:2] for b in pool)
 
 
-def question_shares_words(question: str | None, user_text: str | None) -> bool:
-    """질문이 직전 리더 답과 내용 낱말을 하나라도 나누는가(어간 앞 두 글자까지 같으면 같은 낱말로 본다 — '놓쳤어' ↔ '놓치신')."""
-    qc, uc = _q_chunks(question), {c for c in _content_chunks(user_text or "") if len(c) >= 2}
-    return bool(qc) and bool(uc) and any(_shares(a, uc) for a in qc)
+# ── (2026-11-12 P11c-4) 사례 없음 뒤의 재질문 · 같은 질문 ─────────────────────
+_REFRAME_EXIST_RE = re.compile(r"(있으셨|있었|있으세요|있나요|있을까요|있으신가요|있습니까|있으십니까|있는지|떠오르|기억(나|에 남)|겪으신 적|하신 적|해 ?보신 적)")
+_REFRAME_PRESUPPOSE_RE = re.compile(r"(언제\s*누구와|누구와\s*있었던|언제였|언제\s*있었던|하셨을 때|받으셨을 때|했을 때|때 어떻게|때 무엇을|직접 하신 말이나 행동|"
+                                    r"어떻게 받아들였|무엇이 달라졌|정하신 기준|다르게 하고 싶은)")
+
+
+def reframe_question_ok(question: str | None) -> bool:
+    """사례가 없다는 답 뒤의 재질문이 '그런 일이 있었는지'를 다른 각도로 묻는 꼴인가 — 사례가 있다고 전제한 질문('언제 누구와 있었던 일인지')은 아니다."""
+    q = (question or "").strip()
+    return bool(q) and bool(_REFRAME_EXIST_RE.search(q)) and not _REFRAME_PRESUPPOSE_RE.search(q)
+
+
+def same_question(a: str | None, b: str | None) -> bool:
+    """낱말만 바꾼 같은 질문인가 — 글자 순서가 80% 이상 같거나, 내용 낱말(어간 앞 두 글자)의 70% 이상이 겹친다."""
+    import difflib
+    na, nb = _compact(a or ""), _compact(b or "")
+    if not na or not nb:
+        return False
+    if difflib.SequenceMatcher(None, na, nb).ratio() >= 0.8:
+        return True
+    # 묻는 몸통(마지막 쉼표 뒤)이 거의 같으면 앞의 상황 절만 바꾼 같은 질문이다 — '…떠올려 보시면, 언제쯤이었고 누구와 함께 있었는지 …'
+    ta, tb = _compact(re.split(r"[,，]", a or "")[-1]), _compact(re.split(r"[,，]", b or "")[-1])
+    if min(len(ta), len(tb)) >= 10 and difflib.SequenceMatcher(None, ta, tb).ratio() >= 0.75:
+        return True
+    ca, cb = {c[:2] for c in _q_chunks(a)}, {c[:2] for c in _q_chunks(b)}
+    if len(ca) < 2 or len(cb) < 2:
+        return False
+    return len(ca & cb) / len(ca | cb) >= 0.7
 
 
 def unsaid_fact_words(candidate: str | None, sources: list[str] | None) -> list[str]:

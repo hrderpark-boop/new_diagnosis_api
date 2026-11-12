@@ -261,11 +261,19 @@ def _key_clause_of(t: str) -> str:
 
 _FIRST_PERSON_TOKENS = frozenset({"내가", "제가", "나는", "저는", "난", "전", "나도", "저도", "내", "제"})
 QUOTE_RECEIVE_FORMS = ("'{core}'는 말씀이셨군요.", "'{core}'고 하셨군요.")
+QUOTE_RECEIVE_SESSION_MAX = 2       # (2026-11-12 P11c-1) 구절 인용 꼴은 세션 2회까지 — 시스템이 메우는 것은 닫고 넘어가는 턴에서만, 그 뒤로는 메우지 않는다
+_QUOTE_RECV_RE = re.compile(r"['‘’\"“”]\s*(?:이?라?는\s*말씀이(?:셨|시)군요|이?라?고\s*하셨(?:군요|습니다|네요))[.!…]*$")
+
+
+def is_quote_receive(sentence: str | None) -> bool:
+    """리더의 말을 따옴표로 옮기고 '…는 말씀이셨군요/…고 하셨군요' 로 맺은 문장인가(시스템이 메운 것이든 코치가 스스로 쓴 것이든)."""
+    return bool(_QUOTE_RECV_RE.search((sentence or "").strip()))
 
 
 def quote_receive_count(texts: list[str] | None) -> int:
     """세션에서 구절 인용 받기를 쓴 횟수 — 다음 것의 꼴을 고르는 데 쓴다."""
-    return sum(len(re.findall(r"'는 말씀이셨군요\.|'고 하셨군요\.", t or "")) for t in (texts or []))
+    from diag_project.services.output_guard import split_sentences as _ss
+    return sum(1 for t in (texts or []) for x in _ss(t or "") if is_quote_receive(x))
 
 
 def quote_receive(user_text: str | None, variant: int = 0) -> str:

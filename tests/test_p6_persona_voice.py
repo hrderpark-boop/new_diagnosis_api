@@ -18,7 +18,7 @@ def test_fixed_receive_tails_are_gone():
     assert not hasattr(V, "PERSONA_TAILS") and not hasattr(V, "tails_for")
     for p in PERSONAS:
         blk = V.persona_guide_block(p)
-        assert "마무리 어구" not in blk and "리더가 쓴 낱말" in blk
+        assert "마무리 어구" not in blk and "리더가 방금 쓴 낱말" in blk and "되받기" not in blk
         for gone in ("흥미로운 지점", "궤도를 바꿨", "확인했습니다", "그러셨습니까", "그게 움직임"):
             assert gone not in blk, (p, gone)
     assert find_banned_tail("짐작이 되네요.")          # 금지 어구 가드는 그대로
@@ -62,7 +62,7 @@ def test_contrast_and_preference():
     assert not V.is_contrast_question("그때 어떻게 하셨어요?")
     assert "숫자·기간" in V.preference_for("Jessica") and "직접 한 행동" in V.preference_for("Michael")
     # (2026-11-11 P10-2) 대조(가정) 질문은 본 호출이 쓰지 않는다 — 사례 내용을 넣은 슬롯 문장으로만 나간다
-    assert "가정 질문" in V.preference_for("Olivia") and "쓰지 않는다" in V.preference_for("Olivia")
+    assert "가정을 거는 질문" in V.preference_for("Olivia") and "쓰지 않는다" in V.preference_for("Olivia")
     assert "반대로 했다면" not in V.preference_for("Olivia") and V.preference_for("Olivia", contrast_used=True) == V.preference_for("Olivia")
     blk = V.persona_guide_block("Lucas (루카스)")
     assert "[🎭 탐침 선호 — Lucas]" in blk and "알겠습니다 / 그렇군요" not in blk

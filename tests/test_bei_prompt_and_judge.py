@@ -45,10 +45,10 @@ def test_episode_card_probe_lists_filled_missing_and_next_slot():
 
 def test_episode_card_open_and_sweep_carry_system_anchor():
     card = EC.build_episode_card(instruction="EPISODE_OPEN", chapter=CH, ep=None, bei_turns=8, budget=16, anchor_text="그런 일, 최근에 있으셨어요?")
-    assert "시스템이 붙일 여는 문장: \"그런 일, 최근에 있으셨어요?\"" in card and "질문" in card and "쓰지 않는다" in card   # (P4-4) 여는 문장 = 왜 묻는지 + 있었는지 질문
+    assert "시스템이 붙일 문장: \"그런 일, 최근에 있으셨어요?\"" in card and "질문" in card and "쓰지 않는다" in card   # (P4-4) 여는 문장 = 왜 묻는지 + 있었는지 질문
     card2 = EC.build_episode_card(instruction="SWEEP_ANCHOR", chapter=CH, ep=None, bei_turns=12, budget=16, anchor_text="Q?",
                                   weak_hint="아까 1번째 사례에서 이쪽 이야기가 살짝 나왔다")
-    assert "다리 힌트: 아까 1번째 사례" in card2
+    assert "잇는 문장 힌트: 아까 1번째 사례" in card2
     ep = _ep(kind="sweep", leader_turns=1)
     card3 = EC.build_episode_card(instruction="SWEEP_FOLLOWUP", chapter=CH, ep=ep, bei_turns=13, budget=16)
     assert "이번 턴: '리더 행동' 하나" in card3 and "마무리한다" in card3
@@ -59,7 +59,7 @@ def test_bei_turn_text_has_persona_card_guide_and_rules():
              "bei_card": "# 지금 듣고 있는 사례 (1번째)"}
     txt = format_turn_state_for_llm(state)
     assert txt.index("[🎭 페르소나 유지] 당신은 Jessica") < txt.index("# 지금 듣고 있는 사례") < txt.index("[Instruction for this turn]\nEPISODE_PROBE")
-    assert "되받기 1문장 + 질문 1개" in txt and "[금지]" in txt and "[Turn State]" not in txt
+    assert "질문 1개로 끝낸다" in txt and "없어도 된다" in txt and "[금지]" in txt and "[Turn State]" not in txt
     for instr in EC.BEI_GUIDES:
         assert EC.is_bei_instruction(instr)
     assert not EC.is_bei_instruction("COMPETENCY_ALIGN")
@@ -128,7 +128,7 @@ def test_count_question_markers_catches_compound_questions():
 def test_episode_card_first_turn_rule_and_detail_probe():
     ep = _ep(leader_turns=1)
     card = EC.build_episode_card(instruction="EPISODE_PROBE", chapter=CH, ep=ep, bei_turns=1, budget=16)
-    assert "첫 턴 규칙: 먼저 리더가 방금 말한 상황을 한 문장으로 받는다" in card
+    assert "첫 턴 규칙" not in card and "바로 질문한다" in card      # (P11c-1) 질문 앞 평서문은 없어도 된다 — 첫 턴 규칙 삭제
     full = _ep(leader_turns=3)
     full["slots"] = {k: {"status": "filled", "quote": "x"} for k in B.SLOT_KEYS}
     card2 = EC.build_episode_card(instruction="EPISODE_PROBE", chapter=CH, ep=full, bei_turns=3, budget=16)
@@ -277,7 +277,7 @@ def test_p4_5_sweep_cap_three_per_chapter_and_bridge_rule():
     assert has_sweep_bridge("아까 공통 양식 얘기에서 살짝 나왔는데, 그쪽을 하나 더 여쭙고 싶어요.") and not has_sweep_bridge("교안을 먼저 확보하는 쪽이 과정을 살린다고 보셨군요.")
     card = build_episode_card(instruction="SWEEP_ANCHOR", chapter=CH, ep=None, bei_turns=10, budget=20, anchor_text="그런 일, 최근에 있으셨어요?",
                               sweep_seq=2, bridge_material="'하루를 비워서 두 분을 한자리에 앉혔어요'")
-    assert "연속 2번째" in card and "다리 1문장이 필수" in card and "하루를 비워서" in card
+    assert "연속 2번째" in card and "잇는 문장이 필수" in card and "하루를 비워서" in card
     card1 = build_episode_card(instruction="SWEEP_ANCHOR", chapter=CH, ep=None, bei_turns=10, budget=20, anchor_text="그런 일, 최근에 있으셨어요?", sweep_seq=1)
     assert "필수" not in card1
 

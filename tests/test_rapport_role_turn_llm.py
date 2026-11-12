@@ -46,14 +46,14 @@ def test_fixed_questions():
 def test_receive_only_guides():
     for cat in ("담당업무", "기대"):
         g = _rapport_guide(cat, "그럭저럭 지내고 있어요")
-        assert ("받는 문장 하나" in g or "반응 한 문장" in g) and "시스템이 뒤에 붙이므로" in g
+        assert ("평서문 하나" in g or "평서문 한 문장" in g) and "시스템이 뒤에 붙이므로" in g
         assert "그대로 반복하지 않는다" in g and "추측을 보태지 않는다" in g
-        assert "(반복)" in g and "(추측)" in g                 # 금지 예 둘 다(입력과 겹치지 않는 문장)
+        assert "(반복)" not in g and "(추측)" not in g and "출장이 잦" not in g   # (P11c-3) 완성 문장 예시(금지 예 포함)는 삭제
         assert "그럭저럭" not in g                            # 2026-10-19: 금지 예가 입력과 겹쳐 복사됐던 문장 제거
         assert "[READY_FOR_INTRO] 를 반드시 포함" not in g
         assert "어떤 일을 맡고 계신지 간단히" not in g      # 질문 문장은 LLM 가이드에 없다(백엔드가 붙임)
         assert "공감 표현 — 매우 중요" not in g             # 공감·예시 블록 제거
-        assert L.EXAMPLE_LABEL in g
+        assert L.EXAMPLE_LABEL not in g                     # (P11c-3) 완성 문장 예시를 지워 예시 표지도 없다
 
 
 def test_receive_sentence_drops_questions_and_caps_one():

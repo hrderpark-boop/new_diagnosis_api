@@ -316,11 +316,8 @@ def test_p11b_6_inline_two_questions_and_tail():
     one = "면담 전에 표로 정리해 보여주셨을 때, 이기획님은 뭐라고 했습니까?"
     assert T.keep_slot_question(one, "reaction", formal=True) == (one, False)                    # 의문사 절이 하나면 그대로
     assert T.keep_slot_question("누가 언제 무엇을 했는지 말씀해 주시겠습니까?", "context", formal=True)[1] is False
-    # 자른 꼬리가 직전 답과 낱말을 나누는가
-    u = '처음엔 억울해했는데, 표 보고는 "제가 몰랐네요" 하더라. 월간 점검도 자기가 먼저 하겠다고 하고.'
-    assert not T.question_shares_words("다른 자료는 일부러 빼셨는지 말씀해 주시겠습니까?", u)
-    assert T.question_shares_words("월간 점검은 그 뒤에 어떻게 이어졌습니까?", u)
-    assert T.question_shares_words("납기를 놓치신 뒤에는 무엇을 하셨습니까?", "올해 상반기는 납기 한 번도 안 놓쳤어.")
+    # (P11c-5) 꼬리 규칙(자른 뒤 남은 질문을 기본 질문으로)은 삭제 — 함수도 없다
+    assert not hasattr(T, "question_shares_words")
     # 다시 묻는 질문에 리더가 말하지 않은 사실
     orig = "그때 리더님께서 직접 팀원들에게 하신 말이나 결정 가운데 가장 먼저 떠오르는 것이 무엇이었습니까?"
     lead = ["올해 1월에 대표가 교육 운영에 AI 도구를 바로 전면 도입하자고 했어. 근데 팀에 그걸 쓸 줄 아는 사람이 나 말고는 없었어."]
@@ -424,14 +421,14 @@ def test_p11b_after_sim_receive_and_slot_forms():
     # 관찰 슬롯 — 지시문의 말을 옮긴 문장은 불합격
     leader = ["작년 3월에 본부에서 교육 체계 바꾸라고 했을 때, 김선임이랑 박선임이 반대했어.", "전체 대신 한 과정만 파일럿으로 해보자고 제안했어."]
     bad = "작년 3월 본부 지시와 김선임·박선임의 반대 사이에서 개편의 순서를 직접 정하셨던 그 무게를 알아주셨습니다."
-    assert SR.slot_sentence_ok("observation", bad, leader, persona_name="Daniel") == (False, "instruction_echo")
+    assert SR.slot_sentence_ok("observation", bad, leader, persona_name="Daniel")[0] is False      # 누설 낱말('알아주셨습니다') 또는 지시문 되읊기
     assert "알아주" not in SR._SPEC["observation"][0] and "선배로서" not in SR._SPEC["observation"][0]
     # 입버릇 대체 표현 — 영역 안에서 돌려 쓴다(같은 대체 표현만 되풀이하지 않는다)
     ch: list[str] = []
     for _ in range(6):
         out, _n = enforce_phrase_caps("그 장면을 말씀해 주시겠습니까?", session_texts=ch, chapter_texts=ch, formal=True)
         ch.append(out)
-    assert ch[0] == ch[1] == "그 장면을 말씀해 주시겠습니까?" and len(set(ch[2:])) == 4
+    assert set(ch) == {"그 장면을 말씀해 주시겠습니까?"}      # (P11c-5) 상한을 넘어도 바꾸지 않는다 — 치환표로 같은 대체 표현이 되풀이되던 것을 없앴다
 
 
 def test_p11b_after_sim_handler_guards():
@@ -439,7 +436,70 @@ def test_p11b_after_sim_handler_guards():
     from diag_project.routes import diagnoses as D
     src = inspect.getsource(D._submit_message_phase3a)
     assert '_tm["opener_restored"] = 1' in src and '_tm["opener_restored"] = 2' in src                # 여는 턴의 질문 유실 → 다시 조립 · 마지막 안전망
-    assert 'if "two_questions" in _iss and _q_expected:' in src                                         # 여는 턴의 시스템 질문은 8-w 가 자르지 않는다
+    assert "split_compound_question" not in src and "_ksq_" not in src                                  # (P11c-2) 한 문장짜리 질문은 자르지 않는다
     assert "_align_ctx is None and not _reask_kind):   # (시뮬 p11b) 다시 묻기 턴은 8-w0 가 조립한 그대로" in src   # 8-w3 는 다시 묻기 턴을 건너뛴다
     assert 'not _reask_kind and instruction_used != "NO_CASE_REFRAME"):' in src                         # 8-w4 는 사례 없음 재질문 턴을 건너뛴다
-    assert "_qrcv_w0(_llm_user_text, _qr_variant)" in src                                              # 금지 꼴 삭제 뒤에는 재생성 대신 구절 인용 받기
+    assert "_qrcv_w0" not in src and "_qrcv_5" not in src                                              # (P11c-1) 금지 꼴·되풀이 문장은 삭제만 — 구절 인용 대체 없음
+
+
+# ── P11c 규칙 줄이기 ────────────────────────────────────────────────────────
+def test_p11c_receive_optional_and_one_question():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import receive_check as RC
+    from diag_project.services import turn_checks as T
+    src = inspect.getsource(D._submit_message_phase3a)
+    # 1. 탐침 턴은 받는 문장 필수 검사가 없다 · 금지 꼴·되풀이는 삭제만 · 구절 인용 대체는 닫고 넘어가는 턴에서 세션 2회까지
+    assert 'if _recv_optional or _q_expected or _tm.get("recv_ban"):' in src and "_qr_variant < QUOTE_RECEIVE_SESSION_MAX" in src and RC.QUOTE_RECEIVE_SESSION_MAX == 2
+    assert '_drop_5 = "repeat"' in src and '_drop_5 = "quote_cap"' in src
+    assert RC.is_quote_receive("'바로 앉았어야 했다'는 말씀이셨군요.") and RC.is_quote_receive("'직접 썼다'고 하셨군요.") and RC.is_quote_receive('"제가 몰랐네요"라고 하셨군요.')
+    assert not RC.is_quote_receive("표로 정리해 보여주셨군요.")
+    assert RC.quote_receive_count(["'직접 썼다'고 하셨군요. 그 뒤 무엇이 달라졌습니까?", "표로 정리해 보여주셨군요.", "'미뤘다'는 말씀이셨군요."]) == 2
+    # 2. 질문 수는 문장 수 — 한 문장짜리 질문은 자르지 않는다 · 질문이 0개면 붙인다
+    assert "split_compound_question" not in src and "keep_slot_question" not in src and "(tail)" not in src
+    assert '_tm["q_added"] = "none→"' in src and "# 8-q." in src
+    # 5. 다시 묻기 턴에는 재생성이 끼어들지 않는다 · 대상 없는 질문은 재생성 없이 고친다
+    assert '_tm["no_regen"] = 1      # (2026-11-12 P11c-5)' in src and 'why="no_referent"' not in src
+    # 4. 사례 없음 뒤 재질문은 '있었는지'를 다른 각도로 — 사례가 있다고 전제한 질문은 아니다 · 같은 질문은 한 사례에서 2회까지
+    assert T.reframe_question_ok("작은 일이어도 괜찮으니, 최근에 팀원과 진행 상황을 짚다가 일이 어긋났던 순간이 있었는지 여쭤봐도 될까요?")
+    assert not T.reframe_question_ok("언제 누구와 있었던 일인지 말씀해 주시겠습니까?")
+    assert not T.reframe_question_ok("그때 리더님이 직접 하신 말이나 행동은 무엇이었습니까?")
+    a = "그 지연이 났던 날, 어떤 건이었는지 기억나는 대로 짚어 주십시오."
+    assert T.same_question(a, "그 지연이 나던 날, 어떤 건이었는지 떠오르는 대로 짚어 주십시오.")
+    assert T.same_question("그 첫 지연이 난 장면을 다시 떠올려 보시면, 언제쯤이었고 누구와 함께 있었는지 짚어 주시겠습니까?",
+                           "그때 실제로 지연을 보고 계셨던 시점을 떠올리시면, 언제쯤이었고 누구와 같이 계셨는지 짚어 주시겠습니까?")
+    assert not T.same_question(a, "그 뒤로 월간 점검은 실제로 어떻게 돌아갔습니까?")
+
+
+def test_p11c_stalled_empty_closes_as_no_case():
+    from diag_project.services import bei_engine as B
+    ch = "performance_management"
+    store = {"bei_turns": {ch: 8}}
+    store, ep = B.new_episode(store, ch, "문제해결", "k")
+    ep = dict(ep, leader_turns=2, stall=2)
+    assert B.episode_done_reason(ep, store, ch) == "stalled_empty"                       # 채운 칸 없이 2턴 무진전
+    assert B.episode_done_reason(dict(ep, stall=1), store, ch) is None
+    filled = dict(ep, slots={**B.empty_slots(), "context": {"status": "filled", "quote": "x"}})
+    assert B.episode_done_reason(filled, store, ch) == "stalled"                         # 채운 칸이 있으면 종전대로
+    assert B.promoted_done_reason(dict(ep, kind="sweep", promote="promoted"), store, ch) == "stalled_empty"
+
+
+def test_p11c_prompts_have_no_copyable_sentences_or_inner_terms():
+    import re
+    from diag_project.data.coaches_persona import COACHES_PERSONA
+    from diag_project.prompts.phase3a import episode_card as EC, layer1_system as L1
+    from diag_project.services.output_guard import BANNED_STATE_LEAK
+    from diag_project.services.persona_voice import persona_guide_block
+    from diag_project.services.style_tracker import format_style_constraints
+    end = r"(요|다|까|죠|군요|네요|세요|니다|니까|데요)[.?!…]*"
+    quoted = re.compile(r"['‘\"“]([^'‘’\"“”\n~/]{6,90}?" + end + r")['’\"”]")
+    for cid, c in COACHES_PERSONA.items():
+        name = c["name"]
+        txt = (L1.build_layer1_with_persona(coach_id=cid, user_name="박기진", visit_count=1, mode="heavy") + "\n" + "\n".join(EC.BEI_GUIDES.values())
+               + EC.TURN_FORMAT_RULES + format_style_constraints({}, name, "EPISODE_PROBE") + persona_guide_block(name))
+        txt = txt.replace('"이 리더십 진단 과정을 함께 진행하는 전문 코치"', "")              # 소속을 물으면 이렇게만 답한다 — 지정 문구
+        assert quoted.findall(txt) == [], (name, quoted.findall(txt))
+        for w in ("되받기", "받는 문장", "받기", "슬롯", "다리", "무게", "알아주", "예시 발화"):
+            assert w not in txt, (name, w)
+    for w in ("받겠습니다", "알아주셨습니다", "짧게 확인해 주셨는데"):
+        assert w in BANNED_STATE_LEAK

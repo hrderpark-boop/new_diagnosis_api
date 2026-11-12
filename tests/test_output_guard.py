@@ -134,7 +134,7 @@ def test_bridge_rule_in_style_hints_and_analysis_flag():
     for n in ("Daniel (다니엘)", "Jessica (제시카)", "Lucas (루카스)"):
         t = format_style_constraints(sc, n)
         # (2026-11-12 P11b-3) '연결 한 절' 규칙·틀 예시는 삭제 — 받는 문장 1문장 규칙만 남는다
-        assert "연결 한 절" not in t and "이어지는" not in t and "평서문 한 문장만" in t and "받겠" not in t, n
+        assert "연결 한 절" not in t and "이어지는" not in t and "질문 앞의 평서문은 없어도 됩니다" in t and "받겠" not in t and "받는 문장" not in t, n
     from diag_project.llm_service import GeminiService
     tmpl = GeminiService._build_sub_scores_json_template(None, ["목표설정 및 공유"])
     assert "consistency_flag" in tmpl

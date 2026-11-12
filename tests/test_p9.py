@@ -182,7 +182,7 @@ def test_p9_7_phrase_caps_and_opener_frames():
     assert enforce_phrase_caps(t, session_texts=["살펴보려고 합니다."], chapter_texts=["말씀해 주시겠습니까?"]) == (t, {})
     out, done = enforce_phrase_caps(t, session_texts=["살펴보려고 합니다. 살펴보려고 해요."], chapter_texts=["말씀해 주시겠습니까? 말씀해 주시겠습니까?"])
     _cp = count_phrases([out])
-    assert done == {"salpyeo": 1, "malsseum": 1} and _cp["salpyeo"] == 0 and _cp["malsseum"] == 0
+    assert done == {"salpyeo": 1} and _cp["salpyeo"] == 0 and _cp["malsseum"] == 1 and "짚어 주십시오" not in out   # (P11c-5) '말씀해 주시겠습니까?' 는 상한을 넘어도 바꾸지 않는다(원문 유지)
     src = inspect.getsource(__import__("diag_project.routes.diagnoses", fromlist=["x"]))
     assert "enforce_phrase_caps" in src and "frame=_frame_op" in src
 

@@ -41,9 +41,10 @@ def test_p7_1_stall_closes_episode_before_eight_turns():
     # 진전이 있으면 0 으로
     ep["slots"] = _slots(context=("filled", "작년 3월"), action=("filled", "따로 불렀어요"))
     ep = B.update_stall(ep, filled_before=1); assert ep["stall"] == 0
-    # 슬롯이 하나도 없으면 stalled 로 닫지 않는다(그 경우는 no_case 경로)
+    # (2026-11-12 P11c-4) 채운 칸이 하나도 없이 2턴 연속 진전이 없으면 'stalled_empty' — 호출자가 사례 없음으로 닫는다(종전에는 None 이라 8턴까지 갔다)
     ep0 = dict(ep, slots=_slots(), stall=3)
-    assert B.episode_done_reason(ep0, st, CH) is None
+    assert B.episode_done_reason(ep0, st, CH) == "stalled_empty"
+    assert B.episode_done_reason(dict(ep0, stall=1), st, CH) is None
     # stalled 사례도 사례 수에 든다
     st = B.close_episode(st, CH, dict(ep, status="open"), "stalled", [{"sub": SUBS[0], "strength": "strong", "quote": "따로 불렀어요"}], SUBS)
     assert B.counted_episodes(st, CH) == 1 and B.EPISODE_STALL_TURNS == 2
@@ -58,7 +59,8 @@ def test_p7_1_route_wiring_and_guides():
     assert '_jd.get("incident") is False' in src and 'instruction_used = "NO_CASE_REFRAME"' in src and "_bei.update_stall(_ep, _filled_before)" in src
     assert "\"EPISODE_RETRY\"" not in src   # 상수 EPISODE_RETRY_MAX 는 남는다
     g = BEI_GUIDES["NO_CASE_REFRAME"]
-    assert "작은 일이어도 됩니다" in g and "추궁은 금지" in g and "진짜 기억이 없으신가요" in g
+    assert "다른 각도의 질문" in g and "추궁은 금지" in g and "전제하고" in g and "진짜 기억이 없으신가요" not in g and "작은 일이어도 됩니다" not in g   # (P11c-3·4)
+    assert '"no_case" if _reason == "stalled_empty"' in src
     assert "밀어붙이지 않는다" in TURN_FORMAT_RULES
 
 

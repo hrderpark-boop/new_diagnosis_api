@@ -238,6 +238,10 @@ def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None
         return "reserve"                      # (P9-1) 미질문 하위역량 수 × 1턴 예약을 침범 — 6슬롯 전이라도 닫는다
     if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS and filled_slots(ep):
         return "stalled"                      # (P7-1) 2턴 연속 슬롯 진전 없음 — 들은 것으로 매핑하고 다음으로
+    if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS and not filled_slots(ep):
+        # (2026-11-12 P11c-4) 채운 칸이 하나도 없이 리더 턴 2회 연속 진전이 없다 — 사례 없음으로 닫고 다음 칸으로(호출자가 no_case 로 닫는다).
+        #   p11b: 한 칸도 못 채운 사례가 8턴까지 가며 같은 질문을 5번 했다(종전의 무진전 종료는 채운 칸이 있을 때만 걸렸다).
+        return "stalled_empty"
     if len(filled_slots(ep)) >= len(SLOT_KEYS) and turns >= EPISODE_MIN_LEADER_TURNS:
         return "slots"
     return None
@@ -444,8 +448,8 @@ def promoted_done_reason(ep: dict | None, store: dict | None, chapter: str | Non
         return "budget"
     if all_subs and remaining(store, chapter) <= len(unasked(store, chapter, all_subs)):
         return "reserve"
-    if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS and filled_slots(ep):
-        return "stalled"
+    if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS:
+        return "stalled" if filled_slots(ep) else "stalled_empty"     # (P11c-4) 채운 칸 없이 2턴 무진전 → 호출자가 사례 없음으로 닫는다
     return None
 
 

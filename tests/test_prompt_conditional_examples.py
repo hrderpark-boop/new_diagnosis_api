@@ -58,7 +58,7 @@ def test_align_without_definition_has_no_quote_instruction_or_quote_examples():
 
 def test_align_with_definition_keeps_quote_instruction_and_labels_examples():
     g = _guide("COMPETENCY_ALIGN", last_user_response="조직을 효율적으로 관리하는 거요")
-    assert "받는 문장은 리더님이 실제로 쓴 단어·구절을" in g
+    assert "그 평서문은 리더님이 실제로 쓴 단어·구절을" in g
     assert "[인용 금지 — 최우선]" not in g
     # (2026-10-28 P0-1) 다른 챕터 예시('조직을 효과적으로…')는 일관리 ALIGN 에 그대로 유입됐다 — 예시 자체를 뺐다
     assert "효과적으로 관리한다고 하셨는데" not in g
@@ -76,10 +76,10 @@ def test_intro_without_expectation_is_system_only_no_consolation():
 def test_intro_with_expectation_receives_one_sentence_only():
     g = _guide("DIAGNOSIS_INTRO", last_user_response="네", expectation_answer="저의 리더십 역량을 파악하고 싶어요")
     assert "실제로 하신 답**: '저의 리더십 역량을 파악하고 싶어요'" in g
-    assert "받는 문장 하나" in g and "두 문장 이상" in g
+    assert "평서문 하나" in g and "두 문장 이상" in g
     assert "다시 뵙게 되어" in g                       # 재방문 인사 금지 명시
     assert "괜찮습니다' 류" in g                       # 위로 금지
-    assert g.count(L.EXAMPLE_LABEL) >= 1
+    assert g.count(L.EXAMPLE_LABEL) == 0      # (P11c-3) 완성 문장 예시 삭제
 
 
 
