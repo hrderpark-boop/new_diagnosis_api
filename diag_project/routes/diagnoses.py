@@ -1449,7 +1449,7 @@ async def _submit_message_phase3a(
         _ans_len = len((_bei_user_text or "").replace(" ", ""))
         if instruction_used in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
             if _ans_len < 20 or state.get("contains_avoidance_keywords"):
-                _signal = f"직전 답이 짧거나 회피 표지({_ans_len}자) — 더 작은 단위(그날 그 자리에서 처음 한 말)로 묻는다"
+                _signal = f"직전 답이 짧거나 회피 표지({_ans_len}자) — 더 작은 단위(리더가 말한 그 일에서 처음 한 말)로 묻는다"
             elif _ans_len >= 150:
                 _signal = "직전 답이 길고 구체적 — 질문 앞 평서문은 쓰더라도 1문장, 가장 또렷한 장면 하나의 낱말 한두 개만 넣는다(답 전체를 다시 읊지 않는다)"
             if state.get("bei_switched"):
@@ -1723,6 +1723,9 @@ async def _submit_message_phase3a(
             _reask_final = f"{_sorry_rq} {_q_rq}".strip()
             llm_output = {"reply": _reask_final}
             _tm["reask"] = f"{_reask_kind}:{_mode_rq}"
+            # (2026-11-14 P12c-1) 다시 묻기에 넘긴 '직전 질문'과, 그것이 실제로 마지막에 나간 코치 턴의 마지막 질문인지를 남긴다
+            _last_coach_rq = next((m.content or "" for m in reversed(history_messages) if (m.role == MessageRole.MODEL or m.role == "model")), "")
+            _tm["reask_prev"] = {"q": _orig_rq[:160], "is_last": bool(_orig_rq) and _same_rq(_orig_rq, _lqo_rq(_last_coach_rq) or "")}
             logger.info("🔁 다시 묻기(%s): %r ← %r", _tm["reask"], _reask_final[:80], _orig_rq[:60])
         else:
             # (2026-11-11 호출 순서) 조직관리 정의 잇기 턴(ALIGN)의 사례 1 여는 문장도 본 호출과 병렬로
@@ -3205,7 +3208,7 @@ async def _submit_message_phase3a(
             #   (2026-11-13 P12b-4) "이번에는 … 어떻게 바라보고 계신지 들어보고 싶어요." — 듣고 싶다는 꼴도 예고다. 차례를 알리는 머리('이번에는')는 뗀다
             _sk = [x for x in _sk if not re.search(r"(여쭤볼게요|여쭙겠습니다|여쭤보겠습니다|물어볼게요|묻겠습니다|질문드릴게요|질문드리겠습니다|시작할게요|시작하겠습니다|"
                                                    r"(듣고|들어\s?보고|여쭤\s?보고|여쭙고|알고)\s*싶(어요|습니다|네요))[.!…]*$", x)]
-            _sk = [re.sub(r"^(이번에는|이번엔|다음은|다음으로는?|이어서는?)\s+", "", x) for x in _sk]
+            _sk = [re.sub(r"^(이번\s?영역에서는?|이\s?영역에서는?|이번에는|이번엔|다음은|다음으로는?|이어서는?)\s+", "", x) for x in _sk]      # (P12c-6) '이번 영역에서는'도
             # (시뮬 p11b) "그 과정에서 리더님이 어떤 생각으로 판단하셨는지를 중심으로 보겠습니다." — 영역 첫 문장인데 앞의 무엇을 가리키는 말로 시작한다. 영역별 범위 문장으로
             if any(re.match(r"^(그\s?(과정|때|일|자리|장면|부분|가운데|중에서)|이\s?과정|그렇게|그러면서)", x) for x in _sk):
                 _sk = [chapter_scope_line(chapter)]
@@ -3366,6 +3369,13 @@ async def _submit_message_phase3a(
     #   거치지 않았다(s291 Jessica t10: 8-n 재생성 출력이 '되받기 한 문장 + 다리 한 문장으로 답하겠습니다.'로 시작). 엄격 사전 어휘·
     #   상태 보고문이 든 평서문만 지운다(질문 보존). ALIGN 은 조립(8-z) 전의 되받기에 걸리므로 고정 문장은 건드리지 않는다.
     if system_override_text is None and not _llm_error and (clean_reply or "").strip():
+        if instruction_used == "COMPETENCY_ALIGN":
+            # (2026-11-14 P12c-6) ALIGN 받기 끝의 예고("…그대로 살펴볼게요.") — 그 문장만 지운다. 받기가 비면 조립(8-z)이 리더 정의의 구절로 받는다
+            _al_s = [x.strip() for x in split_sentences(clean_reply) if x.strip()]
+            _al_k = [x for x in _al_s if not re.search(r"살펴\s?(볼게요|보겠습니다|볼\s?거예요|보려고\s?(해요|합니다))[.!…]*$", x)]
+            if len(_al_k) != len(_al_s):
+                clean_reply = " ".join(_al_k)
+                _tm["align_announce_cut"] = len(_al_s) - len(_al_k)
         try:
             from diag_project.services.leak_lexicon import find_leaks as _fl_y, find_state_report as _fsr_y, strip_leak_sentences as _sls_y
             from diag_project.services.output_guard import strip_state_leak as _ssl_y, rewrite_incident_word as _riw_y
@@ -3890,6 +3900,8 @@ async def _submit_message_phase3a(
             "ask_slot": _tm.get("ask_slot"), "q_stand": _tm.get("q_stand"),
             # (P12b) slot_tried 이 영역의 페르소나 슬롯 시도(1회뿐) · repeat_ask 닫힌 사례를 다시 말한 답 뒤 한 번 더 청함
             "slot_tried": _tm.get("slot_tried"), "repeat_ask": _tm.get("repeat_ask"),
+            # (P12c) reask_prev 다시 묻기에 넘긴 직전 질문(q)과 그것이 마지막 코치 턴의 마지막 질문인지(is_last) · align_announce_cut ALIGN 받기의 예고 문장 삭제 수
+            "reask_prev": _tm.get("reask_prev"), "align_announce_cut": _tm.get("align_announce_cut"),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

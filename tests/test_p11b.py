@@ -267,7 +267,7 @@ def test_p11b_4_slot_turn_shape_and_repeat_word():
     from diag_project.services import slot_render as SR
     leader = ["김선임이랑 박선임이 반대했어. 전체 개편 대신 한 과정만 파일럿으로 돌려보자고 제안했고 파일럿 설계 초안은 내가 직접 썼어.",
               "파일럿 만족도가 높게 나와서 하반기에 전체 개편으로 넘어갔어. 김선임이랑 박선임이 개편 TF에 자원했어."]
-    slot = "김선임과 박선임이 반대하는 가운데 전체 개편 대신 파일럿을 제안하며 쉽지 않은 자리를 지키셨습니다."
+    slot = "김선임과 박선임의 반대 속에 파일럿을 제안하며 쉽지 않은 자리를 지키셨습니다."      # (P12c-3) 관찰 문장은 12어절 이하
     q = "파일럿 설계 초안을 직접 쓰면서 쉽지 않은 대목은 무엇이었습니까?"
     assert SR.repeated_turn_words(slot, q, leader) == ["쉽지"]
     assert SR.slot_sentence_ok("observation", slot, leader, persona_name="Daniel", avoid_text=q) == (False, "repeat_word")
@@ -530,7 +530,7 @@ async def test_p11d_1_reask_is_one_dedicated_call(monkeypatch):
     assert (await RR.render_reask(llm, kind="contentless", prev_question=prev, leader_texts=lead, persona_name="Daniel"))[1] == "miss:no_question"
     llm = _LLM("파일럿 뒤에 가장 먼저 바뀐 한 가지는 뭐였어요?")                        # 합쇼체 코치의 어미로
     q, mode = await RR.render_reask(llm, kind="contentless", prev_question=prev, leader_texts=lead, persona_name="Daniel")
-    assert mode == "llm" and q.endswith("습니까?") and "가장 답하기 쉬운 부분만" in llm.prompt and "한 가지" not in llm.prompt   # (P11e-6) 지시문 낱말 교체
+    assert mode == "llm" and q.endswith("습니까?") and "묻는 것을 바꾸지 않습니다" in llm.prompt and "한 가지" not in llm.prompt and "그 자리에서" not in llm.prompt   # (P11e-6 → P12c-1) 묻는 것은 그대로
     assert RR.same_text("그 뒤 무엇이 달라졌습니까?", "그 뒤  무엇이 달라졌습니까 ?") and not RR.same_text("a?", "")
     src = inspect.getsource(D._submit_message_phase3a)
     assert "elif _reask_kind and chapter and _bei_ep is not None:" in src and "_rr_rq(llm, kind=_reask_kind" in src      # 본 호출 대신 전용 호출
@@ -831,7 +831,39 @@ def test_p12b_4_wording():
         assert n == 1 and out == "출고표는 직접 고치셨군요.", (bad, out)
     assert "상대" not in B.SLOT_LABELS["reaction"] + B.SLOT_HINTS["reaction"] and "선택지" not in B.SLOT_HINTS["criterion"]
     assert "상대" not in default_slot_question("reaction", formal=True) + default_slot_question("reaction", formal=False)
-    assert "달라진 점만 쓴다" in inspect.getsource(CR.render_close_summary)
+    assert "[리더가 한 일] + [리더가 말한 수치나 달라진 상태]" in inspect.getsource(CR.render_close_summary)      # (P12c-5) 문장 틀을 좁힘
     src = inspect.getsource(D._submit_message_phase3a)
     assert r"들어\\s?보고" in src or "들어\\s?보고" in src or "들어" in src[src.index("(lb1) 범위 문장 자리에 예고 문장"):][:900]
     assert "이번에는|이번엔|다음은" in src
+
+
+# ───────────────────────── P12c (2026-11-14) 다시 묻기 대상 · 사례 첫 꼬리 질문 · 슬롯 길이 · 금지 꼴 ─────────────────────────
+
+def test_p12c_reask_keeps_what_is_asked_and_first_probe_hint():
+    import inspect
+    from diag_project.prompts.phase3a.episode_card import BEI_GUIDES, TURN_FORMAT_RULES
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B
+    from diag_project.services import reask_render as RR
+    task = RR._KIND_TASK["contentless"]
+    assert "묻는 것을 바꾸지 않습니다" in task and "이미 답한 것은 다시 묻지 않습니다" in task and "그 자리에서" not in task and "무슨 말을 했는지" not in task
+    assert "방금 말한 일" in B.SLOT_HINTS["action"] and "그때 리더님이 직접" not in B.SLOT_HINTS["action"] and "상대" not in B.SLOT_HINTS["context"]
+    assert "한 턴에 묻는 것은 하나다" in TURN_FORMAT_RULES and "선택지" not in TURN_FORMAT_RULES + "".join(BEI_GUIDES.values())
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert '_tm["reask_prev"] = {"q": _orig_rq[:160], "is_last":' in src and '"reask_prev": _tm.get("reask_prev")' in src
+    assert "그날 그 자리에서" not in src
+
+
+def test_p12c_slot_length_summary_frame_and_banned_shapes():
+    from diag_project.services import slot_render as SR
+    from diag_project.services.output_guard import strip_state_leak
+    lead = ["야간 출고표를 제가 직접 다시 짰고 조 반장에게는 검수만 맡겼어요.", "그 뒤로 지연이 사흘에서 하루로 줄었습니다."]
+    long_cheer = "야간 출고표를 직접 다시 짜시고 조 반장에게는 검수만 맡기신 뒤 지연이 사흘에서 하루로 줄 때까지 지켜보신 그 선택, 응원해요."
+    assert len(long_cheer.split()) > 12 and SR.slot_sentence_ok("cheer", long_cheer, lead, persona_name="Michael") == (False, "length")
+    assert SR.slot_sentence_ok("cheer", "야간 출고표를 직접 다시 짜신 그 선택, 응원해요.", lead, persona_name="Michael")[1] != "length"
+    assert SR.SLOT_STATEMENT_MAX_EOJEOL == 12
+    for bad in ("정의 질문은 곧 드릴게요.", "질문은 바로 이어서 드릴게요.", "그 사람이 말하거나 움직인 장면을 들려주세요.", "조 반장은 그 말을 어떻게 받아들였군요."):
+        out, n = strip_state_leak(f"출고표는 직접 고치셨군요. {bad}")
+        assert n == 1 and out == "출고표는 직접 고치셨군요.", (bad, out)
+    for ok in ("어떻게 하면 좋을지 오래 고민하셨군요.", "왜 늦는지부터 물으셨군요.", "조 반장을 먼저 부르셨군요."):
+        assert strip_state_leak(ok)[1] == 0, ok

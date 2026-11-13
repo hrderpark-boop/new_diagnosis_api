@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 QUESTION_KINDS = frozenset({"criterion", "reason", "counterfactual", "other_side", "will"})
 STATEMENT_KINDS = frozenset({"cheer", "observation"})
 SLOT_MAX_CHARS = 90
+SLOT_STATEMENT_MAX_EOJEOL = 12
 
 # 종류별 지시(무엇을 쓰는가)와 결 예시. 예시는 진단과 무관한 분야(집·이사)로만 쓴다 — 가이드 예시는 금지 예까지 그대로 베낀다(CLAUDE.md).
 _SPEC: dict[str, tuple[str, str]] = {
@@ -40,13 +41,13 @@ _SPEC: dict[str, tuple[str, str]] = {
                        "월세 대신 전세로 무리해서 들어가셨다면 식구들은 어떻게 움직였을까요?"),
     "other_side": ("리더가 말한 그 장면의 상대(사람)를 리더의 낱말로 짚고, 그 사람 자리에서는 그 장면이 어떻게 보였을지 묻는 질문 한 문장.",
                    "이사 날짜를 갑자기 들은 집주인 자리에서는 그 전화가 어떤 장면이었을까요?"),
-    "cheer": ("리더가 실제로 한 선택을 리더의 낱말로 짚고, 그 선택을 응원한다고 말하는 평서문 한 문장. 질문이 아니다. "
+    "cheer": ("리더가 실제로 한 선택 하나를 리더의 낱말 한두 개로 짧게 짚고(열두 어절 안쪽 — 답을 다시 읊지 않는다), 그 선택을 응원한다고 말하는 평서문 한 문장. 질문이 아니다. "
               "'좋다·훌륭하다·대단하다·잘하셨다' 같은 평가어 없이 '응원'이라는 말로만.",
               "돌아가는 길인 줄 알면서 월세로 정하신 그 선택, 응원해요."),
     # (2026-11-12 P11d-3) 'A와 B 사이에서 … 혼자 …셨겠습니다' 틀의 출처를 지웠다 — 지시문의 '누구 사이에서'·'감당했을 것', 예시 5종의 '사이에서'·'혼자'·
     #   '~셨겠습니다', 그리고 그 낱말이 있어야 통과시키던 꼴 검사. 예시는 주지 않는다.
     #   (P11e-6) '떠안았던 것' 이라는 지시문 낱말이 출력('…직접 떠안으셨습니다')에 나와 바꿨다.
-    "observation": ("리더가 그 일에서 스스로 정하고 책임진 것(리더가 말한 것만)을 리더의 낱말로 짚어 말하는 평서문 한 문장. "
+    "observation": ("리더가 그 일에서 스스로 정하고 책임진 것(리더가 말한 것만) 하나를 리더의 낱말 한두 개로 짧게(열두 어절 안쪽) 짚어 말하는 평서문 한 문장. "
                     "질문·조언·평가가 아니다. 문장의 주어는 리더다. 문장의 뼈대와 끝맺음은 사례마다 다르게 쓴다.",
                     ""),
     "will": ("리더가 겪은 그 상황을 리더의 낱말로 짚고, 같은 상황이 다시 오면 무엇부터 할지 묻는 질문 한 문장.",
@@ -124,6 +125,8 @@ def slot_sentence_ok(kind: str, text: str | None, leader_texts: list[str] | None
         return False, f"sentences={len(sents)}"
     if not (12 <= len(t) <= SLOT_MAX_CHARS):
         return False, "length"
+    if kind in STATEMENT_KINDS and len(t.split()) > SLOT_STATEMENT_MAX_EOJEOL:
+        return False, "length"          # (2026-11-14 P12c-3) 응원·관찰 문장은 12어절 이하 — p12b: 답을 통째로 되풀이한 26어절 응원 문장. 넘으면 그 문장 없이 나간다
     if kind in QUESTION_KINDS:
         if not (is_question(t) and t.endswith("?")) or count_question_markers(t) != 1:
             return False, "not_one_question"
