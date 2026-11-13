@@ -155,6 +155,7 @@ def render_align(
     anchor: str,
     user_text: str | None = None,
     variant: int = 0,
+    fixed_receive: str | None = None,
 ) -> str:
     """ALIGN 최종 출력. anchor 는 사례 1 여는 문장(P4-4: 왜 묻는지 1문장 + 있었는지 질문, 또는 사전 앵커 한 문장). user_text 는 리더의 이번 답(복사 문장 제거용).
     variant 는 챕터 순서 인덱스 — 안내·다리 고정 문장 3종 순환(P4-1)."""
@@ -162,8 +163,10 @@ def render_align(
     if not recv:
         # (2026-11-05 P3-1) 일반 폴백('네, 잘 들었어요') 금지. (2026-11-10 P9 승인 조건 4) 낱말 하나(''상태'를 중심에')가 아니라 리더 정의의 구절을
         #   그대로 받아 '…라고 보시는군요.' — 구절이 없으면(정의가 비었으면) 되받기 생략.
+        # (2026-11-14 P12d-1) 고정 받기가 주어지면 그것으로 받는다(다시 쓰지 않는다). 없을 때만 종전의 구절 인용 문장
         phrase = definition_quote(chapter, user_text)
-        recv = [persona_line(persona_name, "align_receive_quote", quote_rago=f"'{phrase}'{_rago(phrase)}")] if phrase else []
+        recv = ([fixed_receive] if fixed_receive
+                else ([persona_line(persona_name, "align_receive_quote", quote_rago=f"'{phrase}'{_rago(phrase)}")] if phrase else []))
     parts = [
         " ".join(recv),
         definition_sentence(chapter, persona_name) + "\n" + "\n".join(f"· {n}" for n in sub_names),

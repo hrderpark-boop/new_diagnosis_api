@@ -1267,7 +1267,8 @@ def attach_referent(question: str, context_text: str | None) -> str:
     if _REACTION_RE.search(core0) and not _PERSON_RE.search(core0):
         who = key_person(context_text)
         core0 = re.sub(r"^(그리고|또|그래서)\s+", "", core0)            # (p10b) 질문 머리의 접속사는 뗀다 — '그리고 …의 말이나 표정'
-        return f"{who}의 {core0}" if who else f"상대분의 {core0}"
+        # (2026-11-14 P12d-3) 사람을 못 찾았을 때 '상대분의'를 붙이던 수선은 삭제 — 문장을 깨뜨렸다("상대분의 그 결과로 팀이 …")
+        return f"{who}의 {core0}" if who else question
     if _TALK_RE.search(core0) and not _PERSON_RE.search(core0):
         who = key_person(context_text)                     # (P10-2) 오간 이야기는 사람과의 일 — 리더 답에 나온 사람을 붙인다
         if who:

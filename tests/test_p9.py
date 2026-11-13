@@ -281,7 +281,7 @@ def test_p9_conditional_approval_items():
     assert attach_referent(q, user) == "두 분의 말이나 표정, 이후 태도 변화 중 기억에 남는 것을 말씀해 주십시오."
     assert not question_lacks_referent(attach_referent(q, user), [user])
     assert not question_lacks_referent("그 제안을 받은 박선임 님의 반응은 어땠습니까?", [user])
-    assert key_person("박선임 님은 그럼 그렇게 하죠 하고 받아들였어요.") == "박선임 님" and attach_referent("반응은 어땠습니까?", "그날 바로 보고했습니다.").startswith("상대분의 ")
+    assert key_person("박선임 님은 그럼 그렇게 하죠 하고 받아들였어요.") == "박선임 님" and attach_referent("반응은 어땠습니까?", "그날 바로 보고했습니다.") == "반응은 어땠습니까?"      # (P12d-3) 사람을 못 찾으면 '상대분의'를 붙이지 않는다
     # 4. ALIGN 받기 폴백 — 낱말 하나가 아니라 정의 구절
     assert definition_quote("people_management", "사람관리는 한 사람 한 사람의 상태를 알고 맞춰 주는 일 같아요.") == "한 사람 한 사람의 상태를 알고 맞춰 주는 일"
     assert definition_quote("performance_management", "성과관리는 목표를 같이 정하고 중간에 점검해서 끝까지 가게 하는 일이라고 봐요.") == "목표를 같이 정하고 중간에 점검해서 끝까지 가게 하는 일"

@@ -684,7 +684,7 @@ def test_p12_2_3_slot_ask_cap_and_turn_reserve():
     ep = B.bump_slot_ask(ep, B.next_slot(ep))
     assert B.ask_slot(ep) == "reaction"
     card = build_episode_card(instruction="EPISODE_PROBE", chapter="people_management", ep=ep, bei_turns=3, budget=24)
-    assert "이번 턴: '그 말을 들은 사람의 반응'" in card and "리더 턴 2/6" in card
+    assert "이번 턴: '반응'" in card and "리더 턴 2/6" in card
     assert "리더 턴 2/6" in build_episode_card(instruction="EPISODE_PROBE", chapter="organization_management", ep=ep, bei_turns=3, budget=16)
     # 결과를 두 번 물어도 안 나오면 '다시 한다면'으로 넘어간다
     ep2 = dict(ep, slot_asks={"result": 2})
@@ -859,11 +859,63 @@ def test_p12c_slot_length_summary_frame_and_banned_shapes():
     from diag_project.services.output_guard import strip_state_leak
     lead = ["야간 출고표를 제가 직접 다시 짰고 조 반장에게는 검수만 맡겼어요.", "그 뒤로 지연이 사흘에서 하루로 줄었습니다."]
     long_cheer = "야간 출고표를 직접 다시 짜시고 조 반장에게는 검수만 맡기신 뒤 지연이 사흘에서 하루로 줄 때까지 지켜보신 그 선택, 응원해요."
-    assert len(long_cheer.split()) > 12 and SR.slot_sentence_ok("cheer", long_cheer, lead, persona_name="Michael") == (False, "length")
+    assert len(long_cheer.split()) > 16 and SR.slot_sentence_ok("cheer", long_cheer, lead, persona_name="Michael") == (False, "length")
     assert SR.slot_sentence_ok("cheer", "야간 출고표를 직접 다시 짜신 그 선택, 응원해요.", lead, persona_name="Michael")[1] != "length"
-    assert SR.SLOT_STATEMENT_MAX_EOJEOL == 12
+    assert SR.SLOT_STATEMENT_MAX_EOJEOL == 16      # (P12d-4) 12 → 16
     for bad in ("정의 질문은 곧 드릴게요.", "질문은 바로 이어서 드릴게요.", "그 사람이 말하거나 움직인 장면을 들려주세요.", "조 반장은 그 말을 어떻게 받아들였군요."):
         out, n = strip_state_leak(f"출고표는 직접 고치셨군요. {bad}")
         assert n == 1 and out == "출고표는 직접 고치셨군요.", (bad, out)
     for ok in ("어떻게 하면 좋을지 오래 고민하셨군요.", "왜 늦는지부터 물으셨군요.", "조 반장을 먼저 부르셨군요."):
         assert strip_state_leak(ok)[1] == 0, ok
+
+
+# ───────────────────────── P12d (2026-11-14) 영역 시작 턴 조립 · 고정 받기 · 낱말 ─────────────────────────
+
+def test_p12d_1_chapter_start_turn_is_assembled_without_llm():
+    import inspect
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK as CF
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import align_render as AL
+    from diag_project.services import intro_messages as IM
+    from diag_project.services.persona_register import apply_register, register_violations
+    src = inspect.getsource(D._submit_message_phase3a)
+    i = src.index("(2026-11-14 P12d-1) 둘째 이후 영역의 시작 턴(COMPETENCY_ASK)")
+    blk = src[i: i + 1800]
+    assert 'instruction_used == "COMPETENCY_ASK"' in blk and "system_override_text = f\"{_scope_ca} {_dq_ca(" in blk and '_tm["scope_fixed"] = 1' in blk
+    chs = [k for k in CF if k != "supplementary"]
+    for pn in ("Ella", "Jessica", "Olivia", "Daniel", "Michael", "Lucas"):
+        for ch in chs:
+            scope = apply_register(pn, IM.chapter_scope_line(ch, pn), scope="strict")[0]
+            assert scope and not scope.endswith("?") and register_violations(pn, scope, scope="strict") == [], (pn, ch, scope)
+            assert scope.endswith("짚어보겠습니다.") == (IM.line_register(pn) == "formal"), (pn, scope)      # Lucas 도 합쇼체 판
+        assert len(set(IM.ALIGN_FIXED_RECEIVE[IM.persona_key(pn)])) == 3
+    # ALIGN — 다시 쓰지 않는다. 받기가 비면 고정 받기
+    assert 'why="align"' not in src and 'why="align_quote"' not in src and "_align_ctx[\"fixed_receive\"] = _afr_al(" in src
+    out = AL.render_align(llm_text="", chapter="performance_management", sub_names=["가", "나"], persona_name="Michael", anchor="최근에 그런 일이 있으셨어요?",
+                          user_text="목표를 같이 정하고 끝까지 가게 하는 일이요.", variant=1, fixed_receive=IM.align_fixed_receive("Michael", 1))
+    assert out.startswith("그런 일로 보고 계시네요.") and out.rstrip().endswith("최근에 그런 일이 있으셨어요?")
+    out2 = AL.render_align(llm_text="목표를 같이 정한다고 보시는군요.", chapter="performance_management", sub_names=["가", "나"], persona_name="Michael",
+                           anchor="최근에 그런 일이 있으셨어요?", user_text="목표를 같이 정하고 끝까지 가게 하는 일이요.", variant=1,
+                           fixed_receive=IM.align_fixed_receive("Michael", 1))
+    assert out2.startswith("목표를 같이 정한다고 보시는군요.")          # LLM 받기가 살아 있으면 그대로
+
+
+def test_p12d_2_3_4_rapport_receive_pool_and_wording():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B
+    from diag_project.services import intro_messages as IM
+    from diag_project.services import slot_render as SR
+    from diag_project.services.output_guard import attach_referent
+    for pn in ("Ella", "Jessica", "Olivia", "Daniel", "Michael", "Lucas"):
+        a = IM.rapport_fixed_receive(pn, "", start=0)
+        b = IM.rapport_fixed_receive(pn, f"{a} 오늘은 어떠셨어요?", start=1)
+        c = IM.rapport_fixed_receive(pn, f"{b} 어떤 일을 맡고 계세요?", start=1)
+        assert a != b and b != c, (pn, a, b, c)                       # 직전 턴에 쓴 것은 다시 쓰지 않는다
+        assert IM.role_fixed_receive(pn) not in (a, b, c)
+    assert attach_referent("반응은 어땠나요?", "그날 바로 보고했어요.") == "반응은 어땠나요?"
+    assert "그 사람" not in B.SLOT_HINTS["reaction"] and "하지 않기로" not in B.SLOT_HINTS["criterion"] and B.SLOT_LABELS["reaction"] == "반응"
+    assert SR.SLOT_STATEMENT_MAX_EOJEOL == 16
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert 'str(_tm.get("closed") or "").endswith(":repeat")) and len(_recv_5.split()) > RECEIVE_MAX_EOJEOL' in src
+    assert '_tm["case_word_cut"] = 1' in src and "_rfr1(" in src and "_rfr2(" in src and "_rfr3(" in src

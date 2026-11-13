@@ -139,16 +139,98 @@ def gate_run_summary(run_result: Dict[str, Any], sub: str) -> Dict[str, Any]:
     }
 
 
+# ── (2026-11-14 P12d) 최종 레벨을 낸 run 고르기 ───────────────────────────────
+#   병합 결과의 level_gate·근거 인용 맨 앞·영역 서술이 run0 고정이라, 판정이 2·3·3 이면 최종 3.0 인데
+#   사유는 "…Lv.2" 로 끝나는 run0 것이 남았다. 게이트 투표(level_gate.merge_votes)가 '채택 레벨을 낸 표의 사유'를
+#   쓰는 것과 같은 방식으로, 칸마다 최종 레벨을 낸 첫 run 의 것을 쓴다.
+
+# 영역 서술 필드 — 판정 전용 run(outer≥1, DEEP_JUDGE_ONLY)은 이 필드들을 빈 문자열로 낸다(llm_service.judge_only_tail).
+_NARRATIVE_FIELDS = ("comment", "strength_point", "growth_point", "gap_analysis", "situational_pattern")
+_SAR_STEPS = ("1_situation", "2_action", "3_result")
+
+
+def _narrative_slots(run_result: Dict[str, Any] | None) -> set:
+    """이 run 이 실제로 채운 서술 칸(서술 필드 + S/A/R description). 빈 문자열·공백은 채운 것으로 치지 않는다."""
+    r = run_result or {}
+    out = {f for f in _NARRATIVE_FIELDS if isinstance(r.get(f), str) and r[f].strip()}
+    rp = r.get("reasoning_process")
+    if isinstance(rp, dict):
+        for st in _SAR_STEPS:
+            step = rp.get(st)
+            if isinstance(step, dict) and isinstance(step.get("description"), str) and step["description"].strip():
+                out.add(f"reasoning_process.{st}")
+    return out
+
+
+def _run_level(run_result: Dict[str, Any] | None, sub: str):
+    """그 run 이 낸 칸 레벨 — 측정(게이트 통과)된 칸만. 미측정·탈락·검증 미완료(pending 은 level 이 표시용)·칸 없음은 None."""
+    row = ((run_result or {}).get("sub_ledger") or {}).get(sub) or {}
+    if not row.get("measured") or row.get("level") is None:
+        return None
+    return int(row["level"])
+
+
+def pick_level_run(run_results: List[Dict[str, Any] | None], sub: str, level) -> int | None:
+    """그 칸을 실제로 판정한 run 가운데 최종 레벨과 같은 레벨을 낸 첫 run 의 순번. 없으면 None(최종이 미측정이어도 None)."""
+    if level is None:
+        return None
+    for i, r in enumerate(run_results):
+        if run_evaluated(r, sub) and _run_level(r, sub) == int(level):
+            return i
+    return None
+
+
+def pick_base_run(run_results: List[Dict[str, Any] | None], final_levels: Dict[str, Any]) -> int:
+    """영역 서술의 바탕 run — 칸별 레벨이 최종값과 가장 많이 일치하는 run. 동률이면 앞 run. 후보가 없으면 0(종전).
+
+    일치 세는 법: 칸마다 (그 run 의 레벨, 미측정이면 None) == (최종 레벨, 미측정이면 None). 둘 다 미측정인 칸도 일치로 센다 —
+      최종이 '근거 미확보'인 칸을 측정됐다고 서술한 run 보다, 그 칸을 똑같이 미측정으로 본 run 의 서술이 최종 원장과 덜 어긋난다.
+      (모든 run 이 미측정인 칸은 후보 전부에 똑같이 더해져 순위를 바꾸지 않는다.)
+    후보에서 빼는 run:
+      · 생략된 run(None)·한정 판정 run(_eval_subs 가 있음 — 적응형 3회째는 갈린 칸만 판정하고 나머지는 미측정으로 둔다)
+      · 오류 폴백 run
+      · run0 이 채운 서술 칸을 하나라도 비운 run — 판정 전용 run 은 서술이 빈 문자열이라 바탕으로 삼으면 리포트 서술이 빈다.
+    run0 이 없거나 오류 폴백이면 종전대로 0.
+    """
+    r0 = run_results[0] if run_results else None
+    if not r0 or r0.get("_error_fallback"):
+        return 0
+    need = _narrative_slots(r0)
+    best, best_n = 0, -1
+    for i, r in enumerate(run_results):
+        if not r or r.get("_eval_subs") is not None or r.get("_error_fallback"):
+            continue
+        if i and not need <= _narrative_slots(r):
+            continue
+        n = sum(1 for s, lv in final_levels.items() if _run_level(r, s) == lv)
+        if n > best_n:                       # 같으면 앞 run 유지
+            best, best_n = i, n
+    return best
+
+
+def _lead_evidence(lead: List[str] | None, union: List[str]) -> List[str]:
+    """근거 합집합의 순서만 바꾼다 — lead(최종 레벨을 낸 run 의 인용)를 앞에, 나머지는 종전 순서대로. 중복 제거 규칙은 classify_sub 와 같다."""
+    out: List[str] = []
+    seen = set()
+    for e in list(lead or []) + list(union or []):
+        k = (e or "").strip()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(e)
+    return out
+
+
 def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
                      n_runs: int) -> Dict[str, Any]:
     """한 대역량의 outer run 결과들을 교집합 병합 → 단일 competency result.
 
-    서술(S/A/R·comment·score_breakdown)은 run0(기준 표본)에서 가져오고,
     sub_ledger·점수는 교차 분류로 결정론적으로 재계산한다.
+    (2026-11-14 P12d) 서술(S/A/R·comment·score_breakdown 등 바탕 필드)은 run0 고정이 아니라 칸별 레벨이 최종값과
+    가장 많이 일치하는 run(pick_base_run, 동률이면 앞 run)에서 가져오고, 칸별 level_gate·근거 인용 맨 앞은
+    최종 레벨을 낸 첫 run(pick_level_run)의 것을 쓴다. 고른 run 은 base_run·sub_ledger[칸].level_run 에 남긴다.
     """
-    base = dict(run_results[0] or {}) if run_results else {}
-    # 하위역량 목록은 run0 의 sub_ledger 순서 유지
-    subs = list(((run_results[0] or {}).get("sub_ledger") or {}).keys())
+    # 하위역량 목록은 run0 의 sub_ledger 순서 유지(바탕 run 이 바뀌어도 순서는 run0 기준)
+    subs = list((((run_results[0] if run_results else None) or {}).get("sub_ledger") or {}).keys())
 
     sub_ledger: Dict[str, Any] = {}
     gate_counts = {"passed": 0, "failed": 0, "pending": 0, "n_a": 0}
@@ -174,14 +256,19 @@ def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
             level = int(m["level"]); score = float(level)
             measured_count += 1
             disp_ev = m["evidence"]
+            # (P12d) 최종 레벨을 낸 첫 run 의 인용을 맨 앞에 — 합집합·중복 제거는 그대로, 순서만 바뀐다.
+            level_run = pick_level_run(run_results, sub, level)
+            if level_run is not None:
+                disp_ev = _lead_evidence(
+                    ((run_results[level_run].get("sub_ledger") or {}).get(sub) or {}).get("evidence"), disp_ev)
         elif cls == "dropped":
             # 게이트가 2회 이상 적극 거절 → 근거 미확보.
             gate_status, status = "failed", "evidence_missing"
-            level = score = None; disp_ev = []
+            level = score = None; disp_ev = []; level_run = None
         else:  # none
             gate_status = "n_a"
             status = "evidence_missing" if asked else "unexplored"
-            level = score = None; disp_ev = []
+            level = score = None; disp_ev = []; level_run = None
         gate_counts[gate_status] += 1
         sub_ledger[sub] = {
             "asked": asked, "measured": m["measured"], "level": level,
@@ -191,7 +278,28 @@ def merge_competency(run_results: List[Dict[str, Any]], competency_key: str,
             # (2026-10-23) run 별 게이트 판정 — 리포트의 level_gate 는 run0 만 남아 weak(1/3)·탈락 사유를
             #   되짚을 수 없었다(cbd5210b '전략적 사고'). 어느 run 이 왜 떨어뜨렸는지 그대로 싣는다.
             "gate_runs": [gate_run_summary(r, sub) for r in run_results],
+            # (P12d) 이 칸의 level_gate·근거 맨 앞을 가져온 run 순번(gate_runs 의 자리). 미측정 칸은 None.
+            "level_run": level_run,
         }
+
+    # (P12d) 바탕 run — 칸별 최종 레벨이 정해진 뒤에 고른다. 얕은 복사라 아래에서 바꾸는 키는 새 객체로 갈아 끼운다(run 원본 불변).
+    base_run = pick_base_run(run_results, {s: v["level"] for s, v in sub_ledger.items()})
+    base = dict(run_results[base_run] or {}) if run_results else {}
+    base["base_run"] = base_run
+    # (P12d) 칸별 level_gate — 측정 칸은 최종 레벨을 낸 run 의 판정·사유로 덮는다. 그 run 에 판정이 없으면 바탕 run 것 그대로.
+    #   미측정 칸은 바탕 run 것 그대로(run 별 판정은 gate_runs 에 전부 있다). 어느 run 에도 level_gate 가 없으면 키를 만들지 않는다.
+    _lg_src = base.get("level_gate")
+    _lg = dict(_lg_src) if isinstance(_lg_src, dict) else {}
+    _lg_set = False
+    for _s, _v in sub_ledger.items():
+        if _v["level_run"] is None:
+            continue
+        _g = ((run_results[_v["level_run"]] or {}).get("level_gate") or {}).get(_s)
+        if _g:
+            _lg[_s] = dict(_g)
+            _lg_set = True
+    if _lg_set or isinstance(_lg_src, dict):
+        base["level_gate"] = _lg
 
     base["sub_ledger"] = sub_ledger
     base["sub_scores"] = {s: v["score"] for s, v in sub_ledger.items()}

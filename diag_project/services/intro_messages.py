@@ -5,6 +5,7 @@ LLM 이 가이드 텍스트를 학습 데이터 패턴으로 변형하는 문제
 """
 
 import random
+import re
 
 from diag_project.data.competencies import (
     COMPETENCY_FRAMEWORK,
@@ -120,7 +121,20 @@ CHAPTER_SCOPE_LINES: dict[str, str] = {
 }
 
 
-def chapter_scope_line(chapter: str | None) -> str:
+# (2026-11-14 P12d-1) 합쇼체 코치(Jessica·Daniel·Lucas)용 — 어미표로 바꾸지 않고 사전에 둔다(Lucas 는 말투 교정 대상이 아니라 해요체가 그대로 나갔다)
+CHAPTER_SCOPE_LINES_FORMAL: dict[str, str] = {
+    "organization_management": "팀의 방향을 어떻게 세우고, 바꿔야 할 때 팀을 어떻게 움직이셨는지 함께 짚어보겠습니다.",
+    "performance_management": "목표를 어떻게 정하고 점검하셨는지, 결과를 두고 팀원과 어떻게 이야기하셨는지 함께 짚어보겠습니다.",
+    "people_management": "팀원 한 사람 한 사람과 신뢰를 어떻게 쌓고, 갈등이나 성장의 순간에 어떻게 대하셨는지 함께 짚어보겠습니다.",
+    "work_management": "일을 어떻게 계획하고 시간과 자원을 어떻게 나눠 쓰셨는지 함께 짚어보겠습니다.",
+    "self_management": "리더님 자신의 상태를 어떻게 알아차리고, 흔들릴 때 어떻게 중심을 잡으셨는지 함께 짚어보겠습니다.",
+}
+
+
+def chapter_scope_line(chapter: str | None, persona_name: str | None = None) -> str:
+    """영역별 범위 1문장. persona_name 을 주면 그 코치의 말투 판(합쇼체 코치는 합쇼체 문장)."""
+    if persona_name is not None and line_register(persona_name) == "formal":
+        return CHAPTER_SCOPE_LINES_FORMAL.get(chapter or "", "")
     return CHAPTER_SCOPE_LINES.get(chapter or "", "")
 
 
@@ -368,6 +382,44 @@ SMALLTALK_FLAT2: dict[str, str] = {"Ella": "네, 그렇군요.", "Jessica": "알
 
 def smalltalk_flat_receive2(persona_name: str | None) -> str:
     return SMALLTALK_FLAT2[persona_key(persona_name)]
+
+
+# (2026-11-14 P12d-2) 라포 고정 받기 — 3종을 두고 직전 코치 턴에 쓴 것은 뺀다(p12c: '네, 그렇군요.' 두 턴 연속).
+SMALLTALK_FLAT3: dict[str, str] = {"Ella": "네, 알겠어요.", "Jessica": "네, 그렇군요.", "Olivia": "네, 알겠어요.", "Daniel": "네, 그렇군요.",
+                                   "Michael": "네, 알겠어요.", "Lucas": "알겠습니다."}
+# 담당 업무 답이 낱말 나열일 때('교육팀장. 팀원 넷.') — 풀어 옮기지 않고, 다음 질문(기대)으로 이어지는 짧은 말로 받는다
+ROLE_FLAT: dict[str, str] = {"Ella": "맡고 계신 일, 잘 알겠어요.", "Jessica": "맡고 계신 업무, 확인했습니다.", "Olivia": "하시는 일, 잘 알겠어요.",
+                             "Daniel": "맡고 계신 일, 잘 알겠습니다.", "Michael": "맡고 계신 일, 잘 알겠어요.", "Lucas": "맡으신 일, 알겠습니다."}
+
+
+def rapport_fixed_receive(persona_name: str | None, prev_coach_text: str | None, *, start: int = 0) -> str:
+    """라포 고정 받기 한마디 — 세 가지 가운데 직전 코치 턴에 나간 것은 빼고 고른다(start = 먼저 볼 순번)."""
+    k = persona_key(persona_name)
+    pool = [persona_line(persona_name, "smalltalk_flat"), SMALLTALK_FLAT2[k], SMALLTALK_FLAT3[k]]
+    prev = re.sub(r"\s+", "", prev_coach_text or "")
+    order = [pool[(int(start) + i) % len(pool)] for i in range(len(pool))]
+    return next((x for x in order if re.sub(r"\s+", "", x) not in prev), order[0])
+
+
+def role_fixed_receive(persona_name: str | None) -> str:
+    return ROLE_FLAT[persona_key(persona_name)]
+
+
+# (2026-11-14 P12d-1) ALIGN 고정 받기 — 정의 답을 받는 LLM 문장에 리더 답의 낱말이 없거나 금지 꼴로 지워졌을 때 다시 쓰지 않고 이것으로 받는다.
+#   영역 순서로 돌린다(세션에서 같은 문장이 이어지지 않게).
+ALIGN_FIXED_RECEIVE: dict[str, list[str]] = {
+    "Ella": ["그렇게 보고 계시는군요.", "그런 일로 보고 계시네요.", "리더님은 그렇게 정리하고 계시는군요."],
+    "Jessica": ["그렇게 보고 계시군요.", "그런 일로 보고 계시는군요.", "리더님께서는 그렇게 정리하고 계시군요."],
+    "Olivia": ["그렇게 보고 계시는군요.", "그런 일로 보고 계시네요.", "리더님은 그렇게 정리하고 계시는군요."],
+    "Daniel": ["그렇게 보고 계시군요.", "그런 일로 보고 계시는군요.", "리더님께서는 그렇게 정리하고 계시군요."],
+    "Michael": ["그렇게 보고 계시는군요.", "그런 일로 보고 계시네요.", "리더님은 그렇게 정리하고 계시는군요."],
+    "Lucas": ["그렇게 보시는군요.", "그런 일로 보시네요.", "그렇게 정리하고 계시네요."],
+}
+
+
+def align_fixed_receive(persona_name: str | None, variant: int = 0) -> str:
+    pool = ALIGN_FIXED_RECEIVE[persona_key(persona_name)]
+    return pool[int(variant) % len(pool)]
 
 
 def first_chapter_bridge(chapter_name: str, persona_name: str | None = None) -> str:
@@ -693,6 +745,9 @@ def all_fixed_sentences() -> list[str]:
     out: list[str] = []
     for v in ALIGN_OPEN_VARIANTS.values():
         out.extend(v)                      # '먼저 하나부터.'(Lucas) 같은 서술어 없는 고정 다리는 흉터가 아니다
+    for v in ALIGN_FIXED_RECEIVE.values():
+        out.extend(v)                      # (P12d-1) ALIGN 고정 받기
+    out.extend(list(SMALLTALK_FLAT3.values()) + list(ROLE_FLAT.values()))   # (P12d-2) 라포 고정 받기
     return out
 
 

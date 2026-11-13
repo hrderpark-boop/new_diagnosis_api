@@ -39,7 +39,7 @@ def test_episode_card_probe_lists_filled_missing_and_next_slot():
     assert "2번째 / 이 사례 리더 턴 3/6 / 이 영역 리더 턴 5/16" in card
     assert "채워진 것: 상황·시점 — \"작년 3월 교육 개편\"(리더 말)" in card
     assert "반쯤 나온 것" in card and "리더 행동 — \"팀에서 파일럿\"" in card
-    assert "아직 없는 것(이 순서로 하나씩): 리더 행동 → 그 말을 들은 사람의 반응 → 결과 → 판단 기준" in card   # reflection 은 결과 뒤에만
+    assert "아직 없는 것(이 순서로 하나씩): 리더 행동 → 반응 → 결과 → 판단 기준" in card   # reflection 은 결과 뒤에만
     assert "이번 턴: '리더 행동' 하나를 묻는다" in card and "신호: 직전 답 짧음" in card
 
 
