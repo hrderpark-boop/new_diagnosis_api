@@ -26,25 +26,22 @@ import re
 
 SLOT_KEYS: tuple[str, ...] = ("context", "action", "reaction", "result", "criterion", "reflection")
 SLOT_LABELS: dict[str, str] = {
-    "context": "상황·시점", "action": "리더 행동", "reaction": "상대 반응", "result": "결과",
+    # (2026-11-13 P12b-4) '상대'·'선택지' 같은 낱말이 출력에 그대로 옮겨졌다("상대인 최운영 씨는", "버리신 다른 선택지") — 그렇게 옮겨 쓸 수 없는 표현으로
+    "context": "상황·시점", "action": "리더 행동", "reaction": "그 말을 들은 사람의 반응", "result": "결과",
     "criterion": "판단 기준", "reflection": "다시 한다면·배운 것",
 }
 # 사례 카드에 주는 '이번 턴 질문 방향' 힌트 — 문장은 LLM 이 쓴다(고정 문장 아님).
 SLOT_HINTS: dict[str, str] = {
     "context": "언제, 누구와, 무엇이 걸려 있던 장면이었는지(시점과 상대가 둘 다 나오게)",
     "action": "그때 리더님이 직접 한 말·결정·행동 하나(팀이 한 일·방침 설명이 아니라 리더 본인의 행동)",
-    "reaction": "상대(팀원·상사·고객)가 그것을 어떻게 받았는지 — 말·행동·태도 변화",
+    "reaction": "그 말이나 결정을 들은 사람이 어떻게 받았는지 — 그 사람의 말·행동·태도 변화(그 사람은 리더가 부른 이름·호칭으로 쓴다)",
     "result": "그 뒤 무엇이 달라졌는지(정성적 변화도 결과로 받는다)",
-    "criterion": "왜 그렇게 했는지 — 판단 기준, 버린 선택지, 트레이드오프",
+    "criterion": "왜 그렇게 했는지 — 무엇을 보고 그렇게 정했는지, 하지 않기로 한 것은 무엇이었는지",
     "reflection": "지금 돌아보면 바꿀 점이나 배운 것 하나",
 }
 SLOT_STATUSES = ("empty", "partial", "filled")
 
-EPISODE_MAX_LEADER_TURNS = 8
-# (2026-11-13 P12-3) 칸(하위역량)이 7개 이상인 영역은 사례당 리더 턴 최대 6 — 아직 묻지 않은 칸마다 2턴(여는 질문 + 꼬리 1회)을 남겨 두려면
-#   사례가 8턴씩 쓸 수 없다(11/13 운영 Michael 사람관리: 다섯 칸이 질문 1개·답 1개로 끝났다).
-EPISODE_MAX_LEADER_TURNS_WIDE = 6
-WIDE_CHAPTER_SUBS = 7
+EPISODE_MAX_LEADER_TURNS = 6          # (2026-11-13 P12b-2) 8 → 6, 전 영역 — 아직 묻지 않은 칸마다 2턴을 남기고도 사례 2개가 들어가게(P12 는 9칸 영역만 6이었다)
 RESERVE_PER_UNASKED = 2               # (P12-3) 아직 묻지 않은 칸의 예약 — 칸당 1턴 → 2턴
 SLOT_ASK_MAX = 2                      # (P12-2) 같은 것(슬롯)을 채우려는 질문은 사례당 2회까지 — 그래도 안 나오면 다음 것으로
 EPISODE_MIN_LEADER_TURNS = 4          # (2026-11-05 2단계 판정 1) 6/6 이 4턴 전에 차도 "장면 구체화" 턴을 더 묻는다
@@ -66,7 +63,7 @@ BEI_INSTRUCTIONS = frozenset({"EPISODE_OPEN", "EPISODE_PROBE", "NO_CASE_REFRAME"
 # 이 instruction 의 코치 턴 뒤 리더 답은 BEI 리더 턴이다(ALIGN 앵커 답 포함)
 BEI_ANSWER_AFTER = BEI_INSTRUCTIONS | {"COMPETENCY_ALIGN"}
 LEDGER_KEYS = ("chapter_state", "bei_turns", "episodes", "covered", "weak", "sweep_asked", "unconfirmed",
-               "no_case_subs", "asked_subs", "anchored_subs")
+               "no_case_subs", "asked_subs", "anchored_subs", "repeat_subs")
 
 _NO_CASE_RE = re.compile(r"(없(어요|습니다|는데요|네요|었어요|었습니다|는 것 같|을 것 같)|기억(이|은)?\s*(안|잘 안|나지 않)|떠오르(지|는 게) 않|딱히|별로 없|생각(이|은) 안 나)")
 
@@ -160,8 +157,8 @@ def ask_slot(ep: dict | None) -> str:
     return cur if cur in un else (un[0] if un else "reflection")
 
 
-def episode_turn_max(n_subs: int | None) -> int:
-    return EPISODE_MAX_LEADER_TURNS_WIDE if int(n_subs or 0) >= WIDE_CHAPTER_SUBS else EPISODE_MAX_LEADER_TURNS
+def episode_turn_max(n_subs: int | None = None) -> int:
+    return EPISODE_MAX_LEADER_TURNS          # (P12b-2) 칸 수와 무관하게 6
 
 
 def reserve_turns(store: dict | None, chapter: str | None, all_subs: list[str] | None) -> int:
@@ -272,12 +269,12 @@ def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None
     if not ep:
         return None
     turns = int(ep.get("leader_turns") or 0)
+    if len(filled_slots(ep)) >= len(SLOT_KEYS) and turns >= EPISODE_MIN_LEADER_TURNS:
+        return "slots"                        # 여섯 가지가 다 나왔다 — 턴 상한·예약 때문에 닫히는 것과 구별한다
     if turns >= episode_turn_max(len(all_subs or [])):
         return "turns"
     if remaining(store, chapter) <= 0:
         return "budget"
-    if len(filled_slots(ep)) >= len(SLOT_KEYS) and turns >= EPISODE_MIN_LEADER_TURNS:
-        return "slots"                        # 여섯 가지가 다 나왔다 — 예약 때문에 닫히는 것과 구별한다
     if all_subs and remaining(store, chapter) <= reserve_turns(store, chapter, all_subs):
         return "reserve"                      # (P9-1 → P12-3) 미질문 칸 수 × 2턴 예약을 침범 — 6슬롯 전이라도 닫는다
     if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS and filled_slots(ep):
@@ -367,6 +364,12 @@ def close_episode(store: dict, chapter: str, ep: dict, status: str, labels: list
     return store
 
 
+def mark_repeat(store: dict, chapter: str, sub: str | None) -> dict:
+    """(P12b-3) 이 칸의 질문에 리더가 앞에서 닫힌 사례를 다시 말했고, 한 번 더 청해도 다른 장면이 없었다 — '사례 없음'과 구분해 적는다(repeat_subs).
+    그 칸의 근거는 원래 사례에 있다(원래 사례의 addenda 에 그 답의 문장을 남긴다)."""
+    return _add_to_list(store, "repeat_subs", chapter, sub) if sub else store
+
+
 def mark_no_case(store: dict, chapter: str, sub: str | None) -> dict:
     return _add_to_list(store, "no_case_subs", chapter, sub) if sub else store
 
@@ -378,7 +381,8 @@ def mark_unconfirmed(store: dict, chapter: str, sub: str | None) -> dict:
 def uncovered(store: dict | None, chapter: str | None, all_subs: list[str], priority: list[str] | None = None) -> list[str]:
     """covered(strong)·no_case·unconfirmed 를 뺀 하위역량(정의 순서 첫 항목 고정 + priority 우선)."""
     from diag_project.services.traversal import order_by_priority
-    skip = covered_set(store, chapter) | set(_list(store, "no_case_subs", chapter)) | set(_list(store, "unconfirmed", chapter))
+    skip = (covered_set(store, chapter) | set(_list(store, "no_case_subs", chapter)) | set(_list(store, "unconfirmed", chapter))
+            | set(_list(store, "repeat_subs", chapter)))
     return [s for s in order_by_priority(list(all_subs), list(priority or [])) if s not in skip]
 
 
@@ -386,7 +390,7 @@ def unasked(store: dict | None, chapter: str | None, all_subs: list[str]) -> lis
     """(2026-11-10 P9-1) 아직 한 번도 묻지 않은 하위역량 — asked(여는 앵커·SWEEP 앵커·strong 매핑)·no_case·unconfirmed 어디에도 없는 것.
     챕터 종료 조건과 예약 턴 수의 기준이다."""
     done = set(_list(store, "asked_subs", chapter)) | set(_list(store, "no_case_subs", chapter)) | set(_list(store, "unconfirmed", chapter)) \
-        | covered_set(store, chapter) | set(_list(store, "sweep_asked", chapter))
+        | covered_set(store, chapter) | set(_list(store, "sweep_asked", chapter)) | set(_list(store, "repeat_subs", chapter))
     return [s for s in all_subs if s not in done]
 
 
@@ -404,7 +408,7 @@ def pick_opener(store: dict | None, chapter: str | None, all_subs: list[str], pr
 
 def sweep_count(store: dict | None, chapter: str | None) -> int:
     """(P4-5 → 2026-11-06 P7) 챕터당 SWEEP 상한에 세는 항목 — 사례를 찾아 들은 것(sweep_done 등)만. '없음'(no_case) 1턴짜리는 세지 않는다(전수 탐색 보장)."""
-    return sum(1 for e in episodes(store, chapter) if e.get("kind") == "sweep" and e.get("status") not in ("no_case",))
+    return sum(1 for e in episodes(store, chapter) if e.get("kind") == "sweep" and e.get("status") not in ("no_case", "repeat"))
 
 
 def sweep_target(store: dict | None, chapter: str | None, all_subs: list[str], priority: list[str] | None = None) -> str | None:
@@ -529,6 +533,7 @@ def coverage_summary(store: dict | None, chapter: str, all_subs: list[str]) -> d
     asked = set(_list(store, "asked_subs", chapter))   # (P9-1) 여는 앵커로 물은 항목도 물은 것 — 미탐색은 '한 번도 묻지 않은 것'만
     not_explored = [s for s in all_subs if s not in cov and s not in sweep and s not in unc and s not in noc and s not in asked]
     return {
+        "repeat": sorted(set(_list(store, "repeat_subs", chapter))),
         "covered": sorted(cov), "sweep_asked": sorted(sweep), "unconfirmed": sorted(unc | noc),
         "not_explored": not_explored, "episodes": counted_episodes(store, chapter), "bei_turns": bei_turns(store, chapter),
         "budget": chapter_budget(chapter),

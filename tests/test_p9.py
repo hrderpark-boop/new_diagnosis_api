@@ -87,7 +87,7 @@ def test_p9_1_reserve_closes_episode_and_people_budget():
     assert B.unasked(st, ch, subs) == subs[1:] and B.episode_done_reason(ep, st, ch, subs) == "reserve"
     st["bei_turns"] = {ch: 24 - 17}
     assert B.episode_done_reason(ep, st, ch, subs) is None
-    assert B.episode_turn_max(len(subs)) == 6 and B.episode_turn_max(5) == 8      # 칸이 7개 이상인 영역은 사례 최대 6턴
+    assert B.episode_turn_max(len(subs)) == 6 and B.episode_turn_max(5) == 6      # (P12b-2) 전 영역 사례 최대 6턴
     assert B.episode_done_reason(dict(ep, leader_turns=6), st, ch, subs) == "turns"
     # 사람관리는 사례 2개까지 — 2개를 들은 뒤에는 예산이 넉넉해도 SWEEP
     st2: dict = {}

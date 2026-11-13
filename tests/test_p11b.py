@@ -669,7 +669,7 @@ def test_p12_1_question_stands_alone():
         assert "건에서" not in q and "관련해" not in q and "'" not in q, q                                       # 머리 없이 질문만
     assert attach_referent("달라진 점이 있었나요?", ans) == "달라진 점이 있었나요?"                               # ''출고표'와 관련해' 머리 삭제
     src = inspect.getsource(D._submit_message_phase3a)
-    assert "# 8-w4b." in src and 'why="q_stand:" + "+".join(_why_b4)' in src and '"q_stand": _tm.get("q_stand")' in src
+    assert "_qov_b(" not in src and "q_stand:overlap" not in src and '"q_overlap"' not in src      # (P12b-1) 겹침 검사와 그 다시 쓰기는 삭제 — 지시문만 남는다
 
 
 def test_p12_2_3_slot_ask_cap_and_turn_reserve():
@@ -684,8 +684,8 @@ def test_p12_2_3_slot_ask_cap_and_turn_reserve():
     ep = B.bump_slot_ask(ep, B.next_slot(ep))
     assert B.ask_slot(ep) == "reaction"
     card = build_episode_card(instruction="EPISODE_PROBE", chapter="people_management", ep=ep, bei_turns=3, budget=24)
-    assert "이번 턴: '상대 반응'" in card and "리더 턴 2/6" in card                                                # 9칸 영역은 사례 최대 6턴
-    assert "리더 턴 2/8" in build_episode_card(instruction="EPISODE_PROBE", chapter="organization_management", ep=ep, bei_turns=3, budget=16)
+    assert "이번 턴: '그 말을 들은 사람의 반응'" in card and "리더 턴 2/6" in card
+    assert "리더 턴 2/6" in build_episode_card(instruction="EPISODE_PROBE", chapter="organization_management", ep=ep, bei_turns=3, budget=16)
     # 결과를 두 번 물어도 안 나오면 '다시 한다면'으로 넘어간다
     ep2 = dict(ep, slot_asks={"result": 2})
     assert "reflection" in B.unfilled_slots(ep2) and "reflection" not in B.unfilled_slots(ep)
@@ -693,7 +693,7 @@ def test_p12_2_3_slot_ask_cap_and_turn_reserve():
     ep3 = dict(ep, slot_asks={k: 2 for k in B.SLOT_KEYS})
     assert B.next_slot(ep3) is None and B.episode_done_reason(ep3, {"bei_turns": {"organization_management": 3}}, "organization_management", ["a", "b"]) == "stalled"
     # 예약: 아직 묻지 않은 칸마다 2턴
-    assert B.RESERVE_PER_UNASKED == 2 and B.episode_turn_max(9) == 6 and B.episode_turn_max(4) == 8
+    assert B.RESERVE_PER_UNASKED == 2 and B.episode_turn_max(9) == 6 and B.episode_turn_max(4) == 6
     subs = ["가", "나", "다", "라"]
     st, e = B.new_episode({}, "organization_management", "가", "k")
     st["bei_turns"] = {"organization_management": 10}                    # 남은 6 = 미질문 3칸 × 2턴
@@ -761,3 +761,77 @@ def test_p12_7_register_of_summary_and_noun_list_receive():
     assert is_contentless_smalltalk("물류 3팀 반장 야간 배송")
     src = inspect.getsource(D._submit_message_phase3a)
     assert '_tm["smalltalk"] = "fixed3"' in src and '("strict" if _polite_zz else "questions")' in src and "_areg_cs(" in src
+
+
+# ───────────────────────── P12b (2026-11-13) 다시 쓰기 줄이기 · 닫힌 사례를 다시 말한 답 ─────────────────────────
+
+def test_p12b_1_2_fewer_rewrites_and_six_turn_cap():
+    import inspect
+    from diag_project.prompts.phase3a.episode_card import BEI_GUIDES, build_episode_card
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B
+    from diag_project.services.slot_render import repeats_used_shape
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert 'why="sweep_bridge"' not in src and "slot_render:" not in src                       # 잇는 문장·페르소나 슬롯은 다시 쓰지 않는다
+    assert '_tm["slot_tried"] = 1' in src and src.count("rounds=1") >= 2                       # 영역당 1회만 시도
+    assert '_only_long_w = bool(_iss) and set(_iss) == {"long_receive"}' in src                # 긴 받기만이면 다시 쓰지 않고 넘친 문장을 지운다
+    assert repeats_used_shape("그 판단을 끝까지 밀고 가신 것, 응원해요.", ["먼저 이유를 들으신 그 순서, 응원해요."]) is None      # 끝맺음이 같아도 걸리지 않는다
+    card = build_episode_card(instruction="SWEEP_ANCHOR", chapter="people_management", ep=None, bei_turns=9, budget=24, anchor_text="Q?", sweep_seq=2,
+                              bridge_material="'분기 계획표'", weak_hint="앞서 들은 이야기에서 이쪽이 살짝 나왔다")
+    assert "잇는 문장" not in card and "잇는 문장" not in BEI_GUIDES["SWEEP_ANCHOR"] and "②" in card
+    assert B.EPISODE_MAX_LEADER_TURNS == 6 and B.episode_turn_max(4) == 6 and B.episode_turn_max(9) == 6
+    ep = {"idx": 1, "leader_turns": 6, "slots": {k: {"status": "filled", "quote": "x"} for k in B.SLOT_KEYS}}
+    assert B.episode_done_reason(ep, {"bei_turns": {"organization_management": 6}}, "organization_management", ["a", "b"]) == "slots"      # 다 찼으면 턴 상한보다 먼저
+    ep["slots"]["reflection"] = {"status": "empty", "quote": ""}
+    assert B.episode_done_reason(ep, {"bei_turns": {"organization_management": 6}}, "organization_management", ["a", "b"]) == "turns"
+
+
+def test_p12b_3_repeat_answer_asks_once_then_closes_as_repeat():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B
+    from diag_project.services import intro_messages as IM
+    from diag_project.services.turn_checks import same_incident
+    # 같은 프로젝트의 다른 사건은 같은 사건이 아니다 — 앞 이야기를 가리키는 말이 있어도
+    proj = ("작년 3월에 본부에서 교육과정 개편을 맡으라는 지시가 왔어요. 강사 두 분이 왜 바꾸냐고 반대해서 따로 불러 이유를 들었고, "
+            "한 과정만 두 달 파일럿으로 돌리자고 제안했습니다. 파일럿 만족도가 높게 나와 하반기에 전체 개편으로 넘어갔어요.")
+    closed = {1: proj}
+    for other in ("아까 말씀드린 교육과정 개편 때 일인데요, 중간에 외부 강사료 예산이 30% 모자랐어요. 그래서 재무팀 정 과장을 찾아가 분기 예산을 앞당겨 쓰는 안을 냈습니다.",
+                  "그 개편을 하던 중에 과정마다 교안 양식이 제각각이라 검수가 안 됐어요. 제가 한 장짜리 표준 양식을 만들어 다음 주부터 그것만 받겠다고 공지했습니다.",
+                  "같은 개편 프로젝트에서 강의실 예약이 자꾸 겹쳤습니다. 공유 캘린더를 새로 만들고 운영 담당 한 명에게 배정 권한을 넘겼어요.",
+                  "앞서 말한 개편 건인데, 이번에는 수강생 설문 문항을 제가 직접 다시 짰고 응답률이 두 배가 됐습니다."):
+        assert same_incident(other, closed) is None, other
+    assert same_incident("아까 말씀드린 그 개편 일에서요, 강사 두 분을 따로 불러 이유를 들었고 한 과정만 두 달 파일럿으로 돌리자고 제안했습니다.", closed) == 1
+    # 상태·원장: repeat 는 사례 없음과 구분해 적고, 그 칸은 다시 묻지 않는다
+    subs = ["가", "나", "다"]
+    st, ep = B.new_episode({}, "organization_management", "가", "k", kind="sweep")
+    st = B.close_episode(st, "organization_management", ep, "repeat", [], subs)
+    st = B.mark_repeat(st, "organization_management", "가")
+    assert st["repeat_subs"]["organization_management"] == ["가"] and "가" not in (st.get("no_case_subs") or {}).get("organization_management", [])
+    assert "가" not in B.uncovered(st, "organization_management", subs) and "가" not in B.unasked(st, "organization_management", subs)
+    assert B.coverage_summary(st, "organization_management", subs)["repeat"] == ["가"] and B.sweep_count(st, "organization_management") == 0
+    for pn in ("Ella", "Jessica", "Olivia", "Daniel", "Michael", "Lucas"):
+        assert IM.persona_line(pn, "repeat_heard").endswith(".") and len(IM.persona_line(pn, "repeat_heard")) <= 16
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "_repeat_ask_now = True" in src and 'await _close_and_map(_ep, "repeat")' in src and "'repeat_heard')} 그 일 말고, " in src
+    assert '"sub": _ep.get("opener_sub"), "quote": _s_r[:200]' in src                         # 그 답의 문장을 전부, 묻던 칸을 붙여 원래 사례에 남긴다
+    assert 'if status not in ("no_case", "repeat") and _bei.filled_slots(ep):' in src
+
+
+def test_p12b_4_wording():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B
+    from diag_project.services import close_render as CR
+    from diag_project.services.output_guard import strip_state_leak
+    from diag_project.services.turn_checks import default_slot_question
+    for bad in ("상대인 조 반장은 그 말을 어떻게 받았나요?", "상대 쪽 반응은 어땠나요?", "버리신 다른 선택지가 있었다면 그것도 알려 주세요.", "그 결과가 분명하게 남았네요.",
+                "사람 단위로 보신다는 게 먼저 느껴지네요.", "걱정했다는 말씀이 기억에 남네요.", "그 맥락과 이어져 들려요.", "그 대목이 이번 장면과 이어지네요.", "잇는 문장 하나만 쓰겠어요."):
+        out, n = strip_state_leak(f"출고표는 직접 고치셨군요. {bad}")
+        assert n == 1 and out == "출고표는 직접 고치셨군요.", (bad, out)
+    assert "상대" not in B.SLOT_LABELS["reaction"] + B.SLOT_HINTS["reaction"] and "선택지" not in B.SLOT_HINTS["criterion"]
+    assert "상대" not in default_slot_question("reaction", formal=True) + default_slot_question("reaction", formal=False)
+    assert "달라진 점만 쓴다" in inspect.getsource(CR.render_close_summary)
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert r"들어\\s?보고" in src or "들어\\s?보고" in src or "들어" in src[src.index("(lb1) 범위 문장 자리에 예고 문장"):][:900]
+    assert "이번에는|이번엔|다음은" in src

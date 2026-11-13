@@ -160,14 +160,14 @@ def test_b_slot_sentence_no_repeated_ending_no_first_person():
     u = ["교육 체계 개편을 두고 김선임과 박선임 사이에서 제가 먼저 따로 이야기를 꺼내야 했습니다", "본부 지시라 미룰 수가 없었어요"]
     used = ["두 선임 사이에서 개편을 밀어야 했던 자리, 가볍지 않으셨겠습니다."]
     assert slot_sentence_ok("observation", "김선임과 박선임 사이에서 제가 먼저 따로 이야기를 꺼내야 했던 자리, 가볍지 않으셨겠습니다.", u, persona_name="Daniel") == (False, "first_person")
-    assert slot_sentence_ok("observation", "본부 지시와 두 선임의 반대 사이에 서야 했던 자리, 가볍지 않으셨겠습니다.", u, persona_name="Daniel", used=used) == (False, "same_ending")
+    assert slot_sentence_ok("observation", "본부 지시와 두 선임의 반대 사이에 서야 했던 자리, 가볍지 않으셨겠습니다.", u, persona_name="Daniel", used=used) == (False, "same_shape")      # (P12b-1) 끝맺음 반복 검사는 뺐다 — 이 문장은 문형('…자리, …')이 같아 걸린다
     assert slot_sentence_ok("observation", "본부 지시와 두 선임 사이에 서야 했던 자리, 오래 망설이셨겠습니다.", u, persona_name="Daniel", used=used) == (False, "same_shape")
     assert slot_sentence_ok("observation", "개편을 미룰 수 없는 처지에서 두 선임을 따로 만나기까지 오래 망설이셨겠습니다.", u, persona_name="Daniel", used=used) == (True, "")
     assert has_leader_first_person("저희 팀이 먼저 나섰던 일") and not has_leader_first_person("문제가 커진 뒤였습니다")
     # 다른 코치의 슬롯에도 같은 규칙
     u2 = ["올해는 운영팀 두 명만 먼저 쓰게 하고 전면 도입은 내년으로 미뤘어요"]
     used2 = ["운영팀 두 명 없이 바로 전면 도입을 하셨다면 팀원들은 어떻게 움직였을까요?"]
-    assert slot_sentence_ok("counterfactual", "전면 도입을 내년으로 미루지 않으셨다면 운영팀 두 명은 어떻게 움직였을까요?", u2, persona_name="Olivia", used=used2)[1] == "same_ending"
+    assert slot_sentence_ok("counterfactual", "전면 도입을 내년으로 미루지 않으셨다면 운영팀 두 명은 어떻게 움직였을까요?", u2, persona_name="Olivia", used=used2)[1] == ""      # (P12b-1) 끝맺음 반복 검사는 페르소나 슬롯 문장에 걸지 않는다
     assert repeats_used_shape("전면 도입을 미루지 않으셨다면 운영팀은 무엇부터 막혔을까요?", used2) is None
     # (2026-11-12 P11d-3) 관찰 문장 예시 5종·꼴 검사는 삭제 — 'A와 B 사이에서 … 혼자 …셨겠습니다' 틀의 출처였다
     import diag_project.services.slot_render as _SR

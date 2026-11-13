@@ -254,7 +254,7 @@ def strip_question_start(question: str | None) -> str:
 _DEFAULT_Q: dict[str, tuple[str, str]] = {
     "context": ("{topic}언제 누구와 있었던 일인지 말씀해 주시겠습니까?", "{topic}언제 누구와 있었던 일인지 들려주시겠어요?"),
     "action": ("{topic}리더님이 직접 하신 말이나 행동은 무엇이었습니까?", "{topic}리더님이 직접 하신 말이나 행동은 무엇이었어요?"),
-    "reaction": ("{topic}상대는 리더님의 말을 어떻게 받아들였습니까?", "{topic}상대는 리더님의 말을 어떻게 받아들였어요?"),
+    "reaction": ("{topic}그 말을 들은 분은 어떻게 받아들였습니까?", "{topic}그 말을 들은 분은 어떻게 받아들였어요?"),
     "result": ("{topic}그 일이 끝난 뒤에 무엇이 달라졌습니까?", "{topic}그 일이 끝난 뒤에 무엇이 달라졌어요?"),
     "criterion": ("{topic}그렇게 하기로 정하신 기준은 무엇이었습니까?", "{topic}그렇게 하기로 정하신 기준은 무엇이었어요?"),
     "reflection": ("{topic}지금 돌아보면 다르게 하고 싶은 점이 있습니까?", "{topic}지금 돌아보면 다르게 하고 싶은 점이 있으세요?"),
@@ -683,7 +683,9 @@ _BACKREF_RE = re.compile(r"(아까|앞서|앞에서|방금|이미)\s*(말씀드�
 def same_incident(answer: str | None, closed_texts: dict | None) -> object | None:
     """리더 답이 이번 영역에서 이미 닫힌 사례와 같은 사건이면 그 사례의 표지(사례 번호 또는 'sweepN'). 아니면 None.
     답의 내용 낱말(어간 앞 두 글자) 가운데 그 사례에서 리더가 한 말과 겹치는 비율이 60% 이상이고 5개 이상 겹치거나,
-    '아까 말씀드린 그 일' 처럼 앞 이야기를 가리키면서 3개 이상 겹칠 때."""
+    '아까 말씀드린 그 일' 처럼 앞 이야기를 가리키면서 4개 이상·30% 이상 겹칠 때.
+    (2026-11-13 P12b-3) 같은 프로젝트의 다른 사건(같은 개편 안의 예산 부족·양식 통일·일정 도구)은 같은 사건이 아니다 — 앞 이야기를 가리키는 말이 있어도
+    겹치는 낱말이 프로젝트 이름 몇 개뿐이면(종전 기준 3개) 걸리지 않게 올렸다."""
     a = {c[:2] for c in _content_chunks(answer or "") if len(c) >= 2}
     if len(a) < 3:
         return None
@@ -692,6 +694,6 @@ def same_incident(answer: str | None, closed_texts: dict | None) -> object | Non
     for tag, txt in (closed_texts or {}).items():
         e = {c[:2] for c in _content_chunks(txt or "") if len(c) >= 2}
         n = len(a & e)
-        if ((n >= 5 and n / len(a) >= 0.6) or (backref and n >= 3)) and n > best_n:
+        if ((n >= 5 and n / len(a) >= 0.6) or (backref and n >= 4 and n / len(a) >= 0.3)) and n > best_n:
             best, best_n = tag, n
     return best

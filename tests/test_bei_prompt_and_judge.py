@@ -36,10 +36,10 @@ def test_episode_card_probe_lists_filled_missing_and_next_slot():
     ep["slots"]["context"] = {"status": "filled", "quote": "작년 3월 교육 개편"}
     ep["slots"]["action"] = {"status": "partial", "quote": "팀에서 파일럿"}
     card = EC.build_episode_card(instruction="EPISODE_PROBE", chapter=CH, ep=ep, bei_turns=5, budget=16, signal="직전 답 짧음")
-    assert "2번째 / 이 사례 리더 턴 3/8 / 이 영역 리더 턴 5/16" in card
+    assert "2번째 / 이 사례 리더 턴 3/6 / 이 영역 리더 턴 5/16" in card
     assert "채워진 것: 상황·시점 — \"작년 3월 교육 개편\"(리더 말)" in card
     assert "반쯤 나온 것" in card and "리더 행동 — \"팀에서 파일럿\"" in card
-    assert "아직 없는 것(이 순서로 하나씩): 리더 행동 → 상대 반응 → 결과 → 판단 기준" in card   # reflection 은 결과 뒤에만
+    assert "아직 없는 것(이 순서로 하나씩): 리더 행동 → 그 말을 들은 사람의 반응 → 결과 → 판단 기준" in card   # reflection 은 결과 뒤에만
     assert "이번 턴: '리더 행동' 하나를 묻는다" in card and "신호: 직전 답 짧음" in card
 
 
@@ -48,7 +48,7 @@ def test_episode_card_open_and_sweep_carry_system_anchor():
     assert "시스템이 붙일 문장: \"그런 일, 최근에 있으셨어요?\"" in card and "질문" in card and "쓰지 않는다" in card   # (P4-4) 여는 문장 = 왜 묻는지 + 있었는지 질문
     card2 = EC.build_episode_card(instruction="SWEEP_ANCHOR", chapter=CH, ep=None, bei_turns=12, budget=16, anchor_text="Q?",
                                   weak_hint="아까 1번째 사례에서 이쪽 이야기가 살짝 나왔다")
-    assert "잇는 문장 힌트: 아까 1번째 사례" in card2
+    assert "②의 힌트: 아까 1번째 사례" in card2
     ep = _ep(kind="sweep", leader_turns=1)
     card3 = EC.build_episode_card(instruction="SWEEP_FOLLOWUP", chapter=CH, ep=ep, bei_turns=13, budget=16)
     assert "이번 턴: '리더 행동' 하나" in card3 and "마무리한다" in card3
@@ -277,7 +277,7 @@ def test_p4_5_sweep_cap_three_per_chapter_and_bridge_rule():
     assert has_sweep_bridge("아까 공통 양식 얘기에서 살짝 나왔는데, 그쪽을 하나 더 여쭙고 싶어요.") and not has_sweep_bridge("교안을 먼저 확보하는 쪽이 과정을 살린다고 보셨군요.")
     card = build_episode_card(instruction="SWEEP_ANCHOR", chapter=CH, ep=None, bei_turns=10, budget=20, anchor_text="그런 일, 최근에 있으셨어요?",
                               sweep_seq=2, bridge_material="'하루를 비워서 두 분을 한자리에 앉혔어요'")
-    assert "연속 2번째" in card and "잇는 문장이 필수" in card and "하루를 비워서" in card
+    assert "연속 2번째" in card and "잇는 문장" not in card and "②의 재료" in card and "하루를 비워서" in card      # (P12b-1) 안에서 부르는 이름은 번호로
     card1 = build_episode_card(instruction="SWEEP_ANCHOR", chapter=CH, ep=None, bei_turns=10, budget=20, anchor_text="그런 일, 최근에 있으셨어요?", sweep_seq=1)
     assert "필수" not in card1
 

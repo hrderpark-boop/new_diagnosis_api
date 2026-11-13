@@ -479,7 +479,7 @@ def test_regen_budget_one_per_turn_then_deterministic_repair():
     i = src.index("async def _timed_regen(**kw):")
     wrap = src[i: i + 1200]
     assert 'if _tm.get("no_regen") or _tm.get("budget_used"):' in wrap and '_tm["budget_used"] = 1' in wrap
-    assert src.count('rounds=(1 if _tm.get("budget_used") else 2)') >= 4      # (P12-6) 여는 문장 렌더 호출이 빠졌다
+    assert src.count('rounds=(1 if _tm.get("budget_used") else 2)') >= 2      # (P12-6) 여는 문장 렌더 호출이 빠졌다 · (P12b-1) 페르소나 슬롯은 1회만 쓴다
     # 8-w: 재생성 1회, 그 뒤는 결정론 수선(긴 받기 자르기 · 질문 없으면 후속 질문 · 받기 없으면 구절 인용 받기)
     j = src.index("while _iss and _rounds < 1 and not (_tm.get(\"budget_used\")")
     after = src[j: src.index("# 8-w2.", j)]

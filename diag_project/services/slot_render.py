@@ -78,10 +78,9 @@ def _shape_key(text: str | None) -> str:
 
 def repeats_used_shape(text: str | None, used: list[str] | None) -> str | None:
     """이번 세션에서 이미 쓴 슬롯 문장과 끝맺음이 같거나('…가볍지 않으셨겠습니다'), 같은 문형('…자리, …')이면 그 사유."""
-    ek, sk = _ending_key(text), _shape_key(text)
+    # (2026-11-13 P12b-1) 끝맺음 반복 검사는 뺐다 — Michael 응원 문장은 늘 '…응원해요'로 끝나, 둘째 영역부터 매 턴 불합격하며 다시 쓰기를 썼다(p12 6턴)
+    sk = _shape_key(text)
     for u in used or []:
-        if ek and ek == _ending_key(u):
-            return "same_ending"
         if sk and sk == _shape_key(u):
             return "same_shape"
     return None

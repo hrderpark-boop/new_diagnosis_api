@@ -405,7 +405,7 @@ async def run_session(tag: str, coach: str, port: int, out_dir: Path, profile: d
     out_rows = [{"t": t, "role": role, "chapter": ch, "probe": probe, "instr": instr, "content": content,
                  "guard": (_guard_for(t, instr, ch) if role == "model" else None)} for t, role, ch, probe, instr, content in rows]
     ledger = {k: store.get(k) for k in ("chapter_state", "bei_turns", "episodes", "covered", "weak", "sweep_asked", "unconfirmed",
-                                        "no_case_subs", "asked_subs", "anchored_subs") if store.get(k) is not None}
+                                        "no_case_subs", "repeat_subs", "asked_subs", "anchored_subs") if store.get(k) is not None}
     truth = {"episodes": [{"id": e["id"], "chapter": e["chapter"], "subs": e["subs"], "used": e["id"] in leader.used} for e in profile["episodes"]],
              "no_case_subs": profile.get("no_case_subs") or []}
     result = {"session": sid, "coach": coach, "provider": provider, "stub": stub, "status": sad[1] if sad else None,
@@ -440,7 +440,7 @@ def dump_transcript(path: str) -> str:
     led = d.get("ledger") or {}
     if led:
         L.append("## 원장")
-        L.append(json.dumps({k: led.get(k) for k in ("bei_turns", "covered", "sweep_asked", "unconfirmed", "no_case_subs", "chapter_state")}, ensure_ascii=False, indent=1))
+        L.append(json.dumps({k: led.get(k) for k in ("bei_turns", "covered", "sweep_asked", "unconfirmed", "no_case_subs", "repeat_subs", "chapter_state")}, ensure_ascii=False, indent=1))
     return "\n".join(L)
 
 

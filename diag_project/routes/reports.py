@@ -57,7 +57,7 @@ def _build_store_meta(store: dict) -> Dict[str, Any]:
         subs = [ind["name"] for ind in cv.get("indicators", {}).values()]
         coverage[ck] = coverage_summary(store, ck, subs)
     meta: Dict[str, Any] = {"coverage": coverage}
-    for k in ("covered", "weak", "sweep_asked", "unconfirmed", "no_case_subs", "anchored_subs", "episodes"):
+    for k in ("covered", "weak", "sweep_asked", "unconfirmed", "no_case_subs", "repeat_subs", "anchored_subs", "episodes"):
         if store.get(k):
             meta[k] = store.get(k)
     return meta
