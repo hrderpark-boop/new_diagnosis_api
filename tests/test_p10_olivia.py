@@ -135,7 +135,7 @@ def test_p10_2_short_bare_probe_question_gets_referent():
     assert not short("분담표는 누가 짰나요?", [ans])                 # 리더가 쓴 낱말이 있다
     assert not short("그 회의가 끝난 뒤에 두 분이 일정표를 놓고 다시 이야기한 자리가 있었나요?", [ans])   # 15자 넘음
     src = _route_src()
-    assert "is_short_bare_question as _isbq_w3" in src and '"attached_short"' in src
+    assert "is_short_bare_question as _isbq_w3" not in src and '"attached_short"' not in src      # (P12e-5) 사람·대상을 붙이던 수선(8-w3)은 삭제
 
 
 # ── P10-3 ────────────────────────────────────────────────────────────────────────────────────────
@@ -431,7 +431,7 @@ def test_latency_b_two_questions_trimmed_without_regen():
     loop = src[j: src.index('_tm["format_regen"] = _rounds', j)]
     assert "_cand, _n_tq2 = _trim_two(_cand)" in loop and "_iss2 = _issues_for_regen(_cand)" in loop    # 재생성 본문이 두 질문이어도 다시 돌리지 않는다
     # P9-5(대상 없는 질문 보정)는 그대로 — 자른 턴(one_q)은 8-w3 의 대상 검사를 받는다
-    assert '_trimmed_w3 = bool(_tm.get("one_q"))' in src and src.index("# 8-w3.") > j
+    assert '_trimmed_w3' not in src and src.index("# 8-w3.") > j      # (P12e-5) 8-w3 수선은 삭제(자리 표시만 남음)
     # 자르는 규칙: 문장이 둘이면 마지막 질문, 한 문장 안의 복합 질문은 뒤 질문
     def trim(t):
         t, _ = split_compound_question(t)

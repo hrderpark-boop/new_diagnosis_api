@@ -90,10 +90,12 @@ def evidence_reselect_schema() -> Dict[str, Any]:
     return _obj({"evidence": _arr(_STR)})
 
 
-def slot_judge_schema() -> Dict[str, Any]:
-    """(2026-11-04 BEI) 슬롯 판정(services/slot_judge.judge_slots): 6슬롯 status·quote + no_case·switched_case."""
+def slot_judge_schema(with_same: bool = False) -> Dict[str, Any]:
+    """(2026-11-04 BEI) 슬롯 판정(services/slot_judge.judge_slots): 6슬롯 status·quote + no_case·switched_case.
+    (2026-11-14 P12e-4) with_same = 앞에서 닫힌 이야기 후보를 함께 넘긴 호출 — same_as(같은 장면이면 그 번호, 아니면 빈 문자열) 항목이 하나 더 있다."""
     slot = _obj({"status": {"type": "string", "enum": ["filled", "partial", "empty"]}, "quote": _STR})
     return _obj({
+        **({"same_as": _STR} if with_same else {}),
         "slots": _obj({k: slot for k in ("context", "action", "reaction", "result", "criterion", "reflection")}),
         "no_case": _BOOL,
         "switched_case": _BOOL,

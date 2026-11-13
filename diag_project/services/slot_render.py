@@ -34,7 +34,10 @@ SLOT_STATEMENT_MAX_EOJEOL = 16     # (P12d-4) 12 → 16 — p12c: Michael 응원
 _SPEC: dict[str, tuple[str, str]] = {
     "criterion": ("리더가 실제로 내린 결정을 리더의 낱말로 짚고, 그렇게 정할 때 무엇을 기준으로 삼았는지 묻는 질문 한 문장.",
                   "전세 대신 월세로 정하실 때 무엇을 기준으로 삼으셨습니까?"),
-    "reason": ("리더가 고른 쪽과 버린 쪽을 리더의 낱말로 짚고, 그쪽을 고른 이유를 한 줄로 청하는 짧은 질문 한 문장.",
+    # (2026-11-14 P12e-2) 대상은 리더 본인이 실제로 한 결정뿐 — p12d: 다른 사람(김선임)의 이유를 리더에게 물었고, 리더가 '그랬어야 했다'고 한 일을 한 것으로 물었다
+    "reason": ("리더 본인이 직전 답에서 실제로 내린 결정 하나를 리더의 낱말로 짚고, 그렇게 정한 이유를 한 줄로 청하는 짧은 질문 한 문장. "
+               "다른 사람이 한 일의 이유는 묻지 않는다. 리더가 하지 않은 일(그랬어야 했다고 아쉬워한 일)은 대상이 아니다. "
+               "직전 답에 리더 본인이 내린 결정이 없으면 질문을 쓰지 말고 '없음' 한 낱말만 출력한다.",
                "전세 말고 월세를 고른 이유, 한 줄로 하면 무엇입니까?"),
     "counterfactual": ("리더가 실제로 고른 쪽 대신 '고르지 않은 쪽'을 했다고 가정하고, 그랬다면 그 자리의 사람들이 어떻게 움직였을지 묻는 질문 한 문장. "
                        "꼴: '[고른 쪽] 대신(없이) [고르지 않은 쪽]을 하셨다면, [사람]은 어떻게 …했을까요?' — 가정하는 것은 반드시 '고르지 않은 쪽'이다.",
@@ -226,6 +229,8 @@ async def render_slot(llm, *, kind: str, persona_name: str | None, transcript: l
         except Exception as e:  # noqa: BLE001
             logger.warning("슬롯 문장 렌더링 실패: %s", e)
             return None, "miss:error"
+        if re.sub(r"[\s.\"'“”]", "", out or "") == "없음":
+            return None, "miss:no_decision"      # (P12e-2) 대상이 될 리더의 결정이 직전 답에 없다 — 이 턴은 슬롯 없이
         cand = _pick_sentence(out)
         cand = apply_register(persona_name, cand, scope="strict")[0]
         ok, why = slot_sentence_ok(kind, cand, leader, persona_name=persona_name, used=used, avoid_text=avoid_text)

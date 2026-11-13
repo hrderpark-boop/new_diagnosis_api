@@ -268,6 +268,9 @@ def _serve() -> None:
         _names_sim = [x.strip() for x in os.environ["SIM_TOPICS"].split(",") if x.strip()]
         _D_sim._topic_order_cache = _names_sim
         _CT_sim.CHAPTER_ORDER[:] = [_CT_sim.TOPIC_TO_CHAPTER[x] for x in _names_sim]
+        # (P12e) 첫 영역이 조직관리가 아닐 때 — 영역 시작 전(current_topic='General')의 기본 영역도 순서의 첫 영역으로(시뮬 서버에서만).
+        #   topic_to_chapter 를 이름으로 불러 쓰는 모듈이 여럿이라 함수가 아니라 변환표에 'General' 을 넣는다.
+        _CT_sim.TOPIC_TO_CHAPTER["General"] = _CT_sim.CHAPTER_ORDER[0]
     import uvicorn
     uvicorn.run("diag_project.main:app", host="127.0.0.1", port=port, log_level="info")
 

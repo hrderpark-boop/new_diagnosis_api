@@ -235,7 +235,7 @@ def test_p9_followups_from_first_sim():
     assert "시간과 자원을 어떻게 나눠 쓰셨는지" not in inspect.getsource(layer3_state)
     assert not question_lacks_referent("그 전환을 리더님께서 어떻게 확인하셨습니까?", ["이기획이 멘토를 맡겠다고 먼저 나섰습니다."])
     src = inspect.getsource(__import__("diag_project.routes.diagnoses", fromlist=["x"]))
-    assert "_trimmed_w3" in src and "_areg_first" in src
+    assert "_trimmed_w3" not in src and "_areg_first" in src      # (P12e-5) 8-w3 삭제
 
 
 def test_p9_followups_from_second_sim():

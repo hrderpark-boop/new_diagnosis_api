@@ -680,6 +680,25 @@ def is_new_fact(quote: str | None, original_text: str | None) -> bool:
 _BACKREF_RE = re.compile(r"(아까|앞서|앞에서|방금|이미)\s*(말씀드린|말씀드렸|말한|말했|얘기한|이야기한)|같은\s*(일|사례|건)|그\s*일(에서|이요|인데)")
 
 
+INCIDENT_CANDIDATE_MIN = 0.3
+
+
+def incident_candidates(answer: str | None, closed_texts: dict | None) -> list:
+    """(2026-11-14 P12e-4) '같은 사건' 판정의 예비 거름 — 답의 내용 낱말(앞 두 글자) 가운데 그 이야기에서 리더가 한 말과 겹치는 비율이 30% 이상인
+    닫힌 이야기의 표지(많이 겹치는 순). 최종 판정은 슬롯 판정 호출이 한다(judge_slots 의 same_as). 낱말 겹침만으로 정하던 종전 방식은
+    실세션 답에서 여유가 얇았다(같은 프로젝트의 다른 장면이 52% 겹침)."""
+    a = {c[:2] for c in _content_chunks(answer or "") if len(c) >= 2}
+    if len(a) < 3:
+        return []
+    out = []
+    for tag, txt in (closed_texts or {}).items():
+        e = {c[:2] for c in _content_chunks(txt or "") if len(c) >= 2}
+        r = len(a & e) / len(a)
+        if r >= INCIDENT_CANDIDATE_MIN:
+            out.append((r, tag))
+    return [t for _, t in sorted(out, key=lambda x: -x[0])]
+
+
 def same_incident(answer: str | None, closed_texts: dict | None) -> object | None:
     """리더 답이 이번 영역에서 이미 닫힌 사례와 같은 사건이면 그 사례의 표지(사례 번호 또는 'sweepN'). 아니면 None.
     답의 내용 낱말(어간 앞 두 글자) 가운데 그 사례에서 리더가 한 말과 겹치는 비율이 60% 이상이고 5개 이상 겹치거나,

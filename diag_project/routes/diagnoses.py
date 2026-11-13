@@ -1148,7 +1148,7 @@ async def _submit_message_phase3a(
     _ch_msgs_b = [m for m in history_messages if m.chapter == chapter] if chapter else []
     _turn_index_b = state.get("turn_count", 0) + state.get("rapport_turn_count", 0)
 
-    def _anchor_for_sub(sub: str | None, *, alt: bool = False) -> str:
+    def _anchor_for_sub(sub: str | None, *, alt: bool = False, raw: str | None = None) -> str:
         """여는 앵커·SWEEP 앵커 — 사전 52문(세션 회차로 회전) + 페르소나 어미. alt=True 면 다른 문안(같은 하위역량을 이 챕터에서
         이미 여는 질문으로 물었을 때 — s2a Jessica 가 SWEEP 에서 ALIGN 앵커를 그대로 되물었다)."""
         from diag_project.services.anchor_render import dict_anchor as _da
@@ -1160,7 +1160,7 @@ async def _submit_message_phase3a(
         from diag_project.services.persona_voice import MICHAEL_TAIL_N as _mtn_a, persona_key as _pk_a, voice_question as _vq_a
         from diag_project.services.turn_checks import tail_key as _tk_a
         _pn_a2 = (state.get("coach_persona") or {}).get("name")
-        _raw_a = _sfl(_da(_k, _pos))
+        _raw_a = raw or _sfl(_da(_k, _pos))      # raw = 이미 고른 문안(재질문 조립)
         _nv_a = _mtn_a if _pk_a(_pn_a2) == "Michael" else 3
         _base_a = _vv_total()
         _used_a: dict = {}
@@ -1169,6 +1169,24 @@ async def _submit_message_phase3a(
         _cands_a = [_vq_a(_pn_a2, _raw_a, variant=_base_a + i) for i in range(_nv_a)]
         _tm["voiced"] = 1
         return min(enumerate(_cands_a), key=lambda x: (_used_a.get(_tk_a(x[1]), 0), x[0]))[1]
+
+    def _reframe_question(sub: str | None) -> str:
+        """(2026-11-14 P12e-3) 사례 없음 뒤 재질문·'그 일 말고,' 뒤 질문 — LLM 을 부르지 않고 그 칸의 사전 질문 문안 가운데 직전에 나가지 않은 것을 코치 말투로 낸다.
+        닫힌 사례의 내용은 어디에도 넘기지 않는다(p12d: LLM 재질문이 닫힌 사례를 끌어왔다). 칸마다 문안은 2개 — 직전 코치 턴과 덜 겹치는 쪽, 같으면 이 영역에서 덜 나간 쪽."""
+        from diag_project.services.anchor_render import dict_anchor as _da_rq2
+        from diag_project.services.output_guard import anchor_overlap as _aov_rq2, strip_frame_lead as _sfl_rq2
+        _k_rq2 = _fsk_b(chapter, sub) if (chapter and sub) else None
+        _pos_rq2 = int((session.self_assessment_data or {}).get("anchor_variant") or 0)
+        _raws = []
+        for _i_rq2 in range(4):
+            _r_rq2 = _sfl_rq2(_da_rq2(_k_rq2, _pos_rq2 + _i_rq2))
+            if _r_rq2 and _r_rq2 not in _raws:
+                _raws.append(_r_rq2)
+        if not _raws:
+            return ""
+        _ch_txt_rq2 = " ".join(_chapter_questions())
+        _best_rq2 = min(_raws, key=lambda r: (_aov_rq2(_prev_coach_text or "", r), _aov_rq2(_ch_txt_rq2, r)))
+        return _anchor_for_sub(sub, raw=_best_rq2)
 
     def _chapter_questions() -> list[str]:
         """이번 영역에서 코치가 이미 한 질문 문장들."""
@@ -1299,7 +1317,22 @@ async def _submit_message_phase3a(
                 _store, _ep = _bei.record_leader_turn(_store, chapter, _ep, turn_index=_turn_index_b)
                 _tr = _ep_transcript(_ep)
                 _filled_before = len(_bei.filled_slots(_ep))
-                _jd = await _judge_slots(llm, transcript=_tr, prev_slots=_ep.get("slots"))
+                # (2026-11-14 P12e-4) '같은 사건' 판정 — 낱말 겹침(30% 이상)은 예비 거름으로만 쓰고, 최종 판정은 이 턴의 슬롯 판정 호출에 항목 하나로 넘긴다(추가 호출 없음).
+                #   여는 답(재질문 답 포함)일 때만 본다. 후보가 없으면 판정 호출은 종전과 같다.
+                from diag_project.services.turn_checks import incident_candidates as _inc_cands
+                _closed_r: dict = {}
+                _cands_r: dict = {}
+                _all_eps_r = _bei.episodes(_store, chapter)
+                if int(_ep.get("leader_turns") or 0) <= 1 + int(_ep.get("retry") or 0):
+                    for _i_r, _e_r in enumerate(_all_eps_r):
+                        if _e_r.get("status") not in ("done", "turns", "budget", "stalled", "reserve", "switched", "sweep_done"):
+                            continue
+                        _a_r = int(_e_r.get("opened_at") or 0)
+                        _b_r = next((int(x.get("opened_at") or 0) for x in _all_eps_r[_i_r + 1:] if x.get("opened_at") is not None), len(_ch_msgs_b))
+                        _tag_r = _e_r.get("idx") if _e_r.get("kind", "episode") == "episode" else f"sweep{_e_r.get('idx')}"
+                        _closed_r[_tag_r] = " ".join((m.content or "") for m in _ch_msgs_b[_a_r:_b_r] if not (m.role == MessageRole.MODEL or m.role == "model"))
+                    _cands_r = {str(t): _closed_r[t] for t in _inc_cands(_bei_user_text, _closed_r)[:3]}
+                _jd = await _judge_slots(llm, transcript=_tr, prev_slots=_ep.get("slots"), closed_cases=(_cands_r or None))
                 # (2026-11-06 P7-1) 사례 유무는 사례를 열기 전에 — 여는 답(재질문 답 포함)에 시점·인물·구체 행동이 하나도 없으면(incident=false) 사례가 아니다
                 _opening_turn = int(_ep.get("leader_turns") or 0) <= 1 + int(_ep.get("retry") or 0)
                 _no_incident = (_jd.get("incident") is False) and _opening_turn and not _bei.filled_slots(_ep)
@@ -1309,16 +1342,15 @@ async def _submit_message_phase3a(
                 #   그 답에 새로 나온 사실은 원래 사례의 근거로만 덧붙이고(addenda), 덧붙인 칸과 인용을 그 사례에 따로 적는다.
                 if _opening_turn and not _no_case:
                     from diag_project.services.turn_checks import is_new_fact as _newfact_r, same_incident as _same_inc
-                    _all_eps_r = _bei.episodes(_store, chapter)
-                    _closed_r: dict = {}
-                    for _i_r, _e_r in enumerate(_all_eps_r):
-                        if _e_r.get("status") not in ("done", "turns", "budget", "stalled", "reserve", "switched", "sweep_done"):
-                            continue
-                        _a_r = int(_e_r.get("opened_at") or 0)
-                        _b_r = next((int(x.get("opened_at") or 0) for x in _all_eps_r[_i_r + 1:] if x.get("opened_at") is not None), len(_ch_msgs_b))
-                        _tag_r = _e_r.get("idx") if _e_r.get("kind", "episode") == "episode" else f"sweep{_e_r.get('idx')}"
-                        _closed_r[_tag_r] = " ".join((m.content or "") for m in _ch_msgs_b[_a_r:_b_r] if not (m.role == MessageRole.MODEL or m.role == "model"))
-                    _rep_tag = _same_inc(_bei_user_text, _closed_r)
+                    # 후보가 있을 때만: 판정 호출의 same_as(스텁·판정 실패 때는 종전의 낱말 겹침 기준)
+                    _rep_tag = None
+                    if _cands_r:
+                        if _jd.get("stub") or _jd.get("error"):
+                            _rep_tag = _same_inc(_bei_user_text, _closed_r)
+                        else:
+                            _sa_r = _jd.get("same_as")
+                            _rep_tag = next((t for t in _closed_r if str(t) == str(_sa_r)), None) if _sa_r else None
+                        _tm["same_judge"] = {"cands": list(_cands_r), "same_as": (str(_rep_tag) if _rep_tag is not None else None)}
                     if _rep_tag is not None:
                         _orig_r = next((e for e in _all_eps_r if (e.get("idx") if e.get("kind", "episode") == "episode" else f"sweep{e.get('idx')}") == _rep_tag), None)
                         _added_r = []
@@ -1359,7 +1391,7 @@ async def _submit_message_phase3a(
                 if _repeat_ask_now:
                     # (P12b-3) 닫힌 사례를 다시 말한 답 — 고정 한마디 + 같은 칸의 다른 사전 질문으로 한 번만 청한다
                     from diag_project.services.intro_messages import persona_line as _pline_rp
-                    _alt_rp = _anchor_for_sub(_ep.get("opener_sub"), alt=True)
+                    _alt_rp = _reframe_question(_ep.get("opener_sub"))      # (P12e-3) 직전에 나간 문안은 뺀다
                     _anomaly_override_text = f"{_pline_rp((state.get('coach_persona') or {}).get('name'), 'repeat_heard')} 그 일 말고, {_alt_rp}".strip()
                     _bei_ep = _ep; instruction_used = "NO_CASE_REFRAME"; _tm["bei"] = "repeat_ask"; _tm["repeat_ask"] = 1
                 elif _ep.get("repeat_asked") and _no_case and _opening_turn:
@@ -1406,6 +1438,10 @@ async def _submit_message_phase3a(
                             _ep["retry"] = int(_ep.get("retry") or 0) + 1
                             _store = _bei.update_episode(_store, chapter, _ep)
                             _bei_ep = _ep; instruction_used = "NO_CASE_REFRAME"; _tm["bei"] = "reframe"
+                            # (2026-11-14 P12e-3) 재질문은 LLM 없이 조립 — 그 칸의 다른 사전 문안을 코치 말투로
+                            _rq_fix = _reframe_question(_ep.get("opener_sub"))
+                            if _rq_fix:
+                                _anomaly_override_text = _rq_fix; _tm["reframe_fixed"] = 1
                         else:
                             await _close_and_map(_ep, "no_case")
                             _next_after_close()
@@ -1685,6 +1721,21 @@ async def _submit_message_phase3a(
         _scope_ca = _areg_ca(_pn_ca, _csl_ca(chapter, _pn_ca), scope="strict")[0]      # 합쇼체 코치는 합쇼체 판(사전), 그 위에 말투 교정
         system_override_text = f"{_scope_ca} {_dq_ca(COMPETENCY_FRAMEWORK[chapter].get('name', '이 역량'), _pn_ca, _ch_i_ca)}".strip()
         _tm["def_variant"] = _ch_i_ca % 5; _tm["scope_fixed"] = 1; _tm["no_regen"] = 1
+
+    # (2026-11-14 P12e-7) 첫 영역 시작 턴(DIAGNOSIS_CONFIRM)도 '시작할까요'의 답이 동의면 같은 조립 — [첫 영역 진입 다리] + [범위 문장(사전)] + [정의 질문].
+    #   동의가 아닌 답(거절·질문)은 종전대로 LLM 이 받는다.
+    if (instruction_used == "DIAGNOSIS_CONFIRM" and chapter and system_override_text is None and not _is_aborted and not _is_warning
+            and chapter in COMPETENCY_FRAMEWORK):
+        from diag_project.services.input_anomaly import is_consent as _is_consent_dc
+        if _is_consent_dc(request.content):
+            from diag_project.services.intro_messages import chapter_scope_line as _csl_dc, definition_question as _dq_dc, first_chapter_bridge as _fcb_dc
+            from diag_project.services.persona_register import apply_register as _areg_dc
+            _pn_dc = (state.get("coach_persona") or {}).get("name")
+            _cn_dc = COMPETENCY_FRAMEWORK[chapter].get("name", "이 역량")
+            _ch_i_dc = [k for k in COMPETENCY_FRAMEWORK if k != "supplementary"].index(chapter)
+            _scope_dc = _areg_dc(_pn_dc, _csl_dc(chapter, _pn_dc), scope="strict")[0]
+            system_override_text = f"{_fcb_dc(_cn_dc, _pn_dc)} {_scope_dc} {_dq_dc(_cn_dc, _pn_dc, _ch_i_dc)}".strip()
+            _tm["def_variant"] = _ch_i_dc % 5; _tm["scope_fixed"] = 1; _tm["no_regen"] = 1; _tm["first_bridge"] = 1
 
     # (2026-10-28 P0-4) 입력 이상 턴은 위 어떤 분기보다 우선 — 고정 응답, LLM 미호출
     if _anomaly_override_text is not None:
@@ -2315,6 +2366,17 @@ async def _submit_message_phase3a(
                 _sum, _close_mode = _cncl((state.get("coach_persona") or {}).get("name")), "no_case_fixed"
             _tm["close_summary_mode"] = _close_mode if _sum else "bridge_only"
             _tm["close_summary_eps"] = f"{_best_n}/{_n_eps_c}"
+            # (2026-11-14 P12e-6) 요약에는 리더가 직접 한 일만 — 결과·인과를 잇는 절과 다른 사람이 주어인 절은 그 절만 지운다.
+            #   집중 호출(render_close_summary)은 안에서 이미 거쳤다 — 본 호출이 쓴 요약이 그대로 채택된 경우에도 같은 삭제를 건다(두 번 걸려도 결과는 같다).
+            if _sum and _eps_c:
+                try:
+                    from diag_project.services.close_render import drop_result_clauses as _drc_cs, people_in_material as _pim_cs
+                    from diag_project.services.intro_messages import line_register as _lreg_cs
+                    _sum, _n_drc = _drc_cs(_sum, formal=(_lreg_cs((state.get("coach_persona") or {}).get("name")) == "formal"), people=_pim_cs(_eps_c))
+                    if _n_drc:
+                        _tm["close_clause_cut"] = _n_drc
+                except Exception as _e_drc:   # noqa: BLE001
+                    logger.warning("종료 요약 절 삭제 실패(무시): %s", _e_drc)
             # (2026-11-13 P12-7) 요약도 코치 말투로 — 해요체 코치(Michael 등)의 요약이 합쇼체로 나갔다(말투 교정이 질문 문장만 봤다)
             from diag_project.services.persona_register import apply_register as _areg_cs
             _sum, _n_cs_reg, _ = _areg_cs((state.get("coach_persona") or {}).get("name"), _sum, scope="strict")
@@ -2895,37 +2957,8 @@ async def _submit_message_phase3a(
             logger.info("🧷 여는 질문 유실 → [받기] + 여는 문장으로 다시 조립")
         clean_reply = _c_w2
 
-    # 8-w3. (2026-11-10 P9-5) 질문이 하나 남았는데 주어·대상이 없으면("달라진 부분이 있었는지 궁금합니다") 재생성 1회, 그래도 없으면
-    #   리더 답의 핵심 명사구를 질문 앞에 붙여 조립한다. 사례 탐침 턴(질문을 LLM 이 쓰는 턴)만.
-    if (_is_probe and system_override_text is None and not _llm_error and not needs_user_decision and chapter
-            and (clean_reply or "").strip() and _align_ctx is None and not _reask_kind):   # (시뮬 p11b) 다시 묻기 턴은 8-w0 가 조립한 그대로 — 재생성 본문이 사과·설명을 덧붙였다
-        from diag_project.services.output_guard import attach_referent as _ar_w3, question_lacks_referent as _qlr_w3
-        _sents_w3 = [x for x in split_sentences(clean_reply) if x.strip()]
-        _qs_w3 = [x for x in _sents_w3 if is_question_sentence(x)]
-        _ctx_w3 = [_llm_user_text or ""]
-        # 질문 하나만 남긴 턴(앞 질문을 지움)이거나 질문 앞에 받는 문장이 없는 턴에서만 본다 — 받는 문장이 대상을 말한 짧은 후속 질문은 그대로 둔다
-        from diag_project.services.output_guard import _PERSON_RE as _per_w3, _REACTION_RE as _rea_w3
-        _trimmed_w3 = bool(_tm.get("one_q")) or not [x for x in _sents_w3 if not is_question_sentence(x)]
-        #   (승인 조건 3) 누구의 반응·태도·표정·변화인지 없는 질문은 언제나 본다 — 같은 턴의 받는 문장이 사람을 말했으면 대상이 있는 것으로 친다
-        _react_w3 = bool(_qs_w3) and bool(_rea_w3.search(_qs_w3[-1])) and not _per_w3.search(" ".join(_sents_w3))
-        # (2026-11-11 P10-2) 탐침 질문 최소 길이 — 대상·장면 없이 15자 이하인 질문("그때 어떤 이야기가 오갔나요?")은 재생성 없이 직전 답의 대상을 붙여 다시 쓴다
-        from diag_project.services.output_guard import is_short_bare_question as _isbq_w3
-        _short_w3 = len(_qs_w3) == 1 and _isbq_w3(_qs_w3[0], _ctx_w3)
-        if _short_w3:
-            _new_q3s = _ar_w3(_qs_w3[0], _llm_user_text)
-            if _new_q3s != _qs_w3[0]:
-                clean_reply = clean_reply.replace(_qs_w3[0], _new_q3s, 1)
-                _tm["no_referent"] = "attached_short"
-                logger.info("🎯 짧은 질문에 대상 붙임: %r → %r", _qs_w3[0][:40], _new_q3s[:60])
-        elif len(_qs_w3) == 1 and (_trimmed_w3 or _react_w3) and _qlr_w3(_qs_w3[0], _ctx_w3) and not (not _trimmed_w3 and not _react_w3):
-            # (2026-11-12 P11c) 재생성하지 않는다 — 직전 답의 대상(사람·일)을 질문 앞에 붙여 바로 고친다. 질문만 나가는 턴이 정상이 되면서
-            #   이 검사가 걸리는 턴이 늘 수 있어(질문 앞 평서문이 없는 턴을 본다) 재생성 경로를 없앴다.
-            _tm["no_referent"] = 1
-            _new_q3 = _ar_w3(_qs_w3[0], _llm_user_text)
-            if _new_q3 != _qs_w3[0]:
-                clean_reply = clean_reply.replace(_qs_w3[0], _new_q3, 1)
-                _tm["no_referent"] = "attached"
-            logger.info("🎯 대상 없는 질문 교정(%s): %r", _tm.get("no_referent"), _qs_w3[0][:50])
+    # 8-w3. (2026-11-14 P12e-5 삭제) 대상 없는 질문에 직전 답의 사람을 붙이던 수선 — 두 질문 중 뒤쪽만 남은 조각에 사람을 붙여 뜻이 서지 않는 문장을 만들었다
+    #   (p12d: "두 분과 있었다면 어떤 모습이었는지 말씀해 주세요."). 질문은 LLM 이 쓴 그대로 둔다.
 
     # 8-w4. (2026-11-12 P11-C) 질문 완결성 — 접속·조건어로 시작('있었다면 누가 …') · 무엇을 묻는지 없는 조각('…태도였는지 궁금합니다') ·
     #   두 질문('…셨는지, 혹시 … 언제였습니까?') · 가리키는 말의 대상이 직전 답에 없음('그 변화', '그 과정', '그때').
@@ -3880,6 +3913,8 @@ async def _submit_message_phase3a(
             "reask_prev": _tm.get("reask_prev"), "align_announce_cut": _tm.get("align_announce_cut"),
             # (P12d) scope_fixed 영역 시작 턴을 LLM 없이 조립 · case_word_cut '이 사례에서' 구절 삭제
             "scope_fixed": _tm.get("scope_fixed"), "case_word_cut": _tm.get("case_word_cut"),
+            # (P12e) same_judge '같은 사건' 판정(후보 표지·판정 결과) · reframe_fixed 재질문을 사전 문안으로 조립
+            "same_judge": _tm.get("same_judge"), "reframe_fixed": _tm.get("reframe_fixed"), "close_clause_cut": _tm.get("close_clause_cut"),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):

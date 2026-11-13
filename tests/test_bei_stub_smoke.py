@@ -113,8 +113,9 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
     assert len(evs) == 3 and all(e.situation and e.mapped_subcompetency for e in evs)   # 사례 2 + SWEEP 보완 1(변화관리는 미확인 — 위 P11-H 주석)
     # (2026-11-05 P4-1) 페르소나 슬롯은 챕터당 1회(Ella 없음) — 세션 원장 slot_chapters·slot_used_idx 에 기록, 문구 인덱스 = 챕터 순서(조직관리 0)
     slot_turns = [g for g in store.get("guard_log", []) if g.get("slot") and g.get("slot") != "Michael_q"]
-    assert len(slot_turns) == (0 if coach_key == "1" else 1), [(g.get("episode"), g.get("slot")) for g in slot_turns]
-    if coach_key != "1":
+    # (2026-11-14 P12e-1) Olivia(3)는 반사실 질문을 지운 뒤 '그 사람 자리' 질문만 남았다 — 반응 칸이 이미 찬 사례에서는 넣지 않으므로 이 대본에서는 0회
+    assert len(slot_turns) == (0 if coach_key in ("1", "3") else 1), [(g.get("episode"), g.get("slot")) for g in slot_turns]
+    if coach_key not in ("1", "3"):
         assert store.get("slot_chapters") == {CH: 1} and store.get("slot_used_idx") == [0] and slot_turns[0].get("slot_idx") == 0
     # (P4-2) '좋습니다' 리드 0 · (P4-3) 흉터 0 · 여는 문장은 스텁 모드에서 사전 앵커(opener=stub)
     coach_texts = [c for role, ins, ch, c in rows if role == "model"]

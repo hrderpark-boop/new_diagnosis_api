@@ -183,7 +183,7 @@ def test_p4_1_slot_variants_rotate_per_session_and_caps():
         assert not hasattr(M, gone), gone                       # 고정 슬롯 문장·순환 함수는 전부 삭제
     assert set(SLOT_KINDS) == {"Jessica", "Lucas", "Olivia", "Michael", "Daniel"} and slot_kind_for("Ella", 0) is None
     assert slot_kind_for("Jessica", 0) == "criterion" and slot_kind_for("Lucas", 2) == "reason" and slot_kind_for("Michael", 1) == "cheer"
-    assert [slot_kind_for("Olivia", i) for i in range(5)] == ["counterfactual", "other_side", "counterfactual", "counterfactual", "other_side"]
+    assert [slot_kind_for("Olivia", i) for i in range(5)] == ["other_side"] * 5      # (P12e-1) 반사실 질문은 삭제 — 일어나지 않은 일을 가정해 묻지 않는다
     assert SLOT_KIND_TARGET["other_side"] == "reaction" and SLOT_KIND_TARGET["counterfactual"] == "criterion" and "cheer" not in SLOT_KIND_TARGET
     # 정의 질문 5종 — 코치마다 5개 서로 다르고 {cn_eul} 자리 포함
     for k, pool in DEFINITION_VARIANTS.items():

@@ -435,7 +435,7 @@ def test_p11b_after_sim_handler_guards():
     src = inspect.getsource(D._submit_message_phase3a)
     assert '_tm["opener_restored"] = 1' in src and '_tm["opener_restored"] = 2' in src                # 여는 턴의 질문 유실 → 다시 조립 · 마지막 안전망
     assert "split_compound_question" not in src and "_ksq_" not in src                                  # (P11c-2) 한 문장짜리 질문은 자르지 않는다
-    assert "_align_ctx is None and not _reask_kind):   # (시뮬 p11b) 다시 묻기 턴은 8-w0 가 조립한 그대로" in src   # 8-w3 는 다시 묻기 턴을 건너뛴다
+    assert "_ar_w3(" not in src      # (P12e-5) 8-w3(대상 붙이기)는 삭제
     assert 'not _reask_kind and instruction_used != "NO_CASE_REFRAME"):' in src                         # 8-w4 는 사례 없음 재질문 턴을 건너뛴다
     assert "_qrcv_w0" not in src and "_qrcv_5" not in src                                              # (P11c-1) 금지 꼴·되풀이 문장은 삭제만 — 구절 인용 대체 없음
 
@@ -831,7 +831,7 @@ def test_p12b_4_wording():
         assert n == 1 and out == "출고표는 직접 고치셨군요.", (bad, out)
     assert "상대" not in B.SLOT_LABELS["reaction"] + B.SLOT_HINTS["reaction"] and "선택지" not in B.SLOT_HINTS["criterion"]
     assert "상대" not in default_slot_question("reaction", formal=True) + default_slot_question("reaction", formal=False)
-    assert "[리더가 한 일] + [리더가 말한 수치나 달라진 상태]" in inspect.getsource(CR.render_close_summary)      # (P12c-5) 문장 틀을 좁힘
+    assert "리더가 한 일에서 문장을 맺는다" in inspect.getsource(CR.render_close_summary)      # (P12c-5 → P12e-6) 결과·인과를 쓰지 않는다
     src = inspect.getsource(D._submit_message_phase3a)
     assert r"들어\\s?보고" in src or "들어\\s?보고" in src or "들어" in src[src.index("(lb1) 범위 문장 자리에 예고 문장"):][:900]
     assert "이번에는|이번엔|다음은" in src
@@ -919,3 +919,72 @@ def test_p12d_2_3_4_rapport_receive_pool_and_wording():
     src = inspect.getsource(D._submit_message_phase3a)
     assert 'str(_tm.get("closed") or "").endswith(":repeat")) and len(_recv_5.split()) > RECEIVE_MAX_EOJEOL' in src
     assert '_tm["case_word_cut"] = 1' in src and "_rfr1(" in src and "_rfr2(" in src and "_rfr3(" in src
+
+
+# ───────────────────────── P12e (2026-11-14) 가장자리 경로 정리 ─────────────────────────
+
+def test_p12e_1_2_no_hypothetical_questions_and_reason_slot_scope():
+    from diag_project.prompts.phase3a.episode_card import TURN_FORMAT_RULES
+    from diag_project.services import slot_render as SR
+    from diag_project.services.intro_messages import SLOT_KINDS
+    assert "일어나지 않은 일을 가정해서 묻지 않는다" in TURN_FORMAT_RULES and "다시 한다면" in TURN_FORMAT_RULES
+    assert "하지 못해 아쉬워한 일은 리더가 하지 않은 일이다" in TURN_FORMAT_RULES
+    assert "리더가 한 일로 단정해 높임말로 옮기지 않는다" in TURN_FORMAT_RULES
+    assert "counterfactual" not in sum((list(v) for v in SLOT_KINDS.values()), [])
+    spec = SR._SPEC["reason"] if isinstance(SR._SPEC["reason"], str) else " ".join(SR._SPEC["reason"])
+    assert "리더 본인이" in spec and "다른 사람이 한 일의 이유는 묻지 않는다" in spec and "'없음'" in spec
+
+
+def test_p12e_3_4_reframe_is_assembled_and_same_scene_is_judged_by_slot_judge():
+    import asyncio
+    import inspect
+    from diag_project.llm_schemas import slot_judge_schema
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import slot_judge as SJ
+    from diag_project.services.turn_checks import incident_candidates
+    closed = {1: "지난봄 창고 이전 때 반장 세 명을 먼저 불러 배치표를 다시 짰습니다. 그 뒤 출고 지연이 없었습니다.",
+              2: "가을 재고 실사에서 수량이 맞지 않아 전산 담당과 이틀 동안 원장을 대조했습니다."}
+    assert incident_candidates("창고 이전 때 반장 세 명을 불러 배치표를 다시 짰고 야간조도 따로 불렀습니다.", closed)[0] == 1
+    assert incident_candidates("올여름 신규 거래처와 단가 협상을 제가 직접 했습니다.", closed) == []
+    assert "same_as" in slot_judge_schema(with_same=True)["properties"] and "same_as" not in slot_judge_schema()["properties"]
+
+    class _LLM:
+        def __init__(self, out):
+            self.out, self.prompt, self.schema = out, "", None
+
+        async def _generate_with_retry(self, **kw):
+            self.prompt, self.schema = kw.get("prompt") or "", kw.get("json_schema")
+            return self.out
+    slots = {k: {"status": "empty", "quote": ""} for k in ("context", "action", "reaction", "result", "criterion", "reflection")}
+    import json as _json
+    import os as _os
+    _stub = _os.environ.pop("FM_LLM_STUB", None)
+    try:
+        tr = [("model", "최근에 일정이 밀렸을 때 직접 나서신 일이 있었습니까?"), ("user", "아까 말씀드린 창고 이전 때 반장 세 명을 불러 배치표를 다시 짰습니다.")]
+        llm = _LLM(_json.dumps({"slots": slots, "no_case": False, "switched_case": False, "incident": True, "same_as": "(1)"}, ensure_ascii=False))
+        out = asyncio.run(SJ.judge_slots(llm, transcript=tr, prev_slots=None, closed_cases={"1": closed[1]}))
+        assert out["same_as"] == "1" and "[앞에서 이미 들은 이야기]" in llm.prompt and "same_as" in llm.schema["properties"]
+        llm2 = _LLM(_json.dumps({"slots": slots, "no_case": False, "switched_case": False, "incident": True, "same_as": "7"}, ensure_ascii=False))
+        assert asyncio.run(SJ.judge_slots(llm2, transcript=tr, prev_slots=None, closed_cases={"1": closed[1]}))["same_as"] is None      # 후보에 없는 표지는 버린다
+        llm3 = _LLM(_json.dumps({"slots": slots, "no_case": False, "switched_case": False, "incident": True}, ensure_ascii=False))
+        out3 = asyncio.run(SJ.judge_slots(llm3, transcript=tr, prev_slots=None))
+        assert out3["same_as"] is None and "앞에서 이미 들은 이야기" not in llm3.prompt and "same_as" not in llm3.schema["properties"]   # 후보가 없으면 종전과 같은 호출
+    finally:
+        if _stub is not None:
+            _os.environ["FM_LLM_STUB"] = _stub
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "closed_cases=(_cands_r or None)" in src and '_sa_r = _jd.get("same_as")' in src and '"same_judge": _tm.get("same_judge")' in src
+    assert "def _reframe_question(sub" in src and '_anomaly_override_text = _rq_fix; _tm["reframe_fixed"] = 1' in src
+    assert "_alt_rp = _reframe_question(_ep.get(\"opener_sub\"))" in src
+
+
+def test_p12e_5_7_attach_repair_removed_and_first_chapter_assembled_on_consent():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services.input_anomaly import is_consent
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "_ar_w3(" not in src and "attach_referent as" not in src
+    i = src.index("(2026-11-14 P12e-7) 첫 영역 시작 턴(DIAGNOSIS_CONFIRM)")
+    blk = src[i: i + 1600]
+    assert "_is_consent_dc(request.content)" in blk and "system_override_text = f\"{_fcb_dc(_cn_dc, _pn_dc)} {_scope_dc} {_dq_dc(" in blk
+    assert is_consent("ㅇㅋ") and is_consent("네, 시작하겠습니다.") and not is_consent("얼마나 걸려요?") and not is_consent("잠깐만요")

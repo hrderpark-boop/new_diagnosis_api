@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import os
 
 from diag_project.services.bei_engine import SLOT_KEYS, SLOT_LABELS, is_no_case_text
@@ -65,13 +66,23 @@ def _stub_slots(transcript: list[tuple[str, str]], prev_slots: dict | None) -> d
     return {"slots": slots, "no_case": no_case, "switched_case": False, "incident": not no_case, "stub": True}
 
 
-async def judge_slots(llm, *, transcript: list[tuple[str, str]], prev_slots: dict | None) -> dict:
-    """반환: {"slots": {key: {status, quote}}, "no_case": bool, "switched_case": bool, "error": bool}.
-    transcript = [("model", 코치 문장), ("user", 리더 답), ...] 여는 앵커부터 이번 답까지."""
+async def judge_slots(llm, *, transcript: list[tuple[str, str]], prev_slots: dict | None, closed_cases: dict | None = None) -> dict:
+    """반환: {"slots": {key: {status, quote}}, "no_case": bool, "switched_case": bool, "error": bool, "same_as": 표지|None}.
+    transcript = [("model", 코치 문장), ("user", 리더 답), ...] 여는 앵커부터 이번 답까지.
+    (2026-11-14 P12e-4) closed_cases = {표지: 그 이야기에서 리더가 한 말} — 이번 영역에서 이미 닫힌 이야기 가운데 이번 답과 낱말이 겹치는 후보.
+      주어지면 같은 호출에 항목 하나(same_as)를 더해 '같은 장면을 다시 말한 것인가, 같은 프로젝트의 다른 장면인가'를 판정한다(추가 호출 없음)."""
     if _stub_on() or llm is None:
         return _stub_slots(transcript, prev_slots)
     from diag_project.llm_schemas import slot_judge_schema
     prev_lines = "\n".join(f"- {SLOT_LABELS[k]}({k}): {(prev_slots or {}).get(k, {}).get('status', 'empty')}" for k in SLOT_KEYS)
+    _cc = {str(k): re.sub(r"\s+", " ", str(v or "")).strip()[:500] for k, v in (closed_cases or {}).items() if str(v or "").strip()}
+    _same_block = ""
+    if _cc:
+        _same_block = (
+            "same_as: 아래 [앞에서 이미 들은 이야기] 가운데, 리더의 마지막 답이 **같은 장면**(같은 때·같은 사람·같은 일)을 다시 말한 것이 있으면 그 표지를 그대로 쓴다. "
+            "같은 프로젝트나 같은 사람들이 나오더라도 다른 때의 다른 일(다른 문제·다른 결정)이면 다른 장면이다 — 그때는 빈 문자열. "
+            "'아까 말씀드린' 같은 말이 있어도 내용이 다른 일이면 빈 문자열이다.\n"
+            "[앞에서 이미 들은 이야기]\n" + "\n".join(f"- ({k}) {v}" for k, v in _cc.items()) + "\n")
     prompt = (
         "아래는 리더십 진단 대화에서 코치가 리더의 '사례 하나'를 듣고 있는 구간입니다. 리더가 지금까지 말한 내용만으로 여섯 슬롯이 "
         "찼는지 판정하세요. 코치의 질문은 근거가 아닙니다. 리더가 말하지 않은 것을 추정하지 마세요.\n\n"
@@ -80,14 +91,15 @@ async def judge_slots(llm, *, transcript: list[tuple[str, str]], prev_slots: dic
         "no_case: 리더가 이 질문에 해당하는 일이 없다·기억이 안 난다고 답했으면 true.\n"
         "incident: 리더의 답(지금까지 전체)에 시점·인물·리더가 한 구체 행동 중 하나라도 있으면 true. 하나도 없고 '없어요·글쎄요·특별히·그 정도·"
         "보통은·대체로' 류의 일반론·회피만이면 false.\n"
-        "switched_case: 리더의 마지막 답이 지금 듣던 사례가 아니라 전혀 다른 사례로 넘어갔으면 true(같은 사례의 다른 장면은 false).\n\n"
+        "switched_case: 리더의 마지막 답이 지금 듣던 사례가 아니라 전혀 다른 사례로 넘어갔으면 true(같은 사례의 다른 장면은 false).\n"
+        + (_same_block if _cc else "") + "\n"
         f"[직전 판정]\n{prev_lines}\n\n[대화]\n{_transcript_text(transcript)}\n\n"
         "JSON 으로만 답하세요: {\"slots\": {\"context\": {\"status\": \"filled|partial|empty\", \"quote\": \"\"}, ... 6개}, "
-        "\"no_case\": false, \"switched_case\": false, \"incident\": true}"
+        "\"no_case\": false, \"switched_case\": false, \"incident\": true" + (", \"same_as\": \"\"" if _cc else "") + "}"
     )
     try:
         raw = await llm._generate_with_retry(
-            prompt=prompt, max_tokens=700, json_mode=True, json_schema=slot_judge_schema(),
+            prompt=prompt, max_tokens=700, json_mode=True, json_schema=slot_judge_schema(with_same=bool(_cc)),
             thinking_budget=0, call_type="slot_judge", temperature=0.0,
         )
     except Exception as e:  # noqa: BLE001
@@ -96,7 +108,9 @@ async def judge_slots(llm, *, transcript: list[tuple[str, str]], prev_slots: dic
     out = _parse(raw)
     slots = out.get("slots") if isinstance(out.get("slots"), dict) else {}
     _inc = out.get("incident")
-    return {"slots": {k: (slots.get(k) or {}) for k in SLOT_KEYS},
+    _sa = re.sub(r"[()\s]", "", str(out.get("same_as") or ""))
+    return {"same_as": (_sa if (_cc and _sa in _cc) else None),
+            "slots": {k: (slots.get(k) or {}) for k in SLOT_KEYS},
             "no_case": bool(out.get("no_case")), "switched_case": bool(out.get("switched_case")),
             "incident": (bool(_inc) if isinstance(_inc, bool) else None), "error": not bool(slots)}
 

@@ -725,7 +725,8 @@ _FINAL_DEFAULT = ("긴 시간 함께해 주셔서 감사합니다. 오늘 나눈
 #   Jessica 기준 / Lucas 한 줄 이유 / Olivia 버린 선택 가정·상대 자리 / Michael 응원(+다음 턴 실행 의지) / Daniel 선배 관찰.
 SLOT_KINDS: dict[str, tuple[str, ...]] = {
     "Jessica": ("criterion",), "Lucas": ("reason",),
-    "Olivia": ("counterfactual", "other_side", "counterfactual", "counterfactual", "other_side"),
+    # (2026-11-14 P12e-1) 반사실 질문('그렇게 하지 않으셨다면 …')은 삭제 — 일어나지 않은 일을 가정해 묻지 않는다. Olivia 는 '그 사람 자리' 한 종류만.
+    "Olivia": ("other_side",),
     "Michael": ("cheer",), "Daniel": ("observation",),
 }
 # 슬롯 질문이 겨냥하는 사례 슬롯(이미 찼으면 넣지 않는다). 평서문 종류(응원·관찰)는 겨냥 슬롯 없음.
