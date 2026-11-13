@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from diag_project.data.competencies import COMPETENCY_FRAMEWORK, SUBCOMPETENCY_ANCHORS, SUBCOMPETENCY_MUST_ASK
 from diag_project.services.bei_engine import (
-    BEI_INSTRUCTIONS, EPISODE_MAX_LEADER_TURNS, SLOT_HINTS, SLOT_KEYS, SLOT_LABELS, detail_probe_hint, filled_slots, unfilled_slots,
+    BEI_INSTRUCTIONS, SLOT_HINTS, SLOT_KEYS, SLOT_LABELS, ask_slot, detail_probe_hint, episode_turn_max, filled_slots, unfilled_slots,
 )
 
 
@@ -53,6 +53,7 @@ def build_episode_card(
     weak_hint: str | None = None,
     sweep_seq: int = 0,
     bridge_material: str | None = None,
+    used_endings: list[str] | None = None,
 ) -> str:
     """사례 카드 본문(300토큰 이내). prev_episodes = [{"idx", "summary"}] 이 챕터·이전 챕터에서 끝난 사례.
     sweep_seq = 연속 SWEEP 순번(2 이상이면 앵커 앞 다리 문장 필수, P4-5). bridge_material = 앞 사례에서 리더가 쓴 말(다리 재료)."""
@@ -60,7 +61,8 @@ def build_episode_card(
     if instruction in ("EPISODE_PROBE", "NO_CASE_REFRAME") and ep:
         n = ep.get("idx", 1)
         k = int(ep.get("leader_turns") or 0)
-        L.append(f"# 지금 듣고 있는 사례 ({n}번째 / 이 사례 리더 턴 {k}/{EPISODE_MAX_LEADER_TURNS} / 이 영역 리더 턴 {bei_turns}/{budget})")
+        _kmax = episode_turn_max(len((COMPETENCY_FRAMEWORK.get(chapter or "", {}) or {}).get("indicators") or {}))
+        L.append(f"# 지금 듣고 있는 사례 ({n}번째 / 이 사례 리더 턴 {k}/{_kmax} / 이 영역 리더 턴 {bei_turns}/{budget})")
         filled = filled_slots(ep)
         partial = [x for x in SLOT_KEYS if ((ep.get("slots") or {}).get(x) or {}).get("status") == "partial"]
         missing = unfilled_slots(ep)
@@ -71,7 +73,7 @@ def build_episode_card(
         if missing:
             L.append("아직 없는 것(이 순서로 하나씩): " + " → ".join(SLOT_LABELS[x] for x in missing))
             L.append("위 세 줄은 코치만 보는 점검표다. 무엇을 들었고 무엇이 남았는지를 리더에게 말하지 않는다 — 바로 질문한다.")   # (P9 승인 조건 2)
-            nxt = missing[0]
+            nxt = ask_slot(ep)          # (P12-2) 같은 것을 두 번 물었으면 다음 것으로 넘어간 자리
             L.append(f"이번 턴: '{SLOT_LABELS[nxt]}' 하나를 묻는다 — {SLOT_HINTS[nxt]}. "
                      "리더가 다른 데로 가면 한 번은 따라가되 질문은 이 사례로 돌아온다.")
             if nxt in partial:
@@ -107,8 +109,12 @@ def build_episode_card(
             nxt = "action" if "action" in missing else ("result" if "result" in missing else missing[0])
             L.append(f"이번 턴: '{SLOT_LABELS[nxt]}' 하나 — {SLOT_HINTS[nxt]}. 이 장면은 이 질문으로 마무리한다(더 파지 않는다).")
     if prev_episodes and instruction != "NO_CASE_REFRAME":      # (P11e-1) 재질문 턴에는 지난 사례를 주지 않는다 — 재질문이 닫힌 사례를 끌어왔다
-        L.append("지난 사례(참고 — 리더가 다시 꺼내면 새 사례를 요구하지 말고 지금 묻는 것의 관점으로 이어서 묻는다): "
+        L.append("지난 사례(코치가 먼저 꺼내지 않는다 — 리더가 다시 꺼낼 때만 참고해, 새 사례를 요구하지 말고 지금 묻는 것의 관점으로 이어서 묻는다): "
                  + " / ".join(f"[{p.get('idx')}] {p.get('summary', '')}" for p in prev_episodes[-5:]))
+    if used_endings and instruction in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
+        # (2026-11-13 P12-4) 이번 영역에서 이미 여러 번 쓴 질문 끝맺음 — 치환표가 아니라 목록을 넘겨 다른 끝맺음을 쓰게 한다
+        L.append("이번 영역에서 이미 여러 번 쓴 질문 끝맺음: " + " / ".join(f"'{x}'" for x in used_endings[:6])
+                 + " — 이번 질문은 이 꼴로 끝내지 않는다. 무엇을·어떻게로 바로 묻는 꼴처럼 다른 끝맺음을 쓴다.")
     if signal:
         L.append(f"신호: {signal}")
     return "\n".join(L)
@@ -146,16 +152,20 @@ BEI_GUIDES: dict[str, str] = {
 TURN_FORMAT_RULES = (
     "[턴 형식]\n"
     "- 질문 1개로 끝낸다. 질문 문장은 하나만 쓴다.\n"
+    "- 질문 문장 안에 리더가 직전 답에서 쓴 낱말(사람·일·때 가운데 하나)을 넣는다. 앞 문장 없이 그 질문만 읽어도 무엇에 대한 질문인지 "
+    "알 수 있어야 한다 — 질문 앞 평서문에 기대지 않고, 가리키는 말만으로 대상을 대신하지 않는다.\n"
+    "- 다음 질문은 아직 듣지 못한 것(그 뒤의 결과, 그렇게 정한 기준, 다시 한다면 달리할 점)으로 나아간다. 이미 들은 대화를 한 마디씩 "
+    "거슬러 올라가며 되묻지 않는다.\n"
+    "- 지금 듣는 이야기의 말만 쓴다. 앞에서 끝난 다른 이야기를 평서문이나 질문에 끌어오지 않는다.\n"
     "- 질문 앞의 평서문은 없어도 된다. 쓰면 1문장 — 리더가 방금 쓴 낱말 한두 개만 넣는다. 답 전체를 다시 읊지 않고, 뜻을 풀이하지 않고, "
     "리더가 말하지 않은 사정·심정·까닭을 보태지 않는다.\n"
     "- 리더가 쓰지 않은 낱말을 리더가 한 말처럼 따옴표에 넣지 않는다. 리더의 말과 질문을 잇기만 하는 문구도 쓰지 않는다.\n"
     "- 리더의 말을 옮길 때 누가 한 일인지를 바꾸지 않는다 — 리더가 한 일은 리더가 한 일로, 다른 사람이 한 일은 그 사람이 한 일로 쓴다.\n"
     "- 리더가 이미 말한 때·사람·일은 다시 묻지 않는다. 아직 나오지 않은 것만 묻는다.\n"
     "- 리더의 답이 짧거나 모자라도 그렇다는 말을 하지 않는다. 더 쉬운 질문 하나로 넘어간다.\n"
-    "- 질문은 혼자 읽어도 뜻이 서야 한다 — 접속어·조건절로 시작하지 않고, 누구의 무엇을 묻는지가 문장 안에 낱말로 있다.\n"
+    "- 질문은 접속어·조건절로 시작하지 않는다.\n"
     "- 무엇을 물을지 미리 알리는 문장을 쓰지 않는다. 고맙다는 말은 사례를 닫을 때만 한다.\n"
     "- 리더가 반말이나 아주 짧은 말로 답해도 코치의 말씨는 그대로다. 리더의 말씨·말 길이를 입에 올리지 않고 따라 하지도 않는다.\n"
-    "- 질문은 리더가 쓴 낱말로 대상을 분명히 한다. 가리키는 말만으로 대상을 대신하지 않는다.\n"
     "- 질문은 열린 질문 하나. 선택지를 늘어놓는 질문과 가정을 거는 질문은 쓰지 않는다 — 무엇을 했는지는 리더가 말한다.\n"
     "- 새 장면을 청할 때는 그런 일이 있었는지부터 묻는다 — 있었음을 전제하는 문형은 쓰지 않는다.\n"
     "- 평가하는 말은 쓰지 않는다(시스템이 지운다). 평서문은 들은 사실만.\n"

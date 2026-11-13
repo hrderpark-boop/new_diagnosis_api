@@ -194,7 +194,7 @@ def test_c_question_completeness_real_cases():
     for slot in ("context", "action", "reaction", "result", "criterion", "reflection"):
         for formal in (True, False):
             q = default_slot_question(slot, formal=formal, topic_text="작년 3월에 교육 체계를 전면 개편하라고 했을 때 두 강사가 반대했습니다")
-            assert q.endswith("?") and count_question_markers(q) == 1 and q.startswith("말씀하신 '"), q
+            assert q.endswith("?") and count_question_markers(q) == 1 and "말씀하신 '" not in q and "관련해" not in q, q      # (P12-1) 머리 없이 질문만
     src = _src("diag_project/routes/diagnoses.py")
     i = src.index("# 8-w4. (2026-11-12 P11-C)")
     blk = src[i: src.index("# 8-s.", i)]
@@ -240,7 +240,7 @@ def test_f_opener_frames_rotate_without_adjacent_repeat():
         assert register_violations("Daniel", _frame_example("Daniel", i), scope="strict") == [], i
         assert register_violations("Olivia", _frame_example("Olivia", i), scope="strict") == [], i
     src = _src("diag_project/routes/diagnoses.py")
-    assert '_gl_store["opener_frames"]' in src and '_tm["opener_frame"] = _frame_op' in src
+    assert '_gl_store["opener_frames"]' in src and '_tm["opener_frame"] = _obf_op' in src      # (P12-6) 여는 문장은 질문만
 
 
 # ── I: 같은 답 안내 ─────────────────────────────────────────────────────────
@@ -343,6 +343,6 @@ def test_p11a_followups_from_sim_transcript():
     assert quote_receive("그날 저녁에 원인부터 쪼갰어. 다음 날 박선임이랑 교안부터 문서로 복원했어.") == "'박선임이랑 교안부터 문서로 복원했다'는 말씀이셨군요."
     assert quote_receive("운영 공수가 올해 안에 30% 정도 줄었고, 내년 전면 도입 예산도 그대로 승인됐어.").endswith("승인됐다'는 말씀이셨군요.")
     # ⑦ 기본 질문의 머리
-    assert T.default_slot_question("criterion", formal=True, topic_text="작년 12월 평가 때 이기획한테 낮은 등급을 줘야 했어").startswith("말씀하신 '")
+    assert T.default_slot_question("criterion", formal=True, topic_text="작년 12월 평가 때 이기획한테 낮은 등급을 줘야 했어") == "그렇게 하기로 정하신 기준은 무엇이었습니까?"      # (P12-1) 머리 삭제
     src = _src("diag_project/routes/diagnoses.py")
     assert "_poq_t(txt)" in src and "_rco_rk" not in src and '_tm["request_q"] = 1' in src      # (P11d-1) 다시 묻기 후보 검사 삭제

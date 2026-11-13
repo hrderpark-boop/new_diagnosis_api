@@ -124,7 +124,7 @@ def test_bei_chapter_one_every_coach_stub(client: TestClient, seed_data, monkeyp
     _fixed = {x.replace(" ", "") for x in all_fixed_sentences()}
     for c in coach_texts:
         assert not [b for b in broken_statements("\n".join(l for l in c.split("\n") if not l.strip().startswith("·"))) if b.replace(" ", "") not in _fixed], c
-    assert {g.get("opener") for g in store["guard_log"] if g.get("instr") in ("COMPETENCY_ALIGN", "EPISODE_OPEN")} == {"stub"}
+    assert {g.get("opener") for g in store["guard_log"] if g.get("instr") in ("COMPETENCY_ALIGN", "EPISODE_OPEN")} == {"bare"}      # (P12-6) 여는 문장은 질문만(사전 질문)
     # Michael 실행 의지 질문은 세션 누적(michael_q_count ≤ 3)
     if coach_key == "5":
         assert 0 <= int(store.get("michael_q_count") or 0) <= 3

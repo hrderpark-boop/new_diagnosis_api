@@ -58,10 +58,11 @@ def test_anchor_tail_three_variants_per_persona():
                "팀원 둘 사이 갈등을 중재하신 경험이 최근에 있으실까요?"]
     for p in ["Ella", "Jessica", "Olivia", "Daniel", "Michael", "Lucas"]:
         for q in anchors:
-            outs = [V.voice_question(p, q, variant=v) for v in (0, 1, 2)]
-            assert len(set(outs)) == 3, (p, outs)
+            n = V.MICHAEL_TAIL_N if p == "Michael" else 3          # (P12-4) Michael 꼬리는 5종
+            outs = [V.voice_question(p, q, variant=v) for v in range(n)]
+            assert len(set(outs)) == n, (p, outs)
             assert all(is_question(o) and count_questions(o) == 1 for o in outs), (p, outs)
-            assert V.voice_question(p, q, variant=3) == outs[0]
+            assert V.voice_question(p, q, variant=n) == outs[0]
     m = [V.voice_question("Michael", anchors[0], variant=v) for v in (0, 1, 2)]
     assert m[0].endswith("맞추셨던 일, 하나만 들려주세요.") and m[1].endswith("맞추셨던 일, 떠오르는 게 있으세요?")
     assert m[2].endswith("맞추신 적, 기억나는 일 있으면 얘기해 주세요.")

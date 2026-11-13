@@ -104,10 +104,24 @@ _SMALLTALK_FLAT_RE = re.compile(r"(그냥\s*(그래|그렇|그랬|있|지내|보
                                 r"딱히|모르겠|특별한\s*(건|것|일)\s*없|별일\s*없|뭐\s*그냥|그렇죠\s*뭐|늘\s*똑같|똑같(아요|죠|습니다))")
 
 
+_JOSA_END_RE = re.compile(r"(은|는|이|가|을|를|에|에서|에게|으로|로|와|과|도|의|고|며|만|까지|부터|이고|이며)$")
+_PRED_END_RE = re.compile(r"(다|요|죠|음|임|함|어|야|지|네|까|니다|세요)$")
+NOUN_LIST_MAX_CHARS = 30
+
+
+def is_bare_noun_list(text: str | None) -> bool:
+    """(2026-11-13 P12-7) 조사·서술어 없이 낱말만 늘어놓은 짧은 답인가('교육팀 팀장 4명 팀원 교육기획'). 풀어 옮기다 뜻이 바뀐다
+    ('팀장 네 분을 이끌면서') — 고정 받기로 받는다. 낱말 2~8개, 30자 이하, 어느 낱말도 조사·서술어로 끝나지 않을 때만."""
+    toks = [x for x in re.split(r"[\s,./·]+", (text or "").strip()) if x]
+    if not (2 <= len(toks) <= 8) or len("".join(toks)) > NOUN_LIST_MAX_CHARS:
+        return False
+    return not any(_JOSA_END_RE.search(x) or _PRED_END_RE.search(x) for x in toks)
+
+
 def is_contentless_smalltalk(text: str | None) -> bool:
     t = (text or "").strip()
     core = re.sub(r"[\s.,!?~…ㅎㅋ^]+", "", t)
-    if len(core) <= SMALLTALK_SHORT_CHARS:
+    if len(core) <= SMALLTALK_SHORT_CHARS or is_bare_noun_list(t):
         return True
     return len(core) <= 24 and bool(_SMALLTALK_FLAT_RE.search(t))
 

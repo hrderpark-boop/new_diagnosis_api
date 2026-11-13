@@ -649,3 +649,115 @@ def test_p11e_5_6_receive_length_first_person_and_words():
     q0 = default_slot_question("action", formal=True, topic_text="")
     assert q0 and "건에서" not in q0 and q0.endswith("?")
     assert "'상태'" not in default_slot_question("action", formal=True, topic_text="그때는 상태가 좀 그랬어요")
+
+
+# ───────────────────────── P12 (2026-11-13) 11/13 운영 Michael 검토 반영 ─────────────────────────
+
+def test_p12_1_question_stands_alone():
+    import inspect
+    from diag_project.prompts.phase3a.episode_card import TURN_FORMAT_RULES
+    from diag_project.routes import diagnoses as D
+    from diag_project.services.output_guard import attach_referent
+    from diag_project.services.turn_checks import answer_has_words, default_slot_question, question_overlap
+    assert "질문 문장 안에 리더가 직전 답에서 쓴 낱말" in TURN_FORMAT_RULES and "질문 앞 평서문에 기대지 않고" in TURN_FORMAT_RULES
+    ans = "지난주 수요일에 물류 3팀 조 반장이 야간 출고표를 혼자 고쳐 왔어요."
+    assert question_overlap("그 결정을 다른 분들은 어떻게 받아들였는지도 함께 알려 주세요.", ans) == []          # 가리키는 말뿐 — 겹치는 낱말 없음
+    assert question_overlap("조 반장이 고쳐 온 출고표를 보고 뭐라고 하셨어요?", ans)                               # 사람·일이 겹친다
+    assert answer_has_words(ans) and not answer_has_words("그냥 그랬습니다.") and not answer_has_words("네.")
+    for slot in ("context", "action", "reaction", "result", "criterion", "reflection"):
+        q = default_slot_question(slot, formal=False, topic_text="야간 출고표를 혼자 고쳐 왔어요")
+        assert "건에서" not in q and "관련해" not in q and "'" not in q, q                                       # 머리 없이 질문만
+    assert attach_referent("달라진 점이 있었나요?", ans) == "달라진 점이 있었나요?"                               # ''출고표'와 관련해' 머리 삭제
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "# 8-w4b." in src and 'why="q_stand:" + "+".join(_why_b4)' in src and '"q_stand": _tm.get("q_stand")' in src
+
+
+def test_p12_2_3_slot_ask_cap_and_turn_reserve():
+    from diag_project.prompts.phase3a.episode_card import TURN_FORMAT_RULES, build_episode_card
+    from diag_project.services import bei_engine as B
+    assert "거슬러 올라가며 되묻지 않는다" in TURN_FORMAT_RULES and "아직 듣지 못한 것" in TURN_FORMAT_RULES
+    ep = {"idx": 1, "leader_turns": 2, "slots": {k: {"status": "empty", "quote": ""} for k in B.SLOT_KEYS}}
+    ep["slots"]["context"] = {"status": "filled", "quote": "지난주 수요일 야간 출고 때"}
+    assert B.next_slot(ep) == "action"
+    ep = B.bump_slot_ask(ep, "action"); ep = B.bump_slot_ask(ep, "action")
+    assert B.slot_asks(ep, "action") == 2 and B.next_slot(ep) == "reaction" and B.ask_slot(ep) == "action"       # 두 번 물었으면 다음 것으로
+    ep = B.bump_slot_ask(ep, B.next_slot(ep))
+    assert B.ask_slot(ep) == "reaction"
+    card = build_episode_card(instruction="EPISODE_PROBE", chapter="people_management", ep=ep, bei_turns=3, budget=24)
+    assert "이번 턴: '상대 반응'" in card and "리더 턴 2/6" in card                                                # 9칸 영역은 사례 최대 6턴
+    assert "리더 턴 2/8" in build_episode_card(instruction="EPISODE_PROBE", chapter="organization_management", ep=ep, bei_turns=3, budget=16)
+    # 결과를 두 번 물어도 안 나오면 '다시 한다면'으로 넘어간다
+    ep2 = dict(ep, slot_asks={"result": 2})
+    assert "reflection" in B.unfilled_slots(ep2) and "reflection" not in B.unfilled_slots(ep)
+    # 남은 것을 모두 두 번씩 물었으면 닫는다
+    ep3 = dict(ep, slot_asks={k: 2 for k in B.SLOT_KEYS})
+    assert B.next_slot(ep3) is None and B.episode_done_reason(ep3, {"bei_turns": {"organization_management": 3}}, "organization_management", ["a", "b"]) == "stalled"
+    # 예약: 아직 묻지 않은 칸마다 2턴
+    assert B.RESERVE_PER_UNASKED == 2 and B.episode_turn_max(9) == 6 and B.episode_turn_max(4) == 8
+    subs = ["가", "나", "다", "라"]
+    st, e = B.new_episode({}, "organization_management", "가", "k")
+    st["bei_turns"] = {"organization_management": 10}                    # 남은 6 = 미질문 3칸 × 2턴
+    assert B.reserve_turns(st, "organization_management", subs) == 6
+    assert B.episode_done_reason(dict(e, leader_turns=3), st, "organization_management", subs) == "reserve"
+    st["bei_turns"] = {"organization_management": 9}
+    assert B.episode_done_reason(dict(e, leader_turns=3), st, "organization_management", subs) is None
+
+
+def test_p12_4_question_endings():
+    import inspect
+    from diag_project.prompts.phase3a.episode_card import build_episode_card
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import persona_voice as V
+    from diag_project.services.turn_checks import QUESTION_ENDING_MAX, ending_counts, ending_label, request_ending_key, tail_key
+    assert QUESTION_ENDING_MAX == 3
+    assert request_ending_key("그날 장면을 조금 더 떠올려 주실 수 있을까요?") == request_ending_key("출고표를 고친 순서를 떠올려 주실 수 있을까요?")
+    assert request_ending_key("그 뒤 일을 들려주실 수 있을까요?") != request_ending_key("그 뒤 일을 떠올려 주실 수 있을까요?")
+    assert request_ending_key("조 반장은 뭐라고 했나요?") is None and request_ending_key("그 뒤로 무엇이 달라졌습니까?") is None      # 바로 묻는 질문은 세지 않는다
+    assert ending_label(request_ending_key("천천히 떠올려 주실 수 있을까요?")) == "떠올려 주실 수 있을까요"
+    cnt = ending_counts(["하나 떠올려 주실 수 있을까요?", "또 떠올려 주실 수 있을까요?", "그건 왜였나요?", "편하게 들려주세요."])
+    assert cnt == {"떠올려주실수있을까요": 2, "들려주세요": 1}
+    assert tail_key("최근에 직접 맡기셨던 일, 하나만 들려주세요.") == "들려주세요" and tail_key("요즘 그런 일이 있으세요?") == "일이 있으세요"
+    ep = {"idx": 1, "leader_turns": 1, "slots": {k: {"status": "empty", "quote": ""} for k in ("context", "action", "reaction", "result", "criterion", "reflection")}}
+    card = build_episode_card(instruction="EPISODE_PROBE", chapter="people_management", ep=ep, bei_turns=2, budget=24, used_endings=["떠올려 주실 수 있을까요"])
+    assert "이미 여러 번 쓴 질문 끝맺음: '떠올려 주실 수 있을까요'" in card
+    assert "끝맺음" not in build_episode_card(instruction="EPISODE_OPEN", chapter="people_management", ep=ep, bei_turns=2, budget=24, used_endings=["들려주세요"])
+    # Michael 사전 질문의 꼬리 5종
+    q = "새로 온 직원에게 일을 넘기신 적이 최근에 있으셨어요?"
+    outs = [V.voice_question("Michael", q, variant=v) for v in range(V.MICHAEL_TAIL_N)]
+    assert len({tail_key(o) for o in outs}) == 5, outs
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "_chapter_question_tails()" in src and "_used_end_b = [" in src
+
+
+def test_p12_5_6_banned_commentary_and_bare_opener():
+    import inspect
+    from diag_project.prompts.phase3a import layer3_state as L3
+    from diag_project.prompts.phase3a.episode_card import TURN_FORMAT_RULES
+    from diag_project.routes import diagnoses as D
+    from diag_project.services.output_guard import strip_state_leak
+    for bad in ("말씀하신 흐름이 잘 보입니다.", "기준이 분명하게 잡혀 있네요.", "그날 일이 구체적으로 보이네요.", "의지가 분명하게 느껴지네요.",
+                "그 대목이 눈에 들어왔어요.", "이번에는 그 뒤를 짚어 보려고 해요.", "이제 사례 하나의 마무리로 가 볼게요.", "그것을 기준으로 본 순간이었군요."):
+        out, n = strip_state_leak(f"{bad} 조 반장은 그때 뭐라고 했나요?")
+        assert n == 1 and out == "조 반장은 그때 뭐라고 했나요?", (bad, out)
+    assert "떠오르세요" not in inspect.getsource(L3) and "떠오르는 장면" not in inspect.getsource(L3)          # ALIGN 받기에 흘러든 옛 예시
+    assert "앞에서 끝난 다른 이야기를 평서문이나 질문에 끌어오지 않는다" in TURN_FORMAT_RULES
+    src = inspect.getsource(D._submit_message_phase3a)
+    i = src.index("async def _opener_for(")
+    body = src[i: src.index("def ", i + 30)]
+    assert 'return fallback_q, "bare"' in body and "render_opener" not in body                                # 여는 문장은 질문만 — LLM 호출 없음
+
+
+def test_p12_7_register_of_summary_and_noun_list_receive():
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services.input_anomaly import is_bare_noun_list, is_contentless_smalltalk
+    from diag_project.services.persona_register import apply_register
+    out, n, left = apply_register("Michael", "리더님은 야간 출고표를 직접 고치셨습니다. 그 뒤 지연이 줄었습니다. 그 까닭이 궁금합니다.", scope="strict")
+    assert n == 3 and left == [] and "습니다" not in out and out.endswith("궁금해요.")
+    assert apply_register("Daniel", "리더님은 야간 출고표를 직접 고치셨습니다.", scope="strict")[1] == 0
+    assert is_bare_noun_list("물류 3팀 반장 야간 배송") and is_bare_noun_list("인사팀, 채용 담당, 팀원 5명")
+    assert not is_bare_noun_list("물류 3팀 반장이고 야간 출고를 맡고 있습니다.") and not is_bare_noun_list("반장")
+    assert not is_bare_noun_list("물류 3팀 야간 출고")          # 조사와 같은 글자로 끝나는 낱말('출고')이 있으면 나열로 보지 않는다(LLM 받기로 간다 — 안전한 쪽)
+    assert is_contentless_smalltalk("물류 3팀 반장 야간 배송")
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert '_tm["smalltalk"] = "fixed3"' in src and '("strict" if _polite_zz else "questions")' in src and "_areg_cs(" in src

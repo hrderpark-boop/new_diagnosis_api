@@ -82,11 +82,13 @@ def test_p9_1_reserve_closes_episode_and_people_budget():
     ch = "people_management"; subs = _subs(ch)
     assert B.chapter_budget(ch) == 24 and B.episode_max(ch) == 2 and B.SWEEP_MAX_PER_CHAPTER is None
     st, ep = B.new_episode({}, ch, subs[0], "k")
-    st["bei_turns"] = {ch: 24 - 8}                      # 남은 8턴 = 미질문 8개 → 예약 침범
+    st["bei_turns"] = {ch: 24 - 16}                     # (P12-3) 남은 16턴 = 미질문 8개 × 2턴 → 예약 침범
     ep = dict(ep, leader_turns=3)
     assert B.unasked(st, ch, subs) == subs[1:] and B.episode_done_reason(ep, st, ch, subs) == "reserve"
-    st["bei_turns"] = {ch: 24 - 9}
+    st["bei_turns"] = {ch: 24 - 17}
     assert B.episode_done_reason(ep, st, ch, subs) is None
+    assert B.episode_turn_max(len(subs)) == 6 and B.episode_turn_max(5) == 8      # 칸이 7개 이상인 영역은 사례 최대 6턴
+    assert B.episode_done_reason(dict(ep, leader_turns=6), st, ch, subs) == "turns"
     # 사람관리는 사례 2개까지 — 2개를 들은 뒤에는 예산이 넉넉해도 SWEEP
     st2: dict = {}
     for i in range(2):
@@ -144,7 +146,7 @@ def test_p9_5_question_without_referent_detected_and_assembled():
     assert not question_lacks_referent("분담표를 다시 짠 뒤 두 사람은 어떻게 받아들였습니까?", [user])
     assert not question_lacks_referent("그 자리에서 리더님이 처음 꺼낸 말은 무엇이었고 팀원들은 그 말을 어떻게 받았는지 기억나십니까?", [user])
     fixed = attach_referent("달라진 부분이 있었는지 궁금합니다.", user)
-    assert fixed != "달라진 부분이 있었는지 궁금합니다." and "분담표" in fixed and not question_lacks_referent(fixed, [user])
+    assert fixed == "달라진 부분이 있었는지 궁금합니다."          # (P12-1) 명사구 머리(''분담표'와 관련해')는 붙이지 않는다 — 겹치는 낱말이 없으면 다시 쓴다(8-w4b)
 
 
 def test_p9_6_register_per_persona():
@@ -184,7 +186,7 @@ def test_p9_7_phrase_caps_and_opener_frames():
     _cp = count_phrases([out])
     assert done == {"salpyeo": 1} and _cp["salpyeo"] == 0 and _cp["malsseum"] == 1 and "짚어 주십시오" not in out   # (P11c-5) '말씀해 주시겠습니까?' 는 상한을 넘어도 바꾸지 않는다(원문 유지)
     src = inspect.getsource(__import__("diag_project.routes.diagnoses", fromlist=["x"]))
-    assert "enforce_phrase_caps" in src and "frame=_frame_op" in src
+    assert "enforce_phrase_caps" in src and 'return fallback_q, "bare"' in src      # (P12-6) 여는 문장은 질문만
 
 
 def test_p9_8_pause_only_after_case_close_40min_then_30min():

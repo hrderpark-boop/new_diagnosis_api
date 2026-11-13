@@ -261,6 +261,13 @@ def _serve() -> None:
             pass
         return out
     llm_service.GeminiService._generate_with_retry = _patched
+    if os.environ.get("SIM_TOPICS"):
+        # (2026-11-13 P12) 시뮬 전용 — 영역 순서를 바꿔 돌린다(예: 조직관리,사람관리). 제품 코드는 그대로이고 이 서버 프로세스의 순서 캐시만 바꾼다.
+        from diag_project.routes import diagnoses as _D_sim
+        from diag_project.services import chapter_translator as _CT_sim
+        _names_sim = [x.strip() for x in os.environ["SIM_TOPICS"].split(",") if x.strip()]
+        _D_sim._topic_order_cache = _names_sim
+        _CT_sim.CHAPTER_ORDER[:] = [_CT_sim.TOPIC_TO_CHAPTER[x] for x in _names_sim]
     import uvicorn
     uvicorn.run("diag_project.main:app", host="127.0.0.1", port=port, log_level="info")
 
@@ -511,10 +518,13 @@ def main(argv=None) -> int:
     ap.add_argument("--stub", action="store_true")
     ap.add_argument("--profile", default=str(ROOT / "tools/sim_profiles/edu_team_lead.json"))
     ap.add_argument("--smalltalk", help="스몰톡 답 바꾸기(예: '그냥 그래요')")
+    ap.add_argument("--topics", help="영역 순서 바꾸기(시뮬 전용, 예: '조직관리,사람관리')")
     ap.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--dump", help="sim_result_*.json 전문 출력")
     ap.add_argument("--analyze", help="sim_result_*.json 의 세션을 분석(Sonnet 1회) — 지시문에 횟수·USD 가 있을 때만")
     args = ap.parse_args(argv)
+    if getattr(args, "topics", None):
+        os.environ["SIM_TOPICS"] = args.topics
     if args.serve:
         _serve()
         return 0

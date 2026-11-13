@@ -41,6 +41,12 @@ SLOT_HINTS: dict[str, str] = {
 SLOT_STATUSES = ("empty", "partial", "filled")
 
 EPISODE_MAX_LEADER_TURNS = 8
+# (2026-11-13 P12-3) 칸(하위역량)이 7개 이상인 영역은 사례당 리더 턴 최대 6 — 아직 묻지 않은 칸마다 2턴(여는 질문 + 꼬리 1회)을 남겨 두려면
+#   사례가 8턴씩 쓸 수 없다(11/13 운영 Michael 사람관리: 다섯 칸이 질문 1개·답 1개로 끝났다).
+EPISODE_MAX_LEADER_TURNS_WIDE = 6
+WIDE_CHAPTER_SUBS = 7
+RESERVE_PER_UNASKED = 2               # (P12-3) 아직 묻지 않은 칸의 예약 — 칸당 1턴 → 2턴
+SLOT_ASK_MAX = 2                      # (P12-2) 같은 것(슬롯)을 채우려는 질문은 사례당 2회까지 — 그래도 안 나오면 다음 것으로
 EPISODE_MIN_LEADER_TURNS = 4          # (2026-11-05 2단계 판정 1) 6/6 이 4턴 전에 차도 "장면 구체화" 턴을 더 묻는다
 EPISODE_MIN = 2
 EPISODE_MAX = 3
@@ -119,12 +125,48 @@ def filled_slots(ep: dict | None) -> list[str]:
 
 
 def unfilled_slots(ep: dict | None) -> list[str]:
-    """아직 안 찬 슬롯(우선순위 순). '다시 한다면·배운 것'은 결과가 찬 뒤에만 묻는다."""
+    """아직 안 찬 슬롯(우선순위 순). '다시 한다면·배운 것'은 결과가 찬 뒤(또는 결과를 두 번 물은 뒤)에만 묻는다."""
     slots = (ep or {}).get("slots") or {}
     out = [k for k in SLOT_KEYS if slots.get(k, {}).get("status") != "filled"]
-    if "reflection" in out and slots.get("result", {}).get("status") != "filled":
+    if "reflection" in out and slots.get("result", {}).get("status") != "filled" and slot_asks(ep, "result") < SLOT_ASK_MAX:
         out.remove("reflection")
     return out
+
+
+def slot_asks(ep: dict | None, slot: str) -> int:
+    return int((((ep or {}).get("slot_asks") or {}).get(slot)) or 0)
+
+
+def next_slot(ep: dict | None) -> str | None:
+    """(P12-2) 이번 턴에 물을 것 — 아직 안 찬 것 가운데 이 사례에서 두 번 묻지 않은 첫 항목. 남은 것을 모두 두 번씩 물었으면 None."""
+    return next((k for k in unfilled_slots(ep) if slot_asks(ep, k) < SLOT_ASK_MAX), None)
+
+
+def bump_slot_ask(ep: dict, slot: str | None) -> dict:
+    """이번 턴의 질문이 향하는 것(ask_slot)을 적고 그 횟수를 올린다."""
+    ep = dict(ep)
+    if slot:
+        asks = dict(ep.get("slot_asks") or {})
+        asks[slot] = int(asks.get(slot) or 0) + 1
+        ep["slot_asks"] = asks
+    ep["ask_slot"] = slot
+    return ep
+
+
+def ask_slot(ep: dict | None) -> str:
+    """이번 턴 질문이 향하는 것 — 적어 둔 것(ask_slot)이 아직 안 찼으면 그것, 아니면 안 찬 첫 항목."""
+    un = unfilled_slots(ep)
+    cur = (ep or {}).get("ask_slot")
+    return cur if cur in un else (un[0] if un else "reflection")
+
+
+def episode_turn_max(n_subs: int | None) -> int:
+    return EPISODE_MAX_LEADER_TURNS_WIDE if int(n_subs or 0) >= WIDE_CHAPTER_SUBS else EPISODE_MAX_LEADER_TURNS
+
+
+def reserve_turns(store: dict | None, chapter: str | None, all_subs: list[str] | None) -> int:
+    """아직 한 번도 묻지 않은 칸을 위해 남겨 둘 턴 수(칸당 2턴)."""
+    return RESERVE_PER_UNASKED * len(unasked(store, chapter, list(all_subs or [])))
 
 
 def is_no_case_text(text: str | None) -> bool:
@@ -230,12 +272,14 @@ def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None
     if not ep:
         return None
     turns = int(ep.get("leader_turns") or 0)
-    if turns >= EPISODE_MAX_LEADER_TURNS:
+    if turns >= episode_turn_max(len(all_subs or [])):
         return "turns"
     if remaining(store, chapter) <= 0:
         return "budget"
-    if all_subs and remaining(store, chapter) <= len(unasked(store, chapter, all_subs)):
-        return "reserve"                      # (P9-1) 미질문 하위역량 수 × 1턴 예약을 침범 — 6슬롯 전이라도 닫는다
+    if len(filled_slots(ep)) >= len(SLOT_KEYS) and turns >= EPISODE_MIN_LEADER_TURNS:
+        return "slots"                        # 여섯 가지가 다 나왔다 — 예약 때문에 닫히는 것과 구별한다
+    if all_subs and remaining(store, chapter) <= reserve_turns(store, chapter, all_subs):
+        return "reserve"                      # (P9-1 → P12-3) 미질문 칸 수 × 2턴 예약을 침범 — 6슬롯 전이라도 닫는다
     if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS and filled_slots(ep):
         return "stalled"                      # (P7-1) 2턴 연속 슬롯 진전 없음 — 들은 것으로 매핑하고 다음으로
     if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS and not filled_slots(ep):
@@ -244,6 +288,8 @@ def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None
         return "stalled_empty"
     if len(filled_slots(ep)) >= len(SLOT_KEYS) and turns >= EPISODE_MIN_LEADER_TURNS:
         return "slots"
+    if unfilled_slots(ep) and next_slot(ep) is None:
+        return "stalled" if filled_slots(ep) else "stalled_empty"     # (P12-2) 남은 것을 모두 두 번씩 물었다 — 더 캐묻지 않고 닫는다
     return None
 
 
@@ -398,7 +444,7 @@ def plan_after_episode(store: dict | None, chapter: str | None, all_subs: list[s
         return STATE_CLOSE
     # (2026-11-10 P9-1) 종료 조건은 "모든 하위역량 asked" 하나 — 미질문이 남아 있으면 예산이 0 이어도 SWEEP(앵커 1턴)로 간다.
     #   사례를 새로 열려면 여는 하위역량을 뺀 미질문 수만큼(1턴씩)을 예약하고도 최소 턴이 남아야 한다.
-    reserve = max(0, len(un) - 1)
+    reserve = RESERVE_PER_UNASKED * max(0, len(un) - 1)      # (P12-3) 칸당 2턴
     can_open = rem - reserve >= EPISODE_OPEN_MIN_REMAINING
     if n < EPISODE_MIN and can_open:
         return STATE_EPISODE
@@ -408,13 +454,12 @@ def plan_after_episode(store: dict | None, chapter: str | None, all_subs: list[s
 
 
 def sweep_followup_allowed(store: dict | None, chapter: str | None, all_subs: list[str], ep: dict | None) -> bool:
-    """SWEEP 후속 ≤1: 예산이 남은 미커버 수보다 많고, 답이 행동+결과를 이미 채우지 않았을 때만."""
+    """SWEEP 후속 1턴 — (P12-3) 사례가 나왔으면 꼬리 질문을 한 번은 하고 넘어간다. 여섯 가지가 다 나왔거나, 아직 묻지 않은 칸의
+    여는 질문(칸당 1턴)까지 못 내게 될 때만 생략한다. (종전: 행동+결과가 찼으면 생략 · 미질문 예약 1턴씩)"""
     if not ep or int(ep.get("leader_turns") or 0) >= 2:
         return False
-    sl = (ep.get("slots") or {})
-    if sl.get("action", {}).get("status") == "filled" and sl.get("result", {}).get("status") == "filled":
+    if len(filled_slots(ep)) >= len(SLOT_KEYS):
         return False
-    # (P9-1) 후속 1턴은 미질문 예약(1턴씩)을 침범하지 않을 때만
     return remaining(store, chapter) > len(unasked(store, chapter, all_subs))
 
 
@@ -432,7 +477,7 @@ def sweep_promote_decision(store: dict | None, chapter: str | None, all_subs: li
         return None
     if len(filled_slots(ep)) >= len(SLOT_KEYS):
         return None                                   # 한 번의 답에 여섯 가지가 다 나왔다 — 더 물을 것이 없다
-    room = remaining(store, chapter) - len(unasked(store, chapter, all_subs))
+    room = remaining(store, chapter) - reserve_turns(store, chapter, all_subs)
     return "promoted" if room >= SWEEP_PROMOTE_MIN_ROOM else "no_budget"
 
 
@@ -446,9 +491,9 @@ def promoted_done_reason(ep: dict | None, store: dict | None, chapter: str | Non
         return "turns"
     if remaining(store, chapter) <= 0:
         return "budget"
-    if all_subs and remaining(store, chapter) <= len(unasked(store, chapter, all_subs)):
+    if all_subs and remaining(store, chapter) <= reserve_turns(store, chapter, all_subs):
         return "reserve"
-    if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS:
+    if int(ep.get("stall") or 0) >= EPISODE_STALL_TURNS or next_slot(ep) is None:
         return "stalled" if filled_slots(ep) else "stalled_empty"     # (P11c-4) 채운 칸 없이 2턴 무진전 → 호출자가 사례 없음으로 닫는다
     return None
 

@@ -140,14 +140,16 @@ _MQ_RESULT_RE = re.compile(r"어떻게 됐(?:어요|나요|습니까|을까요)\
 
 # (2026-11-04 P3 3차) 앵커 꼬리 3종 순환 — Michael: '하나만 들려주세요.' / '떠오르는 게 있으세요?' / '기억나는 일 있으면 얘기해 주세요.'
 #   '…는지 들려주세요.' 꼴은 '…는지 떠오르는 대로 말씀해 주세요.' / '…는지 기억나는 대로 얘기해 주세요.' 로.
-_MQ_EXIST_TAILS = ("하나만 들려주세요.", "떠오르는 게 있으세요?", "기억나는 일 있으면 얘기해 주세요.")
-_MQ_NUNJI_TAILS = ("들려주세요.", "떠오르는 대로 말씀해 주세요.", "기억나는 대로 얘기해 주세요.")
+# (2026-11-13 P12-4) 5종 — 11/13 운영 Michael: '하나만 들려주세요' 6회. 넷째는 '…하셨던 일이 있었는지 알려 주세요.'(쉼표 없이 잇는다), 다섯째는 '편하게 꺼내 주세요.'
+_MQ_EXIST_TAILS = ("하나만 들려주세요.", "떠오르는 게 있으세요?", "기억나는 일 있으면 얘기해 주세요.", "있었는지 알려 주세요.", "편하게 꺼내 주세요.")
+_MQ_NUNJI_TAILS = ("들려주세요.", "떠오르는 대로 말씀해 주세요.", "기억나는 대로 얘기해 주세요.", "알려 주세요.", "편하게 꺼내 주세요.")
+MICHAEL_TAIL_N = 5
 
 
 def _michael_request(body: str, variant: int = 0) -> str:
     """Michael 요청형 변환. 구조 규칙 → 어미표 → 변환 불가면 원문. variant 로 꼬리 3종 순환."""
     b = body.strip()
-    v = int(variant or 0) % 3
+    v = int(variant or 0) % MICHAEL_TAIL_N
     m = _MQ_RESULT_RE.search(b)
     if m:
         out = b[:m.start()] + "어떻게 됐는지도요."
@@ -173,6 +175,9 @@ def _michael_request(body: str, variant: int = 0) -> str:
             core = f"{pre}{verb}{nm2} {head2}"
         core = re.sub(r"\s{2,}", " ", core).strip()
         lead = f"{time} " if time and not re.match(r"^" + _MQ_TIME, core) else ""
+        if v == 3:
+            from diag_project.services.korean import with_josa as _wj_mq
+            return f"{lead}{_wj_mq(core, '이/가')} {_MQ_EXIST_TAILS[v]}"
         return f"{lead}{core}, {_MQ_EXIST_TAILS[v]}"
     for pat, rep in _MICHAEL_ENDINGS:
         if re.search(pat, b):

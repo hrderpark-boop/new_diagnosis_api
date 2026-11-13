@@ -130,7 +130,7 @@ def test_p10_2_short_bare_probe_question_gets_referent():
     from diag_project.services.output_guard import attach_referent, is_short_bare_question as short
     ans = "지난달 주간 회의에서 박선임과 김책임 두 분이 일정 문제로 부딪혔어요. 제가 따로 불러서 분담표를 다시 짰습니다."
     assert short("그때 어떤 이야기가 오갔나요?", [ans]) and attach_referent("그때 어떤 이야기가 오갔나요?", ans) == "그때 두 분과 어떤 이야기가 오갔나요?"
-    assert short("그 뒤에는 어떻게 됐나요?", [ans]) and attach_referent("그 뒤에는 어떻게 됐나요?", ans) == "'분담표'와 관련해 그 뒤에는 어떻게 됐나요?"
+    assert short("그 뒤에는 어떻게 됐나요?", [ans]) and attach_referent("그 뒤에는 어떻게 됐나요?", ans) == "그 뒤에는 어떻게 됐나요?"      # (P12-1) 명사구 머리는 붙이지 않는다
     assert not short("두 분은 뭐라고 하셨어요?", [ans])              # 사람을 가리킨다
     assert not short("분담표는 누가 짰나요?", [ans])                 # 리더가 쓴 낱말이 있다
     assert not short("그 회의가 끝난 뒤에 두 분이 일정표를 놓고 다시 이야기한 자리가 있었나요?", [ans])   # 15자 넘음
@@ -202,7 +202,7 @@ def test_p10_4_strict_register_for_opener_scope_bridge():
     assert "해요체" in register_hint("Olivia") and "합쇼체" in register_hint("Daniel")
     src = _route_src()
     assert src.count('scope="strict"') >= 4          # 여는 문장 · 다리 · 범위 문장(LLM·폴백)
-    assert '_areg_op(_pn_op, _txt_op, scope="strict")' in src and '_areg_k(_pn_k, _sk[-1], scope="strict")' in src
+    assert 'return fallback_q, "bare"' in src and '_areg_k(_pn_k, _sk[-1], scope="strict")' in src      # (P12-6) 여는 문장은 질문만(사전 질문, 이미 코치 어미)
     # (확인) p9 에서 범위를 줄일 때 여는 문장은 빠지지 않았다 — 빠져 있던 것은 해요체 코치의 평서문 검사였다
     from diag_project.services.anchor_render import render_opener
     assert 'scope="strict"' in inspect.getsource(render_opener)
@@ -335,7 +335,7 @@ def test_p10a_followups_from_confirm_sim():
     # 1) 세션 첫 사례가 '이번에는 ~ 이야기예요' 로 열렸다 — 틀 순번은 '앞서 연 사례 수'(이번 것 제외)
     # (P11-F) 틀은 순번표가 아니라 세션 원장(opener_frames)을 보고 고른다 — 첫 사례는 여전히 0번 틀
     from diag_project.services.anchor_render import pick_opener_frame
-    assert "_frame_op = _pof(" in src and pick_opener_frame([]) == 0 and opener_frame_for(0) == 0
+    assert 'return fallback_q, "bare"' in src and pick_opener_frame([]) == 0 and opener_frame_for(0) == 0      # (P12-6) 틀은 더 고르지 않는다 — 질문만
     # 2) 받을 낱말이 없는 답('네, 맞아요') 뒤의 여는 턴에 "그럼 이 사례를 조금 더 펼쳐 볼게요." 가 붙었다 — 받기가 아니다
     assert leader_nouns("네, 맞아요.") == [] and close_side_violation("그럼 이 사례를 조금 더 펼쳐 볼게요.")
     assert '_tm["receive_dropped"] = 1' in src and "_recv_optional = _is_open and not _ln_w(_llm_user_text)" in src
@@ -479,7 +479,7 @@ def test_regen_budget_one_per_turn_then_deterministic_repair():
     i = src.index("async def _timed_regen(**kw):")
     wrap = src[i: i + 1200]
     assert 'if _tm.get("no_regen") or _tm.get("budget_used"):' in wrap and '_tm["budget_used"] = 1' in wrap
-    assert src.count('rounds=(1 if _tm.get("budget_used") else 2)') >= 5
+    assert src.count('rounds=(1 if _tm.get("budget_used") else 2)') >= 4      # (P12-6) 여는 문장 렌더 호출이 빠졌다
     # 8-w: 재생성 1회, 그 뒤는 결정론 수선(긴 받기 자르기 · 질문 없으면 후속 질문 · 받기 없으면 구절 인용 받기)
     j = src.index("while _iss and _rounds < 1 and not (_tm.get(\"budget_used\")")
     after = src[j: src.index("# 8-w2.", j)]

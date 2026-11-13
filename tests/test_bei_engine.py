@@ -115,7 +115,9 @@ def test_sweep_target_followup_and_unconfirmed():
     assert st["sweep_asked"][CH] == [SUBS[2]] and B.sweep_target(st, CH, SUBS) == SUBS[3]
     st, sw = B.record_leader_turn(st, CH, sw)
     sw["slots"] = _judged(action=("filled", "a"), result=("filled", "b"))
-    assert B.sweep_followup_allowed(st, CH, SUBS, sw) is False           # 행동+결과가 이미 찼으면 후속 생략
+    assert B.sweep_followup_allowed(st, CH, SUBS, sw) is True            # (P12-3) 행동+결과가 찼어도 꼬리 질문은 한 번 한다
+    sw["slots"] = _judged(**{k: ("filled", "x") for k in B.SLOT_KEYS})
+    assert B.sweep_followup_allowed(st, CH, SUBS, sw) is False           # 여섯 가지가 다 나왔으면 생략
     sw["slots"] = _judged(action=("partial", "a"))
     assert B.sweep_followup_allowed(st, CH, SUBS, sw) is True            # 남은 턴 3 > 남은 미커버 1
     st["bei_turns"] = {CH: 17}

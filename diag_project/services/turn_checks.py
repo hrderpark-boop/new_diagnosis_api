@@ -266,14 +266,72 @@ _WEAK_TOPIC_HEADS = frozenset({"상태", "상황", "일", "것", "때", "부분"
 
 
 def default_slot_question(slot: str | None, *, formal: bool, topic_text: str | None = None) -> str:
-    """그 슬롯의 기본 질문. topic_text(사례의 상황 인용 또는 직전 리더 답)에서 핵심 명사구를 뽑아 머리에 붙인다 — 없으면 머리 없이."""
+    """그 슬롯의 기본 질문 — 머리 없이 질문만. (2026-11-13 P12-1) '말씀하신 '○○' 건에서' 머리는 삭제했다(topic_text 는 쓰지 않는다 — 호출부 호환용)."""
     pair = _DEFAULT_Q.get(slot or "") or _DEFAULT_Q["action"]
-    np_ = key_noun_phrase(topic_text or "")
-    # (2026-11-12 P11e-6) 머리 낱말을 못 고르면 머리 없이 질문만 — p11d: "말씀하신 '상태' 건에서 …". 뜻이 넓은 한 낱말은 머리로 쓰지 않는다
-    if np_ and (len(np_.replace(" ", "")) < 2 or np_.strip() in _WEAK_TOPIC_HEADS):
-        np_ = ""
-    topic = f"말씀하신 '{np_}' 건에서 " if np_ else ""       # (시뮬 p11a) "'등급' 일에서 …" 는 어색했다
-    return pair[0 if formal else 1].format(topic=topic)
+    return pair[0 if formal else 1].format(topic="")
+
+
+# ── (2026-11-13 P12-1·4) 질문이 스스로 서는가 · 질문 끝맺음 ─────────────────────────────
+_OVERLAP_GENERIC = frozenset(("리더", "어떻", "어떤", "무엇", "무슨", "누가", "누구", "언제", "어디", "그때", "그것", "그게", "이것", "직접", "먼저", "가장",
+                              "실제", "혹시", "조금", "하나", "말씀", "이야", "얘기", "생각", "기억", "처음", "다음", "지금", "최근", "당시", "순간", "자리",
+                              "결정", "상황", "과정", "결과", "부분", "방식", "기준", "이유", "변화", "반응", "행동", "있었", "있으", "하셨", "했는", "됐는",
+                              "들려", "떠올", "알려", "짚어", "궁금", "여쭙", "여쭤", "주시", "주실", "주세", "어땠", "되었", "보셨", "느끼", "드셨"))
+
+
+def question_overlap(question: str | None, answer: str | None) -> list[str]:
+    """질문 문장에 리더의 답과 겹치는 내용 낱말(앞 두 글자 기준) — 지시어·의문사·흔한 낱말은 세지 않는다. 겹친 낱말(질문 쪽 표기) 목록.
+    지시어('그때'·'그 결정')를 보는 검사가 아니다 — 겹치는 낱말이 하나라도 있는지만 본다."""
+    a = {c[:2] for c in _content_chunks(answer or "") if len(c) >= 2} - _OVERLAP_GENERIC
+    out: list[str] = []
+    for c in _content_chunks(question or ""):
+        if len(c) >= 2 and c[:2] in a and c[:2] not in _OVERLAP_GENERIC and c not in out:
+            out.append(c)
+    return out
+
+
+def answer_has_words(answer: str | None) -> bool:
+    """겹침을 따질 만한 낱말이 답에 있는가(흔한 낱말을 뺀 내용 낱말 2개 이상)."""
+    return len({c[:2] for c in _content_chunks(answer or "") if len(c) >= 2} - _OVERLAP_GENERIC) >= 2
+
+
+_REQ_END_RE = re.compile(
+    r"((?:말씀|이야기|얘기|설명)해\s*|들려\s*|떠올려\s*|알려\s*|짚어\s*|꺼내\s*|나눠\s*|풀어\s*)"
+    r"(주실\s*수\s*있(?:을까요|으실까요|으세요|겠습니까|습니까|나요|으신가요)|주시겠(?:어요|습니까)|주실래요|주실까요|주세요|주십시오|주시죠|"
+    r"주시면\s*(?:좋겠|감사하겠|됩니다|돼요)[가-힣]*|줄\s*수\s*있(?:을까요|나요))[?.!…\s]*$")
+QUESTION_ENDING_MAX = 3            # 같은 끝맺음은 영역 안에서 3회까지 — 4회째면 다시 쓴다(1회, 실패하면 그대로)
+
+
+def request_ending_key(question: str | None) -> str | None:
+    """청하는 꼴로 끝나는 질문의 끝맺음('떠올려 주실 수 있을까요', '들려주세요') — 띄어쓰기를 뺀 꼴. 바로 묻는 질문('무엇이었나요?')은 None."""
+    m = _REQ_END_RE.search((question or "").strip())
+    if not m:
+        return None
+    return re.sub(r"\s+", "", m.group(1) + m.group(2))
+
+
+def ending_label(key: str | None) -> str:
+    """끝맺음 키를 읽기 좋은 꼴로(프롬프트·보고용)."""
+    k = key or ""
+    k = re.sub(r"^(말씀해|이야기해|얘기해|설명해|떠올려|알려|짚어|꺼내|나눠|풀어)(?=주)", r"\1 ", k)
+    return k.replace("주실수있", "주실 수 있").replace("줄수있", "줄 수 있").replace("주시면", "주시면 ")
+
+
+def tail_key(question: str | None) -> str:
+    """질문의 끝 두 어절(문장부호 제외) — 사전 질문의 꼬리 변형을 가르는 데 쓴다. 청하는 꼴이면 그 끝맺음 키."""
+    k = request_ending_key(question)
+    if k:
+        return k
+    toks = re.sub(r"[.?!…~\"'”’]+$", "", (question or "").strip()).split()
+    return " ".join(toks[-2:])
+
+
+def ending_counts(questions: list[str] | None) -> dict:
+    out: dict = {}
+    for q in questions or []:
+        k = request_ending_key(q)
+        if k:
+            out[k] = out.get(k, 0) + 1
+    return out
 
 
 # ── 두 질문 가운데 남길 것 · 요청형 질문 ─────────────────────────────────────

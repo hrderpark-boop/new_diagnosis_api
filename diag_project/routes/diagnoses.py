@@ -1155,38 +1155,40 @@ async def _submit_message_phase3a(
         from diag_project.services.output_guard import strip_frame_lead as _sfl
         _k = _fsk_b(chapter, sub) if (chapter and sub) else None
         _pos = int((session.self_assessment_data or {}).get("anchor_variant") or 0) + (1 if alt else 0)
-        return _voiced_q(_sfl(_da(_k, _pos)))
+        # (2026-11-13 P12-4) 끝맺음을 여러 종으로 — 꼬리 변형 가운데 이번 영역에서 가장 덜 쓴 끝맺음을 고른다(같으면 세션 순번 차례).
+        #   11/13 운영 Michael: '하나만 들려주세요' 6회 — 순번만 돌려서는 LLM 이 쓴 질문의 끝맺음과 겹쳤다.
+        from diag_project.services.persona_voice import MICHAEL_TAIL_N as _mtn_a, persona_key as _pk_a, voice_question as _vq_a
+        from diag_project.services.turn_checks import tail_key as _tk_a
+        _pn_a2 = (state.get("coach_persona") or {}).get("name")
+        _raw_a = _sfl(_da(_k, _pos))
+        _nv_a = _mtn_a if _pk_a(_pn_a2) == "Michael" else 3
+        _base_a = _vv_total()
+        _used_a: dict = {}
+        for _key_a in _chapter_question_tails():
+            _used_a[_key_a] = _used_a.get(_key_a, 0) + 1
+        _cands_a = [_vq_a(_pn_a2, _raw_a, variant=_base_a + i) for i in range(_nv_a)]
+        _tm["voiced"] = 1
+        return min(enumerate(_cands_a), key=lambda x: (_used_a.get(_tk_a(x[1]), 0), x[0]))[1]
+
+    def _chapter_questions() -> list[str]:
+        """이번 영역에서 코치가 이미 한 질문 문장들."""
+        _out_cq: list[str] = []
+        for _m_cq in history_messages:
+            if (_m_cq.role == MessageRole.MODEL or _m_cq.role == "model") and chapter and _m_cq.chapter == chapter:
+                _out_cq.extend(x.strip() for x in split_sentences(_m_cq.content or "") if x.strip() and is_question_sentence(x))
+        return _out_cq
+
+    def _chapter_question_tails() -> list[str]:
+        from diag_project.services.turn_checks import tail_key as _tk_cq
+        return [_tk_cq(x) for x in _chapter_questions()]
 
     async def _opener_for(sub: str | None, fallback_q: str) -> tuple[str, str]:
         """(2026-11-05 P4-4) 사례 여는 문장 = [왜 묻는지 1문장] + [있었는지 질문] — LLM 렌더(형식 검사·재생성 1회), 불합격은 사전 앵커(fallback_q)."""
-        from diag_project.services.anchor_render import render_opener
-        from diag_project.services.intro_messages import PERSONA_LINES as _PL_op, persona_key as _pk_op
-        _pn_op = (state.get("coach_persona") or {}).get("name")
-        _hint = ""
-        # (2026-11-10 P9-7 → 11-11 P10-3) 여는 문장 틀 3종 — 세션에서 연 사례 순번으로 돌린다('이번에는 ~ 쪽 이야기' 틀은 세션 2회만)
-        # (2026-11-12 P11-F) 틀 5종 — 세션에서 쓴 틀(원장 opener_frames)을 보고 직전 틀을 빼고 고른다. 같은 틀은 세션 2회까지.
-        from diag_project.services.anchor_render import pick_opener_frame as _pof
-        _frame_op = _pof(list((session.self_assessment_data or {}).get("opener_frames") or []))
-        _tm["opener_frame"] = _frame_op
-        _txt_op, _mode_op = await render_opener(llm, chapter=chapter, sub_key=(_fsk_b(chapter, sub) if (chapter and sub) else None), persona_name=_pn_op,
-                                                leader_text=_bei_user_text, fallback_question=fallback_q, register_hint=_hint, frame=_frame_op,
-                                                rounds=(1 if _tm.get("budget_used") else 2))
-        if _mode_op in ("llm_regen", "fallback_retry"):
-            _tm["budget_used"] = 1                     # (재생성 예산) 여는 문장을 한 번 다시 썼다 — 이 턴의 재생성은 여기까지
-            _tm["render_regen"] = int(_tm.get("render_regen") or 0) + 1
-            _tm.setdefault("regen_why", []).append("opener_render")
-        if _mode_op == "fallback_retry":
-            _mode_op = "fallback"
-        # (2026-11-10 P9-6) LLM 이 쓴 여는 문장에도 페르소나 어미 — 교정 뒤에도 섞이면 사전 앵커(이미 페르소나 어미)로
-        if _mode_op in ("llm", "llm_regen"):
-            from diag_project.services.persona_register import apply_register as _areg_op
-            _txt_op, _n_reg_op, _left_op = _areg_op(_pn_op, _txt_op, scope="strict")   # (P10-4) 여는 문장은 코치 어미 강제(해요체 코치의 '~습니다' 포함)
-            if _n_reg_op:
-                _tm["register_fix"] = int(_tm.get("register_fix") or 0) + _n_reg_op
-            if _left_op:
-                _tm["register_fallback"] = 1
-                return fallback_q, "fallback_register"
-        return _txt_op, _mode_op
+        # (2026-11-13 P12-6) 여는 문장은 질문만 — 칸 설명을 문형에 끼워 넣은 문장("…에 관한 건데요", "다음은 …에 대해서예요", "이번에는 … 쪽 이야기")이
+        #   어색했다(11/13 운영 Michael). 사전 질문(이미 코치 어미, 끝맺음은 _anchor_for_sub 가 고른다)을 그대로 낸다. LLM 호출 없음.
+        from diag_project.services.anchor_render import OPENER_BARE_FRAME as _obf_op
+        _tm["opener_frame"] = _obf_op
+        return fallback_q, "bare"
 
     def _ep_transcript(ep: dict) -> list[tuple[str, str]]:
         """사례 전문 = 사례를 연 코치 턴부터 이번 리더 답까지(opened_at = 열 때의 챕터 메시지 수)."""
@@ -1399,6 +1401,11 @@ async def _submit_message_phase3a(
                         _bei_ep = _ep; instruction_used = "EPISODE_PROBE"; _tm["bei"] = "probe"
                         if _jd.get("switched_case"):
                             state["bei_switched"] = True
+        if instruction_used == "EPISODE_PROBE" and _bei_ep is not None and not state.get("bei_reask_only"):
+            # (2026-11-13 P12-2) 같은 것을 채우려는 질문은 사례당 2회까지 — 이번 턴이 향하는 것을 사례에 적는다(다시 묻기 턴은 세지 않는다)
+            _bei_ep = _bei.bump_slot_ask(_bei_ep, _bei.next_slot(_bei_ep))
+            _store = _bei.update_episode(_store, chapter, _bei_ep)
+            _tm["ask_slot"] = _bei_ep.get("ask_slot")
         session.self_assessment_data = _store
         from sqlalchemy.orm.attributes import flag_modified as _fm_bei
         _fm_bei(session, "self_assessment_data")
@@ -1448,10 +1455,14 @@ async def _submit_message_phase3a(
         _prev_eps_card = [{"idx": i + 1, "summary": f"[{e.get('chapter')}] {e.get('summary')}"}
                           for i, e in enumerate((state.get("all_collected_events") or [])[-5:])]
         from diag_project.prompts.phase3a.episode_card import build_episode_card as _bec
+        # (2026-11-13 P12-4) 이번 영역에서 두 번 이상 쓴 질문 끝맺음(청하는 꼴) — 카드에 넘겨 다른 끝맺음을 쓰게 한다
+        from diag_project.services.turn_checks import ending_counts as _ec_b, ending_label as _el_b
+        _end_cnt_b = _ec_b(_chapter_questions())
+        _used_end_b = [_el_b(k) for k, v in sorted(_end_cnt_b.items(), key=lambda kv: -kv[1]) if v >= 2]
         state["bei_card"] = _bec(instruction=instruction_used, chapter=chapter, ep=_bei_ep, bei_turns=_bei.bei_turns(_store, chapter),
                                  budget=_bei.chapter_budget(chapter), prev_episodes=_prev_eps_card, signal=_signal,
                                  anchor_text=_bei_anchor_text, sweep_sub=current_target_sub, weak_hint=_weak_hint,
-                                 sweep_seq=_sweep_seq_b, bridge_material=_bridge_mat_b)
+                                 sweep_seq=_sweep_seq_b, bridge_material=_bridge_mat_b, used_endings=_used_end_b)
         logger.info("🧭 BEI [%s] state=%s instr=%s ep=%s%s turns=%d/%d filled=%s closed=%s", chapter, _bei.chapter_state(_store, chapter),
                     instruction_used, (_bei_ep or {}).get("kind", "-"), (_bei_ep or {}).get("idx", "-"), _bei.bei_turns(_store, chapter),
                     _bei.chapter_budget(chapter), _tm.get("slots_filled"), _tm.get("closed"))
@@ -1631,6 +1642,17 @@ async def _submit_message_phase3a(
             _pn_s2 = (state.get("coach_persona") or {}).get("name")
             system_override_text = f"{_sfr2(_pn_s2)} {_pl_s2(_pn_s2, 'role_q')}"
             _tm["smalltalk"] = "fixed2"; _tm["no_regen"] = 1
+
+    # (2026-11-13 P12-7) 담당 업무 답(라포 3턴)이 조사 없는 낱말 나열이면('교육팀 팀장 4명 팀원 교육기획') 풀어 옮기지 않는다 — 고정 받기 + 기대 질문.
+    #   11/13 운영: "팀장 네 분을 이끌면서" 로 잘못 옮겼다. 10자 이하 기준은 이 턴에 걸지 않는다(짧아도 '영업팀장입니다' 는 받을 말이 있다).
+    if (not _is_aborted and not _is_warning and not _is_name_reconfirm and instruction_used == "RAPPORT_BUILDING"
+            and state.get("rapport_turn_count", 0) == 3 and system_override_text is None):
+        from diag_project.services.input_anomaly import is_bare_noun_list as _ibnl
+        if _ibnl(request.content):
+            from diag_project.services.intro_messages import persona_line as _pl_s3, smalltalk_flat_receive2 as _sfr3
+            _pn_s3 = (state.get("coach_persona") or {}).get("name")
+            system_override_text = f"{_sfr3(_pn_s3)} {_pl_s3(_pn_s3, 'expect_q')}"
+            _tm["smalltalk"] = "fixed3"; _tm["no_regen"] = 1
 
     # (2026-10-28 P0-4) 입력 이상 턴은 위 어떤 분기보다 우선 — 고정 응답, LLM 미호출
     if _anomaly_override_text is not None:
@@ -2302,6 +2324,11 @@ async def _submit_message_phase3a(
                 _sum, _close_mode = _cncl((state.get("coach_persona") or {}).get("name")), "no_case_fixed"
             _tm["close_summary_mode"] = _close_mode if _sum else "bridge_only"
             _tm["close_summary_eps"] = f"{_best_n}/{_n_eps_c}"
+            # (2026-11-13 P12-7) 요약도 코치 말투로 — 해요체 코치(Michael 등)의 요약이 합쇼체로 나갔다(말투 교정이 질문 문장만 봤다)
+            from diag_project.services.persona_register import apply_register as _areg_cs
+            _sum, _n_cs_reg, _ = _areg_cs((state.get("coach_persona") or {}).get("name"), _sum, scope="strict")
+            if _n_cs_reg:
+                _tm["register_fix"] = int(_tm.get("register_fix") or 0) + _n_cs_reg
             wrap_up = f"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch), (state.get('coach_persona') or {}).get('name'))}".strip()
         else:
             # (2026-11-10 P9-9) 세션 마지막 답도 받기 1문장 뒤에 종료한다 — 고정 종료 문구만 나가면 마지막 답이 허공에 뜬다
@@ -2939,7 +2966,7 @@ async def _submit_message_phase3a(
             return _qs[-1] if _qs else ""
         _q_c = _last_q_c(clean_reply)
         _formal_c = _lreg_c((state.get('coach_persona') or {}).get('name')) == "formal"
-        _slot_now_c = (_bei.unfilled_slots(_bei_ep) or ["reflection"])[0] if _bei_ep else "action"
+        _slot_now_c = _bei.ask_slot(_bei_ep) if _bei_ep else "action"
         _fixed_c = {re.sub(r"\s+", "", x) for x in ([str(_tm.get("slot_text") or "")] + split_sentences(_bei_anchor_text or "")) if x}
         # (2026-11-12 P11c-2·5) 한 문장 안 두 질문 자르기(P11b-6)와 꼬리 규칙(자른 뒤 남은 질문을 기본 질문으로)은 삭제 — 한 문장짜리 질문은 그대로 둔다
         def _qi2_c(q: str) -> list[str]:
@@ -2974,12 +3001,73 @@ async def _submit_message_phase3a(
                     except Exception as _e_c:   # noqa: BLE001
                         logger.error("질문 완결성 재생성 실패: %s", _e_c)
                 if not _done_c:
-                    _slot_c = (_bei.unfilled_slots(_bei_ep) or ["reflection"])[0] if _bei_ep else "action"
+                    _slot_c = _bei.ask_slot(_bei_ep) if _bei_ep else "action"
                     _topic_c = (((_bei_ep or {}).get("slots") or {}).get("context") or {}).get("quote") or ""      # (P11e-6) 머리 낱말은 사례의 상황 인용에서만 — 없으면 머리 없이
                     _dq_c = _dsq_c(_slot_c, formal=(_lreg_c((state.get('coach_persona') or {}).get('name')) == "formal"), topic_text=_topic_c)
                     clean_reply = clean_reply.replace(_new_q_c, _dq_c, 1)
                     _tm["q_complete"] = f"default:{_slot_c}"
             logger.info("❓ 질문 완결성(%s) → %s: %r", _iss_c, _tm.get("q_complete"), _q_c[:60])
+
+    # 8-w4b. (2026-11-13 P12-1·4) 질문이 스스로 서는가 · 끝맺음 — 검사 둘, 재생성은 합쳐 1회(이 턴의 예산이 남았을 때만).
+    #   ① 질문 문장에 리더 직전 답과 겹치는 내용 낱말이 하나도 없다(지시어는 보지 않는다 — 겹치는 낱말 유무만). 직전 답에 낱말이 없으면('그냥 그랬습니다')
+    #      이 사례에서 리더가 한 말 전체와 견준다.
+    #   ② 청하는 꼴의 같은 끝맺음('떠올려 주실 수 있을까요')이 이번 영역에서 이미 3회 — 이번이 4회째.
+    #   다시 쓴 질문이 걸린 것을 풀었으면 질문만 바꾼다. 못 풀었으면 그대로 내보낸다(머리를 붙이거나 표로 바꾸지 않는다).
+    if (instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP") and system_override_text is None and not _llm_error and not needs_user_decision and chapter
+            and (clean_reply or "").strip() and _align_ctx is None and not _reask_kind and not str(_tm.get("q_complete") or "").startswith("default")):
+        from diag_project.services.turn_checks import (
+            QUESTION_ENDING_MAX as _qem_b, answer_has_words as _ahw_b, ending_label as _el_w, question_overlap as _qov_b, request_ending_key as _rek_b,
+        )
+        _qs_b4 = [x.strip() for x in split_sentences(clean_reply) if x.strip() and is_question_sentence(x)]
+        _fixed_b4 = {re.sub(r"\s+", "", x) for x in ([str(_tm.get("slot_text") or "")] + split_sentences(_bei_anchor_text or "")) if x}
+        if _qs_b4 and re.sub(r"\s+", "", _qs_b4[-1]) not in _fixed_b4:
+            _q_b4 = _qs_b4[-1]
+            _ref_b4 = _llm_user_text or ""
+            _case_b4 = " ".join(t for r, t in _ep_transcript(_bei_ep) if r == "user") if _bei_ep else ""
+            _ov_b4 = _qov_b(_q_b4, _ref_b4) if _ahw_b(_ref_b4) else []
+            _tm["q_overlap_src"] = "prev" if _ov_b4 else None
+            if not _ov_b4:
+                # 직전 답과 겹치는 낱말이 없어도, 이 사례에서 리더가 앞서 쓴 낱말(사람·일)이 질문에 있으면 그 질문은 혼자 읽어도 선다 — 다시 쓰지 않는다.
+                #   어느 쪽과 겹쳤는지는 기록에 남긴다(q_overlap_src: prev=직전 답 · case=이 사례의 앞선 답).
+                _ref_b4 = _case_b4 or _ref_b4
+                _ov_b4 = (_qov_b(_q_b4, _ref_b4) if _ahw_b(_ref_b4) else ["-"])
+                _tm["q_overlap_src"] = ("case" if _ov_b4 and _ov_b4 != ["-"] else None)
+            _key_b4 = _rek_b(_q_b4)
+            _end_n_b4 = sum(1 for x in _chapter_questions() if _key_b4 and _rek_b(x) == _key_b4)
+            _why_b4 = ([] if _ov_b4 else ["overlap"]) + (["ending"] if (_key_b4 and _end_n_b4 >= _qem_b) else [])
+            _tm["q_overlap"] = _ov_b4[:4] if _ov_b4 != ["-"] else None
+            if _why_b4:
+                _tm["q_stand"] = "+".join(_why_b4)
+                if not (_tm.get("budget_used") or _tm.get("no_regen")):
+                    try:
+                        _hint_b4 = ""
+                        if "overlap" in _why_b4:
+                            _hint_b4 += ("방금 질문은 그 문장만 읽어서는 무엇에 대한 질문인지 알 수 없습니다. 리더님이 직전 답에서 쓴 낱말(사람·일·때 가운데 하나)을 "
+                                         "질문 문장 안에 넣어 다시 쓰세요. ")
+                        if "ending" in _why_b4:
+                            _hint_b4 += f"방금 질문의 끝맺음('{_el_w(_key_b4)}')은 이번 영역에서 이미 여러 번 썼습니다. 다른 끝맺음으로 끝내세요. "
+                        _r_b4 = await _timed_regen(why="q_stand:" + "+".join(_why_b4),
+                            system_prompt=system_prompt, chapter_context=chapter_context,
+                            turn_state_text=turn_state_text + ("\n\n🚨 [시스템 — 재생성 지시] " + _hint_b4
+                                                               + "묻는 것은 그대로 두고 질문 1개만 씁니다. 이 지시문의 단어를 답에 옮기지 마세요."),
+                            compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
+                        _t_b4 = _MARKER_RE.sub("", _r_b4.get("reply") or "").strip()
+                        _q2s_b4 = [x.strip() for x in split_sentences(_t_b4) if x.strip() and is_question_sentence(x)]
+                        _q2_b4 = _q2s_b4[-1] if _q2s_b4 else ""
+                        _ok_ov = bool(_q2_b4) and ("overlap" not in _why_b4 or bool(_qov_b(_q2_b4, _ref_b4)))
+                        _k2_b4 = _rek_b(_q2_b4) if _q2_b4 else None
+                        _ok_end = bool(_q2_b4) and ("ending" not in _why_b4 or _k2_b4 != _key_b4)
+                        if _ok_ov and _ok_end:
+                            clean_reply = clean_reply.replace(_q_b4, _q2_b4, 1)      # 질문 앞 평서문은 그대로 두고 질문만 바꾼다
+                            _tm["q_stand"] += "→regen"
+                            _tm["q_overlap"] = _qov_b(_q2_b4, _ref_b4)[:4] or _tm.get("q_overlap")
+                        else:
+                            _tm["q_stand"] += "→left"
+                    except Exception as _e_b4:   # noqa: BLE001
+                        logger.error("질문 다시 쓰기 실패(q_stand): %s", _e_b4)
+                else:
+                    _tm["q_stand"] += "→no_budget"
+                logger.info("🧍 질문 검사(%s): %r", _tm.get("q_stand"), _q_b4[:60])
 
     # 8-w5. (2026-11-12 P11b-5 → P11c-1) 질문 앞 평서문 — ① '리더님께서' 로 시작하면 세션 2회까지, 주어가 리더가 아닌 문장에 붙었으면 그 머리를 뗀다.
     #   ② 탐침 턴: 답 전체를 되풀이한 문장(리더 답 어절의 60% 이상 + 내용 어절 10개 이상)과 세션 3회째부터의 구절 인용 꼴('…'는 말씀이셨군요)은
@@ -3433,6 +3521,8 @@ async def _submit_message_phase3a(
         _formal_q = _lreg_q((state.get('coach_persona') or {}).get('name')) == "formal"
         _qs_q = [x.strip() for x in split_sentences(clean_reply) if x.strip() and is_question_sentence(x)]
         _un_q = (_bei.unfilled_slots(_bei_ep) or ["reflection"]) if _bei_ep else ["action"]
+        if _bei_ep and _bei.ask_slot(_bei_ep) in _un_q:
+            _un_q = [_bei.ask_slot(_bei_ep)] + [x for x in _un_q if x != _bei.ask_slot(_bei_ep)]      # (P12-2) 이번 턴이 향하는 것부터
         _topic_q = (((_bei_ep or {}).get("slots") or {}).get("context") or {}).get("quote") or ""
         _tgt_q = current_target_sub or (_bei_ep or {}).get("opener_sub")      # 재질문 턴에는 여는 하위역량이 사례에만 적혀 있다
         _drag_q = None
@@ -3517,8 +3607,13 @@ async def _submit_message_phase3a(
             from diag_project.services.persona_register import apply_register as _areg_z
             _fixed_z = ([x for x in split_sentences(_bias_z((state.get("coach_persona") or {}).get("name"))) if x.strip()]
                         if instruction_used == "DIAGNOSIS_INTRO" else [])
+            # (2026-11-13 P12-7) 해요체 코치는 평서문도 본다 — '…궁금합니다', 마무리 문장이 합쇼체로 나갔다. 합쇼체 코치는 종전대로 질문 문장만
+            #   (받는 문장의 '~군요/~네요'를 그대로 두기 위해서다 — 해요체 코치에게는 그 꼴이 위반이 아니다).
+            from diag_project.services.persona_register import register_of as _rof_zz
+            _polite_zz = _rof_zz((state.get("coach_persona") or {}).get("name")) == "polite"
             clean_reply, _n_reg_z, _left_z = _areg_z((state.get("coach_persona") or {}).get("name"), clean_reply,
-                                                     scope=("all" if system_override_text is not None else "questions"), fixed=_fixed_z)
+                                                     scope=("all" if system_override_text is not None else ("strict" if _polite_zz else "questions")),
+                                                     fixed=_fixed_z)
             if _n_reg_z:
                 _tm["register_fix"] = int(_tm.get("register_fix") or 0) + _n_reg_z
             if _left_z:
@@ -3812,6 +3907,8 @@ async def _submit_message_phase3a(
             "lean_start": int(_tm.get("lean_start") or 0), "opener_restored": int(_tm.get("opener_restored") or 0), "q_added": _tm.get("q_added"), "slot_ctx": _tm.get("slot_ctx"),
             # (2026-11-12 P11e) repeat_case 이미 닫힌 사례를 다시 말한 답(원래 사례·덧붙인 칸) · dup_close 같은 답 두 번째에 사례 닫음 · reframe_drag 재질문이 끌어온 닫힌 사례의 낱말
             "repeat_case": _tm.get("repeat_case"), "dup_close": int(_tm.get("dup_close") or 0), "reframe_drag": _tm.get("reframe_drag"),
+            # (2026-11-13 P12) ask_slot 이번 턴 질문이 향한 것 · q_overlap 질문과 직전 답이 겹친 낱말 · q_stand 질문 검사(overlap·ending)와 처리(regen·left·no_budget)
+            "ask_slot": _tm.get("ask_slot"), "q_overlap": _tm.get("q_overlap"), "q_overlap_src": _tm.get("q_overlap_src"), "q_stand": _tm.get("q_stand"),
         })
         _gl_store["guard_log"] = _gl
         if _gl_store.get("llm_error_streak"):
