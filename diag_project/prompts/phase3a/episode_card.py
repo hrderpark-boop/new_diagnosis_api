@@ -66,21 +66,30 @@ def build_episode_card(
         filled = filled_slots(ep)
         partial = [x for x in SLOT_KEYS if ((ep.get("slots") or {}).get(x) or {}).get("status") == "partial"]
         missing = unfilled_slots(ep)
+        # (2026-11-15 P13-3) 들은 것·남은 것을 문장이 아니라 자료(항목: 값)로만 넘긴다 — 11/14 운영 Lucas: "이 사례는 …까지 들었으니, 이제 …를 묻겠습니다",
+        #   "지금 주신 답에서는 … 기준이 보입니다". 이 자료의 내용·낱말은 리더에게 말하지 않는다.
+        L.append("[코치만 보는 자료 — 아래 내용과 낱말을 리더에게 말하지 않는다. 무엇을 들었는지·무엇이 남았는지·무엇을 물을지를 알리는 문장을 쓰지 않는다. 바로 질문한다]")
         if filled:
-            L.append("채워진 것: " + " / ".join(_quote_line(ep, x) for x in filled))
+            L.append("들음: " + " | ".join(_quote_line(ep, x) for x in filled))
         if partial:
-            L.append("반쯤 나온 것(한 번 더 구체화해도 좋다): " + " / ".join(_quote_line(ep, x) for x in partial))
+            L.append("반쯤: " + " | ".join(_quote_line(ep, x) for x in partial))
         if missing:
-            L.append("아직 없는 것(이 순서로 하나씩): " + " → ".join(SLOT_LABELS[x] for x in missing))
-            L.append("위 세 줄은 코치만 보는 점검표다. 무엇을 들었고 무엇이 남았는지를 리더에게 말하지 않는다 — 바로 질문한다.")   # (P9 승인 조건 2)
-            nxt = ask_slot(ep)          # (P12-2) 같은 것을 두 번 물었으면 다음 것으로 넘어간 자리
-            L.append(f"이번 턴: '{SLOT_LABELS[nxt]}' 하나를 묻는다 — {SLOT_HINTS[nxt]}. "
-                     "리더가 다른 데로 가면 한 번은 따라가되 질문은 이 사례로 돌아온다.")
-            if nxt in partial:
-                # (2026-11-12 P11d-3) 반쯤 나온 것을 처음부터 다시 묻지 않게 — p11c: '작년 12월'·'이기획'을 말했는데 '언제, 누구와' 를 다시 물었다
-                L.append("이 한 가지는 리더가 이미 일부를 말했다(위 '반쯤 나온 것'의 인용). 이미 말한 때·사람은 다시 묻지 않고, 빠진 것만 묻는다.")
+            L.append("아직: " + ", ".join(SLOT_LABELS[x] for x in missing))
+        nxt = ask_slot(ep) if (missing or ep.get("ask_first")) else None
+        if nxt:
+            if ep.get("ask_first") and nxt == "action":
+                # (P13-1) 사례의 첫 꼬리 질문은 리더가 직접 한 말·행동의 구체화 — 여는 답에 한 줄 요약이 있어도 한 번은 묻는다
+                L.append("이번 질문: 리더가 직접 한 말·행동을 구체로 듣는다 — 리더가 방금 말한 일(누가 무엇을 했을 때인지)을 질문 문장 안에 넣고, "
+                         "그 일에서 리더 본인이 무엇을, 어떤 순서로, 누구에게 했는지를 묻는다. 리더가 한 줄로 줄여 말한 행동이 있으면 그 행동의 실제 말이나 조치를 묻는다.")
+                if ((ep.get("slots") or {}).get("context") or {}).get("status", "empty") == "empty":
+                    L.append("때와 함께 있던 사람이 아직 나오지 않았다 — 이 질문에 곁들여 한 번만 묻는다(따로 묻지 않는다).")   # (P13-2)
+            else:
+                L.append(f"이번 질문: '{SLOT_LABELS[nxt]}' 하나 — {SLOT_HINTS[nxt]}. 리더가 다른 데로 가면 한 번은 따라가되 질문은 지금 이야기로 돌아온다.")
+                if nxt in partial:
+                    L.append("이 한 가지는 리더가 이미 일부를 말했다(위 '반쯤'의 인용). 이미 말한 것은 다시 묻지 않고 빠진 것만 묻는다.")
+            L.append("때·사람(언제였는지, 누가 함께 있었는지)만 따로 묻는 질문은 하지 않는다.")
         else:
-            L.append(f"이번 턴(장면 구체화): 여섯 가지가 다 나왔다. 질문 하나 — {detail_probe_hint(ep)}.")
+            L.append(f"이번 질문(장면 구체화): {detail_probe_hint(ep)}.")
         # (2026-11-12 P11c-1) '첫 턴 규칙'(먼저 한 문장으로 받는다)은 삭제 — 질문 앞 평서문은 없어도 된다
     elif instruction == "EPISODE_OPEN":
         L.append("# 다음 사례로 넘어가는 턴")
@@ -104,12 +113,13 @@ def build_episode_card(
     elif instruction == "SWEEP_FOLLOWUP" and ep:
         missing = unfilled_slots(ep)
         L.append("# 방금 꺼낸 장면에 질문 하나만 더하는 턴")
-        if missing:
-            nxt = "action" if "action" in missing else ("result" if "result" in missing else missing[0])
-            L.append(f"이번 턴: '{SLOT_LABELS[nxt]}' 하나 — {SLOT_HINTS[nxt]}. 이 장면은 이 질문으로 마무리한다(더 파지 않는다).")
-    if prev_episodes and instruction != "NO_CASE_REFRAME":      # (P11e-1) 재질문 턴에는 지난 사례를 주지 않는다 — 재질문이 닫힌 사례를 끌어왔다
-        L.append("지난 사례(코치가 먼저 꺼내지 않는다 — 리더가 다시 꺼낼 때만 참고해, 새 사례를 요구하지 말고 지금 묻는 것의 관점으로 이어서 묻는다): "
-                 + " / ".join(f"[{p.get('idx')}] {p.get('summary', '')}" for p in prev_episodes[-5:]))
+        # (P13-1) 방금 꺼낸 장면의 꼬리 질문도 리더가 직접 한 말·행동부터
+        L.append("이번 질문: 리더가 방금 말한 일(누가 무엇을 했을 때인지)을 질문 문장 안에 넣고, 그 일에서 리더 본인이 직접 한 말이나 조치 하나를 묻는다. "
+                 "이 장면은 이 질문으로 마무리한다(더 파지 않는다).")
+        _ = missing
+    # (2026-11-15 P13-3) 지난 사례 목록은 넘기지 않는다 — 코치가 앞 이야기를 끌어오거나 "이전 … 같은 장면으로 보이네요" 처럼 판정을 입 밖에 냈다.
+    #   리더가 닫힌 이야기를 다시 말하는 경우는 사례 단계(같은 장면 판정)가 따로 받는다.
+    _ = prev_episodes
     if used_endings and instruction in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
         # (2026-11-13 P12-4) 이번 영역에서 이미 여러 번 쓴 질문 끝맺음 — 치환표가 아니라 목록을 넘겨 다른 끝맺음을 쓰게 한다
         L.append("이번 영역에서 이미 여러 번 쓴 질문 끝맺음: " + " / ".join(f"'{x}'" for x in used_endings[:6])
@@ -151,8 +161,10 @@ BEI_GUIDES: dict[str, str] = {
 TURN_FORMAT_RULES = (
     "[턴 형식]\n"
     "- 질문 1개로 끝낸다. 질문 문장은 하나만 쓰고, 한 턴에 묻는 것은 하나다 — 둘 가운데 고르게 하는 꼴과, 두 가지를 이어 한 문장에 묻는 꼴을 쓰지 않는다.\n"
-    "- 질문 문장 안에 리더가 직전 답에서 쓴 낱말(사람·일·때 가운데 하나)을 넣는다. 앞 문장 없이 그 질문만 읽어도 무엇에 대한 질문인지 "
-    "알 수 있어야 한다 — 질문 앞 평서문에 기대지 않고, 가리키는 말만으로 대상을 대신하지 않는다.\n"
+    "- 질문 문장에는 두 가지가 들어간다 — 무엇에 대해(리더가 말한 일·사람)와 무엇을 묻는지. 앞 문장 없이 그 질문만 읽어도 무엇에 대한 질문인지 "
+    "알 수 있어야 한다. 때나 자리나 앞의 말을 가리키는 말만으로 질문을 시작하지 않는다. 질문 앞 평서문에 기대지 않는다.\n"
+    "- 묻는 것은 리더 본인이 한 말·조치와 그 까닭·결과다. 리더가 이끌거나 함께 일하는 사람이 아닌 사람(가르친 사람, 고객)의 장면은 캐묻지 않는다 — "
+    "그런 사람의 반응은 리더가 결과로 말할 때만 듣는다.\n"
     "- 다음 질문은 아직 듣지 못한 것(그 뒤의 결과, 그렇게 정한 기준, 다시 한다면 달리할 점)으로 나아간다. 이미 들은 대화를 한 마디씩 "
     "거슬러 올라가며 되묻지 않는다.\n"
     "- 지금 듣는 이야기의 말만 쓴다. 앞에서 끝난 다른 이야기를 평서문이나 질문에 끌어오지 않는다.\n"

@@ -136,6 +136,8 @@ class Leader:
             if reuse:   # 이미 말한 사례 — 상황은 다시 말하지 않고 '아까 그 일에서' 한 행동을 말한다
                 self.said.add("context")
                 return await self._say("action", coach_text, reopening=True)
+            if ep.get("opening"):   # (2026-11-15 P13 중간 판정 1) 요약형 프로필 — 여는 답은 프로필 문장 그대로(LLM 을 거치지 않는다). 상황 칸은 따로 물으면 답한다.
+                return str(ep["opening"])
             return await self._say("context", coach_text, opening=True)
         if self.short_every and self.n_answers % self.short_every == 0 and not _reask:
             return self.rng.choice(self.short_answers)
@@ -148,6 +150,8 @@ class Leader:
             self.start_episode(ep)
             if ep is None:
                 return self._no_case_reply()
+            if ep.get("opening"):   # (P13) 재질문 뒤처럼 여는 턴이 아닌 자리에서 새 사례를 꺼낼 때도 요약형 여는 답 그대로
+                return str(ep["opening"])
         slot = self._slot_for(coach_text)
         return await self._say(slot, coach_text)
 

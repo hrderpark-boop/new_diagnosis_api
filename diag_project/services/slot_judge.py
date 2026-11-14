@@ -18,13 +18,16 @@ from diag_project.services.bei_engine import SLOT_KEYS, SLOT_LABELS, is_no_case_
 
 logger = logging.getLogger(__name__)
 
-SLOT_JUDGE_PROMPT_VERSION = "2026-11-04.v1"
+SLOT_JUDGE_PROMPT_VERSION = "2026-11-15.v2"   # (P13-1) 행동 채움 기준 상향 · 반응은 리더가 이끌거나 함께 일하는 사람만
 _SLOT_RULES = (
     "context: 시점(연·월·분기·'지난달' 같은 상대 표현 포함)과 상대(사람 이름·직함) 또는 대상(무슨 일인지)이 둘 다 있으면 filled — "
     "한 문장에 짧게 함께 나와도 채운 것이다. 하나만 있으면 partial.\n"
-    "action: 리더가 1인칭으로 직접 한 말·결정·행동('제가 …했다')이 있으면 filled. 팀이 한 일·방침·생각만이면 partial.\n"
-    "reaction: 상대(팀원·상사·고객)의 말·행동·태도 변화가 하나라도 있으면 filled.\n"
-    "result: 그 뒤 달라진 것이 하나 있으면 filled(정성적 변화도 결과). '잘 됐다'만이면 partial.\n"
+    # (2026-11-15 P13-1) 11/14 운영 Lucas: 여는 답의 한 줄 요약('…하자고 제안했습니다')만으로 행동이 채움이 되어 리더 본인의 행동을 묻는 질문이 0이었다
+    "action: 리더가 직접 한 구체적인 말(그때 한 말을 옮긴 것)이나 조치(누구에게 무엇을 어떻게 했는지)가 하나 이상 있으면 filled. "
+    "'…하기로 했다'·'…하자고 했다'·'…하도록 했다' 수준의 한 줄 요약이나 팀이 한 일·방침·생각만이면 partial.\n"
+    "reaction: 리더가 이끌거나 함께 일하는 사람(팀원·상사·동료·협업자)의 말·행동·태도 변화가 하나라도 있으면 filled. "
+    "교육생·고객처럼 팀 밖 사람의 반응은 reaction 이 아니라 result 로 본다.\n"
+    "result: 그 뒤 달라진 것이 하나 있으면 filled(정성적 변화, 팀 밖 사람의 반응·만족도도 결과). '잘 됐다'만이면 partial.\n"
     "criterion: 왜 그렇게 했는지 이유 또는 버린 선택지·트레이드오프가 하나 있으면 filled.\n"
     "reflection: 돌아보며 바꿀 점 또는 배운 점이 하나 있으면 filled.\n"
 )

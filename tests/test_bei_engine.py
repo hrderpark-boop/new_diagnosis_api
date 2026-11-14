@@ -50,7 +50,7 @@ def test_merge_slots_sticky_and_verbatim_check():
 
 def test_unfilled_order_gates_reflection_on_result():
     ep = {"slots": _judged(context=("filled", "a"), action=("filled", "b"))}
-    assert B.unfilled_slots(ep) == ["reaction", "result", "criterion"]     # result 전에는 reflection 을 묻지 않는다
+    assert B.unfilled_slots(ep) == ["criterion", "result", "reaction"]     # (P13-1) 기준 → 결과 → 반응 순. result 전에는 reflection 을 묻지 않는다
     ep = {"slots": _judged(context=("filled", "a"), action=("filled", "b"), reaction=("filled", "c"), result=("filled", "d"))}
     assert B.unfilled_slots(ep) == ["criterion", "reflection"]
 

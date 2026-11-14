@@ -68,7 +68,7 @@ def test_anchor_tail_three_variants_per_persona():
     assert m[2].endswith("맞추신 적, 기억나는 일 있으면 얘기해 주세요.")
     b = [V.voice_question("Michael", "최근에 정보가 부족한데도 중요한 결정을 내려야 했을 때, 어떻게 하셨어요?", variant=v) for v in (0, 1, 2)]
     assert b[0].endswith("하셨는지 들려주세요.") and b[1].endswith("하셨는지 떠오르는 대로 말씀해 주세요.") and b[2].endswith("하셨는지 기억나는 대로 얘기해 주세요.")
-    assert V.voice_question("Lucas", anchors[0], variant=1).endswith("맞추신 일, 최근 떠오르는 게 있나요?")
+    assert V.voice_question("Lucas", anchors[0], variant=1).endswith("맞추신 일, 최근에 떠오르는 게 있나요?")
 
 
 

@@ -37,7 +37,9 @@ SLOT_HINTS: dict[str, str] = {
     #   앞의 받는 문장에 기대는 질문이라, 받는 문장이 길이 기준으로 지워지면 무엇을 묻는지 알 수 없었다. 방금 들은 일의 낱말을 질문에 넣게 한다.
     "action": "리더가 방금 말한 일(누가 무엇을 했을 때인지)을 질문 문장 안에 넣고, 그 일에서 리더 본인이 한 말·결정·행동 하나를 묻는다(팀이 한 일·방침 설명이 아니라)",
     # (2026-11-14 P12d-4) 힌트의 낱말('그 사람', '하지 않기로 한 것')이 출력에 옮겨졌다 — 코치가 그대로 말할 수 없는 설명 꼴로 쓰고, 사람은 이름으로 받게 한다
-    "reaction": "(들은 쪽이 어떻게 받았는지: 말·행동·태도의 달라짐) 사람을 가리킬 때는 리더가 부른 이름·직함을 그대로 쓰고 대명사로 바꾸지 않는다",
+    # (2026-11-15 P13-1) 대상은 리더가 이끌거나 함께 일하는 사람뿐 — 11/14 운영 Lucas: 교육생의 수업 장면을 5턴 연속 물었다. 사례당 1회만 묻는다
+    "reaction": "(리더가 이끌거나 함께 일하는 사람 — 팀원·상사·동료·협업자 — 이 그 말이나 조치를 어떻게 받았는지: 말·행동·태도의 달라짐) "
+                "사람은 리더가 부른 이름·직함으로 쓴다. 교육생·고객처럼 리더의 팀 밖에 있는 사람의 장면은 묻지 않는다",
     "result": "그 뒤 무엇이 달라졌는지(정성적 변화도 결과로 받는다)",
     "criterion": "(판단의 근거: 그렇게 정한 까닭, 견주어 본 다른 길) 리더가 내린 결정의 낱말을 넣어 묻는다",
     "reflection": "지금 돌아보면 바꿀 점이나 배운 것 하나",
@@ -47,6 +49,21 @@ SLOT_STATUSES = ("empty", "partial", "filled")
 EPISODE_MAX_LEADER_TURNS = 6          # (2026-11-13 P12b-2) 8 → 6, 전 영역 — 아직 묻지 않은 칸마다 2턴을 남기고도 사례 2개가 들어가게(P12 는 9칸 영역만 6이었다)
 RESERVE_PER_UNASKED = 2               # (P12-3) 아직 묻지 않은 칸의 예약 — 칸당 1턴 → 2턴
 SLOT_ASK_MAX = 2                      # (P12-2) 같은 것(슬롯)을 채우려는 질문은 사례당 2회까지 — 그래도 안 나오면 다음 것으로
+SLOT_ASK_MAX_BY: dict[str, int] = {"reaction": 1}      # (P13-1) 반응 질문은 사례당 1회
+# (2026-11-15 P13-1) 꼬리 질문의 기본 순서 — 리더 행동 → 판단 기준 → 결과 → 반응(1회) → 다시 한다면. 상황(때·사람)은 따로 묻지 않는다
+#   (둘 다 없을 때만 첫 행동 질문에 곁들인다 — P13-2). 종전 순서는 상황 → 행동 → 반응 → 결과 → 기준 → 다시 한다면.
+ASK_ORDER: tuple[str, ...] = ("action", "criterion", "result", "reaction", "reflection")
+
+
+def slot_ask_max(slot: str | None) -> int:
+    return SLOT_ASK_MAX_BY.get(slot or "", SLOT_ASK_MAX)
+
+
+def slots_complete(ep: dict | None) -> bool:
+    """사례를 다 들었는가 — 묻는 다섯 가지(ASK_ORDER)가 모두 찼고 상황(때·사람)이 채움 또는 반쯤 나옴. 상황은 따로 묻지 않으므로 반쯤이어도 닫을 수 있다."""
+    sl = (ep or {}).get("slots") or {}
+    return (all((sl.get(k) or {}).get("status") == "filled" for k in ASK_ORDER)
+            and (sl.get("context") or {}).get("status") in ("filled", "partial"))
 EPISODE_MIN_LEADER_TURNS = 4          # (2026-11-05 2단계 판정 1) 6/6 이 4턴 전에 차도 "장면 구체화" 턴을 더 묻는다
 EPISODE_MIN = 2
 EPISODE_MAX = 3
@@ -125,10 +142,11 @@ def filled_slots(ep: dict | None) -> list[str]:
 
 
 def unfilled_slots(ep: dict | None) -> list[str]:
-    """아직 안 찬 슬롯(우선순위 순). '다시 한다면·배운 것'은 결과가 찬 뒤(또는 결과를 두 번 물은 뒤)에만 묻는다."""
+    """아직 안 찬 것 가운데 물을 것(ASK_ORDER 순). 상황(때·사람)은 따로 묻지 않으므로 여기에 없다.
+    '다시 한다면·배운 것'은 결과가 찬 뒤(또는 결과를 두 번 물은 뒤)에만 묻는다."""
     slots = (ep or {}).get("slots") or {}
-    out = [k for k in SLOT_KEYS if slots.get(k, {}).get("status") != "filled"]
-    if "reflection" in out and slots.get("result", {}).get("status") != "filled" and slot_asks(ep, "result") < SLOT_ASK_MAX:
+    out = [k for k in ASK_ORDER if slots.get(k, {}).get("status") != "filled"]
+    if "reflection" in out and slots.get("result", {}).get("status") != "filled" and slot_asks(ep, "result") < slot_ask_max("result"):
         out.remove("reflection")
     return out
 
@@ -137,14 +155,24 @@ def slot_asks(ep: dict | None, slot: str) -> int:
     return int((((ep or {}).get("slot_asks") or {}).get(slot)) or 0)
 
 
+def first_probe_pending(ep: dict | None) -> bool:
+    """(P13-1) 이 사례에서 아직 꼬리 질문을 하나도 하지 않았는가 — 첫 꼬리 질문은 언제나 리더가 직접 한 말·행동을 구체화한다
+    (여는 답에 행동이 한 줄로 요약돼 '채움'이어도 한 번은 묻는다)."""
+    return not any(int(v or 0) for v in (((ep or {}).get("slot_asks") or {}).values()))
+
+
 def next_slot(ep: dict | None) -> str | None:
-    """(P12-2) 이번 턴에 물을 것 — 아직 안 찬 것 가운데 이 사례에서 두 번 묻지 않은 첫 항목. 남은 것을 모두 두 번씩 물었으면 None."""
-    return next((k for k in unfilled_slots(ep) if slot_asks(ep, k) < SLOT_ASK_MAX), None)
+    """이번 턴에 물을 것 — 사례의 첫 꼬리 질문은 리더 행동, 그 뒤로는 아직 안 찬 것 가운데 상한(같은 것 2회, 반응 1회)을 넘지 않은 첫 항목.
+    남은 것을 모두 상한만큼 물었으면 None."""
+    if first_probe_pending(ep):
+        return "action"
+    return next((k for k in unfilled_slots(ep) if slot_asks(ep, k) < slot_ask_max(k)), None)
 
 
 def bump_slot_ask(ep: dict, slot: str | None) -> dict:
-    """이번 턴의 질문이 향하는 것(ask_slot)을 적고 그 횟수를 올린다."""
+    """이번 턴의 질문이 향하는 것(ask_slot)을 적고 그 횟수를 올린다. ask_first = 이 사례의 첫 꼬리 질문(행동 구체화)."""
     ep = dict(ep)
+    ep["ask_first"] = bool(slot == "action" and first_probe_pending(ep))
     if slot:
         asks = dict(ep.get("slot_asks") or {})
         asks[slot] = int(asks.get(slot) or 0) + 1
@@ -154,10 +182,12 @@ def bump_slot_ask(ep: dict, slot: str | None) -> dict:
 
 
 def ask_slot(ep: dict | None) -> str:
-    """이번 턴 질문이 향하는 것 — 적어 둔 것(ask_slot)이 아직 안 찼으면 그것, 아니면 안 찬 첫 항목."""
+    """이번 턴 질문이 향하는 것 — 적어 둔 것(ask_slot)이 아직 안 찼거나 첫 꼬리 질문(행동 구체화)이면 그것, 아니면 안 찬 첫 항목."""
     un = unfilled_slots(ep)
     cur = (ep or {}).get("ask_slot")
-    return cur if cur in un else (un[0] if un else "reflection")
+    if cur and (cur in un or (ep or {}).get("ask_first")):
+        return cur
+    return un[0] if un else "reflection"
 
 
 def episode_turn_max(n_subs: int | None = None) -> int:
@@ -272,7 +302,7 @@ def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None
     if not ep:
         return None
     turns = int(ep.get("leader_turns") or 0)
-    if len(filled_slots(ep)) >= len(SLOT_KEYS) and turns >= EPISODE_MIN_LEADER_TURNS:
+    if slots_complete(ep) and turns >= EPISODE_MIN_LEADER_TURNS:
         return "slots"                        # 여섯 가지가 다 나왔다 — 턴 상한·예약 때문에 닫히는 것과 구별한다
     if turns >= episode_turn_max(len(all_subs or [])):
         return "turns"
@@ -286,7 +316,7 @@ def episode_done_reason(ep: dict | None, store: dict | None, chapter: str | None
         # (2026-11-12 P11c-4) 채운 칸이 하나도 없이 리더 턴 2회 연속 진전이 없다 — 사례 없음으로 닫고 다음 칸으로(호출자가 no_case 로 닫는다).
         #   p11b: 한 칸도 못 채운 사례가 8턴까지 가며 같은 질문을 5번 했다(종전의 무진전 종료는 채운 칸이 있을 때만 걸렸다).
         return "stalled_empty"
-    if len(filled_slots(ep)) >= len(SLOT_KEYS) and turns >= EPISODE_MIN_LEADER_TURNS:
+    if slots_complete(ep) and turns >= EPISODE_MIN_LEADER_TURNS:
         return "slots"
     if unfilled_slots(ep) and next_slot(ep) is None:
         return "stalled" if filled_slots(ep) else "stalled_empty"     # (P12-2) 남은 것을 모두 두 번씩 물었다 — 더 캐묻지 않고 닫는다
@@ -465,7 +495,7 @@ def sweep_followup_allowed(store: dict | None, chapter: str | None, all_subs: li
     여는 질문(칸당 1턴)까지 못 내게 될 때만 생략한다. (종전: 행동+결과가 찼으면 생략 · 미질문 예약 1턴씩)"""
     if not ep or int(ep.get("leader_turns") or 0) >= 2:
         return False
-    if len(filled_slots(ep)) >= len(SLOT_KEYS):
+    if slots_complete(ep):
         return False
     return remaining(store, chapter) > len(unasked(store, chapter, all_subs))
 
@@ -482,7 +512,7 @@ def sweep_promote_decision(store: dict | None, chapter: str | None, all_subs: li
     """보완 질문의 첫 답을 보고 정한다 — 'promoted'(일반 사례로 올림) | 'no_budget'(사건이지만 예산 부족, 종전대로) | None(사건이 아니거나 이미 정했다)."""
     if not ep or ep.get("kind") != "sweep" or ep.get("promote") or int(ep.get("leader_turns") or 0) != 1 or incident is not True:
         return None
-    if len(filled_slots(ep)) >= len(SLOT_KEYS):
+    if slots_complete(ep):
         return None                                   # 한 번의 답에 여섯 가지가 다 나왔다 — 더 물을 것이 없다
     room = remaining(store, chapter) - reserve_turns(store, chapter, all_subs)
     return "promoted" if room >= SWEEP_PROMOTE_MIN_ROOM else "no_budget"
@@ -492,7 +522,7 @@ def promoted_done_reason(ep: dict | None, store: dict | None, chapter: str | Non
     """올린 보완 사례의 종료 사유 — 'slots'(여섯 가지) | 'turns'(리더 턴 4) | 'budget' | 'reserve'(미질문 예약 침범) | 'stalled' | None(계속)."""
     if not ep:
         return None
-    if len(filled_slots(ep)) >= len(SLOT_KEYS):
+    if slots_complete(ep):
         return "slots"
     if int(ep.get("leader_turns") or 0) >= SWEEP_PROMOTE_MAX_TURNS:
         return "turns"

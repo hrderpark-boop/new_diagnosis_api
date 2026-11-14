@@ -423,14 +423,14 @@ def test_quote_receive_keeps_only_key_clause():
 def test_latency_b_two_questions_trimmed_without_regen():
     from diag_project.services.output_guard import count_question_markers as c, keep_last_question, split_compound_question
     src = _route_src()
-    i = src.index("def _trim_two(txt: str)")
+    # (2026-11-15 P13 중간 판정 3) 질문이 둘이면 손대지 않고 그대로 내보낸다 — 자르기·평서 꼴로 살리기·재생성 모두 없다
+    assert "def _trim_two(" not in src and "revive_question_receive" not in src and '_tm["two_q_pass"] = 1' in src
+    i = src.index('_iss = _format_issues(clean_reply)')
     j = src.index("while _iss and _rounds < 1 and not", i)
     pre = src[i:j]
-    assert 'if _q_expected and "two_questions" in _iss:' in pre and "_timed_regen" not in pre            # 루프 앞에서 바로 자른다(LLM 호출 없음)
-    assert '_tm["two_q_trim"] = 1' in pre and "_issues_for_regen(clean_reply)" in pre
+    assert 'if "two_questions" in _iss:' in pre and "_timed_regen" not in pre and "keep_main_question" not in pre
     loop = src[j: src.index('_tm["format_regen"] = _rounds', j)]
-    assert "_cand, _n_tq2 = _trim_two(_cand)" in loop and "_iss2 = _issues_for_regen(_cand)" in loop    # 재생성 본문이 두 질문이어도 다시 돌리지 않는다
-    # P9-5(대상 없는 질문 보정)는 그대로 — 자른 턴(one_q)은 8-w3 의 대상 검사를 받는다
+    assert "_iss2 = _issues_for_regen(_cand)" in loop and "two_questions" not in loop                  # 재생성 본문이 두 질문이어도 다시 돌리지 않는다
     assert '_trimmed_w3' not in src and src.index("# 8-w3.") > j      # (P12e-5) 8-w3 수선은 삭제(자리 표시만 남음)
     # 자르는 규칙: 문장이 둘이면 마지막 질문, 한 문장 안의 복합 질문은 뒤 질문
     def trim(t):
@@ -469,7 +469,7 @@ def test_latency_b_followups_from_sim():
     assert check_receive("그 판단이 지금 돌아보니 가장 분명하게 남으셨군요. 무엇이 달라졌을까요?", "강사들도 처음부터 같이 배우게 했으면 더 빨랐을 것 같아요.") == (True, False)
     # 3) 범위 문장 자리의 예고 문장("먼저 여쭤볼게요.")은 범위 문장이 아니다
     src = _route_src()
-    assert "여쭤볼게요|여쭙겠습니다" in src[src.index("# (lb1) 범위 문장 자리에 예고 문장"):][:400] and "keep_main_question as _kmq_t" in src
+    assert "여쭤볼게요|여쭙겠습니다" in src[src.index("# (lb1) 범위 문장 자리에 예고 문장"):][:400]
 
 
 # ── (2026-11-11) 재생성 예산 · 질문 꼴 받기 살리기 · 호출 순서 · 단계 표시 ──────────────────────────────────────
@@ -491,26 +491,12 @@ def test_regen_budget_one_per_turn_then_deterministic_repair():
     assert "_timed_regen" not in close and '_tm["no_regen"] = 1' in close
 
 
-def test_question_shaped_receive_is_revived_as_statement():
-    from diag_project.services.output_guard import count_question_markers as c, keep_main_question, question_to_statement as q2s, revive_question_receive as rv
-    assert q2s("처음의 반대가 거리를 둔 게 아니라 조건부였다는 뜻이었을까요?") == "처음의 반대가 거리를 둔 게 아니라 조건부였다는 뜻이었군요."
-    assert q2s("그 뒤로 두 분이 먼저 자료를 가져오셨나요?") == "그 뒤로 두 분이 먼저 자료를 가져오셨군요."
-    assert q2s("두 분이 남는 쪽을 고르신 거죠?") == "두 분이 남는 쪽을 고르신 거군요."
-    assert q2s("그때 무엇을 먼저 확인하셨어요?") == "그때 무엇을 먼저 확인하셨군요."     # 어미표는 꼴만 본다 — 진짜 질문인지는 revive 의 내용 검사가 거른다
-    assert q2s("분담표를 다시 짜셨군요.") is None and q2s("그 뒤에는 어떻게 하실 건가요?") is not None
-    u = "처음엔 그래도 결국 바꿀 거잖아요 하던 김선임 선임이 파일럿 2주차부터 본인 과정 자료를 먼저 가져왔어요."
-    t = ("파일럿 2주차에 김선임이 먼저 자료를 가져왔다는 건, 처음의 반대가 거리를 둔 게 아니라 조건부였다는 뜻이었을까요? "
-         "그 2주 사이에 어떤 신호를 보고 움직였다고 느끼셨어요?")
-    out, n = rv(t, u)
-    assert n == 1 and out.startswith("파일럿 2주차에 김선임이 먼저 자료를 가져왔다는 건, 처음의 반대가 거리를 둔 게 아니라 조건부였다는 뜻이었군요.")
-    assert c(out) == 1 and keep_main_question(out)[0] == out                      # 받기가 살아서 질문은 하나만 남는다
-    # 리더 말을 담지 않은 첫 질문은 받기가 아니다 — 바꾸지 않는다(종전대로 마지막 질문만 남는다)
-    t2 = "그때 기분이 어떠셨나요? 그 뒤에는 무엇을 하셨어요?"
-    assert rv(t2, u) == (t2, 0)
-    # 평서문 받기가 이미 있으면 건드리지 않는다
-    t3 = "자료를 먼저 가져왔군요. 그게 조건부였다는 뜻이었을까요? 그때 무엇을 보셨어요?"
-    assert rv(t3, u) == (t3, 0)
-    assert "revive_question_receive as _rqr_t" in _route_src()
+def test_question_shaped_receive_is_no_longer_revived():
+    """(2026-11-15 P13 중간 판정 3) 질문 꼴 받기를 평서 꼴로 바꾸던 수선은 삭제 — "…정한 기준은 무엇이었군요." 를 만들었다."""
+    from diag_project.services import output_guard as G
+    assert not hasattr(G, "revive_question_receive") and not hasattr(G, "question_to_statement")
+    assert "revive_question_receive" not in _route_src() and "recv_revived" in _route_src()            # 기록 키는 남는다(항상 0)
+
 
 
 def test_call_order_opener_parallel_and_close_turn_skips_main_call():

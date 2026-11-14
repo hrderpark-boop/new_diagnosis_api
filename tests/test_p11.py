@@ -345,4 +345,4 @@ def test_p11a_followups_from_sim_transcript():
     # ⑦ 기본 질문의 머리
     assert T.default_slot_question("criterion", formal=True, topic_text="작년 12월 평가 때 이기획한테 낮은 등급을 줘야 했어") == "그렇게 하기로 정하신 기준은 무엇이었습니까?"      # (P12-1) 머리 삭제
     src = _src("diag_project/routes/diagnoses.py")
-    assert "_poq_t(txt)" in src and "_rco_rk" not in src and '_tm["request_q"] = 1' in src      # (P11d-1) 다시 묻기 후보 검사 삭제
+    assert "_poq_t(txt)" not in src and "_rco_rk" not in src and '_tm["request_q"] = 1' in src      # (P11d-1) 다시 묻기 후보 검사 삭제 · (P13 중간 판정 3) 두 질문은 손대지 않는다 — 열린 질문 고르기도 라우트에서 빠졌다

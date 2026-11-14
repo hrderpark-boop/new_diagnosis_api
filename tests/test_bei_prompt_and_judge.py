@@ -37,10 +37,12 @@ def test_episode_card_probe_lists_filled_missing_and_next_slot():
     ep["slots"]["action"] = {"status": "partial", "quote": "팀에서 파일럿"}
     card = EC.build_episode_card(instruction="EPISODE_PROBE", chapter=CH, ep=ep, bei_turns=5, budget=16, signal="직전 답 짧음")
     assert "2번째 / 이 사례 리더 턴 3/6 / 이 영역 리더 턴 5/16" in card
-    assert "채워진 것: 상황·시점 — \"작년 3월 교육 개편\"(리더 말)" in card
-    assert "반쯤 나온 것" in card and "리더 행동 — \"팀에서 파일럿\"" in card
-    assert "아직 없는 것(이 순서로 하나씩): 리더 행동 → 반응 → 결과 → 판단 기준" in card   # reflection 은 결과 뒤에만
-    assert "이번 턴: '리더 행동' 하나를 묻는다" in card and "신호: 직전 답 짧음" in card
+    # (2026-11-15 P13-3) 들은 것·남은 것은 문장이 아니라 자료 꼴로 — '리더에게 말하지 않는다' 를 머리에 둔다
+    assert "코치만 보는 자료" in card and "리더에게 말하지 않는다" in card
+    assert "들음: 상황·시점 — \"작년 3월 교육 개편\"(리더 말)" in card
+    assert "반쯤: 리더 행동 — \"팀에서 파일럿\"" in card
+    assert "아직: 리더 행동, 판단 기준, 결과, 반응" in card   # (P13-1) 행동 → 기준 → 결과 → 반응. reflection 은 결과 뒤에만
+    assert "이번 질문: '리더 행동' 하나" in card and "신호: 직전 답 짧음" in card and "지난 사례" not in card
 
 
 def test_episode_card_open_and_sweep_carry_system_anchor():
@@ -51,7 +53,7 @@ def test_episode_card_open_and_sweep_carry_system_anchor():
     assert "②의 힌트: 아까 1번째 사례" in card2
     ep = _ep(kind="sweep", leader_turns=1)
     card3 = EC.build_episode_card(instruction="SWEEP_FOLLOWUP", chapter=CH, ep=ep, bei_turns=13, budget=16)
-    assert "이번 턴: '리더 행동' 하나" in card3 and "마무리한다" in card3
+    assert "리더 본인이 직접 한 말이나 조치 하나를 묻는다" in card3 and "마무리한다" in card3
 
 
 def test_bei_turn_text_has_persona_card_guide_and_rules():

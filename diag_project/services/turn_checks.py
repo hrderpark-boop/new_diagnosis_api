@@ -338,6 +338,13 @@ def ending_counts(questions: list[str] | None) -> dict:
 _ALT_Q_RE = re.compile(r"(는지|은지|인지|을지|나요|습니까|까요|어요)[,，?]?\s*(아니면|혹은|또는)\s")
 _REQ_Q_TAIL_RE = re.compile(r"((?:는|은|인|을|였는|었는|했는|셨는)지)(?:를|가|도)?\s*(?:꼭\s*|한번\s*|조금\s*더\s*)?(여쭙고\s*싶습니다|여쭤보고\s*싶습니다|듣고\s*싶습니다|알고\s*싶습니다|"
                             r"여쭙고\s*싶어요|여쭤보고\s*싶어요|듣고\s*싶어요|알고\s*싶어요|여쭙니다|묻고\s*싶습니다)[.!…]*$")
+# (2026-11-15 P13 중간 판정 5) '…를/…인지 묻겠습니다·여쭙겠습니다·짚겠습니다' 로 끝난 문장은 질문으로 세지 않는다(묻는 꼴로 바꾸지도 않는다) — 질문 보장 단계가 지우고 기본 질문을 붙인다
+ANNOUNCE_ASK_RE = re.compile(r"(묻겠습니다|여쭙겠습니다|여쭤보겠습니다|짚겠습니다|짚어\s*보겠습니다|여쭤볼게요|물어볼게요|짚어\s*볼게요)[.!…]*$")
+
+
+def is_announce_ask(sentence: str | None) -> bool:
+    """묻겠다고 알리기만 하는 문장인가('이제 판단 기준을 묻겠습니다.', '…무엇이었는지 여쭙겠습니다.') — 질문이 아니다(질문 수에 넣지 않는다)."""
+    return bool(ANNOUNCE_ASK_RE.search((sentence or "").strip()))
 
 
 def prefer_open_question(text: str | None) -> tuple[str, int]:

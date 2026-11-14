@@ -422,6 +422,9 @@ _NOUN_TAIL_RE = re.compile(r"(점|것|거|게|쪽|부분|말씀|팀원|이유|�
 _PREDICATE_TAIL_RE = re.compile(r"(다|요|죠|네|까|오|지|며|고|게요|세요|습니다|니다|군요|는데요|거든요|라고요|니까요|잖아요|던데요|구요|고요|시죠|시지요|겠죠|겠네요)$")
 
 
+_FRAGMENT_YO_RE = re.compile(r"^(함께|같이|따로|먼저|조금만|하나만)요$|(선택지|이유|기준|방법|결과|순서|부분|정도|쪽|때문)요$")
+
+
 def is_broken_sentence(sentence: str) -> bool:
     s = (sentence or "").strip()
     if not s or is_question(s):
@@ -436,6 +439,8 @@ def is_broken_sentence(sentence: str) -> bool:
         return True                                      # (a) 계사 어절만 남음('…게 인데요')
     if _PARTICLE_END_RE.fullmatch(last) and not re.search(r"(다|요|죠|네|까|오|게|지|며|고)$", last):
         return True                                      # (c) 조사로 끝남
+    if _FRAGMENT_YO_RE.search(last):
+        return True                                      # (d) 서술어 없이 낱말에 '요'만 붙은 조각('…있었는지도 함께요.', '…같은 선택지요.') — 11/14 운영 Lucas
     if len(toks) >= 2 and _NOUN_TAIL_RE.search(last) and not _PREDICATE_TAIL_RE.search(last) and last not in ("때", "일"):
         return True                                      # (a) 서술어 없이 명사로 끝남('그 결정의 기준.')
     return False
@@ -496,44 +501,7 @@ def is_aid_sentence(sentence: str | None) -> bool:
     return bool(_AID_LEAD_RE.search(s_) or _AID_END_RE.search(s_))
 
 
-# (2026-11-11 재생성 예산) 질문 꼴 받기 — "…조건부였다는 뜻이었을까요?" 는 묻는 말이 아니라 받는 말이다. 두 질문을 자를 때 지우지 않고
-#   평서 꼴("…뜻이었군요.")로 바꿔 받기로 살린다. 아는 어미만 바꾼다.
-_Q_TO_STMT: list[tuple[str, str]] = [
-    (r"(이었|였|었|았|했|셨|됐|겠)을까요\?$", r"\1군요."),
-    (r"(이었|였|었|았|했|셨|됐)(나요|어요|던가요|죠|지요|습니까|던 거죠|던 건가요)\?$", r"\1군요."),
-    (r"(거|것|셈)(일까요|인가요|이죠|죠|지요|예요|이에요)\?$", r"\1군요."),
-    (r"(건|겁)(가요|니까)\?$", "거군요."),
-    (r"일까요\?$", "이군요."), (r"인가요\?$", "이군요."), (r"(이)?신가요\?$", "이시군요."),
-    (r"(겠)(죠|지요|네요)\?$", r"\1네요."), (r"(네요|군요)\?$", r"\1."),
-]
-
-
-def question_to_statement(sentence: str | None) -> str | None:
-    """질문 꼴로 끝난 받는 문장을 평서 꼴로 — '…뜻이었을까요?' → '…뜻이었군요.'. 바꿀 수 없으면 None."""
-    s_ = (sentence or "").strip()
-    if not s_.endswith("?"):
-        return None
-    for pat, repl in _Q_TO_STMT:
-        new = re.sub(pat, repl, s_)
-        if new != s_:
-            return new
-    return None
-
-
-def revive_question_receive(text: str | None, user_text: str | None) -> tuple[str, int]:
-    """받는 평서문 없이 질문 꼴 받기로 시작한 턴("…뜻이었을까요? 그때 …?")에서, 첫 질문이 리더 말을 담고 있으면 평서 꼴로 바꿔 받기로 살린다.
-    질문이 하나뿐이거나 이미 평서문 받기가 있으면 그대로 둔다. (결과, 바꾼 수)"""
-    sents = [x.strip() for x in split_sentences(text or "") if x.strip()]
-    if len(sents) < 2 or not is_question(sents[0]) or sum(1 for x in sents if is_question(x)) < 2:
-        return (text or ""), 0
-    new = question_to_statement(sents[0])
-    if not new:
-        return (text or ""), 0
-    theirs = {c for c in _content_chunks(user_text or "") if len(c) >= 2}
-    mine = {c for c in _content_chunks(new) if len(c) >= 2}
-    if len({c for c in mine if c in theirs or any(len(o) >= 3 and (c.startswith(o) or o.startswith(c)) for o in theirs)}) < 2:
-        return (text or ""), 0                       # 리더 말을 담지 않은 질문은 받기가 아니라 그냥 질문이다
-    return (text or "").replace(sents[0], new, 1), 1
+# (2026-11-15 P13 중간 판정 3) 질문 꼴 받기를 평서 꼴로 살리던 수선(question_to_statement·revive_question_receive)은 삭제 — "…기준은 무엇이었군요." 를 만들었다
 
 
 def keep_main_question(text: str) -> tuple[str, int]:
@@ -689,6 +657,10 @@ _STATE_LEAK_RE = re.compile(
     # (P12c-6) 묻는 말에 '군요'가 붙어 어미가 깨진 문장("…어떻게 받아들였군요.") — 질문을 평서문으로 바꾸다 생긴 꼴
     #   '어떻게 하면 좋을지 오래 고민하셨군요'·'왜 늦는지부터 물으셨군요' 처럼 묻는 절('…지')을 안은 평서문은 걸리지 않게, 사이에 '지' 가 있으면 뺀다
     + r"|(어떻게|무엇을|뭐라고|뭘|왜|누가|언제|어디서)\s[^.?!,지]{0,25}(았|었|였|했|셨|렸)군요"
+    # (P13-4) 의문사에 서술어가 바로 붙은 꼴("…기준은 무엇이었군요.", "…어떤 것이었네요.")은 위 식이 못 잡았다. '누구보다'·'어떤 일이든' 같은 꼴은 뺀다
+    + r"|(무엇|무얼|뭐|누구|언제|어디|얼마|몇\s?[가-힣]{1,3})(이|가|였|이었|인지|였는지)?(었|였)?(군요|네요)"
+    + r"|어떤\s[가-힣]{1,6}(이|가)?(었|였|이었)(군요|네요)"
+    + r"|어땠(군요|네요)|어떠(셨|했|하셨)(군요|네요)"          # (P13 중간 판정 3) 붙여 쓴 꼴
 )
 
 
@@ -724,6 +696,11 @@ def strip_state_leak(text: str) -> tuple[str, int]:
         base = qs[-1] if qs else sents[-1]
         base = _STATE_LEAK_RE.sub("", base)
         base = re.sub(r"[ \t]{2,}", " ", base).strip(" ,")
+        # (2026-11-15 P13-4) 구절을 걷어낸 뒤 남은 것이 온전한 문장이 아니면 그 조각도 지운다("그 방식은 ." 같은 잔해) —
+        #   질문이면 물음표와 서술어가 남아 있어야 하고, 평서문이면 깨진 문장 판정을 통과해야 한다. 비면 호출자가 그 턴의 기본 질문을 붙인다.
+        _core = re.sub(r"[\s.,!?…]+", "", base)
+        if len(_core) < 6 or re.search(r"[은는이가을를의에도]\s*[.?!…]*$", base) or (not is_question(base) and is_broken_sentence(base)):
+            return "", len(hit)
         return base, len(hit)
     out = text
     for x in hit:
