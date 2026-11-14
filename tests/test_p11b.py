@@ -448,7 +448,7 @@ def test_p11c_receive_optional_and_one_question():
     from diag_project.services import turn_checks as T
     src = inspect.getsource(D._submit_message_phase3a)
     # 1. 탐침 턴은 받는 문장 필수 검사가 없다 · 금지 꼴·되풀이는 삭제만 · 구절 인용 대체는 닫고 넘어가는 턴에서 세션 2회까지
-    assert 'if _recv_optional or _q_expected or _tm.get("recv_ban"):' in src and "_qr_variant < QUOTE_RECEIVE_SESSION_MAX" in src and RC.QUOTE_RECEIVE_SESSION_MAX == 2
+    assert 'if _recv_optional or _q_expected or _tm.get("recv_ban") or instruction_used == "SWEEP_ANCHOR":' in src and "_qr_variant < QUOTE_RECEIVE_SESSION_MAX" in src and RC.QUOTE_RECEIVE_SESSION_MAX == 2
     assert '_drop_5 = "repeat"' in src and '_drop_5 = "quote_cap"' in src
     assert RC.is_quote_receive("'바로 앉았어야 했다'는 말씀이셨군요.") and RC.is_quote_receive("'직접 썼다'고 하셨군요.") and RC.is_quote_receive('"제가 몰랐네요"라고 하셨군요.')
     assert not RC.is_quote_receive("표로 정리해 보여주셨군요.")
@@ -848,7 +848,7 @@ def test_p12c_reask_keeps_what_is_asked_and_first_probe_hint():
     task = RR._KIND_TASK["contentless"]
     assert "묻는 것을 바꾸지 않습니다" in task and "이미 답한 것은 다시 묻지 않습니다" in task and "그 자리에서" not in task and "무슨 말을 했는지" not in task
     assert "방금 말한 일" in B.SLOT_HINTS["action"] and "그때 리더님이 직접" not in B.SLOT_HINTS["action"] and "상대" not in B.SLOT_HINTS["context"]
-    assert "한 턴에 묻는 것은 하나다" in TURN_FORMAT_RULES and "선택지" not in TURN_FORMAT_RULES + "".join(BEI_GUIDES.values())
+    assert "한 턴에 묻는 것도 하나다" in TURN_FORMAT_RULES and "한 턴에 질문 문장은 하나다" in TURN_FORMAT_RULES and "선택지" not in TURN_FORMAT_RULES + "".join(BEI_GUIDES.values())
     src = inspect.getsource(D._submit_message_phase3a)
     assert '_tm["reask_prev"] = {"q": _orig_rq[:160], "is_last":' in src and '"reask_prev": _tm.get("reask_prev")' in src
     assert "그날 그 자리에서" not in src
@@ -1004,8 +1004,9 @@ def test_p13_1_first_probe_is_leader_action_and_ask_order():
     ep = B.bump_slot_ask(ep, B.next_slot(ep))
     assert ep["ask_first"] is True and B.ask_slot(ep) == "action"
     card = build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=ep, bei_turns=2, budget=18)
-    assert "무엇을, 어떤 순서로, 누구에게 했는지" in card and "한 줄로 줄여 말한 행동이 있으면" in card
-    assert "때와 함께 있던 사람이 아직 나오지 않았다" not in card                                       # 상황이 이미 나왔으면 곁들이지 않는다
+    from diag_project.prompts.phase3a.episode_card import FIRST_PROBE_HEADER
+    assert card.startswith(FIRST_PROBE_HEADER) and "이 턴에 묻는 것은 하나다" in card and "한 줄로 줄여 말한 행동이 있으면" in card
+    assert "들음:" not in card and "아직:" not in card and "때와 함께 있던 사람" not in card           # (P13b-1) 전용 지시 — 들은 것·남은 것 목록을 주지 않는다
     assert B.next_slot(ep) == "criterion"                                                              # 그 뒤로는 기준 → 결과 → 반응
     ep = B.bump_slot_ask(ep, "criterion"); ep["slots"]["criterion"] = {"status": "filled", "quote": "x"}
     ep = B.bump_slot_ask(ep, "result"); ep["slots"]["result"] = {"status": "filled", "quote": "y"}
@@ -1014,8 +1015,10 @@ def test_p13_1_first_probe_is_leader_action_and_ask_order():
     assert B.next_slot(ep) == "reflection"                                                             # 반응은 사례당 1회 — 안 나와도 다음으로
     ep0 = {"idx": 1, "leader_turns": 1, "slots": {k: {"status": "empty", "quote": ""} for k in B.SLOT_KEYS}}
     ep0 = B.bump_slot_ask(ep0, B.next_slot(ep0))
-    assert "때와 함께 있던 사람이 아직 나오지 않았다 — 이 질문에 곁들여 한 번만 묻는다" in build_episode_card(
-        instruction="EPISODE_PROBE", chapter="work_management", ep=ep0, bei_turns=1, budget=18)
+    assert "때와 함께 있던 사람" not in build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=ep0, bei_turns=1, budget=18)
+    ep0 = B.bump_slot_ask(ep0, B.next_slot(ep0))                                                       # (P13b-1) 상황은 둘째 꼬리 질문에 한 번만 곁들인다
+    assert ep0["ask_first"] is False and "때와 함께 있던 사람이 아직 나오지 않았다 — 이 질문에 곁들여 한 번만 묻는다" in build_episode_card(
+        instruction="EPISODE_PROBE", chapter="work_management", ep=ep0, bei_turns=2, budget=18)
     # 사례 완성 = 묻는 다섯 가지가 차고 상황은 채움 또는 반쯤
     full = {"slots": {**{k: {"status": "filled", "quote": "q"} for k in B.ASK_ORDER}, "context": {"status": "partial", "quote": "지난달"}}}
     assert B.slots_complete(full) and not B.slots_complete({"slots": {**full["slots"], "context": {"status": "empty", "quote": ""}}})
@@ -1070,7 +1073,8 @@ def test_p13_6_7_persona_question_scope_and_align_receive_shape():
         desc, example = SR._SPEC[kind][0], SR._SPEC[kind][-1]
         assert "리더가 직접 말한 것일 때만" in desc and "대신" not in example and "말고" not in example, kind      # 예시에 견줄 대안을 넣지 않는다
     src = inspect.getsource(D._submit_message_phase3a)
-    assert "len(_recv_sents_al) != 1 or len(_recv_txt_al.split()) > 16" in src and '_tm["align_shape_miss"] = 1' in src
+    # (P13b-4) ALIGN 받기는 LLM 을 부르지 않는다 — 고정 받기만(모양 검사는 대상이 없어져 삭제)
+    assert '_tm["align_fixed"] = 1' in src and "_recv_sents_al" not in src and 'llm_output = {"reply": ""}' in src
 
 
 def test_p13_mid_summary_profile_and_fixed_opening():
@@ -1109,7 +1113,7 @@ def test_p13_mid_two_questions_pass_and_announce_tail():
     from diag_project.services.persona_register import register_hint
     from diag_project.services.turn_checks import is_announce_ask
     src = inspect.getsource(D._submit_message_phase3a)
-    assert '_tm["two_q_pass"] = 1' in src and "_trim_two" not in src and '"two_q_pass": _tm.get("two_q_pass")' in src
+    assert "_trim_two" not in src and '"first_q_kept": _tm.get("first_q_kept")' in src          # (P13b-2) 질문 문장이 둘 이상이면 첫 질문 문장만
     for s in ("그 배치를 누가 정했는지 묻겠습니다.", "언제부터였는지 여쭙겠습니다.", "무엇이 걸렸는지 짚겠습니다."):
         assert is_announce_ask(s), s
     for s in ("그 배치는 누가 정했습니까?", "언제부터였나요?", "무엇이 걸렸는지 말씀해 주시겠어요?"):
@@ -1118,3 +1122,86 @@ def test_p13_mid_two_questions_pass_and_announce_tail():
     assert strip_state_leak("어떻게 나눌지 오래 고민하셨군요.")[1] == 0
     assert "질문 문장은 줄이지 않는다" in register_hint("Lucas") and "짧은 단문" not in register_hint("Lucas")
     assert "repeat_notice_line as _rnl_an" in src and "duplicate_answer_line" not in src       # (P13-5) 같은 답 안내 = 짧은 안내 + 방금 한 질문
+
+
+def test_p13b_first_probe_turn_has_its_own_instruction():
+    """(2026-11-15 P13b-1) 사례의 첫 꼬리 질문 턴은 전용 지시 — 묻는 것은 리더가 직접 한 말·조치 하나, 까닭·결과·다른 사람의 말은 이 턴에 묻지 않는다."""
+    import inspect
+    from diag_project.prompts.phase3a import episode_card as EC
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B
+    ep = {"idx": 1, "leader_turns": 1, "slots": {k: {"status": "empty", "quote": ""} for k in B.SLOT_KEYS}}
+    ep["slots"]["action"] = {"status": "filled", "quote": "출고 순서를 바꾸자고 했습니다"}
+    ep = B.bump_slot_ask(ep, B.next_slot(ep))
+    card = EC.build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=ep, bei_turns=2, budget=18, used_endings=["말씀해 주시겠습니까"])
+    assert card.startswith(EC.FIRST_PROBE_HEADER) and "이 턴에 묻지 않는다" in card and "출고 순서" not in card and "끝맺음" not in card
+    txt = EC.bei_turn_text({"instruction_for_this_turn": "EPISODE_PROBE", "bei_card": card, "coach_persona": {"name": "Daniel"}})
+    assert EC.FIRST_PROBE_GUIDE in txt and EC.BEI_GUIDES["EPISODE_PROBE"] not in txt
+    assert "다음 질문은 아직 듣지 못한 것(" not in txt and "이 턴에 묻는 것은 리더 본인이 직접 한 말이나 조치 하나다" in txt
+    assert "한 턴에 질문 문장은 하나다" in txt and "가정해서 묻지 않는다" in txt                       # 나머지 공통 규칙은 그대로
+    # 둘째 꼬리 질문부터는 종전 카드·규칙
+    ep2 = B.bump_slot_ask(ep, B.next_slot(ep))
+    card2 = EC.build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=ep2, bei_turns=3, budget=18)
+    txt2 = EC.bei_turn_text({"instruction_for_this_turn": "EPISODE_PROBE", "bei_card": card2, "coach_persona": {"name": "Daniel"}})
+    assert not card2.startswith(EC.FIRST_PROBE_HEADER) and "들음:" in card2 and "다음 질문은 아직 듣지 못한 것(" in txt2
+    # 꼬리 질문이 하나뿐인 훑는 질문도 같은 지시
+    card3 = EC.build_episode_card(instruction="SWEEP_FOLLOWUP", chapter="work_management", ep=ep, bei_turns=9, budget=18)
+    txt3 = EC.bei_turn_text({"instruction_for_this_turn": "SWEEP_FOLLOWUP", "bei_card": card3, "coach_persona": {"name": "Daniel"}})
+    assert card3.startswith(EC.FIRST_PROBE_HEADER) and "다음 질문은 아직 듣지 못한 것(" not in txt3
+    # 기준 칸 지시문 — 출력에 옮겨지던 낱말을 뺐다
+    assert "판단의 근거" not in B.SLOT_HINTS["criterion"] and "리더가 먼저 말했을 때만" in B.SLOT_HINTS["criterion"]
+    # 떠오르지 않는다·옮기기 어렵다 → 방금 향한 칸은 더 묻지 않는다
+    assert B.is_no_recall_text("그 부분은 따로 기억나는 게 없습니다.") and B.is_no_recall_text("그대로 옮기기는 어렵습니다.") and not B.is_no_recall_text("제가 먼저 물었습니다.")
+    e = {"slots": {k: {"status": "empty", "quote": ""} for k in B.SLOT_KEYS}, "slot_asks": {"action": 1}, "ask_slot": "action"}
+    e = B.exhaust_slot(e, "action")
+    assert e["slot_asks"]["action"] == B.slot_ask_max("action") and B.next_slot(e) == "criterion"
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "_bei.is_no_recall_text(_bei_user_text)" in src and '_tm["no_recall_skip"] = _prev_slot_nr' in src
+    assert 'not _reask_kind and not _bei_ep.get("ask_first")):' in src                                 # 페르소나 문장은 첫 꼬리 턴에 쓰지 않는다
+
+
+def test_p13b_first_question_only_and_wording():
+    """(P13b-2·3) 질문 문장이 둘 이상이면 첫 문장만(문장 단위) · 금지 꼴 · 여는 질문은 낱말을 빼지 않는다 · 고정 다리 문장은 조각이 아니다."""
+    from diag_project.data.competencies import SUBCOMPETENCY_ANCHOR_QUESTIONS
+    from diag_project.services.output_guard import keep_first_question, strip_state_leak
+    from diag_project.services.persona_voice import voice_question
+    from diag_project.services.turn_checks import is_announce_ask
+    from tools.regression_table import classify_broken
+    t = "검수표를 다시 짜셨군요. 그 표를 누구에게 먼저 보여 주셨습니까? 그때 반장들은 무엇이라고 했는지 말씀해 주시겠습니까?"
+    assert keep_first_question(t) == ("검수표를 다시 짜셨군요. 그 표를 누구에게 먼저 보여 주셨습니까?", 1)
+    one = "그 표를 누구에게 먼저 보여 주셨는지, 그리고 반장들은 무엇이라고 했는지 말씀해 주시겠습니까?"
+    assert keep_first_question(one) == (one, 0)                                                        # 한 문장 안의 두 물음은 손대지 않는다
+    ann = "먼저 순서를 묻겠습니다. 그 표를 누구에게 먼저 보여 주셨습니까?"
+    assert keep_first_question(ann, not_question=is_announce_ask) == (ann, 0)                          # 알리는 문장은 질문으로 세지 않는다
+    fixed = "그 표를 누구에게 먼저 보여 주셨습니까? 최근에 일정이 밀린 적 있었나요?"
+    assert keep_first_question(fixed, is_fixed=lambda x: "일정이 밀린" in x) == (fixed, 0)             # 시스템이 붙인 질문은 세지 않는다
+    for bad in ("검수 순서를 바꾼 까닭이 분명하네요.", "리더님이 순서의 뜻을 짚어 주셨네요.", "판단의 근거를 잘 들었습니다."):
+        assert strip_state_leak(f"{bad} 그 뒤에는 무엇을 하셨습니까?") == ("그 뒤에는 무엇을 하셨습니까?", 1), bad
+    # 여는 질문: Lucas 도 사전 문안의 낱말을 그대로 둔다(끝맺음만 다르다)
+    drop_ok = ("있", "어떤", "무엇")
+    for qs in SUBCOMPETENCY_ANCHOR_QUESTIONS.values():
+        for q in (qs if isinstance(qs, list) else [qs]):
+            out = voice_question("Lucas", q, variant=0)
+            words = [w.strip(",.?") for w in q.split()[:-1]]
+            assert all(w in out for w in words if w), (q, out)
+            for c in ("Jessica", "Olivia"):
+                o = voice_question(c, q, variant=0)
+                assert o.split()[0] == q.split()[0] or q.split()[0] in ("뭘", "걸"), (c, q, o)         # 문두의 '혹시·한번'도 떼지 않는다
+    assert drop_ok
+    assert classify_broken("먼저 하나부터.") is None and classify_broken("첫 장면부터.") is None and classify_broken("그 자리에 누가 있었는지도 함께요.") == "b"
+
+
+def test_p13b_align_fixed_and_last_chapter_summary():
+    """(P13b-4·5·6) ALIGN 받기는 LLM 없이 고정 받기 · 훑는 질문을 여는 턴은 받는 문장이 없어도 정상 · 마지막 영역도 요약 뒤 종료 문구."""
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from tools.sim_leader import Leader
+    src = inspect.getsource(D._submit_message_phase3a)
+    i = src.index('elif instruction_used == "COMPETENCY_ALIGN":')
+    assert 'llm_output = {"reply": ""}' in src[i:i + 600] and '_tm["align_fixed"] = 1' in src[i:i + 600]
+    assert "_fq(clean_reply, request.content, exempt=_exempt_q)" not in src and '_tm["align_receive_miss"] = 1' not in src      # LLM 받기에 걸던 검사는 삭제
+    assert 'or instruction_used == "SWEEP_ANCHOR":' in src
+    j = src.index("# (2026-11-15 P13b-6) 마지막 영역도")
+    k = src.index("wrap_up = f\"{_sum} {final_closing_message(", j)
+    assert "render_close_summary as _rcs" in src[j:k] and "await _rlr(" not in src
+    assert hasattr(Leader, "_answer_matched") and "기억나는 게 없" in Leader.NO_MATERIAL

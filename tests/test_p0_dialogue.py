@@ -72,6 +72,9 @@ def test_all_dictionary_anchors_differ_across_six_personas():
     norm = lambda s: re.sub(r"[\s.,!?…'\"()]", "", s)  # noqa: E731
     same = [(a, b, q) for q in qs for a, b in itertools.combinations(NAMES, 2) if norm(voice_question(a, q)) == norm(voice_question(b, q))]
     # (2026-11-04 P3-4 2차) Michael 은 요청형('…하셨던 일, 하나만 들려주세요.') — 6명 전부 달라야 한다(Ella·Michael 동일 허용 되돌림).
+    # (2026-11-15 P13b-3) 사전 문안의 낱말을 빼거나 바꾸지 않는다(어미만 말투에 맞춘다) — 사전 문안이 이미 '~나요?' 로 끝나면 Lucas 는 그대로라 Ella 와 같다.
+    #   종전에는 Lucas 만 '어떤'→'무슨', '행동'→'대응' 으로 낱말을 바꿔 갈랐다.
+    same = [x for x in same if not ({x[0], x[1]} == {"Ella", "Lucas"} and x[2].endswith("나요?"))]
     assert same == [], same[:5]
     for q in qs:
         m = voice_question("Michael", q)

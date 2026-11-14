@@ -152,8 +152,44 @@ class Leader:
                 return self._no_case_reply()
             if ep.get("opening"):   # (P13) 재질문 뒤처럼 여는 턴이 아닌 자리에서 새 사례를 꺼낼 때도 요약형 여는 답 그대로
                 return str(ep["opening"])
+        if not self.stub:
+            # (2026-11-15 P13b-7) 질문의 낱말로 칸을 고르면 질문과 어긋난 답이 나왔다(우려를 물었는데 때·자리를 답함) — 사례의 재료를 모두 주고
+            #   질문이 묻는 것에 해당하는 재료로만 답하게 한다. 해당하는 재료가 없으면 기억나는 게 없다고 짧게 답한다.
+            return await self._answer_matched(coach_text)
         slot = self._slot_for(coach_text)
         return await self._say(slot, coach_text)
+
+    NO_MATERIAL = "그 부분은 따로 기억나는 게 없습니다."
+    _MATERIAL_LABELS = (("context", "때·자리"), ("action", "내가 직접 한 말·조치"), ("reaction", "다른 사람들이 보인 반응"), ("result", "그 뒤 달라진 것"),
+                        ("criterion", "그렇게 정한 까닭·기준"), ("reflection", "다시 한다면·배운 점"))
+
+    async def _answer_matched(self, coach_text: str) -> str:
+        from diag_project.llm_service import GeminiService
+        if self._svc is None:
+            self._svc = GeminiService().bind_provider(self.provider)
+        ep = self.current or {}
+        persona = self.p["persona"]
+        mats = "\n".join(f"- {label}: {ep[k]}" for k, label in self._MATERIAL_LABELS if ep.get(k))
+        system = (
+            f"당신은 리더십 진단에 참여한 리더입니다. {persona['role']} 팀원: {', '.join(persona['members'])}.\n"
+            f"말하는 방식: {persona['style']}\n"
+            "규칙: 코치의 이번 질문이 묻는 것에만 답한다. 아래 [이 일에 대해 내가 아는 것]에서 질문이 묻는 것에 해당하는 항목의 내용만 자기 말로 답한다 — "
+            "해당 항목의 내용은 한 가지도 빠뜨리지 않는다. 질문이 두 가지를 물으면 해당하는 항목을 각각 답한다. "
+            f"질문이 묻는 것에 해당하는 항목이 하나도 없으면 '{self.NO_MATERIAL}' 한 문장만 답한다(다른 항목으로 대신 답하지 않는다). "
+            "항목에 없는 내용을 지어내지 않는다. 묻지 않은 항목을 먼저 꺼내지 않는다. 항목의 이름(때·자리 같은 말)은 말하지 않는다. "
+            f"코치의 말을 되풀이하지 않는다. {self.p.get('speech') or '존댓말, 구어체'}. 질문하지 않는다. '음,'·'네,'·'그랬죠' 같은 추임새로 문장을 시작하지 않는다. "
+            + (f"최대 {self.p['max_sentences']}문장." if self.p.get("max_sentences") else "두세 문장 안팎.")
+        )
+        recent = "\n".join(f"{'코치' if r == 'model' else '나'}: {t}" for r, t in self.history[-6:])
+        prompt = f"[최근 대화]\n{recent}\n\n[코치의 이번 질문]\n{coach_text}\n\n[이 일에 대해 내가 아는 것]\n{mats}\n\n답변:"
+        try:
+            out = await self._svc._generate_with_retry(prompt=prompt, system_instruction=system, max_tokens=300, thinking_budget=0,
+                                                       call_type="sim_leader", temperature=0.0)
+            self.usage["calls"] += 1
+            return (out or self.NO_MATERIAL).strip().split("\n")[0][:400] or self.NO_MATERIAL
+        except Exception as e:  # noqa: BLE001
+            print(f"!! 시뮬 리더 LLM 실패({e}) → 기억나는 게 없다는 답")
+            return self.NO_MATERIAL
 
     def _injection(self, instr: str | None, bei: str | None) -> str | None:
         """프로필 injections = [{"when": "probe"|"open"|"reask", "nth": n, "text": "…"} | {"when": …, "nth": n, "paste": true}] — 해당 종류의 n번째 코치 턴에 한 번.
@@ -501,6 +537,22 @@ async def _main_async(args) -> None:
         # (2026-11-11 P10-1) 스몰톡 답을 바꿔 돌린다 — 운영에서 본 '그냥 그래요' 같은 내용 없는 답의 경로(LLM 없이 고정 받기 + 예비 되물음) 확인용
         profile = dict(profile); profile["onboarding"] = {**(profile.get("onboarding") or {}), "smalltalk": args.smalltalk}
     coaches = [c for c in args.coaches.split(",") if c]
+    if not args.stub:
+        # (2026-11-15 P13b-7) 시뮬 리더(클라이언트 쪽) 호출의 토큰을 따로 적는다 — sim_result 의 cost_usd 는 서버(코치) 쪽 호출만 센다
+        from diag_project import llm_service as _ls_cli
+        _lead_usage = out_dir / f"sim_usage_{args.tag}_leader_{'-'.join(coaches)}.jsonl"
+        if _lead_usage.exists():
+            _lead_usage.unlink()
+        _orig_rec_cli = _ls_cli.USAGE_METER.record
+
+        def _rec_cli(call_type, model, inp, out, thoughts, cache_write=0, cache_read=0):
+            try:
+                with open(_lead_usage, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"call_type": call_type, "model": model, "in": int(inp or 0), "out": int(out or 0), "think": int(thoughts or 0)}) + "\n")
+            except Exception:  # noqa: BLE001
+                pass
+            return _orig_rec_cli(call_type, model, inp, out, thoughts, cache_write, cache_read)
+        _ls_cli.USAGE_METER.record = _rec_cli
     port_base = int(os.environ.get("RP_PORT_BASE", "8070"))
     servers = {c: (_start_server(args.tag, c, port_base + i, out_dir, provider=args.provider, stub=args.stub), port_base + i) for i, c in enumerate(coaches)}
     await asyncio.sleep(3)
@@ -513,6 +565,8 @@ async def _main_async(args) -> None:
     finally:
         for proc, _ in servers.values():
             proc.terminate()
+    if not args.stub:
+        print(f"시뮬 리더 호출 비용(코치별 cost_usd 에 들어 있지 않음): ${_cost_usd(_lead_usage)} ({_lead_usage.name})")
     print("ALL DONE")
 
 

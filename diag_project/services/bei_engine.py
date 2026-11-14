@@ -41,7 +41,8 @@ SLOT_HINTS: dict[str, str] = {
     "reaction": "(리더가 이끌거나 함께 일하는 사람 — 팀원·상사·동료·협업자 — 이 그 말이나 조치를 어떻게 받았는지: 말·행동·태도의 달라짐) "
                 "사람은 리더가 부른 이름·직함으로 쓴다. 교육생·고객처럼 리더의 팀 밖에 있는 사람의 장면은 묻지 않는다",
     "result": "그 뒤 무엇이 달라졌는지(정성적 변화도 결과로 받는다)",
-    "criterion": "(판단의 근거: 그렇게 정한 까닭, 견주어 본 다른 길) 리더가 내린 결정의 낱말을 넣어 묻는다",
+    # (2026-11-15 P13b-3) '판단의 근거'가 출력에 옮겨졌다("리더님이 판단의 근거를 짚어 주셨네요") — 코치가 그대로 말할 수 없는 설명 꼴로
+    "criterion": "(왜 그렇게 정했는지) 리더가 내린 결정의 낱말을 넣어 묻는다. 견주어 본 다른 길은 리더가 먼저 말했을 때만 묻는다",
     "reflection": "지금 돌아보면 바꿀 점이나 배운 것 하나",
 }
 SLOT_STATUSES = ("empty", "partial", "filled")
@@ -167,6 +168,26 @@ def next_slot(ep: dict | None) -> str | None:
     if first_probe_pending(ep):
         return "action"
     return next((k for k in unfilled_slots(ep) if slot_asks(ep, k) < slot_ask_max(k)), None)
+
+
+# (2026-11-15 P13b-1) 리더가 떠오르지 않는다·옮기기 어렵다고 답한 것은 다시 캐묻지 않는다 — 방금 물은 것을 다 물은 것으로 치고 다음으로 넘어간다
+#   (시뮬 p13_1: 팀원이 한 말을 두 턴 연속 물었다)
+_NO_RECALL_RE = re.compile(r"기억(이|은|도)?\s*(잘\s*)?(안\s*나|나지\s*않|나는\s*게\s*없|에\s*없)|떠오르(지\s*않|는\s*게\s*없)|안\s*떠오르|옮기기(는|가)?\s*어렵|생각(이|은)?\s*(잘\s*)?(안\s*나|나지\s*않)")
+
+
+def is_no_recall_text(text: str | None) -> bool:
+    return bool(_NO_RECALL_RE.search(text or ""))
+
+
+def exhaust_slot(ep: dict, slot: str | None) -> dict:
+    """이 칸은 더 묻지 않는다 — 질문 횟수를 상한으로 올린다."""
+    if not slot:
+        return ep
+    ep = dict(ep)
+    asks = dict(ep.get("slot_asks") or {})
+    asks[slot] = max(int(asks.get(slot) or 0), slot_ask_max(slot))
+    ep["slot_asks"] = asks
+    return ep
 
 
 def bump_slot_ask(ep: dict, slot: str | None) -> dict:

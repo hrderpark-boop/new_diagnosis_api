@@ -504,6 +504,26 @@ def is_aid_sentence(sentence: str | None) -> bool:
 # (2026-11-15 P13 중간 판정 3) 질문 꼴 받기를 평서 꼴로 살리던 수선(question_to_statement·revive_question_receive)은 삭제 — "…기준은 무엇이었군요." 를 만들었다
 
 
+def keep_first_question(text: str, is_fixed=None, not_question=None) -> tuple[str, int]:
+    """(2026-11-15 P13b-2) 질문 문장이 둘 이상이면 첫 질문 문장만 남긴다 — 문장 단위로만 자른다(한 문장 안의 'A인지, 그리고 B인지'는 손대지 않는다).
+    is_fixed = 건드리지 않을 고정 문장 판정, not_question = 질문으로 세지 않을 문장 판정(묻겠다고 알리는 문장). (결과, 지운 문장 수)"""
+    sents = [x for x in split_sentences(text or "") if x.strip()]
+
+    def _is_q(x: str) -> bool:
+        return is_question(x) and not (is_fixed and is_fixed(x)) and not (not_question and not_question(x))
+    qs = [x for x in sents if _is_q(x)]
+    if len(qs) < 2:
+        return (text or ""), 0
+    out = text or ""
+    for x in qs[1:]:
+        i = out.rfind(x.strip())
+        if i >= 0:
+            out = out[:i] + out[i + len(x.strip()):]
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    return re.sub(r"\n{3,}", "\n\n", out).strip(), len(qs) - 1
+
+
 def keep_main_question(text: str) -> tuple[str, int]:
     """한 턴 한 질문(재생성 없이): 도움말 문장을 먼저 걷어내고, 그래도 질문이 둘 이상이면 마지막 질문만 남긴다.
     질문이 도움말뿐이면(직접 묻는 문장이 없으면) 그 도움말이 이 턴의 질문이다 — 마지막 하나를 남긴다. (결과, 지운 문장 수)"""
@@ -650,6 +670,8 @@ BANNED_STATE_LEAK = [
     "사례의 결", "분명하게 들립니다", "분명해졌습니다",
     # (2026-11-12 P11e-6) p11d: 다시 묻기 지시문의 '한 가지' · 관찰 문장 지시문의 '떠안'
     "어떤 한 가지", "한 가지 말씀이나", "떠안으셨",
+    # (2026-11-15 P13b-3) 시뮬 p13_1: "이 사례는 … 기준이 분명하네요." · "리더님이 판단의 근거를 짚어 주셨네요." — 답을 평하거나 풀이하는 말, 지시문의 낱말
+    "분명하네요", "짚어 주셨네요", "짚어주셨네요", "판단의 근거를",
 ]
 _STATE_LEAK_RE = re.compile(
     "|".join(re.escape(p) for p in sorted(set(BANNED_STATE_LEAK), key=len, reverse=True))

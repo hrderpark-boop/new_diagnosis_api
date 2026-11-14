@@ -444,10 +444,22 @@ def _ends_connective(core: str) -> bool:
     return bool(CONNECTIVE_END_RE.search(core))
 
 
+_FIXED_BRIDGE_C: set[str] | None = None
+
+
+def _is_fixed_bridge(sentence: str) -> bool:
+    """(2026-11-15 P13b-3) 고정 다리 문장('먼저 하나부터.', '첫 장면부터.' 등 — 영역 시작 턴에 시스템이 붙이는 문장)은 조각으로 세지 않는다."""
+    global _FIXED_BRIDGE_C
+    if _FIXED_BRIDGE_C is None:
+        from diag_project.services.intro_messages import ALIGN_OPEN_VARIANTS
+        _FIXED_BRIDGE_C = {re.sub(r"[\s.,!?…]+", "", x) for v in ALIGN_OPEN_VARIANTS.values() for x in v}
+    return re.sub(r"[\s.,!?…]+", "", sentence or "") in _FIXED_BRIDGE_C
+
+
 def classify_broken(sentence: str) -> str | None:
     """깨진 문장이면 꼴("a" 의문사+감탄 어미 | "b" 서술어 없는 조각 | "c" 쉼표·연결어미 끝)을, 아니면 None."""
     s = (sentence or "").strip()
-    if not s or s.startswith("·"):
+    if not s or s.startswith("·") or _is_fixed_bridge(s):
         return None
     bare = _strip_quotes(s)
     core = _core(bare)

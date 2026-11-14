@@ -219,7 +219,8 @@ def test_p9_9_summary_material_includes_sweep_answers_and_last_receive_wired():
     assert "행동 '늦은 이유를 먼저 물어봤어요'" in g and "합쳐서 2~3문장으로" in g and "보완 답" not in g
     assert len([x for x in clean_close_summary("가. 나. 다. 라. 마.", 5).split(". ") if x]) == 3
     src = inspect.getsource(__import__("diag_project.routes.diagnoses", fromlist=["x"]))
-    assert "render_last_receive" in src and '"sweep_done")' in src and "final_receive" in src
+    # (2026-11-15 P13b-6) 마지막 영역도 같은 요약 뒤 종료 문구 — 마지막 답만 받던 호출(render_last_receive)은 라우트에서 빠졌다
+    assert "await _rlr(" not in src and '"sweep_done")' in src and '_tm["final_summary"]' in src
 
 
 def test_p9_followups_from_first_sim():

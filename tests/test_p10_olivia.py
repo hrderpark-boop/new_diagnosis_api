@@ -423,14 +423,14 @@ def test_quote_receive_keeps_only_key_clause():
 def test_latency_b_two_questions_trimmed_without_regen():
     from diag_project.services.output_guard import count_question_markers as c, keep_last_question, split_compound_question
     src = _route_src()
-    # (2026-11-15 P13 중간 판정 3) 질문이 둘이면 손대지 않고 그대로 내보낸다 — 자르기·평서 꼴로 살리기·재생성 모두 없다
-    assert "def _trim_two(" not in src and "revive_question_receive" not in src and '_tm["two_q_pass"] = 1' in src
+    # (2026-11-15 P13b-2) 질문 문장이 둘 이상이면 첫 질문 문장만 남긴다(문장 단위) — 평서 꼴로 살리기·마지막 질문 남기기·재생성은 없다
+    assert "def _trim_two(" not in src and "revive_question_receive" not in src and "def _first_q_only(txt: str)" in src
     i = src.index('_iss = _format_issues(clean_reply)')
     j = src.index("while _iss and _rounds < 1 and not", i)
     pre = src[i:j]
-    assert 'if "two_questions" in _iss:' in pre and "_timed_regen" not in pre and "keep_main_question" not in pre
+    assert 'if "two_questions" in _iss:' in pre and "_timed_regen" not in pre and "clean_reply, _n_fq = _first_q_only(clean_reply)" in pre
     loop = src[j: src.index('_tm["format_regen"] = _rounds', j)]
-    assert "_iss2 = _issues_for_regen(_cand)" in loop and "two_questions" not in loop                  # 재생성 본문이 두 질문이어도 다시 돌리지 않는다
+    assert "_iss2 = _issues_for_regen(_cand)" in loop and "_first_q_only(_cand)" in loop              # 다시 쓴 본문도 첫 질문만 — 다시 돌리지 않는다
     assert '_trimmed_w3' not in src and src.index("# 8-w3.") > j      # (P12e-5) 8-w3 수선은 삭제(자리 표시만 남음)
     # 자르는 규칙: 문장이 둘이면 마지막 질문, 한 문장 안의 복합 질문은 뒤 질문
     def trim(t):
@@ -479,7 +479,7 @@ def test_regen_budget_one_per_turn_then_deterministic_repair():
     i = src.index("async def _timed_regen(**kw):")
     wrap = src[i: i + 1200]
     assert 'if _tm.get("no_regen") or _tm.get("budget_used"):' in wrap and '_tm["budget_used"] = 1' in wrap
-    assert src.count('rounds=(1 if _tm.get("budget_used") else 2)') >= 2      # (P12-6) 여는 문장 렌더 호출이 빠졌다 · (P12b-1) 페르소나 슬롯은 1회만 쓴다
+    assert src.count('rounds=(1 if _tm.get("budget_used") else 2)') >= 1      # (P12-6) 여는 문장 렌더 · (P12b-1) 페르소나 슬롯 · (P13b-6) 마지막 답 받기 호출이 빠졌다
     # 8-w: 재생성 1회, 그 뒤는 결정론 수선(긴 받기 자르기 · 질문 없으면 후속 질문 · 받기 없으면 구절 인용 받기)
     j = src.index("while _iss and _rounds < 1 and not (_tm.get(\"budget_used\")")
     after = src[j: src.index("# 8-w2.", j)]

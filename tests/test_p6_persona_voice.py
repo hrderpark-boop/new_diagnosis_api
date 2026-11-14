@@ -40,7 +40,9 @@ def test_voice_keeps_one_question_and_content():
     assert V.voice_question("Jessica", q).endswith("하셨습니까?")
     assert not V.voice_question("Michael", q).startswith("좋습니다")                       # '좋습니다' 는 턴 가드가 관리
     lucas = V.voice_question("Lucas", q)
-    assert "리더님" not in lucas and len(lucas) < len(q)
+    assert lucas == "그때 리더님은 직접 어떻게 하셨나요?"      # (P13b-3) 낱말을 빼지 않는다 — 어미만 바꾼다
+    assert V.voice_question("Lucas", "협업이 끊겨 있던 두 팀이 같이 일하게 되기까지 하신 일, 최근에 있으세요?").startswith("협업이 끊겨 있던 두 팀이 같이 일하게 되기까지 하신 일, 최근에")
+    assert V.voice_question("Lucas", "최근에 직접 하고 싶은 일을 팀원에게 맡기신 적 있으셨어요?") == "최근에 직접 하고 싶은 일을 팀원에게 맡기신 적 있었나요?"
     assert V.voice_question("Jessica", "결과까지 책임지게 맡기신 일이 있었어요?") == "결과까지 책임지게 맡기신 일이 있었습니까?"
     # Daniel 꼬리 3개 변주 — 서로 다르고, 0·1 은 격식 꼬리
     d = [V.voice_question("Daniel", "그 지표를 보고 실제로 뭘 고치셨어요?", variant=v) for v in (0, 1, 2)]

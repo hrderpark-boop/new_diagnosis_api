@@ -53,7 +53,7 @@ def test_episode_card_open_and_sweep_carry_system_anchor():
     assert "②의 힌트: 아까 1번째 사례" in card2
     ep = _ep(kind="sweep", leader_turns=1)
     card3 = EC.build_episode_card(instruction="SWEEP_FOLLOWUP", chapter=CH, ep=ep, bei_turns=13, budget=16)
-    assert "리더 본인이 직접 한 말이나 조치 하나를 묻는다" in card3 and "마무리한다" in card3
+    assert card3.startswith(EC.FIRST_PROBE_HEADER) and "리더 본인이 직접 한 말이나 조치" in card3 and "마무리한다" in card3      # (P13b-1) 첫 꼬리 질문과 같은 전용 지시
 
 
 def test_bei_turn_text_has_persona_card_guide_and_rules():

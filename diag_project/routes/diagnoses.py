@@ -1456,6 +1456,11 @@ async def _submit_message_phase3a(
                         if _jd.get("switched_case"):
                             state["bei_switched"] = True
         if instruction_used == "EPISODE_PROBE" and _bei_ep is not None and not state.get("bei_reask_only"):
+            # (2026-11-15 P13b-1) 리더가 떠오르지 않는다·옮기기 어렵다고 답한 것은 다시 캐묻지 않는다 — 방금 물은 것을 다 물은 것으로 치고 다음 것으로
+            _prev_slot_nr = _bei_ep.get("ask_slot")
+            if _prev_slot_nr and _bei.is_no_recall_text(_bei_user_text):
+                _bei_ep = _bei.exhaust_slot(_bei_ep, _prev_slot_nr)
+                _tm["no_recall_skip"] = _prev_slot_nr
             # (2026-11-13 P12-2) 같은 것을 채우려는 질문은 사례당 2회까지 — 이번 턴이 향하는 것을 사례에 적는다(다시 묻기 턴은 세지 않는다)
             _bei_ep = _bei.bump_slot_ask(_bei_ep, _bei.next_slot(_bei_ep))
             _store = _bei.update_episode(_store, chapter, _bei_ep)
@@ -1796,12 +1801,12 @@ async def _submit_message_phase3a(
             _last_coach_rq = next((m.content or "" for m in reversed(history_messages) if (m.role == MessageRole.MODEL or m.role == "model")), "")
             _tm["reask_prev"] = {"q": _orig_rq[:160], "is_last": bool(_orig_rq) and _same_rq(_orig_rq, _lqo_rq(_last_coach_rq) or "")}
             logger.info("🔁 다시 묻기(%s): %r ← %r", _tm["reask"], _reask_final[:80], _orig_rq[:60])
+        elif instruction_used == "COMPETENCY_ALIGN":
+            # (2026-11-15 P13b-4) 영역 시작의 받는 말은 LLM 을 부르지 않는다 — 고정 받기(P12d 3종)만 쓴다. 첫 영역·둘째 이후 영역 모두.
+            #   시뮬 p13_1: LLM 받기가 두 번 다 조건(1문장·16어절·평가 없음)을 못 넘겨 버려졌다(호출만 쓰고 버림).
+            llm_output = {"reply": ""}
+            _tm["align_fixed"] = 1
         else:
-            # (2026-11-11 호출 순서) 조직관리 정의 잇기 턴(ALIGN)의 사례 1 여는 문장도 본 호출과 병렬로
-            if instruction_used == "COMPETENCY_ALIGN" and chapter and current_target_sub and _opener_task is None:
-                import asyncio as _aio_al
-                _opener_task = _aio_al.ensure_future(_opener_for(current_target_sub, _anchor_for_sub(current_target_sub)))
-                _tm["opener_align_task"] = 1
             llm_output = await llm.generate_phase3a_interaction(
                 system_prompt=system_prompt,
                 chapter_context=chapter_context,
@@ -2195,73 +2200,9 @@ async def _submit_message_phase3a(
     #   전체 응답을 생성하므로, 시스템이 목록을 뒤에 붙이지 않는다.
     #   (LLM 이 빈 응답/사과만 낸 극단적 경우에만 최소 폴백.)
     if instruction_used == "COMPETENCY_ALIGN" and not _suppress_mechanical_text:
-        # 후처리 #2: 빈 응답일 때만 폴백('"죄송합니다" 포함' 조건 제거 — 사과가
-        #   들어간 정상 응답은 그대로 통과).
-        if not clean_reply.strip():
-            _fw = COMPETENCY_FRAMEWORK.get(chapter, {})
-            _nm = _fw.get("name", "이 영역")
-            clean_reply = (
-                f"네, 리더님 말씀 잘 들었습니다. 그 결을 이어서 '{_nm}' "
-                f"경험을 조금 더 구체적으로 들여다볼게요."
-            )
-        # (2026-10-21) 인용 가드: '…' 인용구가 리더 정의(이번 발화)에 없으면 따옴표를 떼고 재생성 1회. 역량·하위역량 이름은 예외.
-        from diag_project.services.output_guard import foreign_quotes as _fq, strip_quote_marks as _sqm
-        _exempt_q = [COMPETENCY_FRAMEWORK.get(chapter, {}).get("name", "")] + list(state.get("all_subcompetencies") or [])
-        _bad_q = _fq(clean_reply, request.content, exempt=_exempt_q)
-        if _bad_q:
-            # (2026-11-14 P12d-1) 다시 쓰지 않는다 — 리더가 하지 않은 말의 따옴표만 뗀다
-            _tm["quote"] = 2
-            clean_reply = _sqm(clean_reply, _bad_q)
-            logger.info("🔒 ALIGN 인용 가드: 리더 정의에 없는 인용 %s → 따옴표 제거", _bad_q)
-        # #2(2026-09-07): 정의 제시 → 빈 줄 → 첫 앵커 질문을 한 메시지로. "들어가
-        #   볼까요?" → "네" 확인 턴(정보 없음) 제거. 타겟(asked)은 위 프로브 스텝에서
-        #   LLM 호출 이전에 기록됐고, 여기서는 출력만 조립한다. 브릿지 리드 없이
-        #   앵커 본문만 붙인다(정의 뒤라 리드가 어색).
-        # (2026-10-28 P0-2) ALIGN 되받기의 내부 어휘 누설은 조립 '전'에 처리한다 — 조립 뒤 8-i 가 재생성하면 LLM 새 출력이
-        #   정의·목록·다리·앵커를 통째로 덮었다(10/28 재생 1라운드: 챕터 2~4 ALIGN 목록 누락의 원인). 8-i 는 ALIGN 을 재생성하지 않는다.
-        try:
-            from diag_project.services.leak_lexicon import find_leaks as _fl_al, strip_leak_sentences as _sls_al
-            _lk_al = _fl_al(clean_reply, _prev_user_texts + [request.content or ""])
-        except Exception as _le_al:   # noqa: BLE001
-            logger.warning("ALIGN 누설 검사 실패(무시): %s", _le_al)
-            _lk_al = []
-        if _lk_al:
-            # (P12d-1) 다시 쓰지 않는다 — 내부 낱말이 든 문장만 지운다(받기가 비면 아래에서 고정 받기로 받는다)
-            _tm["align_leak"] = list(_lk_al)
-            clean_reply, _n_al = _sls_al(clean_reply, _lk_al)
-            _tm["align_leak_stripped"] = _n_al
-            logger.info("🛡️ ALIGN 받기 내부 어휘 %s → 문장 삭제 %d", _lk_al, _n_al)
-        # (2026-11-05 3단계 소수정 4) ALIGN 되받기도 P3-1 규칙 — 리더 정의의 명사구를 그대로 인용한 평서문. 없으면 재생성 ≤2,
-        #   그래도 없으면 본문을 비워 render_align 이 인용 문장(align_receive_quote)으로 조립한다. '네, 잘 들었어요' 류 폴백 없음.
-        try:
-            from diag_project.services.align_render import leader_definition_body as _ldb_al, receive_sentences as _rs_al
-            from diag_project.services.receive_check import check_receive as _chk_al, quote_phrase as _qp_al
-            _subs_al = list(state.get("all_subcompetencies") or [])
-            _ut_al = _ldb_al(chapter or "", request.content or "")   # 역량 이름('조직관리는 …')은 인용으로 치지 않는다
-
-            def _recv_state(txt: str) -> tuple[bool, bool]:
-                _r = " ".join(_rs_al(txt, chapter=chapter or "", sub_names=_subs_al, user_text=_ut_al))
-                return _chk_al(_r, _ut_al) if _r else (False, False)
-            _has_al, _quoted_al = _recv_state(clean_reply)
-            # (2026-11-14 P12d-1) 정의 답을 받는 문장은 LLM 1회 그대로 — 받는 문장이 없거나 리더의 정의 답과 겹치는 낱말이 하나도 없으면
-            #   다시 쓰지 않고 고정 받기(말투별 3종, 영역 순서로)로 받는다. 종전: 구절을 그대로 인용하지 않으면 다시 쓰기 최대 2회.
-            from diag_project.services.turn_checks import question_overlap as _qov_al
-            _recv_txt_al = " ".join(_rs_al(clean_reply, chapter=chapter or "", sub_names=_subs_al, user_text=_ut_al))
-            _ov_al = _qov_al(_recv_txt_al, _ut_al) if _recv_txt_al else []
-            _tm["align_regen"] = 0
-            # (2026-11-15 P13-7) 1문장·16어절 이하·평가 낱말 없음일 때만 LLM 문장을 쓴다 — 11/14 운영 Lucas: 2문장·장황, "특히 눈에 띕니다"(평가)
-            from diag_project.services.output_guard import find_praise as _fp_al
-            _recv_sents_al = [x.strip() for x in split_sentences(_recv_txt_al) if x.strip()]
-            _bad_shape_al = (len(_recv_sents_al) != 1 or len(_recv_txt_al.split()) > 16 or bool(_fp_al(_recv_txt_al))
-                             or bool(re.search(r"(눈에\s*띕|눈에\s*띄|돋보|인상\s*(적|깊)|특히|함께\s*있었습니다|이면\s*좋겠습니다|면\s*좋겠)", _recv_txt_al)))
-            if _has_al and _ov_al and _bad_shape_al:
-                _tm["align_shape_miss"] = 1
-            if not (_has_al and _ov_al) or _bad_shape_al:
-                _tm["align_receive_miss"] = 1
-                clean_reply = ""   # 받기를 비운다 → render_align 이 고정 받기로 받는다
-                logger.info("📐 ALIGN 받기에 리더 답의 낱말 없음 → 고정 받기")
-        except Exception as _e_al2:   # noqa: BLE001
-            logger.warning("ALIGN 되받기 인용 검사 실패(무시): %s", _e_al2)
+        # (2026-11-15 P13b-4) LLM 받기는 없다 — 본문을 비워 두면 render_align 이 고정 받기(fixed_receive)로 받는다.
+        #   LLM 받기에 걸던 빈 응답 폴백·인용 가드·내부 어휘 검사·받기 모양 검사(1문장·16어절·평가 없음)는 대상이 없어져 함께 삭제했다.
+        clean_reply = ""
         if chapter and current_target_sub:
             # (2026-10-28 P0-1) ALIGN 조립은 백엔드 결정론(services/align_render.render_align):
             #   [LLM 공감 되받기 2~3문장] + [고정 정의 1문장] + [목록 · 줄 전부] + [고정 안내] + [고정 다리] + [앵커 1개].
@@ -2314,100 +2255,89 @@ async def _submit_message_phase3a(
                     state.get("bei_turns"), len(state.get("asked_in_chapter") or []), state.get("turn_count"))
         # 5(2026-09-17) 마무리 총평 금지: LLM 문장을 쓰지 않고 고정 문구만.
         from diag_project.services.intro_messages import final_closing_message
+        # (2026-11-15 P13b-6) 마지막 영역도 다른 영역과 같은 요약(리더가 한 일 2~3가지)을 낸 뒤 종료 문구를 붙인다.
+        #   종전: 마지막 영역은 마지막 답 하나만 받고 끝났다(11/14 운영 자기관리, 시뮬 p13_1 사람관리) — 그 받기 호출(render_last_receive)은 뺐다.
+        # (2026-10-21) '여기까지 충분히 들었습니다' 대신 들은 것 요약 2문장(LLM, 사실만) + 고정 다리.
+        #   질문·칭찬·상태 누설 문장은 걷어내고 두 문장으로 자른다. 남는 게 없으면 중립 문장.
+        from diag_project.services.intro_messages import chapter_end_bridge
+        from diag_project.services.output_guard import drop_question_sentences as _dqs_e, split_sentences as _ss_e
+        from diag_project.services.output_guard import strip_praise as _sp_e, strip_state_leak as _ssl_e
+        from diag_project.services.output_guard import _content_chunks as _cc_e, strip_transition_sentences as _sts_e
+        _eps_c = state.get("bei_close_episodes") or []
+        _n_eps_c = len(_eps_c)
+        _n_sum_c = min(3, max(2, _n_eps_c))          # (2026-11-10 P9-9) 요약은 사례와 보완 답을 합쳐 2~3문장
+        _need_c = min(_n_eps_c, 2)                   # 재료 가운데 최소 이만큼은 실제로 되짚어야 한다
+
+        def _clean_close(txt: str) -> str:
+            """질문·칭찬·상태 누설·전환·예고 문장을 걷어내고 사례 수만큼(최소 2문장) 남긴다."""
+            from diag_project.services.output_guard import drop_summary_noise as _dsn_e, drop_unfinished_tail as _dut_e
+            t, _ = _dut_e(txt); t, _ = _dsn_e(t); t, _ = _dqs_e(t); t, _ = _sp_e(t); t, _ = _ssl_e(t); t, _ = _sts_e(t)
+            t = " ".join(x for x in _ss_e(t) if not re.search(r"(보세요|주세요|볼게요|보겠습니다|주십시오)[.!…]?$|되짚어|여쭙|여쭤|궁금", x))
+            if state.get("bei_close_no_case"):
+                # (2026-11-05 2단계 판정 4) SWEEP 마지막 답이 '없음'이면 그 답을 받는 문장·'방향을 바꿔/좁혀' 류를 걷어낸다
+                t = " ".join(x for x in _ss_e(t) if not re.search(r"(없(었|으|다|을|는)|떠오르|좁혀|방향을\s*(조금\s*)?바꿔|다른\s*(방향|쪽|질문)|여쭙|여쭤)", x))
+            from diag_project.services.output_guard import strip_case_numbering as _scn_e
+            return " ".join([_scn_e(x).strip() for x in _ss_e(t) if _scn_e(x).strip()][:_n_sum_c]).strip()   # (P4-6) '사례 1에서는' 번호 매기기 제거 · (P9-9) 2~3문장
+
+        def _eps_matched(txt: str) -> int:
+            """재료(사례 인용)와 2개 이상 겹치는 사례 수 — 사례마다 한 문장이 실제로 그 사례를 되짚는지.
+            (P9 p9c) 재료가 2개 이상인데 요약이 한 문장뿐이면 요건(_need_c)에 못 미친 것으로 친다 — 재생성·집중 렌더로 넘긴다."""
+            _ct = set(_cc_e(txt))
+            _m = sum(1 for e in _eps_c
+                     if len({c for k in ("context", "action", "result") for c in _cc_e(e.get(k) or "") if len(c) >= 2} & _ct) >= 2)
+            if _n_eps_c >= 2 and len([x for x in _ss_e(txt) if x.strip()]) < 2:
+                _m = min(_m, _need_c - 1)
+            return _m
+
+        # (2026-11-05 P4-6) 인용은 재료 — LLM 이 사례 전부(2~3개)를 한 문장씩 되짚는다. 빠진 사례가 있으면 재생성 ≤2, 그래도 어느 사례도
+        #   되짚지 못하면 고정 다리만(지어낸 서술 없음). 인용을 나열하던 옛 템플릿(…하셨고, …하셨다고 들었습니다)은 폐지.
+        _sum = _clean_close(clean_reply)
+        _best_n = _eps_matched(_sum) if (_sum and _eps_c) else 0
+        # (2026-11-11 재생성 예산·호출 순서) 본 호출 재생성 루프(≤2회)는 없앴다 — 본 호출은 직전 답에 끌려 요약을 못 썼고(전부 집중 호출로 끝남)
+        #   그만큼 3~4초가 먼저 지나갔다. 요약은 재료만 주는 집중 호출 1회, 재료를 다 못 짚으면 1회 다시(이 턴의 재생성 예산).
+        _close_mode = "llm"
+        if _eps_c and _best_n < _need_c:
+            # (P4-6) 본 호출이 직전 답('네, 맞아요')에 끌려 질문을 이어 쓰는 일이 잦다(p4a Michael 3/3) — 이력 없이 재료만 주는 집중 호출로 다시 만든다
+            try:
+                from diag_project.services.close_render import render_close_summary as _rcs
+                from diag_project.services.intro_messages import PERSONA_LINES as _PL_c, persona_key as _pk_c
+                _pn_c = (state.get("coach_persona") or {}).get("name")
+                _cs_txt, _cs_n = await _rcs(llm, episodes=_eps_c, persona_name=_pn_c, rounds=(1 if _tm.get("budget_used") else 2),
+                                           register_hint="어미 결: " + _PL_c[_pk_c(_pn_c)]["align_definition"].format(cn_eul="'○○'을", defn="…"))
+                _tm["budget_used"] = 1          # 집중 호출이 다시 쓰기까지 썼을 수 있다 — 종료 턴의 뒤 단계는 결정론 수선만
+                if _cs_n > _best_n:
+                    _sum, _best_n, _close_mode = _cs_txt, _cs_n, "focused"
+            except Exception as _e_cs:   # noqa: BLE001
+                logger.error("종료 요약 집중 렌더 실패: %s", _e_cs)
+        if _eps_c and _best_n == 0:
+            _sum = ""
+        if not _eps_c:
+            # (2026-11-06 P7 승인 조건 2) 사례 0 챕터: 다리만 남기지 않고 고정 1문장(페르소나별). LLM 요약은 쓰지 않는다(지어낼 재료가 없다).
+            from diag_project.services.intro_messages import close_no_case_line as _cncl
+            _sum, _close_mode = _cncl((state.get("coach_persona") or {}).get("name")), "no_case_fixed"
+        _tm["close_summary_mode"] = _close_mode if _sum else "bridge_only"
+        _tm["close_summary_eps"] = f"{_best_n}/{_n_eps_c}"
+        # (2026-11-14 P12e-6) 요약에는 리더가 직접 한 일만 — 결과·인과를 잇는 절과 다른 사람이 주어인 절은 그 절만 지운다.
+        #   집중 호출(render_close_summary)은 안에서 이미 거쳤다 — 본 호출이 쓴 요약이 그대로 채택된 경우에도 같은 삭제를 건다(두 번 걸려도 결과는 같다).
+        if _sum and _eps_c:
+            try:
+                from diag_project.services.close_render import drop_result_clauses as _drc_cs, people_in_material as _pim_cs
+                from diag_project.services.intro_messages import line_register as _lreg_cs
+                _sum, _n_drc = _drc_cs(_sum, formal=(_lreg_cs((state.get("coach_persona") or {}).get("name")) == "formal"), people=_pim_cs(_eps_c))
+                if _n_drc:
+                    _tm["close_clause_cut"] = _n_drc
+            except Exception as _e_drc:   # noqa: BLE001
+                logger.warning("종료 요약 절 삭제 실패(무시): %s", _e_drc)
+        # (2026-11-13 P12-7) 요약도 코치 말투로 — 해요체 코치(Michael 등)의 요약이 합쇼체로 나갔다(말투 교정이 질문 문장만 봤다)
+        from diag_project.services.persona_register import apply_register as _areg_cs
+        _sum, _n_cs_reg, _ = _areg_cs((state.get("coach_persona") or {}).get("name"), _sum, scope="strict")
+        if _n_cs_reg:
+            _tm["register_fix"] = int(_tm.get("register_fix") or 0) + _n_cs_reg
         if _next_ch:
-            # (2026-10-21) '여기까지 충분히 들었습니다' 대신 들은 것 요약 2문장(LLM, 사실만) + 고정 다리.
-            #   질문·칭찬·상태 누설 문장은 걷어내고 두 문장으로 자른다. 남는 게 없으면 중립 문장.
-            from diag_project.services.intro_messages import chapter_end_bridge
-            from diag_project.services.output_guard import drop_question_sentences as _dqs_e, split_sentences as _ss_e
-            from diag_project.services.output_guard import strip_praise as _sp_e, strip_state_leak as _ssl_e
-            from diag_project.services.output_guard import _content_chunks as _cc_e, strip_transition_sentences as _sts_e
-            _eps_c = state.get("bei_close_episodes") or []
-            _n_eps_c = len(_eps_c)
-            _n_sum_c = min(3, max(2, _n_eps_c))          # (2026-11-10 P9-9) 요약은 사례와 보완 답을 합쳐 2~3문장
-            _need_c = min(_n_eps_c, 2)                   # 재료 가운데 최소 이만큼은 실제로 되짚어야 한다
-
-            def _clean_close(txt: str) -> str:
-                """질문·칭찬·상태 누설·전환·예고 문장을 걷어내고 사례 수만큼(최소 2문장) 남긴다."""
-                from diag_project.services.output_guard import drop_summary_noise as _dsn_e, drop_unfinished_tail as _dut_e
-                t, _ = _dut_e(txt); t, _ = _dsn_e(t); t, _ = _dqs_e(t); t, _ = _sp_e(t); t, _ = _ssl_e(t); t, _ = _sts_e(t)
-                t = " ".join(x for x in _ss_e(t) if not re.search(r"(보세요|주세요|볼게요|보겠습니다|주십시오)[.!…]?$|되짚어|여쭙|여쭤|궁금", x))
-                if state.get("bei_close_no_case"):
-                    # (2026-11-05 2단계 판정 4) SWEEP 마지막 답이 '없음'이면 그 답을 받는 문장·'방향을 바꿔/좁혀' 류를 걷어낸다
-                    t = " ".join(x for x in _ss_e(t) if not re.search(r"(없(었|으|다|을|는)|떠오르|좁혀|방향을\s*(조금\s*)?바꿔|다른\s*(방향|쪽|질문)|여쭙|여쭤)", x))
-                from diag_project.services.output_guard import strip_case_numbering as _scn_e
-                return " ".join([_scn_e(x).strip() for x in _ss_e(t) if _scn_e(x).strip()][:_n_sum_c]).strip()   # (P4-6) '사례 1에서는' 번호 매기기 제거 · (P9-9) 2~3문장
-
-            def _eps_matched(txt: str) -> int:
-                """재료(사례 인용)와 2개 이상 겹치는 사례 수 — 사례마다 한 문장이 실제로 그 사례를 되짚는지.
-                (P9 p9c) 재료가 2개 이상인데 요약이 한 문장뿐이면 요건(_need_c)에 못 미친 것으로 친다 — 재생성·집중 렌더로 넘긴다."""
-                _ct = set(_cc_e(txt))
-                _m = sum(1 for e in _eps_c
-                         if len({c for k in ("context", "action", "result") for c in _cc_e(e.get(k) or "") if len(c) >= 2} & _ct) >= 2)
-                if _n_eps_c >= 2 and len([x for x in _ss_e(txt) if x.strip()]) < 2:
-                    _m = min(_m, _need_c - 1)
-                return _m
-
-            # (2026-11-05 P4-6) 인용은 재료 — LLM 이 사례 전부(2~3개)를 한 문장씩 되짚는다. 빠진 사례가 있으면 재생성 ≤2, 그래도 어느 사례도
-            #   되짚지 못하면 고정 다리만(지어낸 서술 없음). 인용을 나열하던 옛 템플릿(…하셨고, …하셨다고 들었습니다)은 폐지.
-            _sum = _clean_close(clean_reply)
-            _best_n = _eps_matched(_sum) if (_sum and _eps_c) else 0
-            # (2026-11-11 재생성 예산·호출 순서) 본 호출 재생성 루프(≤2회)는 없앴다 — 본 호출은 직전 답에 끌려 요약을 못 썼고(전부 집중 호출로 끝남)
-            #   그만큼 3~4초가 먼저 지나갔다. 요약은 재료만 주는 집중 호출 1회, 재료를 다 못 짚으면 1회 다시(이 턴의 재생성 예산).
-            _close_mode = "llm"
-            if _eps_c and _best_n < _need_c:
-                # (P4-6) 본 호출이 직전 답('네, 맞아요')에 끌려 질문을 이어 쓰는 일이 잦다(p4a Michael 3/3) — 이력 없이 재료만 주는 집중 호출로 다시 만든다
-                try:
-                    from diag_project.services.close_render import render_close_summary as _rcs
-                    from diag_project.services.intro_messages import PERSONA_LINES as _PL_c, persona_key as _pk_c
-                    _pn_c = (state.get("coach_persona") or {}).get("name")
-                    _cs_txt, _cs_n = await _rcs(llm, episodes=_eps_c, persona_name=_pn_c, rounds=(1 if _tm.get("budget_used") else 2),
-                                               register_hint="어미 결: " + _PL_c[_pk_c(_pn_c)]["align_definition"].format(cn_eul="'○○'을", defn="…"))
-                    _tm["budget_used"] = 1          # 집중 호출이 다시 쓰기까지 썼을 수 있다 — 종료 턴의 뒤 단계는 결정론 수선만
-                    if _cs_n > _best_n:
-                        _sum, _best_n, _close_mode = _cs_txt, _cs_n, "focused"
-                except Exception as _e_cs:   # noqa: BLE001
-                    logger.error("종료 요약 집중 렌더 실패: %s", _e_cs)
-            if _eps_c and _best_n == 0:
-                _sum = ""
-            if not _eps_c:
-                # (2026-11-06 P7 승인 조건 2) 사례 0 챕터: 다리만 남기지 않고 고정 1문장(페르소나별). LLM 요약은 쓰지 않는다(지어낼 재료가 없다).
-                from diag_project.services.intro_messages import close_no_case_line as _cncl
-                _sum, _close_mode = _cncl((state.get("coach_persona") or {}).get("name")), "no_case_fixed"
-            _tm["close_summary_mode"] = _close_mode if _sum else "bridge_only"
-            _tm["close_summary_eps"] = f"{_best_n}/{_n_eps_c}"
-            # (2026-11-14 P12e-6) 요약에는 리더가 직접 한 일만 — 결과·인과를 잇는 절과 다른 사람이 주어인 절은 그 절만 지운다.
-            #   집중 호출(render_close_summary)은 안에서 이미 거쳤다 — 본 호출이 쓴 요약이 그대로 채택된 경우에도 같은 삭제를 건다(두 번 걸려도 결과는 같다).
-            if _sum and _eps_c:
-                try:
-                    from diag_project.services.close_render import drop_result_clauses as _drc_cs, people_in_material as _pim_cs
-                    from diag_project.services.intro_messages import line_register as _lreg_cs
-                    _sum, _n_drc = _drc_cs(_sum, formal=(_lreg_cs((state.get("coach_persona") or {}).get("name")) == "formal"), people=_pim_cs(_eps_c))
-                    if _n_drc:
-                        _tm["close_clause_cut"] = _n_drc
-                except Exception as _e_drc:   # noqa: BLE001
-                    logger.warning("종료 요약 절 삭제 실패(무시): %s", _e_drc)
-            # (2026-11-13 P12-7) 요약도 코치 말투로 — 해요체 코치(Michael 등)의 요약이 합쇼체로 나갔다(말투 교정이 질문 문장만 봤다)
-            from diag_project.services.persona_register import apply_register as _areg_cs
-            _sum, _n_cs_reg, _ = _areg_cs((state.get("coach_persona") or {}).get("name"), _sum, scope="strict")
-            if _n_cs_reg:
-                _tm["register_fix"] = int(_tm.get("register_fix") or 0) + _n_cs_reg
             wrap_up = f"{_sum} {chapter_end_bridge(chapter_to_topic(_next_ch), (state.get('coach_persona') or {}).get('name'))}".strip()
         else:
-            # (2026-11-10 P9-9) 세션 마지막 답도 받기 1문장 뒤에 종료한다 — 고정 종료 문구만 나가면 마지막 답이 허공에 뜬다
-            _pn_fin = (state.get("coach_persona") or {}).get("name")
-            _recv_fin = ""
-            try:
-                from diag_project.services.close_render import render_last_receive as _rlr
-                # (2026-11-11 P10-5) LLM 1문장, 리더 답 인용 필수 — 불합격이면 리더 절 인용, 받을 내용이 없으면 받기 없이 종료 문구
-                _recv_fin, _fin_mode = await _rlr(llm, user_text=_bei_user_text or request.content, persona_name=_pn_fin,
-                                                  rounds=(1 if _tm.get("budget_used") else 2))
-                if _fin_mode in ("llm_regen", "quote"):
-                    _tm["budget_used"] = 1
-                _tm["final_receive_mode"] = _fin_mode
-            except Exception as _e_fin:   # noqa: BLE001
-                logger.error("마지막 답 받기 렌더 실패: %s", _e_fin)
-            _tm["final_receive"] = 1 if _recv_fin else 0
-            wrap_up = f"{_recv_fin} {final_closing_message(_pn_fin)}".strip()
+            wrap_up = f"{_sum} {final_closing_message((state.get('coach_persona') or {}).get('name'))}".strip()
+            _tm["final_summary"] = 1 if _sum else 0
         if not _next_ch:
             # (2026-09-29, A-4) 리포트 예상 시간: 이미 사전분석된(또는 진행 중인) 이전 챕터 수로 계산. 실패하면 문구 없이.
             try:
@@ -2794,7 +2724,8 @@ async def _submit_message_phase3a(
             _has_r, _quoted_r = _chk_r(txt, _llm_user_text)
             # (2026-11-12 P11c-1) 탐침 턴(_q_expected)은 질문 앞 평서문이 없어도 된다 — no_receive·no_quote 검사는 닫고 넘어가는 턴(여는·보완 앵커)에만
             #   닫고 넘어가는 턴이라도 이 턴에 금지 꼴이라 지운 문장의 자리는 메우지 않는다(재생성·대체 없이 삭제만)
-            if _recv_optional or _q_expected or _tm.get("recv_ban"):
+            #   (2026-11-15 P13b-5) 사례를 닫고 훑는 질문을 여는 턴(SWEEP_ANCHOR)도 받는 문장이 없어도 정상 — 재생성·형식미해결 대상이 아니다
+            if _recv_optional or _q_expected or _tm.get("recv_ban") or instruction_used == "SWEEP_ANCHOR":
                 pass
             elif not _has_r:
                 issues.append("no_receive")
@@ -2814,8 +2745,13 @@ async def _submit_message_phase3a(
                 issues.append("praise")           # (P4-2) 재생성 출력에 새로 들어온 평가 말투('인상적이었어요')도 형식 위반 — 8-i 뒤 재생성은 8-i 를 다시 안 지난다
             return issues
 
-        # (2026-11-15 P13 중간 판정 3) 질문이 둘이면 손대지 않고 그대로 내보낸다 — 앞 질문을 평서 꼴로 바꿔 받는 문장으로 살리던 수선("무엇이었습니까?" →
-        #   "무엇이었군요.")과 그 뒤 자르기(마지막 질문만 남기기)를 함께 뺐다. 재생성도 하지 않는다(P10 지연 단축 b 그대로).
+        # (2026-11-15 P13b-2) 질문 문장이 둘 이상이면 첫 질문 문장만 남긴다 — 문장 단위로만 자른다(한 문장 안의 'A인지, 그리고 B인지'는 손대지 않는다).
+        #   앞 질문을 평서 꼴로 살리던 수선과 '마지막 질문만 남기기'는 되살리지 않는다. 재생성도 하지 않는다. 묻겠다고 알리는 문장은 질문으로 세지 않는다.
+        def _first_q_only(txt: str) -> tuple[str, int]:
+            from diag_project.services.output_guard import keep_first_question as _kfq_t
+            from diag_project.services.turn_checks import is_announce_ask as _iaa_t
+            return _kfq_t(txt, is_fixed=lambda x: _cpt_w(x) in _fixed_wc, not_question=_iaa_t)
+
         def _trim_recv(txt: str) -> tuple[str, int]:
             """(P11-H) 탐침 턴의 받는 문장을 1문장으로 — 재생성 없이, 리더가 쓴 낱말이 든 첫 문장을 남긴다."""
             from diag_project.services.receive_check import receive_statements as _rst_t
@@ -2832,8 +2768,10 @@ async def _submit_message_phase3a(
         _iss = _format_issues(clean_reply)
         if "two_questions" in _iss:
             if _q_expected:
-                _tm["two_q_pass"] = 1
-            _iss = [x for x in _iss if x != "two_questions"]
+                clean_reply, _n_fq = _first_q_only(clean_reply)
+                if _n_fq:
+                    _tm["first_q_kept"] = _n_fq
+            _iss = _issues_for_regen(clean_reply)
         if _q_expected and "long_receive" in _iss:
             clean_reply, _n_tr = _trim_recv(clean_reply)
             if _n_tr:
@@ -2866,6 +2804,7 @@ async def _submit_message_phase3a(
             # 질문부가 시스템 문장인 턴(앵커·슬롯)은 되받기만 바꾼다. LLM 질문 턴은 재생성 본문 전체를 후보로.
             _cand = _spl_r(clean_reply, _r_txt, 3, keep_fixed=_fixed_w) if (_fixed_w or not _q_expected) else _r_txt
             if _q_expected:
+                _cand, _n_fq2 = _first_q_only(_cand)       # (P13b-2) 다시 쓴 본문도 첫 질문 문장만
                 _cand, _ = _trim_recv(_cand)              # (P11-H) 재생성 본문의 받기도 1문장으로
             _iss2 = _issues_for_regen(_cand)
             if len(_iss2) < len(_iss):
@@ -3075,8 +3014,9 @@ async def _submit_message_phase3a(
     # 8-s. (2026-11-04 BEI → 2026-11-11 P10-2) 페르소나 슬롯 — 사례당 1회, 사례 리더 턴 3~5, 되받기 뒤. Jessica·Lucas·Olivia 는 LLM 질문을 슬롯 질문으로 대체,
     #   Daniel 은 [되받기] + 관찰 + LLM 질문, Michael 은 [되받기] + 응원 문장 + LLM 질문(실행 의지 질문은 다음 턴). Ella 는 슬롯 없음. 문장은 전부 렌더(고정 문구 없음).
     #   8-w 뒤에서 조립해 '되받기 뒤' 자리를 보장한다. 되받기가 없는 턴에는 넣지 않는다(단독 슬롯 금지 — 다음 턴에 다시 시도).
+    #   (2026-11-15 P13b-1) 사례의 첫 꼬리 질문 턴에는 쓰지 않는다 — 그 턴은 리더가 직접 한 말·조치만 묻는다.
     if (instruction_used == "EPISODE_PROBE" and _bei_ep and system_override_text is None and not _llm_error and chapter
-            and not needs_user_decision and (clean_reply or "").strip() and not _reask_kind):
+            and not needs_user_decision and (clean_reply or "").strip() and not _reask_kind and not _bei_ep.get("ask_first")):
         from diag_project.services.intro_messages import persona_line as _pl_s
         from diag_project.services.output_guard import is_request_statement as _irs_s, starts_without_main_clause as _swmc_s
         from diag_project.services.persona_voice import persona_key as _pk_s
@@ -3904,7 +3844,9 @@ async def _submit_message_phase3a(
             "scope_fixed": _tm.get("scope_fixed"), "case_word_cut": _tm.get("case_word_cut"),
             # (P13) announce_ask_cut 묻겠다고 알리기만 한 문장 삭제 수 · align_shape_miss ALIGN 받기가 1문장·16어절·평가 없음 조건을 못 넘어 고정 받기로
             "announce_ask_cut": _tm.get("announce_ask_cut"), "align_shape_miss": _tm.get("align_shape_miss"),
-            "two_q_pass": _tm.get("two_q_pass"),      # (P13 중간 판정 3) 질문이 둘인 채로 그대로 나간 턴
+            # (P13b) first_q_kept 질문 문장이 둘 이상이라 첫 질문만 남긴 턴(지운 수) · no_recall_skip 리더가 떠오르지 않는다고 해 더 묻지 않기로 한 칸 ·
+            #   align_fixed ALIGN 받기를 LLM 없이 고정 받기로
+            "first_q_kept": _tm.get("first_q_kept"), "no_recall_skip": _tm.get("no_recall_skip"), "align_fixed": _tm.get("align_fixed"),
             # (P12e) same_judge '같은 사건' 판정(후보 표지·판정 결과) · reframe_fixed 재질문을 사전 문안으로 조립
             "same_judge": _tm.get("same_judge"), "reframe_fixed": _tm.get("reframe_fixed"), "close_clause_cut": _tm.get("close_clause_cut"),
         })
