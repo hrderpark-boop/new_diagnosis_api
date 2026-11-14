@@ -430,6 +430,27 @@ ALIGN_FIXED_RECEIVE: dict[str, list[str]] = {
 }
 
 
+# (2026-11-15 P13c-1) 사례의 첫 꼬리 질문이 리더가 직접 한 말·조치를 묻지 않았을 때 쓰는 대체 문장 — 말투별 3종, 세션에서 쓴 횟수로 돌려 직전 것과 겹치지 않는다.
+#   리더 답에서 뽑은 낱말을 끼워 넣지 않는다(끼워 넣다 문장이 깨진 전례가 있다).
+_FP_POLITE = ["그 일에서 리더님이 직접 하신 말이나 조치를 순서대로 들려주시겠어요?",
+              "그 일에서 리더님이 직접 하신 일을 처음부터 차례로 말씀해 주시겠어요?",
+              "그 일에서 리더님이 직접 꺼내신 말과 하신 조치를 하나씩 들려주세요."]
+_FP_FORMAL = ["그 일에서 리더님께서 직접 하신 말씀이나 조치를 순서대로 말씀해 주시겠습니까?",
+              "그 일에서 리더님께서 직접 하신 일을 처음부터 차례로 말씀해 주십시오.",
+              "그 일에서 리더님께서 직접 꺼내신 말씀과 하신 조치는 무엇이었습니까?"]
+FIRST_PROBE_FALLBACK: dict[str, list[str]] = {
+    "Ella": _FP_POLITE, "Olivia": _FP_POLITE, "Michael": _FP_POLITE, "Jessica": _FP_FORMAL, "Daniel": _FP_FORMAL,
+    "Lucas": ["그 일에서 직접 하신 말이나 조치를 순서대로 말씀해 주시겠습니까?",
+              "그 일에서 직접 하신 일을 처음부터 차례로 들려주시겠습니까?",
+              "그 일에서 직접 꺼내신 말과 하신 조치는 무엇이었나요?"],
+}
+
+
+def first_probe_fallback(persona_name: str | None, n: int = 0) -> str:
+    pool = FIRST_PROBE_FALLBACK[persona_key(persona_name)]
+    return pool[int(n) % len(pool)]
+
+
 def align_fixed_receive(persona_name: str | None, variant: int = 0) -> str:
     pool = ALIGN_FIXED_RECEIVE[persona_key(persona_name)]
     return pool[int(variant) % len(pool)]
@@ -767,6 +788,8 @@ def all_fixed_sentences() -> list[str]:
     for v in ALIGN_FIXED_RECEIVE.values():
         out.extend(v)                      # (P12d-1) ALIGN 고정 받기
     out.extend(list(SMALLTALK_FLAT3.values()) + list(ROLE_FLAT.values()))   # (P12d-2) 라포 고정 받기
+    for v in FIRST_PROBE_FALLBACK.values():
+        out.extend(x for x in v if x not in out)   # (P13c-1) 첫 꼬리 질문 대체 문장
     return out
 
 

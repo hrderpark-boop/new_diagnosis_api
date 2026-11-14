@@ -52,13 +52,15 @@ def preference_for(persona_name: str | None, *, contrast_used: bool = False) -> 
     return txt   # (P10-2) contrast_used 는 호환용 인자 — 대조 질문은 slot_render 가 챕터당 1회 넣는다
 
 
-def persona_guide_block(persona_name: str | None, *, contrast_used: bool = False) -> str:
+def persona_guide_block(persona_name: str | None, *, contrast_used: bool = False, with_preference: bool = True) -> str:
     """레이어3 페르소나 블록 뒤에 붙는 탐침 선호 지시.
     (2026-11-11 P10-5) 마무리 어구를 목록에서 고르라는 지시와 어구 목록을 삭제 — 11/11 운영 세션의 고정 받기 문구는 이 지시가 낸 것이었다.
     (이 docstring 은 누설 사전 소스에 포함되므로 따옴표 인용을 넣지 않는다.)"""
     k = persona_key(persona_name)
-    return (f"[🎭 탐침 선호 — {k}] {preference_for(k, contrast_used=contrast_used)}\n"
-            "질문 앞에 평서문을 둘 때는 리더가 방금 쓴 낱말이 들어가야 한다. 어느 답에나 붙일 수 있는 한마디는 쓰지 않는다.\n\n")
+    _recv = "질문 앞에 평서문을 둘 때는 리더가 방금 쓴 낱말이 들어가야 한다. 어느 답에나 붙일 수 있는 한마디는 쓰지 않는다.\n\n"
+    if not with_preference:      # (P13c-1) 사례의 첫 꼬리 질문 턴 — 무엇을 묻는지는 카드가 정한다
+        return _recv
+    return f"[🎭 탐침 선호 — {k}] {preference_for(k, contrast_used=contrast_used)}\n" + _recv
 
 
 # ── 어미 변환 ─────────────────────────────────────────────────────────────────

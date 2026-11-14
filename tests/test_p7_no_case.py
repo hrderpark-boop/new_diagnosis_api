@@ -156,7 +156,8 @@ def test_p7_sweep_cap_ignores_no_case_and_repeat_no_case_not_duplicate():
     assert b is not None and b.kind == "repeat_prev"
     import inspect
     from diag_project.routes import diagnoses as d
-    assert "_quote_required = not (_bei.is_no_case_text(_llm_user_text)" in inspect.getsource(d._submit_message_phase3a)
+    # (2026-11-15 P13c-2) 받는 문장·인용을 요구하는 검사는 삭제 — 면제 조건(_quote_required)도 함께 없어졌다
+    assert "_quote_required" not in inspect.getsource(d._submit_message_phase3a)
 
 
 def test_p7_5_false_attribution_clause_removed_but_real_quote_kept():

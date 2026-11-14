@@ -448,7 +448,7 @@ def test_p11c_receive_optional_and_one_question():
     from diag_project.services import turn_checks as T
     src = inspect.getsource(D._submit_message_phase3a)
     # 1. 탐침 턴은 받는 문장 필수 검사가 없다 · 금지 꼴·되풀이는 삭제만 · 구절 인용 대체는 닫고 넘어가는 턴에서 세션 2회까지
-    assert 'if _recv_optional or _q_expected or _tm.get("recv_ban") or instruction_used == "SWEEP_ANCHOR":' in src and "_qr_variant < QUOTE_RECEIVE_SESSION_MAX" in src and RC.QUOTE_RECEIVE_SESSION_MAX == 2
+    assert 'issues.append("no_receive")' not in src and 'issues.append("no_quote")' not in src and RC.QUOTE_RECEIVE_SESSION_MAX == 2      # (P13c-2) 받는 문장 검사는 어디에도 없다
     assert '_drop_5 = "repeat"' in src and '_drop_5 = "quote_cap"' in src
     assert RC.is_quote_receive("'바로 앉았어야 했다'는 말씀이셨군요.") and RC.is_quote_receive("'직접 썼다'고 하셨군요.") and RC.is_quote_receive('"제가 몰랐네요"라고 하셨군요.')
     assert not RC.is_quote_receive("표로 정리해 보여주셨군요.")
@@ -1134,7 +1134,8 @@ def test_p13b_first_probe_turn_has_its_own_instruction():
     ep["slots"]["action"] = {"status": "filled", "quote": "출고 순서를 바꾸자고 했습니다"}
     ep = B.bump_slot_ask(ep, B.next_slot(ep))
     card = EC.build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=ep, bei_turns=2, budget=18, used_endings=["말씀해 주시겠습니까"])
-    assert card.startswith(EC.FIRST_PROBE_HEADER) and "이 턴에 묻지 않는다" in card and "출고 순서" not in card and "끝맺음" not in card
+    assert card.startswith(EC.FIRST_PROBE_HEADER) and "이 턴에 묻지 않는 것: 때·자리·장면, 다른 사람의 반응, 판단 기준, 결과" in card
+    assert "출고 순서" not in card and "끝맺음" not in card and "누가 무엇을 했을 때인지" not in card      # (P13c-1) 괄호 설명 삭제
     txt = EC.bei_turn_text({"instruction_for_this_turn": "EPISODE_PROBE", "bei_card": card, "coach_persona": {"name": "Daniel"}})
     assert EC.FIRST_PROBE_GUIDE in txt and EC.BEI_GUIDES["EPISODE_PROBE"] not in txt
     assert "다음 질문은 아직 듣지 못한 것(" not in txt and "이 턴에 묻는 것은 리더 본인이 직접 한 말이나 조치 하나다" in txt
@@ -1200,8 +1201,80 @@ def test_p13b_align_fixed_and_last_chapter_summary():
     i = src.index('elif instruction_used == "COMPETENCY_ALIGN":')
     assert 'llm_output = {"reply": ""}' in src[i:i + 600] and '_tm["align_fixed"] = 1' in src[i:i + 600]
     assert "_fq(clean_reply, request.content, exempt=_exempt_q)" not in src and '_tm["align_receive_miss"] = 1' not in src      # LLM 받기에 걸던 검사는 삭제
-    assert 'or instruction_used == "SWEEP_ANCHOR":' in src
+    assert 'issues.append("no_receive")' not in src                                                    # (P13c-2) 받는 문장 검사는 전부 삭제
     j = src.index("# (2026-11-15 P13b-6) 마지막 영역도")
     k = src.index("wrap_up = f\"{_sum} {final_closing_message(", j)
     assert "render_close_summary as _rcs" in src[j:k] and "await _rlr(" not in src
     assert hasattr(Leader, "_answer_matched") and "기억나는 게 없" in Leader.NO_MATERIAL
+
+
+def test_p13c_first_probe_check_and_fallback():
+    """(2026-11-15 P13c-1) 사례의 첫 꼬리 질문 확인(표지) · 불합격이면 말투별 대체 문장 · 첫 꼬리 턴에는 프로필 탐침 선호 문구 없음."""
+    import inspect
+    from diag_project.prompts.phase3a import episode_card as EC
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B, intro_messages as IM
+    from diag_project.services.leak_lexicon import GUARD_KEEP, guard_lexicon
+    from diag_project.services.output_guard import is_question
+    from diag_project.services.persona_register import apply_register
+    from diag_project.services.persona_voice import persona_guide_block
+    from diag_project.services.turn_checks import first_probe_asking_part, first_probe_question_ok as ok
+    good = ("그 출고표를 바꾸실 때 리더님이 직접 하신 말은 무엇이었습니까?", "반장들이 반대했을 때, 리더님께서는 무엇을 먼저 말씀하셨습니까?",
+            "야간 조에 그 순서를 알리실 때 뭐라고 하셨나요?", "검수 담당에게 그 일을 넘기면서 어떤 조치를 하셨는지 들려주시겠어요?")
+    bad = (("그 순서를 바꾸신 것은 언제였습니까?", "off:언제"), ("그 회의에서 가장 먼저 떠오르는 장면은 무엇입니까?", "off:떠오르는 장면"),
+           ("순서를 바꾸자고 하셨을 때 반장들은 어떤 반응을 보였습니까?", "off:어떤 반응"), ("그렇게 정하신 기준은 무엇이었습니까?", "off:기준은 무엇"),
+           ("순서를 바꾼 뒤 출고 시간은 어떻게 됐습니까?", "off:어떻게 됐"), ("그 순서를 어떻게 생각하셨습니까?", "no_action"), ("", "no_question"))
+    for q in good:
+        assert ok(q) == (True, "ok"), (q, ok(q))
+    for q, why in bad:
+        assert ok(q) == (False, why), (q, ok(q))
+    # 앞에 놓인 때 절은 보지 않는다 — 묻는 자리만 본다
+    assert first_probe_asking_part("반장들이 언제 올지 몰라 하셨을 때, 리더님은 뭐라고 하셨습니까?") == "리더님은 뭐라고 하셨습니까?"
+    assert ok("반장들이 어떤 반응을 보였을 때 리더님은 뭐라고 하셨습니까?") == (True, "ok")
+    # 대체 문장: 코치마다 3종, 스스로 합격, 질문 꼴, 말투 교정에 바뀌지 않는다, 돌려 쓰면 직전 것과 겹치지 않는다
+    for coach, pool in IM.FIRST_PROBE_FALLBACK.items():
+        assert len(pool) == 3 and len(set(pool)) == 3
+        for i, x in enumerate(pool):
+            assert ok(x) == (True, "ok") and is_question(x) and apply_register(coach, x, scope="strict")[0] == x, (coach, x)
+            assert IM.first_probe_fallback(coach, i) == x and IM.first_probe_fallback(coach, i + 1) != x
+            assert x in IM.all_fixed_sentences()
+    assert "리더님" not in "".join(IM.FIRST_PROBE_FALLBACK["Lucas"]) and all("리더님께서" in x for x in IM.FIRST_PROBE_FALLBACK["Daniel"])
+    # 첫 꼬리 턴에는 프로필 탐침 선호 문구를 넣지 않는다(여섯 코치 모두)
+    ep = {"idx": 1, "leader_turns": 1, "slots": {k: {"status": "empty", "quote": ""} for k in B.SLOT_KEYS}}
+    ep = B.bump_slot_ask(ep, B.next_slot(ep))
+    card = EC.build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=ep, bei_turns=2, budget=18)
+    for coach in ("Ella", "Jessica", "Olivia", "Daniel", "Michael", "Lucas"):
+        txt = EC.bei_turn_text({"instruction_for_this_turn": "EPISODE_PROBE", "bei_card": card, "coach_persona": {"name": coach}})
+        assert "탐침 선호" not in txt and "리더가 방금 쓴 낱말이 들어가야 한다" in txt, coach
+        assert "탐침 선호" in persona_guide_block(coach) and "탐침 선호" not in persona_guide_block(coach, with_preference=False)
+    ep2 = B.bump_slot_ask(ep, B.next_slot(ep))
+    card2 = EC.build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=ep2, bei_turns=3, budget=18)
+    assert "탐침 선호" in EC.bei_turn_text({"instruction_for_this_turn": "EPISODE_PROBE", "bei_card": card2, "coach_persona": {"name": "Daniel"}})
+    # 지시문에 쓴 낱말이 가드 사전에 들어가 다른 턴의 문장이 지워지지 않는다. (GUARD_KEEP 은 '누설 낱말로 남기는' 목록이라 여기에 넣으면 반대로 지워진다)
+    g = guard_lexicon()["korean"]
+    for w in ("반응", "장면", "자리", "결과", "기준", "판단"):
+        assert w not in g and w not in GUARD_KEEP, w
+    src = inspect.getsource(D._submit_message_phase3a)
+    i = src.index("# 8-q2. (2026-11-15 P13c-1)")
+    blk = src[i: src.index("# 8-z.", i)]
+    assert 'instruction_used == "SWEEP_FOLLOWUP" or (instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("ask_first"))' in blk
+    assert '_tm["first_probe"] = "llm"' in blk and '_tm["first_probe"] = "fallback"' in blk and "_timed_regen" not in blk and "await" not in blk
+    assert '"first_probe": _tm.get("first_probe")' in src
+
+
+def test_p13c_no_receive_requirement_left_and_wording():
+    """(P13c-2·3) 받는 문장을 요구하는 곳이 없다 · 페르소나 문장은 받는 문장 유무와 무관 · 금지 꼴·지시문."""
+    import inspect
+    from diag_project.prompts.phase3a.episode_card import TURN_FORMAT_RULES
+    from diag_project.routes import diagnoses as D
+    from diag_project.services.output_guard import strip_state_leak
+    src = inspect.getsource(D._submit_message_phase3a)
+    for gone in ('issues.append("no_receive")', 'issues.append("no_quote")', "quote_receive as _qrcv_w", '_tm["receive_fallback"] = "quote"', "_recv_optional_w2"):
+        assert gone not in src, gone
+    assert 'if _pn_s == "Michael" and _mq_pending:' in src and '_slot_kind in ("observation", "cheer") and _q_now_s))' not in src
+    assert 'not _reask_kind and not _bei_ep.get("ask_first")):' in src                                 # 첫 꼬리 턴에는 페르소나 문장을 넣지 않는다
+    assert "_c_w2 = _bei_anchor_text.strip()" in src
+    for bad in ("출고 지연이 줄었다는 점이 분명하게 드러나는군요.", "검수 순서가 가장 큰 변화로 보이는군요.", "반장들의 뜻이 그런 것으로 보이네요."):
+        assert strip_state_leak(f"{bad} 그 뒤에는 무엇을 하셨습니까?") == ("그 뒤에는 무엇을 하셨습니까?", 1), bad
+    assert strip_state_leak("표가 잘 보이게 벽에 붙이셨군요.")[1] == 0
+    assert "받는 말은 리더가 쓴 낱말로만 쓴다" in TURN_FORMAT_RULES and "짐작하게 하는 질문도 하지 않는다" in TURN_FORMAT_RULES

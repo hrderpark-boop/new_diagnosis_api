@@ -2708,29 +2708,16 @@ async def _submit_message_phase3a(
         from diag_project.services.output_guard import count_question_markers as _cq_w, keep_last_question as _klq_w   # 복합 질문 절도 센다
         from diag_project.services.output_guard import find_praise as _fp_w, is_leading_choice_question as _ilc_w
         from diag_project.services.receive_check import (
-            _compact as _cpt_w, check_receive as _chk_r, lead_cap_for as _lcf_w, quote_phrase as _qp_r, splice_receive as _spl_r,
+            _compact as _cpt_w, check_receive as _chk_r, splice_receive as _spl_r,
         )
         _q_expected = _is_probe                       # 여는·SWEEP 앵커 턴은 시스템 질문이 이미 붙어 있다
         _fixed_w = [x for x in ([_tm.get("slot_text")] + split_sentences(_bei_anchor_text or "")) if x]   # (P4-4) 여는 문장은 2~3문장
         _fixed_wc = {_cpt_w(x) for x in _fixed_w}
 
-        # (2026-11-06 P7) 리더 답이 '없어요·글쎄요' 류(사례 아님, incident=false)면 인용할 명사구가 없다 — 되받기만 요구하고 인용은 면제
-        _quote_required = not (_bei.is_no_case_text(_llm_user_text) or _tm.get("incident") is False)
-        from diag_project.services.receive_check import leader_nouns as _ln_w
-        _recv_optional = _is_open and not _ln_w(_llm_user_text)   # (P10-5) 받을 낱말이 없는 답('네, 맞아요') 뒤의 여는 턴은 받기 없이 연다
-
         def _format_issues(txt: str) -> list[str]:
             issues: list[str] = []
-            _has_r, _quoted_r = _chk_r(txt, _llm_user_text)
-            # (2026-11-12 P11c-1) 탐침 턴(_q_expected)은 질문 앞 평서문이 없어도 된다 — no_receive·no_quote 검사는 닫고 넘어가는 턴(여는·보완 앵커)에만
-            #   닫고 넘어가는 턴이라도 이 턴에 금지 꼴이라 지운 문장의 자리는 메우지 않는다(재생성·대체 없이 삭제만)
-            #   (2026-11-15 P13b-5) 사례를 닫고 훑는 질문을 여는 턴(SWEEP_ANCHOR)도 받는 문장이 없어도 정상 — 재생성·형식미해결 대상이 아니다
-            if _recv_optional or _q_expected or _tm.get("recv_ban") or instruction_used == "SWEEP_ANCHOR":
-                pass
-            elif not _has_r:
-                issues.append("no_receive")
-            elif not _quoted_r and _quote_required:
-                issues.append("no_quote")
+            # (2026-11-15 P13c-2) 받는 문장을 요구하는 검사는 이제 어디에도 없다 — 탐침 턴(P11c-1), 훑는 질문을 여는 턴(P13b-5)에 이어
+            #   사례를 닫고 다음 사례를 여는 턴의 받는 문장 검사·다시 쓰기·인용 받기도 삭제했다. 받는 문장이 없으면 질문(또는 여는 문장)만 나간다.
             _n_st = sum(1 for x in split_sentences(txt) if x.strip() and not is_question_sentence(x) and _cpt_w(x) not in _fixed_wc)
             if _n_st > (1 if _q_expected else 3):   # (2026-11-12 P11-H) 탐침 턴의 받는 문장은 1문장 — 여는 턴(받기+다리)은 8-w2 가 맞춘다
                 issues.append("long_receive")
@@ -2778,13 +2765,10 @@ async def _submit_message_phase3a(
                 _tm["recv_trim"] = _n_tr
             _iss = _issues_for_regen(clean_reply)
         _rounds = 0
-        _ph = _qp_r(_llm_user_text)
         _only_long_w = bool(_iss) and set(_iss) == {"long_receive"}     # (P12b-1) 긴 받기만 남았으면 다시 쓰지 않는다 — 아래 수선이 넘친 문장을 지운다
         while _iss and _rounds < 1 and not (_tm.get("budget_used") or _tm.get("no_regen") or _only_long_w):   # (재생성 예산) 턴당 1회 — 이미 썼으면 바로 결정론 수선으로
             _rounds += 1
             _notes_w = ["\n\n🚨 [시스템 — 재생성 지시] 방금 응답의 형식이 어긋났습니다. 질문 1개로 끝나게 다시 쓰세요(질문 앞 평서문은 1문장까지). 이 지시문의 단어를 답에 옮기지 마세요."]
-            if "no_receive" in _iss or "no_quote" in _iss:
-                _notes_w.append("- 첫 문장은 리더님이 방금 쓴 표현" + (f"('{_ph}' 같은 말)" if _ph else "") + "을 그대로 하나 넣어 들은 사실을 그대로 말하는 평서문으로 쓰세요(평가·칭찬·짐작 없이).")
             if "long_receive" in _iss:
                 _notes_w.append("- 질문 앞 평서문이 길어요. 1문장, 리더님이 쓴 핵심 낱말 한두 개만 넣으세요.")
             if "no_question" in _iss:
@@ -2829,42 +2813,19 @@ async def _submit_message_phase3a(
                 _iss = [x for x in _iss if x not in _fixed_iss]
         if _iss:
             _tm["format_miss"] = list(_iss)
-            if "no_receive" in _iss or "no_quote" in _iss:
-                # (2026-11-11 P10-5) 받기는 직전 답의 내용을 담는다 — 2회 뒤에도 내용 없는 받기('흥미로운 지점이에요' 류)면 리더가 한 말의 마지막 절을
-                #   그대로 받는 문장으로 바꾼다. 받을 절이 없으면 그대로 두고 receive_miss 로 남긴다.
-                from diag_project.services.receive_check import quote_receive as _qrcv_w
-                # (2026-11-12 P11c-1) 여기는 닫고 넘어가는 턴만 온다(탐침 턴은 받는 문장 검사가 없다). 구절 인용 받기는 세션 2회까지 — 넘으면 받는 문장 없이 내보낸다
-                _qr_w = _qrcv_w(_llm_user_text, _qr_variant) if (_quote_required and _qr_variant < QUOTE_RECEIVE_SESSION_MAX) else ""
-                if _qr_w:
-                    clean_reply = _spl_r(clean_reply, _qr_w, 1, keep_fixed=_fixed_w)
-                    _tm["receive_fallback"] = "quote"
-                    _iss = [x for x in _iss if x not in ("no_receive", "no_quote")]
-                    _tm["format_miss"] = list(_iss) or None
-                else:
-                    _tm["receive_miss"] = 1
-                _tm["receive_phrase"] = _ph
             logger.info("📐 턴 형식 미해결: %s", _iss)
 
-    # 8-w2. (2026-11-10 P9-4) 여는 턴: 8-w 재생성이 들여온 질문·예고·조언·가정 문장을 다시 걷어내고 받기 문장 수를 맞춘다. 받기가 하나도 없으면
-    #   (P10-5) 리더가 한 말의 마지막 절을 그대로 받는다(quote_receive) — 어느 답에나 붙는 고정 받기 문구는 쓰지 않는다. 받을 절도 없으면 여는 문장만.
+    # 8-w2. (2026-11-10 P9-4) 여는 턴: LLM 이 덧쓴 질문·예고·조언·가정 문장을 걷어내고 받기 문장 수를 맞춘다. 받기가 하나도 없으면 여는 문장만 낸다.
     if (_is_open and _bei_anchor_text and system_override_text is None and not _llm_error and not needs_user_decision
             and (clean_reply or "").strip() and _align_ctx is None):
         from diag_project.services.output_guard import clean_close_side as _ccs_w2
-        from diag_project.services.receive_check import quote_receive as _qrcv_w2
         _fixed_w2 = [x for x in split_sentences(_bei_anchor_text or "") if x.strip()]
-        from diag_project.services.receive_check import leader_nouns as _ln_w2
-        _recv_optional_w2 = not _ln_w2(_llm_user_text)        # 받을 낱말이 없는 답 — 인용 폴백도 만들 수 없다
         _max_w2 = 2 if (instruction_used == "SWEEP_ANCHOR" and _sweep_seq_b >= 2) else 1
         _c_w2, _n_w2 = _ccs_w2(clean_reply, max_statements=_max_w2, keep=_fixed_w2)
         _fx_c = {re.sub(r"\s+", "", x) for x in _fixed_w2}
         if not [x for x in split_sentences(_c_w2) if x.strip() and re.sub(r"\s+", "", x) not in _fx_c]:
-            _qr_w2 = "" if (_recv_optional_w2 or _qr_variant >= QUOTE_RECEIVE_SESSION_MAX) else _qrcv_w2(_llm_user_text, _qr_variant)
-            _c_w2 = f"{_qr_w2} {_bei_anchor_text}".strip()
-            _tm["close_side_tail"] = 1 if _qr_w2 else 0
-            if _qr_w2:
-                _tm["receive_fallback"] = "quote"
-            elif not _recv_optional_w2:
-                _tm["receive_miss"] = 1
+            # (2026-11-15 P13c-2) 받는 문장이 없으면 여는 문장만 낸다 — 리더 말의 마지막 절을 따옴표로 받던 인용 받기("'…'는 말씀이셨군요")는 삭제
+            _c_w2 = _bei_anchor_text.strip()
         if _n_w2:
             _tm["close_side_cut"] = int(_tm.get("close_side_cut") or 0) + _n_w2
         # (2026-11-12 시뮬 p11b) 여는 턴은 반드시 [받기] + [여는 문장]이다 — 여는 질문이 남아 있지 않으면 받는 문장만 추려 여는 문장을 다시 붙인다
@@ -3013,7 +2974,7 @@ async def _submit_message_phase3a(
 
     # 8-s. (2026-11-04 BEI → 2026-11-11 P10-2) 페르소나 슬롯 — 사례당 1회, 사례 리더 턴 3~5, 되받기 뒤. Jessica·Lucas·Olivia 는 LLM 질문을 슬롯 질문으로 대체,
     #   Daniel 은 [되받기] + 관찰 + LLM 질문, Michael 은 [되받기] + 응원 문장 + LLM 질문(실행 의지 질문은 다음 턴). Ella 는 슬롯 없음. 문장은 전부 렌더(고정 문구 없음).
-    #   8-w 뒤에서 조립해 '되받기 뒤' 자리를 보장한다. 되받기가 없는 턴에는 넣지 않는다(단독 슬롯 금지 — 다음 턴에 다시 시도).
+    #   8-w 뒤에서 조립한다. (2026-11-15 P13c-2) 받는 문장이 없는 턴에도 넣는다(종전: 받는 문장이 있는 턴에만).
     #   (2026-11-15 P13b-1) 사례의 첫 꼬리 질문 턴에는 쓰지 않는다 — 그 턴은 리더가 직접 한 말·조치만 묻는다.
     if (instruction_used == "EPISODE_PROBE" and _bei_ep and system_override_text is None and not _llm_error and chapter
             and not needs_user_decision and (clean_reply or "").strip() and not _reask_kind and not _bei_ep.get("ask_first")):
@@ -3048,7 +3009,7 @@ async def _submit_message_phase3a(
         if _pn_s == "Michael" and _mq_pending and "reflection" in _filled_s:
             _tm["michael_q_done"] = 1   # 다시 한다면·배운 것이 이미 나왔다 — 대기 해제만
             _mq_pending = False
-        if _pn_s == "Michael" and _mq_pending and _lead_s:
+        if _pn_s == "Michael" and _mq_pending:      # (P13c-2) 받는 문장이 없어도 넣는다
             if _mq_n < _mw_cap:
                 # (P12b-1) 한 번만 쓴다 — 불합격이면 다시 쓰지 않고 그 문장 없이 내보낸다
                 _mq, _mq_mode = await _rsl(llm, kind="will", persona_name=_pn_s, transcript=_ep_transcript(_bei_ep), used=_slot_texts_s, rounds=1)
@@ -3061,8 +3022,8 @@ async def _submit_message_phase3a(
             else:
                 _tm["michael_q_done"] = 1; _tm["michael_q_cap"] = 1   # 세션 상한 — 대기만 해제
         elif (_slot_kind and not _slot_chapters.get(chapter)
-              and len(_slot_used_idx) < _sl_cap and _ep_turn_s in (3, 4, 5) and _slot_target_now not in _filled_s
-              and (_lead_s or (_slot_kind in ("observation", "cheer") and _q_now_s))):
+              and len(_slot_used_idx) < _sl_cap and _ep_turn_s in (3, 4, 5) and _slot_target_now not in _filled_s):
+            # (2026-11-15 P13c-2) 받는 문장이 있는 턴에만 넣던 제한을 풀었다 — 조건이 맞으면 받는 문장 유무와 무관하게 넣는다
             # (2026-11-12 P11b-4) 관찰·응원 슬롯이 들어가는 턴은 [슬롯 1문장 + 질문 1개]만 — 받는 문장·연결 문장 없이. 그 턴의 질문에 쓰인 낱말을 슬롯 문장이
             #   되풀이하지 않게 질문을 렌더에 넘긴다(11/12 p11a: 받기 '쉽지 않은 변화였겠습니다' + 관찰 '쉽지 않은 자리를 지키셨습니다').
             _stmt_slot = _slot_kind in ("observation", "cheer")
@@ -3489,6 +3450,32 @@ async def _submit_message_phase3a(
                 _tm["q_added"] = "none→" + ("opener" if _is_open else ("reframe" if instruction_used == "NO_CASE_REFRAME" else _un_q[0]))
                 _tm["opener_restored"] = 2 if _is_open else _tm.get("opener_restored")
 
+    # 8-q2. (2026-11-15 P13c-1) 사례의 첫 꼬리 질문 확인 — 그 턴의 질문 문장이 리더가 직접 한 말·조치를 묻는가(표지로 본다, LLM 호출 없음).
+    #   불합격이면 다시 쓰지 않고 말투별 대체 문장으로 바꾼다(리더 답의 낱말을 끼워 넣지 않는다). 꼬리 질문이 하나뿐인 훑는 질문(SWEEP_FOLLOWUP)도 같다.
+    #   기록 first_probe: llm(LLM 문장 그대로) | fallback(대체 문장), first_probe_why: 불합격 사유.
+    if ((instruction_used == "SWEEP_FOLLOWUP" or (instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("ask_first")))
+            and chapter and system_override_text is None and not _llm_error and not needs_user_decision and not _reask_kind
+            and (clean_reply or "").strip()):
+        from diag_project.services.intro_messages import first_probe_fallback as _fpf_q2
+        from diag_project.services.turn_checks import first_probe_question_ok as _fpok_q2
+        _sents_q2 = [x.strip() for x in split_sentences(clean_reply) if x.strip()]
+        _qs_q2 = [x for x in _sents_q2 if is_question_sentence(x)]
+        _ok_q2, _why_q2 = _fpok_q2(_qs_q2[-1]) if _qs_q2 else (False, "no_question")
+        if _ok_q2:
+            _tm["first_probe"] = "llm"
+        else:
+            _sd_q2 = dict(session.self_assessment_data or {})
+            _n_q2 = int(_sd_q2.get("first_probe_fb_n") or 0)
+            _fb_q2 = _fpf_q2((state.get("coach_persona") or {}).get("name"), _n_q2)
+            _recv_q2 = [x for x in _sents_q2 if not is_question_sentence(x)][:1]      # 받는 문장은 있으면 1문장만 둔다
+            clean_reply = " ".join(_recv_q2 + [_fb_q2]).strip()
+            _sd_q2["first_probe_fb_n"] = _n_q2 + 1
+            session.self_assessment_data = _sd_q2
+            from sqlalchemy.orm.attributes import flag_modified as _fm_q2
+            _fm_q2(session, "self_assessment_data")
+            _tm["first_probe"] = "fallback"; _tm["first_probe_why"] = _why_q2
+            logger.info("🎯 첫 꼬리 질문 불합격(%s) → 대체 문장 %d번", _why_q2, _n_q2 % 3)
+
     # 8-z. (2026-10-28 P0-1) ALIGN 최종 조립 — 모든 후처리 뒤. 되받기(가드 통과본) + 고정 정의 + 목록 + 안내 + 다리 + 앵커.
     if _align_ctx is not None and system_override_text is None and not _llm_error and chapter:
         from diag_project.services.align_render import align_shape_ok as _aso_z, render_align as _ra_z
@@ -3847,6 +3834,8 @@ async def _submit_message_phase3a(
             # (P13b) first_q_kept 질문 문장이 둘 이상이라 첫 질문만 남긴 턴(지운 수) · no_recall_skip 리더가 떠오르지 않는다고 해 더 묻지 않기로 한 칸 ·
             #   align_fixed ALIGN 받기를 LLM 없이 고정 받기로
             "first_q_kept": _tm.get("first_q_kept"), "no_recall_skip": _tm.get("no_recall_skip"), "align_fixed": _tm.get("align_fixed"),
+            # (P13c-1) first_probe 사례의 첫 꼬리 질문: llm(LLM 문장 그대로) | fallback(대체 문장) · first_probe_why 불합격 사유
+            "first_probe": _tm.get("first_probe"), "first_probe_why": _tm.get("first_probe_why"),
             # (P12e) same_judge '같은 사건' 판정(후보 표지·판정 결과) · reframe_fixed 재질문을 사전 문안으로 조립
             "same_judge": _tm.get("same_judge"), "reframe_fixed": _tm.get("reframe_fixed"), "close_clause_cut": _tm.get("close_clause_cut"),
         })

@@ -214,7 +214,8 @@ def test_p10_5_no_fixed_receive_lines_and_quote_fallback():
     from diag_project.services.receive_check import quote_receive, receive_has_content
     assert not hasattr(V, "PERSONA_TAILS") and not hasattr(V, "tails_for")
     src = _route_src()
-    assert "tails_for" not in src and "quote_receive as _qrcv_w2" in src and '_tm["receive_fallback"] = "quote"' in src
+    # (2026-11-15 P13c-2) 받는 문장이 없을 때 붙이던 인용 받기는 라우트에서 삭제 — 받는 문장이 없으면 질문(여는 문장)만 나간다
+    assert "tails_for" not in src and "quote_receive as _qrcv_w2" not in src and '_tm["receive_fallback"] = "quote"' not in src
     ans = "지난달 주간 회의에서 박선임과 김책임 두 분이 일정 문제로 부딪혔어요. 제가 따로 불러서 분담표를 다시 짰습니다."
     # (2026-11-11 검토 반영) 문장 전체가 아니라 핵심 구절만 — 평서 꼴로 줄여 받는다
     assert quote_receive(ans) == "'따로 불러서 분담표를 다시 짰다'는 말씀이셨군요."
@@ -338,7 +339,7 @@ def test_p10a_followups_from_confirm_sim():
     assert 'return fallback_q, "bare"' in src and pick_opener_frame([]) == 0 and opener_frame_for(0) == 0      # (P12-6) 틀은 더 고르지 않는다 — 질문만
     # 2) 받을 낱말이 없는 답('네, 맞아요') 뒤의 여는 턴에 "그럼 이 사례를 조금 더 펼쳐 볼게요." 가 붙었다 — 받기가 아니다
     assert leader_nouns("네, 맞아요.") == [] and close_side_violation("그럼 이 사례를 조금 더 펼쳐 볼게요.")
-    assert '_tm["receive_dropped"] = 1' in src and "_recv_optional = _is_open and not _ln_w(_llm_user_text)" in src
+    assert '_tm["receive_dropped"] = 1' in src and "_recv_optional" not in src      # (P13c-2) 받는 문장을 요구하는 검사가 없어져 면제 조건도 없다
     # 3) 종료 요약의 총평 문장
     summ = ("두 분을 따로 불러 먼저 이유를 들으셨습니다. 김선임 강사와 박선임 강사의 이야기를 따로 듣고 파일럿 설계 초안을 직접 쓰셨다는 점에서, "
             "저희는 리더가 실행의 첫 장면을 스스로 만드는 힘을 봐요.")
@@ -483,7 +484,7 @@ def test_regen_budget_one_per_turn_then_deterministic_repair():
     # 8-w: 재생성 1회, 그 뒤는 결정론 수선(긴 받기 자르기 · 질문 없으면 후속 질문 · 받기 없으면 구절 인용 받기)
     j = src.index("while _iss and _rounds < 1 and not (_tm.get(\"budget_used\")")
     after = src[j: src.index("# 8-w2.", j)]
-    assert '"long_receive" in _iss' in after and "followup_from_user as _ffu_w" in after and "quote_receive as _qrcv_w" in after
+    assert '"long_receive" in _iss' in after and "followup_from_user as _ffu_w" in after and "quote_receive" not in after      # (P13c-2) 인용 받기 삭제
     assert '_tm["format_repaired"] = _fixed_iss' in after
     # 종료 턴: 본 호출 재생성 루프 없음, 본문은 뒤 단계가 재생성으로 덮지 않는다
     k = src.index("# 8-d. CHAPTER_READY_TO_END")
