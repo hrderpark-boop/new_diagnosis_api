@@ -981,6 +981,7 @@ async def _submit_message_phase3a(
     _anomaly_override_text = None
     _reask_final = None  # (2026-11-12 P11d-1) 다시 묻기 턴의 완성 문장(사과 + 질문 / 질문) — 전용 호출이 만들고, 뒤 단계가 바꾸지 못하게 끝에서 다시 놓는다
     _fp_final = None    # (2026-11-15 P13d-2) 사례의 첫 꼬리 질문 턴의 완성 문장(질문 한 문장) — 전용 호출(또는 대체 문장)이 만들고, 뒤 단계가 바꾸지 못하게 끝에서 다시 놓는다
+    _pre_recv_text = None   # (2026-11-15 P13f-4) 사례를 닫으며 매핑과 함께 받아 둔 받는 말(이 턴에만 쓴다 — 세션 상태에 남기지 않는다)
     _reask_kind = None  # (2026-11-12 P11-A3·H) 'clarify'(되묻기) | 'contentless'(받을 내용 없는 답) — 사례 턴에서 원장·슬롯 판정 없이 직전 질문만 다시 쓴다
     _align_ctx = None   # (2026-10-28 P0-1) ALIGN 조립 재료 — 후처리 끝에 render_align 으로 조립
     try:
@@ -1239,11 +1240,21 @@ async def _submit_message_phase3a(
             return _ep_new
 
         async def _close_and_map(ep: dict, status: str) -> None:
-            nonlocal _store
+            nonlocal _store, _pre_recv_text
             labels: list[dict] = []
             if status not in ("no_case", "repeat") and _bei.filled_slots(ep):
-                labels = await _map_episode(llm, transcript=_ep_transcript(ep), chapter_name=COMPETENCY_FRAMEWORK.get(chapter, {}).get("name", chapter),
-                                            sub_defs=_sub_defs(chapter), opener_sub=ep.get("opener_sub"))
+                # (2026-11-15 P13f-4) 매핑과 받는 말을 동시에 — 이 턴의 본 호출이 쓰는 것은 받는 말 한 문장뿐이고(다음 질문은 시스템이 붙인다) 받는 말은
+                #   매핑 결과를 기다릴 필요가 없다. 받는 말은 전용 호출(close_receive_render)이 리더의 직전 답만 보고 쓴다. 다음 질문 선택은 매핑 뒤 종전대로.
+                #   매핑이 실패하면 종전과 같이 예외가 올라가고, 받는 말만 실패하면 뒤에서 종전처럼 본 호출을 부른다.
+                from diag_project.services.close_receive_render import map_and_receive as _mar_c, render_close_receive as _rcr_c
+                _t0_c = _time.perf_counter()
+                labels, _pr_txt, _pr_mode = await _mar_c(
+                    _map_episode(llm, transcript=_ep_transcript(ep), chapter_name=COMPETENCY_FRAMEWORK.get(chapter, {}).get("name", chapter),
+                                 sub_defs=_sub_defs(chapter), opener_sub=ep.get("opener_sub")),
+                    _rcr_c(llm, leader_answer=_bei_user_text, persona_name=(state.get("coach_persona") or {}).get("name")))
+                _tm["close_par_s"] = round(_time.perf_counter() - _t0_c, 2)
+                _tm["pre_recv"] = _pr_mode
+                _pre_recv_text = _pr_txt
             _store = _bei.close_episode(_store, chapter, ep, status, labels, _all_subs_b)
             if status == "no_case":
                 _store = (_bei.mark_unconfirmed(_store, chapter, ep.get("opener_sub")) if ep.get("kind") == "sweep"
@@ -1828,7 +1839,7 @@ async def _submit_message_phase3a(
             _t0_fp = _time.perf_counter()
             _q_fp, _mode_fp = await _rfp_fp(llm, leader_answer=_llm_user_text, persona_name=_pn_fp, used_endings=_ends_fp, angle=_angle_fp)
             _tm["first_probe_s"] = round(_time.perf_counter() - _t0_fp, 2)
-            _ok_fp, _why_fp = _fpok_fp(_q_fp) if _q_fp else (False, _mode_fp)
+            _ok_fp, _why_fp = _fpok_fp(_q_fp, _llm_user_text) if _q_fp else (False, _mode_fp)      # (P13f-1·3) 상대 확인·표지 오탐에 리더 답을 쓴다
             if _ok_fp:
                 _fp_final = _q_fp
                 _tm["first_probe"] = "llm"
@@ -1846,6 +1857,10 @@ async def _submit_message_phase3a(
             _fm_fp(session, "self_assessment_data")
             llm_output = {"reply": _fp_final}
             _tm["no_regen"] = 1
+        elif _pre_recv_text and instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and chapter:
+            # (2026-11-15 P13f-4) 사례를 닫으면서 매핑과 함께 받아 둔 받는 말을 쓴다 — 본 호출을 부르지 않는다. 다음 질문은 시스템이 붙인다.
+            llm_output = {"reply": str(_pre_recv_text)}
+            _tm["pre_recv"] = "used"
         elif instruction_used == "COMPETENCY_ALIGN":
             # (2026-11-15 P13b-4) 영역 시작의 받는 말은 LLM 을 부르지 않는다 — 고정 받기(P12d 3종)만 쓴다. 첫 영역·둘째 이후 영역 모두.
             #   시뮬 p13_1: LLM 받기가 두 번 다 조건(1문장·16어절·평가 없음)을 못 넘겨 버려졌다(호출만 쓰고 버림).
@@ -1862,6 +1877,8 @@ async def _submit_message_phase3a(
                 tail_block=_style_tail,
             )
         _tm["llm"] = _time.perf_counter() - _l0
+        if _tm.get("pre_recv") == "used":      # (P13f-4) 이 턴의 LLM 시간은 매핑과 함께 돈 구간 — 지연 집계에서 빠지지 않게 적는다
+            _tm["llm"] = max(_tm["llm"], float(_tm.get("close_par_s") or 0.01))
         reply = llm_output["reply"]
         llm_state = {}          # (2026-09-22) 자기보고 JSON 폐기 — 항상 빈 dict
         event_metadata = None
@@ -3875,6 +3892,8 @@ async def _submit_message_phase3a(
             "first_probe_s": _tm.get("first_probe_s"), "first_probe_cut": _tm.get("first_probe_cut"), "recv_allow": _tm.get("recv_allow"),
             # (P13e) first_probe_angle 첫 꼬리 질문의 각도(said·did·order·prep) · reaction_asked 이 사례에서 반응을 물은 횟수 · mark_fix 부호 수선 수
             "first_probe_angle": _tm.get("first_probe_angle"), "reaction_asked": _tm.get("reaction_asked"), "mark_fix": _tm.get("mark_fix"),
+            # (P13f-4) pre_recv 사례를 닫으며 매핑과 함께 받아 둔 받는 말: used(썼다) | llm(받았지만 이 턴에는 쓰지 않았다) | stub | miss:<사유> · close_par_s 매핑+받는 말 동시 실행 시간(초)
+            "pre_recv": _tm.get("pre_recv"), "close_par_s": _tm.get("close_par_s"),
             # (P12e) same_judge '같은 사건' 판정(후보 표지·판정 결과) · reframe_fixed 재질문을 사전 문안으로 조립
             "same_judge": _tm.get("same_judge"), "reframe_fixed": _tm.get("reframe_fixed"), "close_clause_cut": _tm.get("close_clause_cut"),
         })

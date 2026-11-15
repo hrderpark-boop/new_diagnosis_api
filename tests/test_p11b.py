@@ -1416,3 +1416,67 @@ def test_p13e_first_probe_angles_reaction_cap_and_marks():
     assert "리더의 결정·행동이 그 이야기의 결정·행동과 같은 것" in sj and "애매하면 다른 장면으로 본다" in sj and "같은 때·같은 사람·같은 일" not in sj.split("same_as: 아래")[1]
     # Olivia — '그 사람 자리' 슬롯 삭제
     assert IM.slot_kind_for("Olivia", 0) is None and "Olivia" not in IM.SLOT_KINDS
+
+
+def test_p13f_addressee_check_three_angles_and_parallel_close():
+    """(2026-11-15 P13f) 첫 꼬리 질문의 상대 확인 · 각도 셋 · 표지 오탐 · 다른 사람의 말을 묻는 질문도 반응으로 · 매핑과 받는 말 동시 실행(실패 경로)."""
+    import asyncio
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B, close_receive_render as CR, first_probe_render as FP, intro_messages as IM, turn_checks as TC
+    ok = TC.first_probe_question_ok
+    # 1. 상대 확인 — 질문의 '○○에게'는 리더가 직전 답에서 말을 건넨 상대로 말한 사람이어야 한다
+    a1 = "출고가 밀려서 야간조 반장과 따로 이야기했고, 물량을 넘기기로 정했습니다."
+    assert ok("그때 야간조 반장에게 직접 어떤 말을 건네셨습니까?", a1) == (True, "ok")
+    assert ok("그때 거래처 담당자에게 직접 어떤 말을 건네셨습니까?", a1) == (False, "who:담당자")
+    assert ok("물량을 넘기기로 정하실 때 창고 직원들에게 직접 어떤 말씀을 하셨나요?", a1) == (False, "who:직원")
+    assert ok("반장을 불러 직접 어떤 말을 하셨습니까?", "반장을 따로 불러 이야기했습니다.") == (True, "ok")
+    assert ok("그 일을 함께 풀면서 리더님께서 직접 어떤 조치를 하셨습니까?", a1) == (True, "ok")      # '함께'·'리더님께서'는 상대가 아니다
+    assert ok("그때 거래처 담당자에게 직접 어떤 말을 건네셨습니까?") == (True, "ok")                   # 리더 답을 주지 않으면 상대는 보지 않는다(종전 호출 꼴)
+    assert "_fpok_fp(_q_fp, _llm_user_text)" in inspect.getsource(D._submit_message_phase3a)
+    # 2. 각도 셋 — 준비·확인 각도 삭제, 대체 문장은 각도마다 둘, '상대에게' 없음
+    assert TC.FIRST_PROBE_ANGLES == ("said", "did", "order") and set(FP.ANGLE_ASK) == set(TC.FIRST_PROBE_ANGLES)
+    assert TC.pick_first_probe_angle("창고 일이 밀린 적이 있습니다.", ["prep", "said"]) == "did"      # 옛 세션 기록의 prep 은 무시
+    for coach, pairs in IM.FIRST_PROBE_FALLBACK_BY_ANGLE.items():
+        assert [a for a, _t in pairs] == ["said", "said", "did", "did", "order", "order"], coach
+        assert not any("상대에게" in t for _a, t in pairs) and all(ok(t, "창고 일이 밀렸습니다.") == (True, "ok") for _a, t in pairs), coach
+    pr = FP.build_first_probe_prompt(leader_answer=a1, persona_name="Ella", angle="did")
+    assert "두 번 겹쳐 묻지 않는다" in pr and "리더가 말하지 않은 상대를 지어내지 않는다" in pr
+    # 3. 표지 오탐 — 리더가 쓴 낱말 하나가 그대로 들어간 것은 표지가 아니다. 의문사가 붙은 표지는 그대로 본다
+    a3 = "역할을 나누고, 공통 마감일과 중간 점검 시점을 정해 함께 움직이도록 조정했습니다."
+    assert ok("공통 마감일과 중간 점검 시점을 정하기까지 리더님이 직접 어떤 말을 건네셨나요?", a3) == (True, "ok")
+    assert ok("공통 마감일과 중간 점검 시점을 정하기까지 리더님이 직접 어떤 말을 건네셨나요?", "역할을 나눴습니다.")[1] == "off:시점"
+    assert ok("그 일이 있고 나서 팀에서는 어떤 반응이 나왔습니까?", "팀 반응이 좋았습니다.")[1].startswith("off:")
+    assert ok("그 자료를 두고 어떤 방식으로 개선 방향을 찾아가셨나요?", a3) == (True, "ok")
+    # 5. 다른 사람의 말을 묻는 질문도 반응 질문으로 센다
+    assert B.asks_reaction("그 자리에서 반장이 어떤 말을 했는지 들려주시겠어요?") is False      # 목록에 없는 직함은 세지 않는다(한계)
+    assert B.asks_reaction("그 자리에서 팀원이 어떤 말을 했는지 들려주시겠어요?") and B.asks_reaction("그렇게 물으셨을 때 어떤 대답이 돌아왔는지 들려주시겠어요?")
+    assert not B.asks_reaction("리더님이 그 팀원에게 어떤 말을 하셨는지 들려주시겠어요?")
+    # 4. 매핑과 받는 말 동시 실행 — 실패 경로
+    async def _map_ok():
+        await asyncio.sleep(0.05); return [{"sub": "x", "strength": "strong"}]
+    async def _map_fail():
+        raise RuntimeError("map down")
+    async def _recv_ok():
+        await asyncio.sleep(0.05); return ("물량을 야간조에 넘기기로 정하셨군요.", "llm")
+    async def _recv_fail():
+        raise RuntimeError("recv down")
+    import time
+    t0 = time.perf_counter()
+    labels, txt, mode = asyncio.run(CR.map_and_receive(_map_ok(), _recv_ok()))
+    assert labels and txt and mode == "llm" and time.perf_counter() - t0 < 0.095          # 차례가 아니라 동시에 돈다
+    labels, txt, mode = asyncio.run(CR.map_and_receive(_map_ok(), _recv_fail()))
+    assert labels and txt is None and mode == "miss:error"                                  # 받는 말만 실패 → 매핑 결과는 그대로, 본 호출은 호출자가 종전대로
+    try:
+        asyncio.run(CR.map_and_receive(_map_fail(), _recv_ok()))
+        raise AssertionError("매핑 실패는 올라가야 한다")
+    except RuntimeError as e:
+        assert "map down" in str(e)
+    class _Boom:
+        async def _generate_with_retry(self, **kw):
+            raise RuntimeError("llm down")
+    assert asyncio.run(CR.render_close_receive(_Boom(), leader_answer="물량을 넘겼습니다.", persona_name="Ella")) == (None, "miss:error")
+    assert asyncio.run(CR.render_close_receive(None, leader_answer="물량을 넘겼습니다.", persona_name="Ella")) == (None, "miss:no_llm")
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "_mar_c(" in src and "_pre_recv_text and instruction_used in (\"EPISODE_OPEN\", \"SWEEP_ANCHOR\")" in src
+    assert "state[\"_pre_recv_text\"]" not in src                                           # 세션 상태에 남기지 않는다

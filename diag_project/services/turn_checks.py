@@ -280,7 +280,8 @@ FIRST_PROBE_ACTION_MARKS = ("직접", "하신 말·말씀·일·행동·조치",
                             "…하셨(생각·판단·고민·예상·기대·가늠·정·느끼·기억 뒤는 제외)",
                             # (2026-11-15 P13e-1) 조치·순서·준비 쪽 표지
                             "어떤 조치·일·행동", "무엇을/무엇부터 …셨", "어떻게 진행·처리·정리·준비하셨", "어떤 순서·순서로·순서대로·차례로", "먼저 무엇",
-                            "준비하신·준비하셨", "확인하신·확인하셨", "점검하신·점검하셨", "챙기신·챙기셨", "미리")
+                            "준비하신·준비하셨", "확인하신·확인하셨", "점검하신·점검하셨", "챙기신·챙기셨", "미리",
+                            "어떤 방식으로", "어떻게 … 찾으셨/찾아가셨/풀어 가셨")
 FIRST_PROBE_OFF_MARKS = ("언제", "시점", "어떤 생각", "어떤 마음", "누구와", "누가 함께/같이", "어떤/어느/떠오르는/기억나는/기억에 남는 장면·상황·순간", "장면·상황은 무엇/어땠",
                          "어떤 반응", "반응은 어땠/어떻게/보였", "어떻게 받아들", "어떻게 보였/들었/느꼈",
                          "어떤 기준·판단·근거", "기준·근거는 무엇/어떻게", "이유·까닭은 무엇", "왜",
@@ -291,7 +292,8 @@ _FP_ACTION_RE = re.compile(
     r"|(어떤|무슨)\s*말|어떻게\s*움직이셨"
     r"|(?<!생각)(?<!판단)(?<!고민)(?<!예상)(?<!기대)(?<!가늠)(?<!느끼)(?<!기억)(?<!정)하셨"
     r"|(어떤|무슨)\s*(일|행동)|(무엇|뭘)(을|부터)?\s*[^,?]{0,14}셨|어떻게\s*(진행|처리|정리|준비|풀어|나누)[가-힣]{0,3}셨|어떤\s*순서|순서로|순서대로|차례(로|는)|먼저\s*(무엇|뭘|어떤)"
-    r"|(준비|확인|점검)하(신|셨)|챙기(신|셨)|미리")
+    r"|(준비|확인|점검)하(신|셨)|챙기(신|셨)|미리"
+    r"|어떤\s*방식으로|어떻게\s*[^,?]{0,14}(찾으셨|찾아\s*가셨|풀어\s*가셨|풀어내셨)")      # (P13f-3) p13e Olivia: '어떤 방식으로 … 찾아가셨나요'가 떨어졌다
 _FP_OFF_RE = re.compile(
     r"언제|시점|(어떤|무슨)\s*(생각|마음)|누구와|누가\s*(함께|같이)|(어떤|어느|떠오르는|기억나는|기억에\s*남는)\s*(장면|상황|순간)|(장면|상황)(은|이|을)?\s*(무엇|어땠|어떠|떠올)"
     r"|어떤\s*반응|반응(은|이|을|이나)?\s*[^,]{0,8}(어땠|어떠|어떻게|무엇|보였|보이)|어떻게\s*받아들|어떻게\s*(보였|들었|느꼈)"
@@ -316,16 +318,48 @@ _FP_ASK_FOR_RE = re.compile(r"(들려|말씀해|알려|짚어|전해|옮겨|설�
 _FP_UNFINISHED_RE = re.compile(r"(…|\.{2,})\s*$|(습니다만|니다만|지만|는데|은데|인데)[.?!]*\s*$|[,，]\s*$")
 
 
-def first_probe_question_ok(question: str | None) -> tuple[bool, str]:
+# (2026-11-15 P13f-1) 질문에 넣은 상대 — '○○에게/○○들에게/○○께/○○한테'의 ○○은 리더가 직전 답에서 말을 건넨 상대로 말한 사람이어야 한다
+#   (직전 답에 '○○에게/께/한테/와/과/들과' 또는 '○○을/를 불러/만나' 꼴이 있을 때). p13d·p13e: 리더가 말하지 않은 '교육생들에게'를 넣은 질문이 7건.
+_FP_TO_RE = re.compile(r"(?<![가-힣])([가-힣]{1,8}?)(?:분)?(?:들)?(?:에게|한테|(?<!함)께(?!서))")
+_FP_TO_SKIP = frozenset(("리더님", "리더", "본인", "자신", "스스로", "저", "제"))
+
+
+def first_probe_addressee_miss(question: str | None, leader_answer: str | None) -> str | None:
+    """질문에 넣은 상대 가운데 리더 직전 답에서 '말을 건넨 상대'로 나오지 않은 사람(없으면 None)."""
+    ans = leader_answer or ""
+    for m in _FP_TO_RE.finditer(question or ""):
+        who = m.group(1)
+        if who in _FP_TO_SKIP:
+            continue
+        w = re.escape(who)
+        if re.search(rf"{w}(?:분)?(?:들)?(?:에게|한테|께(?!서)|와|과|이랑|랑|하고)|{w}(?:분)?(?:들)?(?:을|를)\s*(?:따로\s*)?(?:불러|만나)", ans):
+            continue
+        return who
+    return None
+
+
+def first_probe_question_ok(question: str | None, leader_answer: str | None = None) -> tuple[bool, str]:
     """사례의 첫 꼬리 질문이 리더가 직접 한 말·조치를 묻는가.
-    (합격 여부, 사유: ok | no_question | unfinished | closed | no_action | off:<걸린 말>)"""
+    (합격 여부, 사유: ok | no_question | unfinished | who:<상대> | closed | no_action | off:<걸린 말>)
+    leader_answer 를 주면 ① 질문에 넣은 상대를 확인하고 ② (나) 표지가 리더 답에 그대로 있는 낱말 하나일 때는 표지로 보지 않는다(P13f-1·3)."""
     q = (question or "").strip()
     if not q:
         return False, "no_question"
     if _FP_UNFINISHED_RE.search(q):
         return False, "unfinished"
+    if leader_answer is not None:
+        who = first_probe_addressee_miss(q, leader_answer)
+        if who:
+            return False, f"who:{who}"
     part = first_probe_asking_part(q)
-    off = _FP_OFF_RE.search(part)
+    off = None
+    for m in _FP_OFF_RE.finditer(part):
+        word = m.group(0).strip()
+        # (P13f-3) 리더가 쓴 낱말 그대로면 표지가 아니다 — p13e: 리더의 '중간 점검 시점'이 질문에 들어가 '시점'에 걸렸다. 의문사가 붙은 표지('어떤 반응')는 그대로 본다.
+        if leader_answer and " " not in word and word in leader_answer:
+            continue
+        off = m
+        break
     if off:
         return False, f"off:{off.group(0).strip()}"
     if not _FP_WH_RE.search(q) and not _FP_ASK_FOR_RE.search(q):
@@ -336,16 +370,16 @@ def first_probe_question_ok(question: str | None) -> tuple[bool, str]:
 
 
 # ── (2026-11-15 P13e-1) 첫 꼬리 질문의 각도 넷 ─────────────────────────────────────────
-#   said 그때 한 말 · did 직접 취한 조치 · order 일을 진행한 순서 · prep 그 전에 준비하거나 확인한 것.
+#   said 그때 한 말 · did 직접 취한 조치 · order 일을 진행한 순서.
 #   리더의 여는 답에 이미 나온 각도와, 이번 세션에서 직전에 쓴 각도는 피한다. 남은 것 가운데 세션에서 가장 적게 쓴 각도를 고른다(코드가 고른다 —
 #   전용 호출에는 고른 각도 하나만 넘긴다. 기록 first_probe_angle).
-FIRST_PROBE_ANGLES: tuple[str, ...] = ("said", "did", "order", "prep")
-FIRST_PROBE_ANGLE_LABELS: dict[str, str] = {"said": "그때 한 말", "did": "직접 취한 조치", "order": "일을 진행한 순서", "prep": "그 전에 준비하거나 확인한 것"}
+# (2026-11-15 P13f-2) '그 전에 준비하거나 확인한 것'(prep) 각도는 삭제 — p13e: 두 코치 모두 '준비한 것이 없다'는 답이 돌아와 한 턴이 비었다. 각도는 셋.
+FIRST_PROBE_ANGLES: tuple[str, ...] = ("said", "did", "order")
+FIRST_PROBE_ANGLE_LABELS: dict[str, str] = {"said": "그때 한 말", "did": "직접 취한 조치", "order": "일을 진행한 순서"}
 _ANGLE_IN_ANSWER: dict[str, re.Pattern] = {
     "said": re.compile(r"자고\s?(제안|했|말|이야기|얘기|요청|청했)|(라고|다고|냐고|달라고)\s?(말|했|이야기|얘기|물|요청|설명)|말씀드렸|이야기했|얘기했|물었|물어봤|물어보고|설명했|설명하고|[\"“”]"),
     "did": re.compile(r"맡겼|미뤘|나눴|나누고|바꿨|줄였|늘렸|만들었|골랐|조정했|반영했|반영하면서|도입했|배정했|넘겼|시범\s?운영(했|하고)|진행하도록\s?했|쓰기로\s?했|다시\s?잡았"),
     "order": re.compile(r"먼저[^.]{0,40}(뒤|다음|이후|나서)|[가-힣]\s?뒤(에)?[ ,]|고\s?나서|그다음|그\s다음|이후(에)?\s"),
-    "prep": re.compile(r"미리|사전에|(전에|앞서)[^.]{0,14}(확인|준비|정리|살펴|점검)"),
 }
 
 
