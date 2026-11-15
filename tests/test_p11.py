@@ -78,7 +78,7 @@ def test_a3_h_reask_turn_wiring_keeps_ledger():
     assert 'elif state.get("bei_reask_only"):' in src and '_tm["bei"] = "reask"' in src
     i = src.index('elif state.get("bei_reask_only"):')
     assert "record_leader_turn" not in src[i: src.index("else:", i)]            # 다시 묻기 턴은 리더 턴·슬롯 판정을 쓰지 않는다
-    assert "and not _reask_kind):" in src and '"CLARIFY_REASK"' in src
+    assert "and not _reask_kind and _fp_final is None):" in src and '"CLARIFY_REASK"' in src      # (P13d) 첫 꼬리 질문 전용 호출 턴도 같은 단계들을 건너뛴다
     from diag_project.services.event_tracker import INPUT_ANOMALY_INSTRUCTIONS
     assert "CLARIFY_REASK" in INPUT_ANOMALY_INSTRUCTIONS
     from diag_project.services.intro_messages import persona_line

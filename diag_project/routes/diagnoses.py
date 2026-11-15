@@ -980,6 +980,7 @@ async def _submit_message_phase3a(
     #   안내 뒤 비실질 입력 / 정의 답 10자 미만 / 질문 뒤 '네·sp·??'. 판정은 services/input_anomaly.detect(순수 함수).
     _anomaly_override_text = None
     _reask_final = None  # (2026-11-12 P11d-1) 다시 묻기 턴의 완성 문장(사과 + 질문 / 질문) — 전용 호출이 만들고, 뒤 단계가 바꾸지 못하게 끝에서 다시 놓는다
+    _fp_final = None    # (2026-11-15 P13d-2) 사례의 첫 꼬리 질문 턴의 완성 문장(질문 한 문장) — 전용 호출(또는 대체 문장)이 만들고, 뒤 단계가 바꾸지 못하게 끝에서 다시 놓는다
     _reask_kind = None  # (2026-11-12 P11-A3·H) 'clarify'(되묻기) | 'contentless'(받을 내용 없는 답) — 사례 턴에서 원장·슬롯 판정 없이 직전 질문만 다시 쓴다
     _align_ctx = None   # (2026-10-28 P0-1) ALIGN 조립 재료 — 후처리 끝에 render_align 으로 조립
     try:
@@ -1801,6 +1802,38 @@ async def _submit_message_phase3a(
             _last_coach_rq = next((m.content or "" for m in reversed(history_messages) if (m.role == MessageRole.MODEL or m.role == "model")), "")
             _tm["reask_prev"] = {"q": _orig_rq[:160], "is_last": bool(_orig_rq) and _same_rq(_orig_rq, _lqo_rq(_last_coach_rq) or "")}
             logger.info("🔁 다시 묻기(%s): %r ← %r", _tm["reask"], _reask_final[:80], _orig_rq[:60])
+        elif ((instruction_used == "SWEEP_FOLLOWUP" or (instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("ask_first"))) and chapter):
+            # (2026-11-15 P13d-2) 사례의 첫 꼬리 질문 턴(훑는 질문의 꼬리 질문 포함)은 코치 본 호출 대신 전용 호출 1회로 질문 한 문장을 만든다
+            #   (다시 묻기 전용 호출과 같은 구조). 넘기는 것은 리더의 직전 답·코치 말투·이번 영역에서 쓴 끝맺음뿐 — 칸 상태·방향 힌트·코치 프로필·
+            #   탐침 선호·영역 정의는 넘기지 않는다. 받는 말은 이 턴에 만들지 않는다. 표지 확인(가·나)에서 떨어지거나 질문을 못 쓰면 다시 쓰지 않고
+            #   말투별 대체 문장(세션에서 쓴 횟수로 돌려 직전 것과 겹치지 않는다). 다른 검사·재생성은 끼어들지 않는다(no_regen).
+            #   기록 first_probe: llm | fallback, first_probe_why: 불합격 사유, first_probe_s: 전용 호출에 걸린 시간(초).
+            from diag_project.services.first_probe_render import render_first_probe as _rfp_fp
+            from diag_project.services.intro_messages import first_probe_fallback as _fpf_fp
+            from diag_project.services.turn_checks import ending_counts as _ec_fp, ending_label as _el_fp, first_probe_question_ok as _fpok_fp
+            _pn_fp = (state.get("coach_persona") or {}).get("name")
+            _ends_fp = [_el_fp(k) for k, _v in sorted(_ec_fp(_chapter_questions()).items(), key=lambda kv: -kv[1])]
+            _t0_fp = _time.perf_counter()
+            _q_fp, _mode_fp = await _rfp_fp(llm, leader_answer=_llm_user_text, persona_name=_pn_fp, used_endings=_ends_fp)
+            _tm["first_probe_s"] = round(_time.perf_counter() - _t0_fp, 2)
+            _ok_fp, _why_fp = _fpok_fp(_q_fp) if _q_fp else (False, _mode_fp)
+            if _ok_fp:
+                _fp_final = _q_fp
+                _tm["first_probe"] = "llm"
+            else:
+                _sd_fp = dict(session.self_assessment_data or {})
+                _n_fp = int(_sd_fp.get("first_probe_fb_n") or 0)
+                _fp_final = _fpf_fp(_pn_fp, _n_fp)
+                _sd_fp["first_probe_fb_n"] = _n_fp + 1
+                session.self_assessment_data = _sd_fp
+                from sqlalchemy.orm.attributes import flag_modified as _fm_fp
+                _fm_fp(session, "self_assessment_data")
+                _tm["first_probe"] = "fallback"; _tm["first_probe_why"] = _why_fp
+                if _q_fp:
+                    _tm["first_probe_cut"] = _q_fp[:200]      # 떨어진 LLM 질문(보고용)
+                logger.info("🎯 첫 꼬리 질문 불합격(%s) → 대체 문장 %d번", _why_fp, _n_fp)
+            llm_output = {"reply": _fp_final}
+            _tm["no_regen"] = 1
         elif instruction_used == "COMPETENCY_ALIGN":
             # (2026-11-15 P13b-4) 영역 시작의 받는 말은 LLM 을 부르지 않는다 — 고정 받기(P12d 3종)만 쓴다. 첫 영역·둘째 이후 영역 모두.
             #   시뮬 p13_1: LLM 받기가 두 번 다 조건(1문장·16어절·평가 없음)을 못 넘겨 버려졌다(호출만 쓰고 버림).
@@ -2685,11 +2718,48 @@ async def _submit_message_phase3a(
     #   앞 단계(가드)가 손댄 것이 있어도 되돌린다. 직전 질문을 골라내던 검사(딴 질문·말하지 않은 사실 판정)는 삭제했다.
     if _reask_kind and _reask_final and system_override_text is None and not _llm_error:
         clean_reply = _reask_final
+    if _fp_final and system_override_text is None and not _llm_error:
+        clean_reply = _fp_final          # (P13d-2) 첫 꼬리 질문 턴 — 전용 호출(또는 대체 문장)의 질문 한 문장
+
+    # 8-wa. (2026-11-15 P13d-3) 받는 말 허용 목록 — 탐침 턴·여는 턴의 받는 말(질문 앞 평서문)은 ① 끝맺음이 되짚는 꼴 ② 리더 직전 답과 겹치는 내용 낱말
+    #   2개 이상 ③ 12어절 이하를 모두 갖출 때만 남긴다. 아니면 그 문장만 지운다(다시 쓰지 않는다 — 질문만 나가는 것이 정상). 금지 꼴을 하나씩 더하던
+    #   방식에서 바꿨다: p13c Daniel 의 '…모습이었겠습니다', '…것으로 보입니다', '…짚어 두고 싶습니다', '…분명히 들었습니다'는 금지 꼴에 없어 나갔다.
+    #   대상이 아닌 것: 시스템이 붙이는 문장(여는 문장·페르소나 문장·고정 문장), 훑는 질문 턴의 '아까'로 시작하는 잇는 문장, 영역 종료 요약,
+    #   영역 시작의 고정 받기, 다시 묻기의 사과 문장, 첫 꼬리 질문 턴(받는 말 없음). 아래 금지 꼴 단계(8-w00)보다 먼저 돈다 — 형식 재생성이
+    #   새 문장을 들여올 수 있어 8-w5 앞에서 한 번 더 돈다. 기록 recv_allow: [[사유(ending|overlap|long), 문장], …].
+    def _recv_allow_pass() -> None:
+        nonlocal clean_reply
+        if not (system_override_text is None and not _llm_error and chapter and (_is_probe or _is_open) and (clean_reply or "").strip()
+                and _align_ctx is None and not _reask_kind and _fp_final is None and not needs_user_decision):
+            return
+        from diag_project.services.intro_messages import all_fixed_sentences as _afs_wa
+        from diag_project.services.persona_register import register_of as _rof_wa
+        from diag_project.services.turn_checks import receive_allowed as _ra_wa
+        _fx_wa = {re.sub(r"\s+", "", x) for x in (split_sentences(_bei_anchor_text or "") + [str(_tm.get("slot_text") or "")] + _afs_wa()) if x}
+        _formal_wa = _rof_wa((state.get("coach_persona") or {}).get("name")) == "formal"
+        _sents_wa = [x.strip() for x in split_sentences(clean_reply) if x.strip()]
+        if not any(is_question_sentence(x) for x in _sents_wa) and not (_is_open and _bei_anchor_text):
+            return                                   # 질문이 없는 본문은 건드리지 않는다 — 질문 보장 단계가 먼저 본다
+        _cut_wa: list[list[str]] = []
+        for _x_wa in _sents_wa:
+            if is_question_sentence(_x_wa) or re.sub(r"\s+", "", _x_wa) in _fx_wa:
+                continue
+            if instruction_used == "SWEEP_ANCHOR" and _x_wa.startswith("아까"):
+                continue                             # 훑는 질문 턴의 잇는 문장(②)은 받는 말이 아니다
+            _ok_wa, _why_wa = _ra_wa(_x_wa, _llm_user_text, formal=_formal_wa)
+            if not _ok_wa:
+                _cut_wa.append([_why_wa, _x_wa[:200]])
+                clean_reply = re.sub(r"[ \t]{2,}", " ", clean_reply.replace(_x_wa, "", 1)).strip()
+        if _cut_wa:
+            _tm["recv_allow"] = list(_tm.get("recv_allow") or []) + _cut_wa
+            logger.info("✂️ recv_allow %d: %s", len(_cut_wa), [c[0] for c in _cut_wa])
+
+    _recv_allow_pass()
 
     # 8-w00. (2026-11-12 P11-A1·A4·H) 받는 문장 금지 꼴 — 리더가 질문한 것처럼 쓰는 말('여쭤봐 주신')·리더의 말투를 언급하는 말('편하게 말씀해 주셔서')·
     #   해석형 받기('…뜻으로 들리네요', '흥미롭습니다'). 그 문장을 지우고, 받기가 없어지면 아래 8-w 가 재생성 1회 → 구절 인용 받기로 메운다.
     if (system_override_text is None and not _llm_error and chapter and (_is_probe or _is_open) and (clean_reply or "").strip()
-            and _align_ctx is None and not _reask_kind and not needs_user_decision):
+            and _align_ctx is None and not _reask_kind and _fp_final is None and not needs_user_decision):
         from diag_project.services.turn_checks import drop_banned_receives as _dbr_w0
         _keep_w0 = {re.sub(r"\s+", "", x) for x in (split_sentences(_bei_anchor_text or "") + [str(_tm.get("slot_text") or "")]) if x}
         _c_w0, _r_w0 = _dbr_w0(clean_reply, keep=_keep_w0)
@@ -2704,7 +2774,7 @@ async def _submit_message_phase3a(
     #   질문이 2개면 마지막 질문만 남긴다(결정 1). 질문부가 시스템 문장(앵커·슬롯)인 턴은 되받기만 교체한다(splice_receive).
     from diag_project.services.receive_check import RECEIVE_REQUIRED_INSTRUCTIONS as _RECV_INSTR
     if (system_override_text is None and not _llm_error and (clean_reply or "").strip() and not needs_user_decision
-            and chapter and instruction_used in _RECV_INSTR and _align_ctx is None and not _reask_kind):
+            and chapter and instruction_used in _RECV_INSTR and _align_ctx is None and not _reask_kind and _fp_final is None):
         from diag_project.services.output_guard import count_question_markers as _cq_w, keep_last_question as _klq_w   # 복합 질문 절도 센다
         from diag_project.services.output_guard import find_praise as _fp_w, is_leading_choice_question as _ilc_w
         from diag_project.services.receive_check import (
@@ -2848,7 +2918,7 @@ async def _submit_message_phase3a(
     #   (시뮬 p11b) 사례 없음 뒤의 재질문 턴(NO_CASE_REFRAME)은 보지 않는다 — 직전 답이 '없다'라 가리킬 말이 없는 것이 정상이고, 잘 쓴 재질문이 기본 질문
     #   ('언제 누구와 있었던 일인지')으로 바뀌었다. 가리키는 말의 대상은 직전 답만이 아니라 이 사례에서 리더가 한 말 전체에서 찾는다(재생성·기본 질문 줄임).
     if (_is_probe and system_override_text is None and not _llm_error and not needs_user_decision and chapter
-            and (clean_reply or "").strip() and _align_ctx is None and not _reask_kind and instruction_used != "NO_CASE_REFRAME"):
+            and (clean_reply or "").strip() and _align_ctx is None and not _reask_kind and _fp_final is None and instruction_used != "NO_CASE_REFRAME"):
         from diag_project.services.intro_messages import line_register as _lreg_c
         from diag_project.services.turn_checks import default_slot_question as _dsq_c, question_issues as _qi_c, strip_question_start as _sqs_c
 
@@ -2899,48 +2969,16 @@ async def _submit_message_phase3a(
                     _tm["q_complete"] = f"default:{_slot_c}"
             logger.info("❓ 질문 완결성(%s) → %s: %r", _iss_c, _tm.get("q_complete"), _q_c[:60])
 
-    # 8-w4b. (2026-11-13 P12-4) 질문 끝맺음 — 청하는 꼴의 같은 끝맺음('떠올려 주실 수 있을까요')이 이번 영역에서 이미 3회면(이번이 4회째) 다시 쓰기 1회
-    #   (이 턴의 예산이 남았을 때만). 다시 쓴 질문의 끝맺음이 다르면 질문만 바꾸고, 아니면 그대로 내보낸다(표로 바꾸지 않는다).
-    #   (P12b-1) 질문과 리더 답이 겹치는 낱말을 보던 검사와 그 다시 쓰기는 삭제했다 — p12: 6턴이 걸렸고 2건은 오탐('두 분'↔'두 강사', '다시 한다면' 질문),
-    #   다시 쓴 질문이 더 나쁜 경우도 있었다. 질문 안에 리더가 쓴 낱말을 넣으라는 지시문은 그대로 둔다.
-    if (instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP") and system_override_text is None and not _llm_error and not needs_user_decision and chapter
-            and (clean_reply or "").strip() and _align_ctx is None and not _reask_kind and not str(_tm.get("q_complete") or "").startswith("default")):
-        from diag_project.services.turn_checks import QUESTION_ENDING_MAX as _qem_b, ending_label as _el_w, request_ending_key as _rek_b
-        _qs_b4 = [x.strip() for x in split_sentences(clean_reply) if x.strip() and is_question_sentence(x)]
-        _fixed_b4 = {re.sub(r"\s+", "", x) for x in ([str(_tm.get("slot_text") or "")] + split_sentences(_bei_anchor_text or "")) if x}
-        if _qs_b4 and re.sub(r"\s+", "", _qs_b4[-1]) not in _fixed_b4:
-            _q_b4 = _qs_b4[-1]
-            _key_b4 = _rek_b(_q_b4)
-            _end_n_b4 = sum(1 for x in _chapter_questions() if _key_b4 and _rek_b(x) == _key_b4)
-            if _key_b4 and _end_n_b4 >= _qem_b:
-                _tm["q_stand"] = "ending"
-                if not (_tm.get("budget_used") or _tm.get("no_regen")):
-                    try:
-                        _r_b4 = await _timed_regen(why="q_stand:ending",
-                            system_prompt=system_prompt, chapter_context=chapter_context,
-                            turn_state_text=turn_state_text + (
-                                f"\n\n🚨 [시스템 — 재생성 지시] 방금 질문의 끝맺음('{_el_w(_key_b4)}')은 이번 영역에서 이미 여러 번 썼습니다. "
-                                "묻는 것은 그대로 두고 다른 끝맺음으로 끝나는 질문 1개만 씁니다. 이 지시문의 단어를 답에 옮기지 마세요."),
-                            compressed_history=compressed_history, user_message=_llm_user_text, light_mode=True)
-                        _t_b4 = _MARKER_RE.sub("", _r_b4.get("reply") or "").strip()
-                        _q2s_b4 = [x.strip() for x in split_sentences(_t_b4) if x.strip() and is_question_sentence(x)]
-                        _q2_b4 = _q2s_b4[-1] if _q2s_b4 else ""
-                        if _q2_b4 and _rek_b(_q2_b4) != _key_b4:
-                            clean_reply = clean_reply.replace(_q_b4, _q2_b4, 1)      # 질문 앞 평서문은 그대로 두고 질문만 바꾼다
-                            _tm["q_stand"] += "→regen"
-                        else:
-                            _tm["q_stand"] += "→left"
-                    except Exception as _e_b4:   # noqa: BLE001
-                        logger.error("질문 다시 쓰기 실패(q_stand): %s", _e_b4)
-                else:
-                    _tm["q_stand"] += "→no_budget"
-                logger.info("🧍 질문 끝맺음 검사(%s): %r", _tm.get("q_stand"), _q_b4[:60])
+    # 8-w4b. (2026-11-13 P12-4 → 2026-11-15 P13d-1 삭제) 질문 끝맺음 반복 검사와 그 다시 쓰기 — 같은 청하는 끝맺음이 영역에서 4회째면 다시 쓰던 단계.
+    #   p13c Daniel: 재생성 11턴 가운데 10턴이 여기서 났고 4턴은 다시 쓰고도 끝맺음이 그대로였다(p50 4.6초). 검사·다시 쓰기는 없앴고,
+    #   이번 영역에서 이미 쓴 끝맺음을 프롬프트(사례 카드)에 넘기는 것만 남긴다. 되살아나는지는 점검표의 '끝맺음별 사용 횟수'로 본다.
 
     # 8-w5. (2026-11-12 P11b-5 → P11c-1) 질문 앞 평서문 — ① '리더님께서' 로 시작하면 세션 2회까지, 주어가 리더가 아닌 문장에 붙었으면 그 머리를 뗀다.
     #   ② 탐침 턴: 답 전체를 되풀이한 문장(리더 답 어절의 60% 이상 + 내용 어절 10개 이상)과 세션 3회째부터의 구절 인용 꼴('…'는 말씀이셨군요)은
     #   그 문장만 삭제한다(재생성·대체 없음 — 질문만 나간다). 닫고 넘어가는 턴(여는·보완 앵커)의 문장은 그대로 둔다.
+    _recv_allow_pass()      # (P13d-3) 형식 재생성·여는 턴 정리가 들여온 문장도 허용 목록으로 본다
     if (system_override_text is None and not _llm_error and chapter and (_is_probe or _is_open) and (clean_reply or "").strip()
-            and _align_ctx is None and not _reask_kind and not needs_user_decision):
+            and _align_ctx is None and not _reask_kind and _fp_final is None and not needs_user_decision):
         from diag_project.services.receive_check import is_quote_receive as _iqr_5
         from diag_project.services.turn_checks import (
             LEADER_PREFIX_SESSION_MAX as _lp_max, RECEIVE_MAX_EOJEOL, RECEIVE_REPEAT_MAX, RECEIVE_REPEAT_MIN_CHUNKS, leader_prefix_wrong_subject as _lpws_5, receive_overlap as _rov_5,
@@ -2977,7 +3015,7 @@ async def _submit_message_phase3a(
     #   8-w 뒤에서 조립한다. (2026-11-15 P13c-2) 받는 문장이 없는 턴에도 넣는다(종전: 받는 문장이 있는 턴에만).
     #   (2026-11-15 P13b-1) 사례의 첫 꼬리 질문 턴에는 쓰지 않는다 — 그 턴은 리더가 직접 한 말·조치만 묻는다.
     if (instruction_used == "EPISODE_PROBE" and _bei_ep and system_override_text is None and not _llm_error and chapter
-            and not needs_user_decision and (clean_reply or "").strip() and not _reask_kind and not _bei_ep.get("ask_first")):
+            and not needs_user_decision and (clean_reply or "").strip() and not _reask_kind and _fp_final is None and not _bei_ep.get("ask_first")):
         from diag_project.services.intro_messages import persona_line as _pl_s
         from diag_project.services.output_guard import is_request_statement as _irs_s, starts_without_main_clause as _swmc_s
         from diag_project.services.persona_voice import persona_key as _pk_s
@@ -3425,7 +3463,7 @@ async def _submit_message_phase3a(
                 clean_reply = clean_reply.replace(_qs_q[-1], _alt_q, 1)
                 _tm["q_added"] = "reframe_alt"
                 _qs_q[-1] = _alt_q
-        if _is_probe and not _reask_kind and instruction_used != "NO_CASE_REFRAME" and _qs_q and _bei_ep:
+        if _is_probe and not _reask_kind and _fp_final is None and instruction_used != "NO_CASE_REFRAME" and _qs_q and _bei_ep:
             _prev_q = []
             for _r_q, _t_q in _ep_transcript(_bei_ep):
                 if _r_q == "model":
@@ -3450,31 +3488,8 @@ async def _submit_message_phase3a(
                 _tm["q_added"] = "none→" + ("opener" if _is_open else ("reframe" if instruction_used == "NO_CASE_REFRAME" else _un_q[0]))
                 _tm["opener_restored"] = 2 if _is_open else _tm.get("opener_restored")
 
-    # 8-q2. (2026-11-15 P13c-1) 사례의 첫 꼬리 질문 확인 — 그 턴의 질문 문장이 리더가 직접 한 말·조치를 묻는가(표지로 본다, LLM 호출 없음).
-    #   불합격이면 다시 쓰지 않고 말투별 대체 문장으로 바꾼다(리더 답의 낱말을 끼워 넣지 않는다). 꼬리 질문이 하나뿐인 훑는 질문(SWEEP_FOLLOWUP)도 같다.
-    #   기록 first_probe: llm(LLM 문장 그대로) | fallback(대체 문장), first_probe_why: 불합격 사유.
-    if ((instruction_used == "SWEEP_FOLLOWUP" or (instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("ask_first")))
-            and chapter and system_override_text is None and not _llm_error and not needs_user_decision and not _reask_kind
-            and (clean_reply or "").strip()):
-        from diag_project.services.intro_messages import first_probe_fallback as _fpf_q2
-        from diag_project.services.turn_checks import first_probe_question_ok as _fpok_q2
-        _sents_q2 = [x.strip() for x in split_sentences(clean_reply) if x.strip()]
-        _qs_q2 = [x for x in _sents_q2 if is_question_sentence(x)]
-        _ok_q2, _why_q2 = _fpok_q2(_qs_q2[-1]) if _qs_q2 else (False, "no_question")
-        if _ok_q2:
-            _tm["first_probe"] = "llm"
-        else:
-            _sd_q2 = dict(session.self_assessment_data or {})
-            _n_q2 = int(_sd_q2.get("first_probe_fb_n") or 0)
-            _fb_q2 = _fpf_q2((state.get("coach_persona") or {}).get("name"), _n_q2)
-            _recv_q2 = [x for x in _sents_q2 if not is_question_sentence(x)][:1]      # 받는 문장은 있으면 1문장만 둔다
-            clean_reply = " ".join(_recv_q2 + [_fb_q2]).strip()
-            _sd_q2["first_probe_fb_n"] = _n_q2 + 1
-            session.self_assessment_data = _sd_q2
-            from sqlalchemy.orm.attributes import flag_modified as _fm_q2
-            _fm_q2(session, "self_assessment_data")
-            _tm["first_probe"] = "fallback"; _tm["first_probe_why"] = _why_q2
-            logger.info("🎯 첫 꼬리 질문 불합격(%s) → 대체 문장 %d번", _why_q2, _n_q2 % 3)
+    # 8-q2. (2026-11-15 P13c-1 → P13d-2) 사례의 첫 꼬리 질문 확인·대체는 전용 호출 자리(7. 응답 생성)로 옮겼다 — 그 턴은 본 호출을 부르지 않고
+    #   전용 호출이 쓴 질문 한 문장을 표지로 확인해, 떨어지면 그 자리에서 대체 문장으로 바꾼다. 여기서는 하는 일이 없다.
 
     # 8-z. (2026-10-28 P0-1) ALIGN 최종 조립 — 모든 후처리 뒤. 되받기(가드 통과본) + 고정 정의 + 목록 + 안내 + 다리 + 앵커.
     if _align_ctx is not None and system_override_text is None and not _llm_error and chapter:
@@ -3486,7 +3501,7 @@ async def _submit_message_phase3a(
             logger.warning("📐 ALIGN 형식 자가점검 실패: %s", _why_z)
 
     # 8-yz. (2026-11-12 P11-H) 받기 겹침 측정(기록만) — 받는 문장(첫 평서문)의 어절이 리더 직전 답에서 얼마나 왔는가. 상한값을 정하기 위한 자료다.
-    if system_override_text is None and not _llm_error and chapter and (_is_probe or _is_open) and (clean_reply or "").strip() and not _reask_kind:
+    if system_override_text is None and not _llm_error and chapter and (_is_probe or _is_open) and (clean_reply or "").strip() and not _reask_kind and _fp_final is None:
         try:
             from diag_project.services.turn_checks import receive_overlap as _rov_y
             _fx_ov = {re.sub(r"\s+", "", x) for x in (split_sentences(_bei_anchor_text or "") + [str(_tm.get("slot_text") or "")]) if x}
@@ -3539,6 +3554,8 @@ async def _submit_message_phase3a(
 
     if _reask_kind and _reask_final and system_override_text is None and not _llm_error and not needs_user_decision:
         clean_reply = _reask_final          # (P11d-1) 다시 묻기 턴은 사과 1문장 + 질문 1개(또는 질문 1개)로 고정
+    if _fp_final and system_override_text is None and not _llm_error and not needs_user_decision:
+        clean_reply = _fp_final             # (P13d-2) 첫 꼬리 질문 턴은 질문 한 문장으로 고정
 
     # 9. 사례 행(Event) 저장 + AI 메시지 저장
     #   (2026-11-04 BEI) 탐침 종류는 instruction 으로만: 여는 턴·SWEEP 앵커·ALIGN = INCIDENT, 사례 탐침 = SPECIFICATION, META = META.
@@ -3821,7 +3838,7 @@ async def _submit_message_phase3a(
             "lean_start": int(_tm.get("lean_start") or 0), "opener_restored": int(_tm.get("opener_restored") or 0), "q_added": _tm.get("q_added"), "slot_ctx": _tm.get("slot_ctx"),
             # (2026-11-12 P11e) repeat_case 이미 닫힌 사례를 다시 말한 답(원래 사례·덧붙인 칸) · dup_close 같은 답 두 번째에 사례 닫음 · reframe_drag 재질문이 끌어온 닫힌 사례의 낱말
             "repeat_case": _tm.get("repeat_case"), "dup_close": int(_tm.get("dup_close") or 0), "reframe_drag": _tm.get("reframe_drag"),
-            # (2026-11-13 P12) ask_slot 이번 턴 질문이 향한 것 · q_stand 질문 끝맺음 검사(ending)와 처리(regen·left·no_budget)
+            # (2026-11-13 P12) ask_slot 이번 턴 질문이 향한 것 · q_stand 는 P13d 에서 검사를 없애 늘 None(옛 기록과 열을 맞추려고 남긴다)
             "ask_slot": _tm.get("ask_slot"), "q_stand": _tm.get("q_stand"),
             # (P12b) slot_tried 이 영역의 페르소나 슬롯 시도(1회뿐) · repeat_ask 닫힌 사례를 다시 말한 답 뒤 한 번 더 청함
             "slot_tried": _tm.get("slot_tried"), "repeat_ask": _tm.get("repeat_ask"),
@@ -3836,6 +3853,8 @@ async def _submit_message_phase3a(
             "first_q_kept": _tm.get("first_q_kept"), "no_recall_skip": _tm.get("no_recall_skip"), "align_fixed": _tm.get("align_fixed"),
             # (P13c-1) first_probe 사례의 첫 꼬리 질문: llm(LLM 문장 그대로) | fallback(대체 문장) · first_probe_why 불합격 사유
             "first_probe": _tm.get("first_probe"), "first_probe_why": _tm.get("first_probe_why"),
+            # (P13d) first_probe_s 첫 꼬리 전용 호출 시간(초) · first_probe_cut 떨어진 LLM 질문 · recv_allow 허용 목록에서 떨어진 받는 말 [[사유, 문장], …]
+            "first_probe_s": _tm.get("first_probe_s"), "first_probe_cut": _tm.get("first_probe_cut"), "recv_allow": _tm.get("recv_allow"),
             # (P12e) same_judge '같은 사건' 판정(후보 표지·판정 결과) · reframe_fixed 재질문을 사전 문안으로 조립
             "same_judge": _tm.get("same_judge"), "reframe_fixed": _tm.get("reframe_fixed"), "close_clause_cut": _tm.get("close_clause_cut"),
         })

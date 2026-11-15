@@ -62,6 +62,11 @@
 · p50 / p95 / 최대    guard.llm 이 있는(0 이 아닌) 코치 턴의 guard.total(초). p50·p95 모두 올림 순위(nearest-rank: ceil(q·n) 번째).
 · 재생성              guard.regen_why 가 있는 턴 수와 사유별 건수.
 · 형식미해결 수       guard.format_miss 가 있는 턴 수.
+· 끝맺음별 사용 횟수  (P13d) 영역마다 코치 턴의 질문 문장(여는 질문·대체 문장 포함)에서 청하는 꼴 끝맺음(turn_checks.request_ending_key —
+                      '말씀해 주시겠습니까', '들려주세요' …)을 세어, 영역별로 가장 많이 쓴 끝맺음과 횟수를 적는다. 바로 묻는 질문('무엇이었습니까?')은
+                      세지 않는다. 같은 끝맺음 4회째 다시 쓰기를 없앤 뒤 입버릇이 되살아나는지 보는 숫자다(종전 상한 3). 상세에 전체 분포.
+· 첫 꼬리 질문        (P13d) guard.first_probe 의 llm / fallback 건수와 fallback 사유, 전용 호출 평균 시간(guard.first_probe_s, 초).
+· 받는 말 탈락        (P13d) guard.recv_allow(허용 목록에서 떨어져 지운 받는 말) 문장 수와 사유별 건수. 상세에 문장.
 · 실제 USD·턴 수      d["cost_usd"], d["turns"].
 
 ────────────────────────────────────────────────────────────────────────────────────────────
@@ -118,6 +123,7 @@ if str(ROOT) not in sys.path:
 
 from diag_project.services.output_guard import is_question, split_sentences  # noqa: E402
 from diag_project.services.persona_register import register_violations  # noqa: E402
+from diag_project.services.turn_checks import ending_label, request_ending_key  # noqa: E402
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 상수
@@ -845,6 +851,23 @@ def analyze(data: dict, label: str | None = None) -> dict:
             regen_why[str(w)] += 1
     format_miss = sum(1 for r in coach_rows if _guard(r).get("format_miss"))
 
+    # ── (P13d) 끝맺음별 사용 횟수 · 첫 꼬리 질문 · 받는 말 탈락 ──
+    endings: dict[str, Counter] = {}
+    for r in coach_rows:
+        ch = r.get("chapter")
+        if not ch:
+            continue
+        for q in question_sentences(r.get("content")):
+            k = request_ending_key(q)
+            if k:
+                endings.setdefault(ch, Counter())[ending_label(k)] += 1
+    fp_rows = [r for r in coach_rows if _guard(r).get("first_probe")]
+    fp_mode = Counter(str(_guard(r).get("first_probe")) for r in fp_rows)
+    fp_why = Counter(str(_guard(r).get("first_probe_why")) for r in fp_rows if _guard(r).get("first_probe") == "fallback")
+    fp_secs = [float(_guard(r).get("first_probe_s")) for r in fp_rows if _guard(r).get("first_probe_s") is not None]
+    fp_cut = [str(_guard(r).get("first_probe_cut")) for r in fp_rows if _guard(r).get("first_probe_cut")]
+    recv_cut = [c for r in coach_rows for c in (_guard(r).get("recv_allow") or []) if isinstance(c, (list, tuple)) and len(c) >= 2]
+
     cases, warnings = build_cases(rows, ledger)
     src_lines, src_summary = strong_sources(cases, ledger)
 
@@ -864,6 +887,9 @@ def analyze(data: dict, label: str | None = None) -> dict:
         "llm_turns": len(totals), "p50": percentile(totals, 0.5), "p95": percentile(totals, 0.95), "max": max(totals) if totals else None,
         "regen_turns": len(regen_rows), "regen_why": dict(regen_why),
         "format_miss": format_miss,
+        "endings": {ch: dict(c) for ch, c in endings.items()},
+        "fp_mode": dict(fp_mode), "fp_why": dict(fp_why), "fp_sec_avg": (sum(fp_secs) / len(fp_secs)) if fp_secs else None, "fp_cut": fp_cut,
+        "recv_cut": recv_cut, "recv_cut_why": dict(Counter(str(c[0]) for c in recv_cut)),
         "cost_usd": data.get("cost_usd"), "turns": data.get("turns"),
         "cases": cases, "warnings": warnings, "sources": src_lines, "source_summary": src_summary,
     }
@@ -892,6 +918,11 @@ def summary_rows(res: dict) -> list[tuple[str, str]]:
     q_note = f" (질문 {res['q_n']}개" + (f", 질문 없는 턴 {res['q_none']}" if res["q_none"] else "") + ")"
     lat = f"{_num(res['p50'])} / {_num(res['p95'])} / {_num(res['max'])} (LLM 턴 {res['llm_turns']})"
     regen = f"{res['regen_turns']}" + (f" ({_dist(res['regen_why'])})" if res["regen_why"] else "")
+    end_top = " / ".join(f"{chapter_short(ch)} {max(c.items(), key=lambda kv: kv[1])[0]} {max(c.values())}" for ch, c in res["endings"].items() if c) or "-"
+    fp = (f"llm {res['fp_mode'].get('llm', 0)} · fallback {res['fp_mode'].get('fallback', 0)}"
+          + (f" ({_dist(res['fp_why'])})" if res["fp_why"] else "")
+          + (f" · 평균 {res['fp_sec_avg']:.1f}초" if res["fp_sec_avg"] is not None else ""))
+    recv = f"{len(res['recv_cut'])}" + (f" ({_dist(res['recv_cut_why'])})" if res["recv_cut"] else "")
     return [
         ("꼬리 질문 수(다시 묻기 제외)", str(res["tail_n"])),
         ("다시 묻기 턴 수", str(res["reask_n"])),
@@ -912,6 +943,9 @@ def summary_rows(res: dict) -> list[tuple[str, str]]:
         ("p50 / p95 / 최대(초)", lat),
         ("재생성 걸린 턴 수(사유별)", regen),
         ("형식미해결 수", str(res["format_miss"])),
+        ("끝맺음별 사용 횟수(영역별 최다)", end_top),
+        ("첫 꼬리 질문 llm / fallback(사유) · 전용 호출 평균", fp),
+        ("받는 말 탈락 문장 수(사유별)", recv),
         ("실제 USD", "-" if res["cost_usd"] is None else str(res["cost_usd"])),
         ("턴 수", _num(res["turns"])),
     ]
@@ -988,6 +1022,16 @@ def render_detail(res: dict) -> list[str]:
     out.append("")
     out.append(f"### {SHORT_Q_EOJEOL}어절 미만 질문 {res['q_short_n']}개")
     out.extend(f"- ({eojeol_count(s)}어절) {s}" for s in res["q_short"])
+    out.append("")
+    out.append("### 끝맺음별 사용 횟수(영역별 전체)")
+    for ch, c in res["endings"].items():
+        out.append(f"- {chapter_short(ch)}: {_dist(c)}")
+    out.append("")
+    out.append(f"### 첫 꼬리 질문에서 떨어진 LLM 질문 {len(res['fp_cut'])}개")
+    out.extend(f"- {s}" for s in res["fp_cut"])
+    out.append("")
+    out.append(f"### 받는 말 탈락 {len(res['recv_cut'])}개")
+    out.extend(f"- ({c[0]}) {c[1]}" for c in res["recv_cut"])
     out.append("")
     out.append("### '직접 한 말·조치' 판정 근거(사례별)")
     for c in res["cases"]:

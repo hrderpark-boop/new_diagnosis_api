@@ -436,7 +436,7 @@ def test_p11b_after_sim_handler_guards():
     assert '_tm["opener_restored"] = 1' in src and '_tm["opener_restored"] = 2' in src                # 여는 턴의 질문 유실 → 다시 조립 · 마지막 안전망
     assert "split_compound_question" not in src and "_ksq_" not in src                                  # (P11c-2) 한 문장짜리 질문은 자르지 않는다
     assert "_ar_w3(" not in src      # (P12e-5) 8-w3(대상 붙이기)는 삭제
-    assert 'not _reask_kind and instruction_used != "NO_CASE_REFRAME"):' in src                         # 8-w4 는 사례 없음 재질문 턴을 건너뛴다
+    assert 'not _reask_kind and _fp_final is None and instruction_used != "NO_CASE_REFRAME"):' in src                         # 8-w4 는 사례 없음 재질문 턴을 건너뛴다
     assert "_qrcv_w0" not in src and "_qrcv_5" not in src                                              # (P11c-1) 금지 꼴·되풀이 문장은 삭제만 — 구절 인용 대체 없음
 
 
@@ -708,8 +708,9 @@ def test_p12_4_question_endings():
     from diag_project.prompts.phase3a.episode_card import build_episode_card
     from diag_project.routes import diagnoses as D
     from diag_project.services import persona_voice as V
-    from diag_project.services.turn_checks import QUESTION_ENDING_MAX, ending_counts, ending_label, request_ending_key, tail_key
-    assert QUESTION_ENDING_MAX == 3
+    from diag_project.services import turn_checks as TC
+    from diag_project.services.turn_checks import ending_counts, ending_label, request_ending_key, tail_key
+    assert not hasattr(TC, "QUESTION_ENDING_MAX")      # (P13d-1) 같은 끝맺음 4회째 다시 쓰기는 삭제 — 세기와 프롬프트 전달만 남는다
     assert request_ending_key("그날 장면을 조금 더 떠올려 주실 수 있을까요?") == request_ending_key("출고표를 고친 순서를 떠올려 주실 수 있을까요?")
     assert request_ending_key("그 뒤 일을 들려주실 수 있을까요?") != request_ending_key("그 뒤 일을 떠올려 주실 수 있을까요?")
     assert request_ending_key("조 반장은 뭐라고 했나요?") is None and request_ending_key("그 뒤로 무엇이 달라졌습니까?") is None      # 바로 묻는 질문은 세지 않는다
@@ -1158,7 +1159,7 @@ def test_p13b_first_probe_turn_has_its_own_instruction():
     assert e["slot_asks"]["action"] == B.slot_ask_max("action") and B.next_slot(e) == "criterion"
     src = inspect.getsource(D._submit_message_phase3a)
     assert "_bei.is_no_recall_text(_bei_user_text)" in src and '_tm["no_recall_skip"] = _prev_slot_nr' in src
-    assert 'not _reask_kind and not _bei_ep.get("ask_first")):' in src                                 # 페르소나 문장은 첫 꼬리 턴에 쓰지 않는다
+    assert 'not _reask_kind and _fp_final is None and not _bei_ep.get("ask_first")):' in src                                 # 페르소나 문장은 첫 꼬리 턴에 쓰지 않는다
 
 
 def test_p13b_first_question_only_and_wording():
@@ -1231,14 +1232,14 @@ def test_p13c_first_probe_check_and_fallback():
     # 앞에 놓인 때 절은 보지 않는다 — 묻는 자리만 본다
     assert first_probe_asking_part("반장들이 언제 올지 몰라 하셨을 때, 리더님은 뭐라고 하셨습니까?") == "리더님은 뭐라고 하셨습니까?"
     assert ok("반장들이 어떤 반응을 보였을 때 리더님은 뭐라고 하셨습니까?") == (True, "ok")
-    # 대체 문장: 코치마다 3종, 스스로 합격, 질문 꼴, 말투 교정에 바뀌지 않는다, 돌려 쓰면 직전 것과 겹치지 않는다
+    # 대체 문장: 코치마다 6종(P13d), 스스로 합격, 질문 꼴, 말투 교정에 바뀌지 않는다, 돌려 쓰면 직전 것과 겹치지 않는다
     for coach, pool in IM.FIRST_PROBE_FALLBACK.items():
-        assert len(pool) == 3 and len(set(pool)) == 3
+        assert len(pool) == 6 and len(set(pool)) == 6      # (P13d-2) 3종 → 6종
         for i, x in enumerate(pool):
             assert ok(x) == (True, "ok") and is_question(x) and apply_register(coach, x, scope="strict")[0] == x, (coach, x)
             assert IM.first_probe_fallback(coach, i) == x and IM.first_probe_fallback(coach, i + 1) != x
             assert x in IM.all_fixed_sentences()
-    assert "리더님" not in "".join(IM.FIRST_PROBE_FALLBACK["Lucas"]) and all("리더님께서" in x for x in IM.FIRST_PROBE_FALLBACK["Daniel"])
+    assert "리더님" not in "".join(IM.FIRST_PROBE_FALLBACK["Lucas"]) and all("리더님이" not in x for x in IM.FIRST_PROBE_FALLBACK["Daniel"])
     # 첫 꼬리 턴에는 프로필 탐침 선호 문구를 넣지 않는다(여섯 코치 모두)
     ep = {"idx": 1, "leader_turns": 1, "slots": {k: {"status": "empty", "quote": ""} for k in B.SLOT_KEYS}}
     ep = B.bump_slot_ask(ep, B.next_slot(ep))
@@ -1254,11 +1255,10 @@ def test_p13c_first_probe_check_and_fallback():
     g = guard_lexicon()["korean"]
     for w in ("반응", "장면", "자리", "결과", "기준", "판단"):
         assert w not in g and w not in GUARD_KEEP, w
+    # (P13d-2) 확인·대체는 전용 호출 자리로 옮겼다 — 8-q2 에는 하는 일이 없다
     src = inspect.getsource(D._submit_message_phase3a)
-    i = src.index("# 8-q2. (2026-11-15 P13c-1)")
-    blk = src[i: src.index("# 8-z.", i)]
-    assert 'instruction_used == "SWEEP_FOLLOWUP" or (instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("ask_first"))' in blk
-    assert '_tm["first_probe"] = "llm"' in blk and '_tm["first_probe"] = "fallback"' in blk and "_timed_regen" not in blk and "await" not in blk
+    i = src.index("# 8-q2. (2026-11-15 P13c-1 → P13d-2)")
+    assert "_tm[" not in src[i: src.index("# 8-z.", i)]
     assert '"first_probe": _tm.get("first_probe")' in src
 
 
@@ -1272,9 +1272,95 @@ def test_p13c_no_receive_requirement_left_and_wording():
     for gone in ('issues.append("no_receive")', 'issues.append("no_quote")', "quote_receive as _qrcv_w", '_tm["receive_fallback"] = "quote"', "_recv_optional_w2"):
         assert gone not in src, gone
     assert 'if _pn_s == "Michael" and _mq_pending:' in src and '_slot_kind in ("observation", "cheer") and _q_now_s))' not in src
-    assert 'not _reask_kind and not _bei_ep.get("ask_first")):' in src                                 # 첫 꼬리 턴에는 페르소나 문장을 넣지 않는다
+    assert 'not _reask_kind and _fp_final is None and not _bei_ep.get("ask_first")):' in src                                 # 첫 꼬리 턴에는 페르소나 문장을 넣지 않는다
     assert "_c_w2 = _bei_anchor_text.strip()" in src
     for bad in ("출고 지연이 줄었다는 점이 분명하게 드러나는군요.", "검수 순서가 가장 큰 변화로 보이는군요.", "반장들의 뜻이 그런 것으로 보이네요."):
         assert strip_state_leak(f"{bad} 그 뒤에는 무엇을 하셨습니까?") == ("그 뒤에는 무엇을 하셨습니까?", 1), bad
     assert strip_state_leak("표가 잘 보이게 벽에 붙이셨군요.")[1] == 0
     assert "받는 말은 리더가 쓴 낱말로만 쓴다" in TURN_FORMAT_RULES and "짐작하게 하는 질문도 하지 않는다" in TURN_FORMAT_RULES
+
+
+def test_p13d_ending_regen_gone_and_first_probe_dedicated_call():
+    """(2026-11-15 P13d-1·2) 끝맺음 반복 다시 쓰기 삭제 · 첫 꼬리 질문은 전용 호출(넘기는 재료 셋) · 표지 추가 · 대체 문장 6종."""
+    import asyncio
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import first_probe_render as FP, intro_messages as IM
+    from diag_project.services.turn_checks import first_probe_question_ok as ok, tail_key
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "q_stand:ending" not in src and "_qem_b" not in src and "_used_end_b = [" in src            # 검사·다시 쓰기는 없고 프롬프트 전달은 남는다
+    # 전용 호출 분기: 본 호출보다 먼저, 다른 재생성 없이, 끝에서 다시 놓는다
+    i = src.index('elif ((instruction_used == "SWEEP_FOLLOWUP" or (instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("ask_first"))) and chapter):')
+    j = src.index('elif instruction_used == "COMPETENCY_ALIGN":', i)
+    blk = src[i:j]
+    assert "render_first_probe" in blk and "generate_phase3a_interaction" not in blk and "_timed_regen" not in blk
+    assert '_tm["first_probe"] = "llm"' in blk and '_tm["first_probe"] = "fallback"' in blk and '_tm["no_regen"] = 1' in blk and '_tm["first_probe_s"]' in blk
+    assert src.count("clean_reply = _fp_final") == 2
+    # 넘기는 것: 리더의 직전 답 · 말투 · 이번 영역에서 쓴 끝맺음. 넘기지 않는 것: 칸 상태 · 방향 힌트 · 코치 프로필 · 영역 정의
+    assert set(inspect.signature(FP.render_first_probe).parameters) == {"llm", "leader_answer", "persona_name", "used_endings"}
+    pr = FP.build_first_probe_prompt(leader_answer="야간 조 반장과 출고표를 다시 짰습니다.", persona_name="Daniel (다니엘)", used_endings=["말씀해 주시겠습니까"])
+    assert "야간 조 반장과 출고표를 다시 짰습니다." in pr and "합쇼체" in pr and "'말씀해 주시겠습니까'" in pr
+    assert "묻지 않는 것: 때·자리·장면, 다른 사람의 반응, 리더의 생각·기준, 결과" in pr
+    for w in ("Daniel", "다니엘", "들음:", "아직:", "이번 질문:", "탐침 선호", "업무관리", "하위역량"):
+        assert w not in pr, w
+    assert "끝맺음" not in FP.build_first_probe_prompt(leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)")
+
+    class _LLM:
+        def __init__(self, out):
+            self.out, self.calls = out, []
+
+        async def _generate_with_retry(self, **kw):
+            self.calls.append(kw)
+            return self.out
+    llm = _LLM("반장과 출고표를 다시 짜실 때 리더님께서 먼저 꺼내신 말씀은 무엇이었습니까?")
+    q, mode = asyncio.run(FP.render_first_probe(llm, leader_answer="야간 조 반장과 출고표를 다시 짰습니다.", persona_name="Daniel (다니엘)"))
+    assert mode == "llm" and ok(q) == (True, "ok") and llm.calls[0]["call_type"] == "first_probe_render"
+    # 질문 문장이 둘이면 첫 문장만 · 질문이 없으면 None
+    q2, _ = asyncio.run(FP.render_first_probe(_LLM("출고표를 다시 짜실 때 뭐라고 하셨나요? 반장은 어떻게 받아들였나요?"), leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)"))
+    assert q2 == "출고표를 다시 짜실 때 뭐라고 하셨나요?"
+    assert asyncio.run(FP.render_first_probe(_LLM("출고표를 다시 짜셨군요."), leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)")) == (None, "miss:no_question")
+    assert asyncio.run(FP.render_first_probe(None, leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)")) == (None, "miss:no_llm")
+    # (나) 표지 추가: 시점 · 어떤 생각 · 어떤 마음
+    assert ok("반장이 반대하는 것을 보고 어떤 생각이 드셨는지, 그리고 말을 꺼내신 시점이 조회 직후였는지 말씀해 주시겠습니까?")[0] is False
+    assert ok("그 표를 꺼내신 시점은 조회 뒤였습니까?") == (False, "off:시점") and ok("어떤 마음으로 그 말을 꺼내셨습니까?") == (False, "off:어떤 마음")
+    assert ok("표를 고치기로 한 시점에 리더님은 뭐라고 하셨습니까?") == (True, "ok")      # 앞에 놓인 때 절은 보지 않는다
+    # 대체 문장 6종: 시작 낱말·끝맺음이 서로 겹치지 않고, '그 일에서'로 시작하는 것은 하나뿐
+    for coach, pool in IM.FIRST_PROBE_FALLBACK.items():
+        assert len({x.split()[0] for x in pool}) == 6 and len({tail_key(x) for x in pool}) == 6, coach
+        assert sum(1 for x in pool if x.startswith("그 일에서")) == 1, coach
+
+
+def test_p13d_receive_allow_list_and_request_forms():
+    """(P13d-3·4) 받는 말은 허용 목록(되짚는 끝맺음 · 리더 낱말 둘 이상 · 12어절 이하)일 때만 · 청하는 꼴도 질문 문장."""
+    import inspect
+    from diag_project.prompts.phase3a.episode_card import TURN_FORMAT_RULES
+    from diag_project.routes import diagnoses as D
+    from diag_project.services.output_guard import is_question, keep_first_question
+    from diag_project.services.turn_checks import RECEIVE_ALLOWED_ENDINGS, receive_allowed as ra
+    ans = "야간 조 반장과 출고표를 다시 짰고, 검수 순서는 앞으로 당겼습니다."
+    for s in ("야간 조 반장과 출고표를 다시 짜셨군요.", "검수 순서를 앞으로 당기셨다는 말씀이군요.", "출고표를 다시 짜고 검수 순서를 당기신 거군요.",
+              "출고표를 반장과 다시 짰다고 하셨네요.", "검수 순서를 앞으로 당기셨다는 거죠."):
+        assert ra(s, ans) == (True, "ok"), (s, ra(s, ans))
+    # 추측·평가·소감 어미는 목록에 없어 떨어진다
+    for s in ("출고표를 다시 짠 것은 쉽지 않은 결정이었겠습니다.", "검수 순서를 당긴 것이 핵심으로 보입니다.", "반장과 출고표를 다시 짠 점을 짚어 두고 싶습니다.",
+              "출고표와 검수 순서 이야기는 분명히 들었습니다.", "반장과 출고표를 다시 짜신 모습이 인상적이네요.", "검수 순서가 달라진 것으로 보이는군요."):
+        assert ra(s, ans, formal=True) == (False, "ending"), (s, ra(s, ans, formal=True))
+    assert ra("그렇게 하셨군요.", ans) == (False, "overlap") and ra("회의 자료를 미리 돌리셨군요.", ans) == (False, "overlap")      # 리더 낱말이 둘 미만
+    long_s = "야간 조 반장과 출고표를 다시 짜고 검수 순서도 앞으로 당기고 그 뒤 표를 벽에 붙여 모두가 보게 하셨군요."
+    assert len(long_s.split()) > 12 and ra(long_s, ans) == (False, "long")
+    # 합쇼체 코치만 '…셨습니다' 꼴
+    s_f = "야간 조 반장과 출고표를 다시 짜셨습니다."
+    assert ra(s_f, ans, formal=True) == (True, "ok") and ra(s_f, ans) == (False, "ending")
+    assert set(RECEIVE_ALLOWED_ENDINGS) == {"common", "formal"}
+    src = inspect.getsource(D._submit_message_phase3a)
+    i = src.index("# 8-wa. (2026-11-15 P13d-3)")
+    blk = src[i: src.index("# 8-w00.", i)]
+    assert "_timed_regen" not in blk and "await" not in blk and '_tm["recv_allow"]' in blk and "_fp_final is None" in blk
+    assert src.count("_recv_allow_pass()") == 3 and '"recv_allow": _tm.get("recv_allow")' in src      # 정의 1 + 호출 2(금지 꼴 앞 · 8-w5 앞)
+    assert "끝을 -셨군요, -말씀이군요, -거군요 가운데 하나로 맺는다" in TURN_FORMAT_RULES
+    # 청하는 꼴도 질문 문장 — 물음 + 청함이 함께 있으면 첫 문장만 남는다
+    for s in ("그 자리에서 실제로 꺼내신 말씀을 그대로 옮겨 주십시오.", "순서대로 말씀해 주십시오.", "하나씩 들려주세요.", "그 일을 풀어 주세요.", "먼저 한 일을 짚어 주세요."):
+        assert is_question(s), s
+    for s in ("그렇게 표를 옮겨 주셨군요.", "말씀해 주셔서 감사합니다."):
+        assert not is_question(s), s
+    assert keep_first_question("표가 막힌 곳은 어디였습니까? 그때 꺼내신 말씀을 그대로 옮겨 주십시오.") == ("표가 막힌 곳은 어디였습니까?", 1)
