@@ -1527,3 +1527,16 @@ def test_p13g_addressee_partial_cut_retry_marks_and_short_question_context():
     # 5. 받아 둔 받는 말에는 입버릇 재생성을 걸지 않는다
     i = src.index("(2026-11-15 P13g-5)")
     assert src.rfind('_tm.get("pre_recv") == "used" and _pre_recv_text', 0, i) > 0 and src.index('_timed_regen(why="tail"', i) > i
+
+
+def test_regression_check_judge_limits():
+    """(2026-11-15) 회귀 점검 스크립트의 조건 판정 — 상한 이하면 통과, 값이 없으면 통과로 보지 않는다."""
+    import importlib.util
+    import pathlib
+    spec = importlib.util.spec_from_file_location("regression_check", pathlib.Path(__file__).resolve().parent.parent / "tools" / "regression_check.py")
+    rc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rc)
+    good = {"p50": 3.4, "p95": 8.0, "regen_turns": 8, "format_miss": 0, "broken_total": 0, "fp_fallback": 1, "short_q": 2}
+    assert all(ok for _n, _v, ok in rc.judge(good)) and len(rc.judge(good)) == 7
+    for key, bad in (("p50", 4.1), ("p95", 8.2), ("regen_turns", 9), ("format_miss", 1), ("broken_total", 1), ("fp_fallback", 2), ("short_q", 3), ("p95", None)):
+        assert not all(ok for _n, _v, ok in rc.judge(dict(good, **{key: bad}))), key
