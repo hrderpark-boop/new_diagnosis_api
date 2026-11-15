@@ -1826,7 +1826,6 @@ async def _submit_message_phase3a(
             #   말투별 대체 문장(세션에서 쓴 횟수로 돌려 직전 것과 겹치지 않는다). 다른 검사·재생성은 끼어들지 않는다(no_regen).
             #   기록 first_probe: llm | fallback, first_probe_why: 불합격 사유, first_probe_s: 전용 호출에 걸린 시간(초).
             from diag_project.services.first_probe_render import render_first_probe as _rfp_fp
-            from diag_project.services.intro_messages import first_probe_fallback as _fpf_fp
             from diag_project.services.turn_checks import (ending_counts as _ec_fp, ending_label as _el_fp, first_probe_question_ok as _fpok_fp,
                                                              pick_first_probe_angle as _pick_fp)
             _pn_fp = (state.get("coach_persona") or {}).get("name")
@@ -1836,21 +1835,47 @@ async def _submit_message_phase3a(
             _angle_fp = _pick_fp(_llm_user_text, _angles_fp)
             _tm["first_probe_angle"] = _angle_fp
             _ends_fp = [_el_fp(k) for k, _v in sorted(_ec_fp(_chapter_questions()).items(), key=lambda kv: -kv[1])]
+            # (2026-11-15 P13g-1·2) ① 질문에 넣은 상대가 걸리면 그 어절만 지우고 나머지는 그대로 쓴다(first_probe_addressee_fix).
+            #   ② 확인에서 떨어지면 사유를 한 줄로 넘겨 전용 호출을 한 번 더 한다. 두 번째도 떨어질 때만 대체 문장.
+            #   기록 first_probe: llm | llm_retry | fallback · first_probe_who: [[지운 어절, 지우기 전 질문], …] · first_probe_why: 떨어진 사유(둘이면 '첫째>둘째').
+            from diag_project.services.intro_messages import first_probe_fallback_pick as _fpp_fp
+            from diag_project.services.turn_checks import first_probe_addressee_fix as _afix_fp, first_probe_retry_note as _note_fp
             _t0_fp = _time.perf_counter()
-            _q_fp, _mode_fp = await _rfp_fp(llm, leader_answer=_llm_user_text, persona_name=_pn_fp, used_endings=_ends_fp, angle=_angle_fp)
+
+            async def _one_fp(note=None):
+                _q, _mode = await _rfp_fp(llm, leader_answer=_llm_user_text, persona_name=_pn_fp, used_endings=_ends_fp, angle=_angle_fp, retry_note=note)
+                if not _q:
+                    return None, False, _mode, _mode
+                _q2, _rm, _clean = _afix_fp(_q, _llm_user_text)
+                if _rm:
+                    _tm["first_probe_who"] = list(_tm.get("first_probe_who") or []) + [[" / ".join(_rm), _q[:200]]]
+                if not _clean:
+                    return _q, False, "who", _mode
+                _ok, _why = _fpok_fp(_q2, _llm_user_text)
+                return _q2, _ok, _why, _mode
+
+            _q_fp, _ok_fp, _why_fp, _mode_fp = await _one_fp()
+            _retry_fp = False
+            if not _ok_fp and _mode_fp not in ("stub", "miss:no_llm", "miss:no_material"):
+                _q1_fp, _why1_fp = _q_fp, _why_fp
+                _q_fp, _ok_fp, _why_fp, _mode_fp = await _one_fp(_note_fp(_why1_fp))
+                _retry_fp = True
+                _tm["first_probe_why"] = _why1_fp if _ok_fp else f"{_why1_fp}>{_why_fp}"
+                if _q1_fp:
+                    _tm["first_probe_cut"] = _q1_fp[:200]      # 처음에 떨어진 LLM 질문(보고용)
             _tm["first_probe_s"] = round(_time.perf_counter() - _t0_fp, 2)
-            _ok_fp, _why_fp = _fpok_fp(_q_fp, _llm_user_text) if _q_fp else (False, _mode_fp)      # (P13f-1·3) 상대 확인·표지 오탐에 리더 답을 쓴다
             if _ok_fp:
                 _fp_final = _q_fp
-                _tm["first_probe"] = "llm"
+                _tm["first_probe"] = "llm_retry" if _retry_fp else "llm"
             else:
-                _n_fp = int(_sd_fp.get("first_probe_fb_n") or 0)
-                _fp_final = _fpf_fp(_pn_fp, _n_fp, _angle_fp)      # (P13e-1) 고른 각도와 같은 각도의 대체 문장
-                _sd_fp["first_probe_fb_n"] = _n_fp + 1
-                _tm["first_probe"] = "fallback"; _tm["first_probe_why"] = _why_fp
-                if _q_fp:
-                    _tm["first_probe_cut"] = _q_fp[:200]      # 떨어진 LLM 질문(보고용)
-                logger.info("🎯 첫 꼬리 질문 불합격(%s) → 대체 문장 %d번", _why_fp, _n_fp)
+                _used_fb_fp = [str(x) for x in (_sd_fp.get("first_probe_fb_used") or [])]
+                _fp_final = _fpp_fp(_pn_fp, _angle_fp, _used_fb_fp)      # (P13g-4) 같은 대체 문장은 세션에서 한 번만
+                _sd_fp["first_probe_fb_used"] = (_used_fb_fp + [_fp_final])[-12:]
+                _sd_fp["first_probe_fb_n"] = int(_sd_fp.get("first_probe_fb_n") or 0) + 1
+                _tm["first_probe"] = "fallback"
+                if not _retry_fp:
+                    _tm["first_probe_why"] = _why_fp
+                logger.info("first probe fallback (%s)", _tm.get("first_probe_why"))
             _sd_fp["first_probe_angles"] = (_angles_fp + [_angle_fp])[-40:]
             session.self_assessment_data = _sd_fp
             from sqlalchemy.orm.attributes import flag_modified as _fm_fp
@@ -2703,7 +2728,12 @@ async def _submit_message_phase3a(
             _tm["tail"] = (_b0 + _r0)[0]
             _third = any(int(_tc.get(t, 0) or 0) >= 2 for t in _r0)
             _fixed = False
-            if not _third:
+            if _tm.get("pre_recv") == "used" and _pre_recv_text:
+                # (2026-11-15 P13g-5) 사례를 닫으며 받아 둔 받는 말에는 다시 쓰기를 걸지 않는다 — 그 받는 말만 버린다(p13f Daniel: 재생성으로 11.1초)
+                clean_reply = re.sub(r"[ \t]{2,}", " ", clean_reply.replace(str(_pre_recv_text), "", 1)).strip()
+                _tm["tail_fix"] = 3
+                _fixed = True
+            elif not _third:
                 try:
                     _t_out = await _timed_regen(why="tail", 
                         system_prompt=system_prompt, chapter_context=chapter_context,
@@ -2776,6 +2806,15 @@ async def _submit_message_phase3a(
             if instruction_used == "SWEEP_ANCHOR" and _x_wa.startswith("아까"):
                 continue                             # 훑는 질문 턴의 잇는 문장(②)은 받는 말이 아니다
             _ok_wa, _why_wa = _ra_wa(_x_wa, _llm_user_text, formal=_formal_wa)
+            if (not _ok_wa and _why_wa == "long" and _is_probe and _tm.get("pre_recv") != "used"):
+                # (2026-11-15 P13g-4) 받는 말이 길이만으로 떨어지고 남는 질문이 8어절 미만이면 그 받는 말을 남긴다(20어절까지, 끝맺음·겹침 조건은 그대로) —
+                #   p13f: '그 뒤에 무엇이 달라졌습니까?'만 나간 턴. 본 호출이 쓴 턴에만.
+                from diag_project.services.turn_checks import RECEIVE_KEEP_LONG_MAX as _rkl_wa, SHORT_QUESTION_EOJEOL as _sqe_wa
+                _qs_wa = [x for x in _sents_wa if is_question_sentence(x)]
+                if (_qs_wa and len(_qs_wa[-1].split()) < _sqe_wa
+                        and _ra_wa(_x_wa, _llm_user_text, formal=_formal_wa, max_eojeol=_rkl_wa)[0]):
+                    _tm["recv_keep_long"] = int(_tm.get("recv_keep_long") or 0) + 1
+                    continue
             if not _ok_wa:
                 _cut_wa.append([_why_wa, _x_wa[:200]])
                 clean_reply = re.sub(r"[ \t]{2,}", " ", clean_reply.replace(_x_wa, "", 1)).strip()
@@ -3022,7 +3061,8 @@ async def _submit_message_phase3a(
                 _drop_5 = "repeat"
             elif _is_probe and _iqr_5(_recv_5) and _qr_variant >= QUOTE_RECEIVE_SESSION_MAX:
                 _drop_5 = "quote_cap"
-            elif (_is_probe or str(_tm.get("closed") or "").endswith(":repeat")) and len(_recv_5.split()) > RECEIVE_MAX_EOJEOL:      # (P12d-4) repeat 로 닫는 턴은 '사례 닫는 턴' 예외에서 뺀다
+            elif ((_is_probe or str(_tm.get("closed") or "").endswith(":repeat")) and len(_recv_5.split()) > RECEIVE_MAX_EOJEOL
+                  and not _tm.get("recv_keep_long")):      # (P13g-4) 짧은 질문 앞에 남기기로 한 받는 말은 여기서도 지우지 않는다      # (P12d-4) repeat 로 닫는 턴은 '사례 닫는 턴' 예외에서 뺀다
                 _drop_5 = "long"                 # (2026-11-12 P11e-5) 12어절을 넘는 문장은 삭제(재생성 없음) — 되풀이 비율 60% 아래로 통과하던 긴 문장
             from diag_project.services.slot_render import has_leader_first_person as _hlfp_5
             if _hlfp_5(re.sub(r"['‘“\"][^'’”\"\n]{0,80}['’”\"]", "", _recv_5)):
@@ -3894,6 +3934,8 @@ async def _submit_message_phase3a(
             "first_probe_angle": _tm.get("first_probe_angle"), "reaction_asked": _tm.get("reaction_asked"), "mark_fix": _tm.get("mark_fix"),
             # (P13f-4) pre_recv 사례를 닫으며 매핑과 함께 받아 둔 받는 말: used(썼다) | llm(받았지만 이 턴에는 쓰지 않았다) | stub | miss:<사유> · close_par_s 매핑+받는 말 동시 실행 시간(초)
             "pre_recv": _tm.get("pre_recv"), "close_par_s": _tm.get("close_par_s"),
+            # (P13g) first_probe_who 첫 꼬리 질문에서 지운 상대 어절 [[지운 것, 지우기 전 질문], …] · recv_keep_long 짧은 질문 앞에 남긴 긴 받는 말 수
+            "first_probe_who": _tm.get("first_probe_who"), "recv_keep_long": _tm.get("recv_keep_long"),
             # (P12e) same_judge '같은 사건' 판정(후보 표지·판정 결과) · reframe_fixed 재질문을 사전 문안으로 조립
             "same_judge": _tm.get("same_judge"), "reframe_fixed": _tm.get("reframe_fixed"), "close_clause_cut": _tm.get("close_clause_cut"),
         })

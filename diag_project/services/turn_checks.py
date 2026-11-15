@@ -318,39 +318,102 @@ _FP_ASK_FOR_RE = re.compile(r"(들려|말씀해|알려|짚어|전해|옮겨|설�
 _FP_UNFINISHED_RE = re.compile(r"(…|\.{2,})\s*$|(습니다만|니다만|지만|는데|은데|인데)[.?!]*\s*$|[,，]\s*$")
 
 
-# (2026-11-15 P13f-1) 질문에 넣은 상대 — '○○에게/○○들에게/○○께/○○한테'의 ○○은 리더가 직전 답에서 말을 건넨 상대로 말한 사람이어야 한다
-#   (직전 답에 '○○에게/께/한테/와/과/들과' 또는 '○○을/를 불러/만나' 꼴이 있을 때). p13d·p13e: 리더가 말하지 않은 '교육생들에게'를 넣은 질문이 7건.
-_FP_TO_RE = re.compile(r"(?<![가-힣])([가-힣]{1,8}?)(?:분)?(?:들)?(?:에게|한테|(?<!함)께(?!서))")
+# (2026-11-15 P13f-1 → P13g-1) 질문에 넣은 상대 — '○○에게/○○들에게/○○께/○○한테'.
+#   P13f: 리더가 말을 건넨 상대로 말한 사람이 아니면 질문을 통째로 대체 문장으로 바꿨다 → 멀쩡한 질문도 떨어졌다(p13f 대체 4/9·4/10).
+#   P13g: 그 어절(앞의 꾸밈말 포함)만 지우고 나머지 질문은 그대로 내보낸다. 통과 기준도 넓혔다 — ○○이 리더 직전 답에 사람으로 나오면 합격(주어로만 나와도).
+#   다만 리더가 그 사람을 말을 건넨 상대로 말하지 않았고 ○○이 제3자 목록(가르친 사람·고객)에 있으면 지운다. 답에 없는 사람도 지운다.
+THIRD_PARTY_WORDS: tuple[str, ...] = ("교육생", "수강생", "참가자", "참석자", "학습자", "고객사", "고객", "수료생", "신입사원", "학생")      # tools/regression_table.py 의 목록과 같다
+_FP_TO_RE = re.compile(r"(?<![가-힣])(?P<mod>(?:(?:그|이|저|해당|각|모든|여러|몇몇)\s+)?(?:[가-힣]{1,6}의\s+)?)(?P<who>[가-힣]{1,8}?)(?:분)?(?:들)?(?:에게|한테|(?<!함)께(?!서))\s*")
 _FP_TO_SKIP = frozenset(("리더님", "리더", "본인", "자신", "스스로", "저", "제"))
+_FP_PRONOUN = frozenset(("그", "이"))
+_FP_PERSON_RE = re.compile("|".join(THIRD_PARTY_WORDS) + "|팀원|직원|구성원|강사|동료|상사|후배|선배|담당자|팀장|임원|부서장")
 
 
-def first_probe_addressee_miss(question: str | None, leader_answer: str | None) -> str | None:
-    """질문에 넣은 상대 가운데 리더 직전 답에서 '말을 건넨 상대'로 나오지 않은 사람(없으면 None)."""
+def _addressee_keep(who: str, answer: str) -> bool:
+    w = re.escape(who)
+    if re.search(rf"{w}(?:분)?(?:들)?(?:에게|한테|께(?!서)|와|과|이랑|랑|하고)|{w}(?:분)?(?:들)?(?:을|를)\s*(?:따로\s*)?(?:불러|만나)", answer):
+        return True                                   # 리더가 말을 건넨 상대로 말했다
+    return who in answer and who not in THIRD_PARTY_WORDS
+
+
+_FP_BARE_ADV = frozenset(("직접", "먼저", "따로", "바로", "처음", "다시", "그때", "당시", "모두", "함께", "실제로", "특히", "결국"))
+_FP_JOSA_END = "을를이가은는에도로때서고며면지게히과와만의다요까든써럼터"
+
+
+def first_probe_addressee_fix(question: str | None, leader_answer: str | None) -> tuple[str, list[str], bool]:
+    """첫 꼬리 질문에서 걸린 상대 어절만 지운다(앞에 붙은 꾸밈말 — 지시어·'○○의'·조사 없는 앞 명사 — 포함).
+    반환 (고친 질문, 지운 어절 목록, 온전한가). 걸린 것이 없으면 (질문 그대로, [], True).
+    지운 자리 앞에 꾸미는 절('…하는', '…한')이 남으면 온전하지 않다(False) — 호출자가 한 번 더 쓴다."""
+    q = (question or "").strip()
     ans = leader_answer or ""
-    for m in _FP_TO_RE.finditer(question or ""):
-        who = m.group(1)
+    removed: list[str] = []
+    out = []
+    pos = 0
+    clean = True
+    for m in _FP_TO_RE.finditer(q):
+        who = m.group("who")
         if who in _FP_TO_SKIP:
             continue
-        w = re.escape(who)
-        if re.search(rf"{w}(?:분)?(?:들)?(?:에게|한테|께(?!서)|와|과|이랑|랑|하고)|{w}(?:분)?(?:들)?(?:을|를)\s*(?:따로\s*)?(?:불러|만나)", ans):
+        if who in _FP_PRONOUN:                         # '그분께'·'그들에게' — 질문 안에서 바로 앞에 나온 사람 낱말로 판단한다(없으면 둔다)
+            prev = [x.group(0) for x in _FP_PERSON_RE.finditer(q[:m.start()])]
+            keep = _addressee_keep(prev[-1], ans) if prev else True
+        else:
+            keep = _addressee_keep(who, ans)
+        if keep:
             continue
-        return who
-    return None
+        start = m.start()
+        head = q[pos:start]
+        prev = re.search(r"([가-힣]+)\s+$", head)          # 조사 없이 앞에 붙은 명사('거래처 담당자에게')는 함께 지운다
+        if prev and prev.group(1) not in _FP_BARE_ADV and prev.group(1)[-1] not in _FP_JOSA_END:
+            start = pos + prev.start()
+            head = q[pos:start]
+        elif re.search(r"[가-힣](는|은|던|한|된|인|할|을|의)\s+$", head):
+            clean = False                                    # 꾸미는 절이 남는다('수업을 듣는 ○○에게')
+        out.append(head)
+        removed.append(q[start:m.end()].strip())
+        pos = m.end()
+    if not removed:
+        return q, [], True
+    out.append(q[pos:])
+    fixed = re.sub(r"\s{2,}", " ", "".join(out)).strip()
+    fixed = re.sub(r"^[,，]\s*", "", fixed)
+    return fixed, removed, clean
+
+
+# (2026-11-15 P13g-2·3) 혼잣말·지시문 낱말이 섞인 질문, 코치 자신이 주어인 동사에 묻는 어미가 붙은 꼴
+_FP_META_RE = re.compile(r"규칙|지시|한\s*문장이어야|—|아니,")
+_FP_SELF_VERB_RE = re.compile(r"(여쭙고|여쭤보고|묻고|듣고|알고)\s*싶습니까|여쭙겠습니까|묻겠습니까|궁금합니까|궁금하십니까")
+FIRST_PROBE_RETRY_NOTES: dict[str, str] = {
+    "closed": "그렇다·아니다로 답하게 되는 꼴이었다",
+    "off": "리더 본인이 한 것이 아니라 때·다른 사람의 반응·기준·결과를 물었다",
+    "no_action": "리더 본인이 한 말이나 조치를 묻지 않았다",
+    "unfinished": "문장을 끝맺지 않았다",
+    "meta": "질문 말고 다른 말이 섞였거나 문장이 둘 이상이었다",
+    "self_verb": "코치 자신이 하는 일에 묻는 어미를 붙였다",
+    "no_question": "질문 문장이 없었다",
+    "who": "리더가 말을 건넨 상대로 말하지 않은 사람을 질문에 넣었다",
+}
+
+
+def first_probe_retry_note(why: str | None) -> str:
+    return FIRST_PROBE_RETRY_NOTES.get(str(why or "").split(":")[0], "질문으로 쓸 수 없는 문장이었다")
 
 
 def first_probe_question_ok(question: str | None, leader_answer: str | None = None) -> tuple[bool, str]:
     """사례의 첫 꼬리 질문이 리더가 직접 한 말·조치를 묻는가.
-    (합격 여부, 사유: ok | no_question | unfinished | who:<상대> | closed | no_action | off:<걸린 말>)
-    leader_answer 를 주면 ① 질문에 넣은 상대를 확인하고 ② (나) 표지가 리더 답에 그대로 있는 낱말 하나일 때는 표지로 보지 않는다(P13f-1·3)."""
+    (합격 여부, 사유: ok | no_question | meta | self_verb | unfinished | closed | no_action | off:<걸린 말>)
+    leader_answer 를 주면 (나) 표지가 리더 답에 그대로 있는 낱말 하나일 때는 표지로 보지 않는다(P13f-3).
+    질문에 넣은 상대는 여기서 보지 않는다 — 호출자가 first_probe_addressee_fix 로 그 어절만 지운 뒤 이 확인을 부른다(P13g-1)."""
     q = (question or "").strip()
     if not q:
         return False, "no_question"
+    from diag_project.services.output_guard import split_sentences as _ss_fp
+    if _FP_META_RE.search(q) or len([x for x in _ss_fp(q) if x.strip()]) >= 2:
+        return False, "meta"
+    if _FP_SELF_VERB_RE.search(q):
+        return False, "self_verb"
     if _FP_UNFINISHED_RE.search(q):
         return False, "unfinished"
-    if leader_answer is not None:
-        who = first_probe_addressee_miss(q, leader_answer)
-        if who:
-            return False, f"who:{who}"
     part = first_probe_asking_part(q)
     off = None
     for m in _FP_OFF_RE.finditer(part):
@@ -404,11 +467,20 @@ _WONDER_Q_RE = re.compile(r"(궁금(해요|합니다|하네요|했어요|했습�
 _ASK_END_STRICT_RE = re.compile(r"(까요|나요|니까|는지요|실래요|인가요|던가요|[을를]\s*수\s*있(을까요|나요|습니까|겠습니까))$")
 
 
+# (2026-11-15 P13g-3) p13f Daniel: '…말씀해 주십시오?'(청하는 말에 물음표), '…순서를 여쭙겠습니다: …'(쌍점 머리말)
+_REQUEST_Q_RE = re.compile(r"(주십시오|주세요|주시기\s*바랍니다|주시지요|바랍니다)\?")
+_COLON_HEAD_RE = re.compile(r"(?:^|(?<=[.?!]\s))[^.?!:：\n]{0,60}(?:여쭙겠습니다|여쭤보겠습니다|묻겠습니다|질문드리겠습니다|여쭙니다)\s*[:：]\s*")
+
+
 def finish_sentence_marks(text: str | None) -> tuple[str, int]:
     """① '…궁금해요?'·'…궁금합니다?' 의 물음표를 마침표로 ② 묻는 어미로 끝나는데 끝 부호가 없으면 물음표를 붙인다. (고친 글, 고친 수)"""
     t = (text or "")
     n = 0
     t2, k = _WONDER_Q_RE.subn(r"\1.", t)
+    n += k
+    t2, k = _REQUEST_Q_RE.subn(r"\1.", t2)          # (P13g-3) 청하는 꼴에는 물음표를 붙이지 않는다
+    n += k
+    t2, k = _COLON_HEAD_RE.subn("", t2)             # (P13g-3) '…여쭙겠습니다: ' 같은 쌍점 머리말은 쌍점까지 지운다
     n += k
     tail = t2.rstrip()
     if tail and tail[-1] not in ".?!…\"'”’)" and _ASK_END_STRICT_RE.search(tail):
@@ -555,12 +627,16 @@ def receive_shared_words(receive: str | None, user_text: str | None) -> list[str
     return question_overlap(receive, user_text)
 
 
-def receive_allowed(sentence: str | None, user_text: str | None, *, formal: bool = False) -> tuple[bool, str]:
-    """받는 말을 남겨도 되는가. (남김 여부, 사유: ok | ending | overlap | long)"""
+RECEIVE_KEEP_LONG_MAX = 20      # (P13g-4) 남은 질문이 8어절 미만일 때 길이만으로 떨어진 받는 말을 남기는 상한
+SHORT_QUESTION_EOJEOL = 8
+
+
+def receive_allowed(sentence: str | None, user_text: str | None, *, formal: bool = False, max_eojeol: int | None = None) -> tuple[bool, str]:
+    """받는 말을 남겨도 되는가. (남김 여부, 사유: ok | ending | overlap | long). max_eojeol 을 주면 길이 상한만 그 값으로 본다."""
     s = (sentence or "").strip()
     if not (_RECV_END_COMMON_RE.search(s) or (formal and _RECV_END_FORMAL_RE.search(s))):
         return False, "ending"
-    if len(s.split()) > RECEIVE_MAX_EOJEOL:
+    if len(s.split()) > (max_eojeol or RECEIVE_MAX_EOJEOL):
         return False, "long"
     if len(receive_shared_words(s, user_text)) < RECEIVE_MIN_SHARED:
         return False, "overlap"

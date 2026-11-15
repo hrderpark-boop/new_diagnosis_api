@@ -1292,10 +1292,10 @@ def test_p13d_ending_regen_gone_and_first_probe_dedicated_call():
     j = src.index('elif instruction_used == "COMPETENCY_ALIGN":', i)
     blk = src[i:j]
     assert "render_first_probe" in blk and "generate_phase3a_interaction" not in blk and "_timed_regen" not in blk
-    assert '_tm["first_probe"] = "llm"' in blk and '_tm["first_probe"] = "fallback"' in blk and '_tm["no_regen"] = 1' in blk and '_tm["first_probe_s"]' in blk
+    assert '_tm["first_probe"] = "llm_retry" if _retry_fp else "llm"' in blk and '_tm["first_probe"] = "fallback"' in blk and '_tm["no_regen"] = 1' in blk and '_tm["first_probe_s"]' in blk
     assert src.count("clean_reply = _fp_final") == 2
     # 넘기는 것: 리더의 직전 답 · 말투 · 이번 영역에서 쓴 끝맺음. 넘기지 않는 것: 칸 상태 · 방향 힌트 · 코치 프로필 · 영역 정의
-    assert set(inspect.signature(FP.render_first_probe).parameters) == {"llm", "leader_answer", "persona_name", "used_endings", "angle"}
+    assert set(inspect.signature(FP.render_first_probe).parameters) == {"llm", "leader_answer", "persona_name", "used_endings", "angle", "retry_note"}
     pr = FP.build_first_probe_prompt(leader_answer="야간 조 반장과 출고표를 다시 짰습니다.", persona_name="Daniel (다니엘)", used_endings=["말씀해 주시겠습니까"])
     assert "야간 조 반장과 출고표를 다시 짰습니다." in pr and "합쇼체" in pr and "'말씀해 주시겠습니까'" in pr
     assert "묻지 않는 것: 때·자리·장면, 다른 사람의 반응, 리더의 생각·기준, 결과" in pr
@@ -1315,7 +1315,9 @@ def test_p13d_ending_regen_gone_and_first_probe_dedicated_call():
     assert mode == "llm" and ok(q) == (True, "ok") and llm.calls[0]["call_type"] == "first_probe_render"
     # 질문 문장이 둘이면 첫 문장만 · 질문이 없으면 None
     q2, _ = asyncio.run(FP.render_first_probe(_LLM("출고표를 다시 짜실 때 뭐라고 하셨나요? 반장은 어떻게 받아들였나요?"), leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)"))
-    assert q2 == "출고표를 다시 짜실 때 뭐라고 하셨나요?"
+    # (P13g-2) 문장이 둘이면 첫 문장만 골라내지 않는다 — 쓴 글 전체를 돌려주고 호출자의 확인에서 떨어져 한 번 더 쓴다
+    from diag_project.services.turn_checks import first_probe_question_ok as _ok_g
+    assert q2 == "출고표를 다시 짜실 때 뭐라고 하셨나요? 반장은 어떻게 받아들였나요?" and _ok_g(q2, "출고표를 다시 짰습니다.") == (False, "meta")
     assert asyncio.run(FP.render_first_probe(_LLM("출고표를 다시 짜셨군요."), leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)")) == (None, "miss:no_question")
     assert asyncio.run(FP.render_first_probe(None, leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)")) == (None, "miss:no_llm")
     # (나) 표지 추가: 시점 · 어떤 생각 · 어떤 마음
@@ -1398,7 +1400,7 @@ def test_p13e_first_probe_angles_reaction_cap_and_marks():
             assert ok(t) == (True, "ok") and is_question(t), (coach, t)
             assert IM.first_probe_fallback(coach, 0, a) in [x for y, x in pairs if y == a]
     src = inspect.getsource(D._submit_message_phase3a)
-    assert "first_probe_angle" in src and "_pick_fp(_llm_user_text, _angles_fp)" in src and "_fpf_fp(_pn_fp, _n_fp, _angle_fp)" in src
+    assert "first_probe_angle" in src and "_pick_fp(_llm_user_text, _angles_fp)" in src and "_fpp_fp(_pn_fp, _angle_fp, _used_fb_fp)" in src
     # 반응 질문 — 사례당 한 번: 물은 것이 적히면 방향 후보에서 빠진다
     assert B.asks_reaction("그 말을 듣고 반장은 어떤 반응을 보였습니까?") and B.asks_reaction("그 제안을 야간조가 어떻게 받아들였는지 말씀해 주시겠습니까?")
     assert not B.asks_reaction("그 제안을 리더님은 어떻게 받아들이셨습니까?") and not B.asks_reaction("팀 분위기가 가라앉았던 일이 최근에 있으셨습니까?")
@@ -1427,13 +1429,9 @@ def test_p13f_addressee_check_three_angles_and_parallel_close():
     ok = TC.first_probe_question_ok
     # 1. 상대 확인 — 질문의 '○○에게'는 리더가 직전 답에서 말을 건넨 상대로 말한 사람이어야 한다
     a1 = "출고가 밀려서 야간조 반장과 따로 이야기했고, 물량을 넘기기로 정했습니다."
-    assert ok("그때 야간조 반장에게 직접 어떤 말을 건네셨습니까?", a1) == (True, "ok")
-    assert ok("그때 거래처 담당자에게 직접 어떤 말을 건네셨습니까?", a1) == (False, "who:담당자")
-    assert ok("물량을 넘기기로 정하실 때 창고 직원들에게 직접 어떤 말씀을 하셨나요?", a1) == (False, "who:직원")
-    assert ok("반장을 불러 직접 어떤 말을 하셨습니까?", "반장을 따로 불러 이야기했습니다.") == (True, "ok")
-    assert ok("그 일을 함께 풀면서 리더님께서 직접 어떤 조치를 하셨습니까?", a1) == (True, "ok")      # '함께'·'리더님께서'는 상대가 아니다
-    assert ok("그때 거래처 담당자에게 직접 어떤 말을 건네셨습니까?") == (True, "ok")                   # 리더 답을 주지 않으면 상대는 보지 않는다(종전 호출 꼴)
-    assert "_fpok_fp(_q_fp, _llm_user_text)" in inspect.getsource(D._submit_message_phase3a)
+    # (P13g-1) 통째로 바꾸지 않고 걸린 어절만 지운다 — 아래 test_p13g 에서 본다. 여기서는 확인 함수가 상대를 보지 않는 것만.
+    assert ok("그때 거래처 담당자에게 직접 어떤 말을 건네셨습니까?", a1) == (True, "ok")
+    assert ok("그 일을 함께 풀면서 리더님께서 직접 어떤 조치를 하셨습니까?", a1) == (True, "ok")
     # 2. 각도 셋 — 준비·확인 각도 삭제, 대체 문장은 각도마다 둘, '상대에게' 없음
     assert TC.FIRST_PROBE_ANGLES == ("said", "did", "order") and set(FP.ANGLE_ASK) == set(TC.FIRST_PROBE_ANGLES)
     assert TC.pick_first_probe_angle("창고 일이 밀린 적이 있습니다.", ["prep", "said"]) == "did"      # 옛 세션 기록의 prep 은 무시
@@ -1480,3 +1478,52 @@ def test_p13f_addressee_check_three_angles_and_parallel_close():
     src = inspect.getsource(D._submit_message_phase3a)
     assert "_mar_c(" in src and "_pre_recv_text and instruction_used in (\"EPISODE_OPEN\", \"SWEEP_ANCHOR\")" in src
     assert "state[\"_pre_recv_text\"]" not in src                                           # 세션 상태에 남기지 않는다
+
+
+def test_p13g_addressee_partial_cut_retry_marks_and_short_question_context():
+    """(2026-11-15 P13g) 상대 어절만 지우기 · 떨어지면 한 번 더 쓰기 · 문장 끝 수선 · 짧은 질문 앞 받는 말 남기기 · 받아 둔 받는 말에는 재생성 없음."""
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import first_probe_render as FP, intro_messages as IM, turn_checks as TC
+    fix, ok = TC.first_probe_addressee_fix, TC.first_probe_question_ok
+    # 1. 부분 삭제 — 제3자 목록의 사람이 말을 건넨 상대로 나오지 않았거나, 답에 없는 사람이면 그 어절만 지운다
+    a1 = "납품이 늦어 고객 불만이 컸습니다. 야간조 반장이 반대했지만 물량을 넘기기로 정했습니다."
+    assert fix("물량을 넘기기로 정하실 때, 고객들에게 직접 어떤 말씀을 하셨습니까?", a1) == ("물량을 넘기기로 정하실 때, 직접 어떤 말씀을 하셨습니까?", ["고객들에게"], True)
+    assert fix("반장이 반대했을 때 반장에게 직접 어떤 말을 건네셨습니까?", a1)[1] == []                    # 주어로만 나와도 합격(제3자 목록이 아니다)
+    assert fix("그때 하청 담당자에게 직접 어떤 말을 건네셨습니까?", a1) == ("그때 직접 어떤 말을 건네셨습니까?", ["하청 담당자에게"], True)   # 답에 없는 사람 — 앞에 붙은 명사까지
+    assert fix("고객에게 사과하셨을 때 어떤 말로 시작하셨습니까?", "고객에게 먼저 전화해 사과했습니다.")[1] == []      # 말을 건넨 상대로 말했다
+    assert fix("그 교육을 듣는 수강생들에게 직접 어떤 말씀을 하셨습니까?", a1)[2] is False                  # 꾸미는 절이 남는다 → 온전하지 않음(한 번 더 쓴다)
+    assert fix("고객들이 항의했을 때, 리더께서 그들에게 직접 어떤 말씀을 하셨습니까?", a1)[1] == ["그들에게"]
+    assert "교육생" in TC.THIRD_PARTY_WORDS and "고객" in TC.THIRD_PARTY_WORDS and "팀원" not in TC.THIRD_PARTY_WORDS
+    # 2. 한 번 더 쓰기 — 혼잣말·두 문장·코치 주어 동사는 불합격, 사유를 한 줄로 넘긴다
+    assert ok("순서대로 말씀해 주십시오 — 아니, 규칙상 질문 한 문장이어야 하므로: 무엇부터 하셨습니까?", a1) == (False, "meta")
+    assert ok("무엇을 하셨습니까? 그다음에는 무엇을 하셨습니까?", a1) == (False, "meta")
+    assert ok("물량을 어떤 순서로 넘기셨는지 여쭙고 싶습니까?", a1) == (False, "self_verb")
+    for why in ("closed", "off:어떤 반응", "no_action", "unfinished", "meta", "self_verb", "who"):
+        note = TC.first_probe_retry_note(why)
+        assert note and note in FP.build_first_probe_prompt(leader_answer=a1, persona_name="Daniel", angle="did", retry_note=note)
+    assert "앞서 쓴 질문은 쓸 수 없었다" not in FP.build_first_probe_prompt(leader_answer=a1, persona_name="Daniel", angle="did")
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "await _one_fp(_note_fp(_why1_fp))" in src and '"llm_retry" if _retry_fp else "llm"' in src
+    # 대체 문장 — 세션에서 같은 문장은 한 번만
+    used = []
+    for _ in range(6):
+        t = IM.first_probe_fallback_pick("Ella", "said", used)
+        assert t not in used
+        used.append(t)
+    assert IM.first_probe_fallback_pick("Ella", "said", [])[:3] == "거기서" and IM.first_probe_fallback_pick("Ella", "said", used)
+    # 3. 문장 끝 수선
+    f = TC.finish_sentence_marks
+    assert f("그다음 무엇을 하셨는지 순서대로 말씀해 주십시오?")[0].endswith("주십시오.")
+    assert f("그 뒤 무엇을 하셨는지 들려주세요")[1] == 0                                                   # 청하는 꼴에는 물음표를 붙이지 않는다
+    assert f("직접 진행하신 순서를 여쭙겠습니다: 무엇을 먼저 하셨습니까?")[0] == "무엇을 먼저 하셨습니까?"
+    assert f("어떤 말씀을 하셨는지 들려주실 수 있을까요")[0].endswith("있을까요?")
+    # 4. 짧은 질문 앞의 받는 말 — 길이만으로 떨어진 것은 20어절까지 남긴다(끝맺음·겹침은 그대로)
+    ans = "하반기 운영 횟수는 줄었지만 현장 사례를 넣은 교재 초안을 만들 수 있었습니다. 내년 과정 계획도 이 교재를 기준으로 세우기로 했습니다."
+    recv = "하반기에 운영 횟수는 줄이셨지만 교재 초안까지 만드셨고, 내년 계획을 그 교재 기준으로 세우기로 하셨군요."
+    assert TC.receive_allowed(recv, ans) == (False, "long") and TC.receive_allowed(recv, ans, max_eojeol=TC.RECEIVE_KEEP_LONG_MAX) == (True, "ok")
+    assert TC.receive_allowed("그 결정이 내년까지 이어진 것으로 보입니다.", ans, max_eojeol=20)[1] == "ending"
+    assert "recv_keep_long" in src and "not _tm.get(\"recv_keep_long\")" in src
+    # 5. 받아 둔 받는 말에는 입버릇 재생성을 걸지 않는다
+    i = src.index("(2026-11-15 P13g-5)")
+    assert src.rfind('_tm.get("pre_recv") == "used" and _pre_recv_text', 0, i) > 0 and src.index('_timed_regen(why="tail"', i) > i

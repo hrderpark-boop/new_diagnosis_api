@@ -30,7 +30,8 @@ ANGLE_ASK: dict[str, str] = {
 }
 
 
-def build_first_probe_prompt(*, leader_answer: str, persona_name: str | None, used_endings: list[str] | None = None, angle: str = "said") -> str:
+def build_first_probe_prompt(*, leader_answer: str, persona_name: str | None, used_endings: list[str] | None = None, angle: str = "said",
+                             retry_note: str | None = None) -> str:
     from diag_project.services.persona_register import register_hint
     ans = re.sub(r"\s+", " ", (leader_answer or "").strip())[-ANSWER_TAIL_CHARS:]
     ends = [x for x in (used_endings or []) if x][:6]
@@ -49,12 +50,13 @@ def build_first_probe_prompt(*, leader_answer: str, persona_name: str | None, us
         "- 고를 것을 늘어놓지 않는다. 한 문장에 두 가지를 묻지 않는다.\n"
         f"- 말투: {register_hint(persona_name)}\n"
         + ("- 이번 영역에서 이미 쓴 질문 끝맺음: " + " / ".join(f"'{x}'" for x in ends) + " — 이것과 다른 끝맺음으로 끝낸다.\n" if ends else "")
+        + (f"- 앞서 쓴 질문은 쓸 수 없었다 — {retry_note}. 그 점을 고쳐 새로 쓴다.\n" if retry_note else "")
         + "\n출력: 질문 한 문장만."
     )
 
 
 async def render_first_probe(llm, *, leader_answer: str, persona_name: str | None, used_endings: list[str] | None = None,
-                             angle: str = "said") -> tuple[str | None, str]:
+                             angle: str = "said", retry_note: str | None = None) -> tuple[str | None, str]:
     """(질문 한 문장 | None, 모드). 모드 'llm' | 'stub' | 'miss:<사유>'(no_material·no_llm·error·no_question)."""
     from diag_project.services.persona_register import apply_register
     if not (leader_answer or "").strip():
@@ -63,7 +65,7 @@ async def render_first_probe(llm, *, leader_answer: str, persona_name: str | Non
         return None, "stub"
     if llm is None:
         return None, "miss:no_llm"
-    prompt = build_first_probe_prompt(leader_answer=leader_answer, persona_name=persona_name, used_endings=used_endings, angle=angle)
+    prompt = build_first_probe_prompt(leader_answer=leader_answer, persona_name=persona_name, used_endings=used_endings, angle=angle, retry_note=retry_note)
     try:
         out = await llm._generate_with_retry(prompt=prompt, max_tokens=160, thinking_budget=0, call_type="first_probe_render", temperature=0.4)
     except Exception as e:  # noqa: BLE001
@@ -74,4 +76,6 @@ async def render_first_probe(llm, *, leader_answer: str, persona_name: str | Non
     qs = [x.strip() for x in split_sentences(text) if x.strip() and is_question(x)]
     if not qs:
         return None, "miss:no_question"
-    return apply_register(persona_name, qs[0], scope="questions")[0], "llm"      # 질문 문장이 둘이면 첫 문장만
+    # (2026-11-15 P13g-2) 문장이 둘 이상이면 호출자의 확인에서 떨어진다(한 번 더 쓴다) — 여기서 첫 문장만 골라내지 않는다. p13f Daniel: 혼잣말이 섞인 원문.
+    full = " ".join(x.strip() for x in split_sentences(text) if x.strip())
+    return apply_register(persona_name, full, scope="questions")[0], "llm"

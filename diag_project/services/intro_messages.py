@@ -467,6 +467,20 @@ def first_probe_fallback(persona_name: str | None, n: int = 0, angle: str | None
     return pool[int(n) % len(pool)]
 
 
+def first_probe_fallback_pick(persona_name: str | None, angle: str | None, used: list[str] | None = None) -> str:
+    """(2026-11-15 P13g-4) 같은 대체 문장은 세션에서 한 번만 — 고른 각도의 문장 가운데 아직 쓰지 않은 것, 없으면 다른 각도의 쓰지 않은 것,
+    여섯 개를 다 썼으면 고른 각도의 문장을 다시 돌린다."""
+    pairs = FIRST_PROBE_FALLBACK_BY_ANGLE[persona_key(persona_name)]
+    seen = set(used or [])
+    same = [t for a, t in pairs if a == angle]
+    for pool in (same, [t for _a, t in pairs]):
+        for t in pool:
+            if t not in seen:
+                return t
+    pool = same or [t for _a, t in pairs]
+    return pool[len(seen) % len(pool)]
+
+
 def align_fixed_receive(persona_name: str | None, variant: int = 0) -> str:
     pool = ALIGN_FIXED_RECEIVE[persona_key(persona_name)]
     return pool[int(variant) % len(pool)]
