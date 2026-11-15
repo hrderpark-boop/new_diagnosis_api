@@ -2,11 +2,10 @@
 
 11/11 운영 Olivia 검토: "반대로 하셨다면 어떻게 됐을까요?" 같은 고정 슬롯 질문은 어느 사례에나 붙어 무엇을 묻는지 흐리다.
 리더가 고른 선택과 버린 선택을 낱말로 넣어야 한다 — "시범 운영 없이 바로 전면 도입하셨다면 팀원들은 어떻게 움직였을까요?"
-6명 전부 같은 원칙(Ella 는 슬롯 없음):
+같은 원칙(Ella·Olivia 는 슬롯 없음 — Olivia 의 '그 사람 자리' 질문은 P13e 에서 삭제, 가정 질문은 P12e 부터 쓰지 않는다):
   criterion       Jessica  실제로 내린 결정을 짚고 기준을 묻는 질문
   reason          Lucas    고른 쪽·버린 쪽을 짚고 이유를 한 줄로 청하는 질문
   counterfactual  Olivia   버린 선택(또는 하지 않았을 경우)을 짚은 가정 질문
-  other_side      Olivia   그 장면의 상대를 짚고 그 사람 자리에서 본 모습을 묻는 질문
   cheer           Michael  실제로 한 선택을 짚고 응원하는 평서문(질문은 LLM 본문이 잇는다)
   observation     Daniel   리더가 놓였던 자리를 짚고 선배로서 건네는 평서문
   will            Michael  응원 다음 턴 — 그 상황을 짚고 다시 온다면 무엇부터 할지 묻는 질문
@@ -25,7 +24,7 @@ from diag_project.services.output_guard import (
 
 logger = logging.getLogger(__name__)
 
-QUESTION_KINDS = frozenset({"criterion", "reason", "counterfactual", "other_side", "will"})
+QUESTION_KINDS = frozenset({"criterion", "reason", "counterfactual", "will"})
 STATEMENT_KINDS = frozenset({"cheer", "observation"})
 SLOT_MAX_CHARS = 90
 SLOT_STATEMENT_MAX_EOJEOL = 16     # (P12d-4) 12 → 16 — p12c: Michael 응원 문장이 두 영역 모두 탈락
@@ -45,8 +44,6 @@ _SPEC: dict[str, tuple[str, str]] = {
     "counterfactual": ("리더가 실제로 고른 쪽 대신 '고르지 않은 쪽'을 했다고 가정하고, 그랬다면 그 자리의 사람들이 어떻게 움직였을지 묻는 질문 한 문장. "
                        "꼴: '[고른 쪽] 대신(없이) [고르지 않은 쪽]을 하셨다면, [사람]은 어떻게 …했을까요?' — 가정하는 것은 반드시 '고르지 않은 쪽'이다.",
                        "월세 대신 전세로 무리해서 들어가셨다면 식구들은 어떻게 움직였을까요?"),
-    "other_side": ("리더가 말한 그 장면의 상대(사람)를 리더의 낱말로 짚고, 그 사람 자리에서는 그 장면이 어떻게 보였을지 묻는 질문 한 문장.",
-                   "이사 날짜를 갑자기 들은 집주인 자리에서는 그 전화가 어떤 장면이었을까요?"),
     "cheer": ("리더가 실제로 한 선택 하나를 리더의 낱말 한두 개로 짧게 짚고(열여섯 어절 안쪽 — 답을 다시 읊지 않는다), 그 선택을 응원한다고 말하는 평서문 한 문장. 질문이 아니다. "
               "'좋다·훌륭하다·대단하다·잘하셨다' 같은 평가어 없이 '응원'이라는 말로만.",
               "돌아가는 길인 줄 알면서 월세로 정하신 그 선택, 응원해요."),
@@ -95,7 +92,6 @@ _KIND_SHAPE: dict[str, re.Pattern] = {
     "criterion": re.compile(r"(기준|근거|무엇을 보고|뭘 보고|어디에 두)"),
     "reason": re.compile(r"(이유|왜|까닭)"),
     "counterfactual": re.compile(r"(다면|더라면|았으면|었으면|없이|대신|않고|말고)[^?]*\?"),
-    "other_side": re.compile(r"(입장|자리에서|쪽에서|눈에는|보기에는|편에서)"),
     "cheer": re.compile(r"응원"),
     "will": re.compile(r"(다시|다음에|또)[^?]*\?"),
 }

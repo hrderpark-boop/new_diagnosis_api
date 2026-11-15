@@ -277,7 +277,10 @@ def default_slot_question(slot: str | None, *, formal: bool, topic_text: str | N
 #   (2026-11-15 P13d-2) (나)에 "시점"·"어떤 생각"·"어떤 마음" 추가 — p13c Daniel: '…어떤 생각이 드셨는지, 그리고 이야기를 꺼내신 시점이 …'이 '꺼내신'으로 통과했다.
 FIRST_PROBE_ACTION_MARKS = ("직접", "하신 말·말씀·일·행동·조치", "한/하신/꺼내신/건네신/전하신 (첫) 말·말씀·마디", "말씀하셨", "말씀을 하셨/꺼내셨/건네셨/나누셨",
                             "꺼내신·꺼내셨", "건네신·건네셨", "전하신·전하셨", "조치", "첫마디", "뭐라고·무엇이라고", "어떤 말·무슨 말", "어떻게 움직이셨",
-                            "…하셨(생각·판단·고민·예상·기대·가늠·정·느끼·기억 뒤는 제외)")
+                            "…하셨(생각·판단·고민·예상·기대·가늠·정·느끼·기억 뒤는 제외)",
+                            # (2026-11-15 P13e-1) 조치·순서·준비 쪽 표지
+                            "어떤 조치·일·행동", "무엇을/무엇부터 …셨", "어떻게 진행·처리·정리·준비하셨", "어떤 순서·순서로·순서대로·차례로", "먼저 무엇",
+                            "준비하신·준비하셨", "확인하신·확인하셨", "점검하신·점검하셨", "챙기신·챙기셨", "미리")
 FIRST_PROBE_OFF_MARKS = ("언제", "시점", "어떤 생각", "어떤 마음", "누구와", "누가 함께/같이", "어떤/어느/떠오르는/기억나는/기억에 남는 장면·상황·순간", "장면·상황은 무엇/어땠",
                          "어떤 반응", "반응은 어땠/어떻게/보였", "어떻게 받아들", "어떻게 보였/들었/느꼈",
                          "어떤 기준·판단·근거", "기준·근거는 무엇/어떻게", "이유·까닭은 무엇", "왜",
@@ -286,7 +289,9 @@ _FP_ACTION_RE = re.compile(
     r"직접|하신\s*(말|말씀|일|행동|조치)|(한|하신|건넨|건네신|꺼낸|꺼내신|전한|전하신)\s*(첫\s*)?(말|말씀|마디)"
     r"|말씀(을|이|은)?\s*(먼저\s*)?(하셨|꺼내셨|건네셨|나누셨|드리셨)|말씀하셨|꺼내(신|셨)|건네(신|셨)|전하(신|셨)|조치|첫\s?마디|뭐라고|무엇이라고"
     r"|(어떤|무슨)\s*말|어떻게\s*움직이셨"
-    r"|(?<!생각)(?<!판단)(?<!고민)(?<!예상)(?<!기대)(?<!가늠)(?<!느끼)(?<!기억)(?<!정)하셨")
+    r"|(?<!생각)(?<!판단)(?<!고민)(?<!예상)(?<!기대)(?<!가늠)(?<!느끼)(?<!기억)(?<!정)하셨"
+    r"|(어떤|무슨)\s*(일|행동)|(무엇|뭘)(을|부터)?\s*[^,?]{0,14}셨|어떻게\s*(진행|처리|정리|준비|풀어|나누)[가-힣]{0,3}셨|어떤\s*순서|순서로|순서대로|차례(로|는)|먼저\s*(무엇|뭘|어떤)"
+    r"|(준비|확인|점검)하(신|셨)|챙기(신|셨)|미리")
 _FP_OFF_RE = re.compile(
     r"언제|시점|(어떤|무슨)\s*(생각|마음)|누구와|누가\s*(함께|같이)|(어떤|어느|떠오르는|기억나는|기억에\s*남는)\s*(장면|상황|순간)|(장면|상황)(은|이|을)?\s*(무엇|어땠|어떠|떠올)"
     r"|어떤\s*반응|반응(은|이|을|이나)?\s*[^,]{0,8}(어땠|어떠|어떻게|무엇|보였|보이)|어떻게\s*받아들|어떻게\s*(보였|들었|느꼈)"
@@ -304,18 +309,78 @@ def first_probe_asking_part(question: str | None) -> str:
     return q[end:].strip() or q
 
 
+# (2026-11-15 P13e-1) 예/아니오로 답하게 되는 꼴 — 의문사도 청하는 말도 없이 '…있었나요?', '…하셨습니까?'로 끝나는 질문(p13d: Ella·Jessica·Michael 1건씩)
+_FP_WH_RE = re.compile(r"무엇|무슨|뭐|뭘|어떤|어떻게|어느|어디|누구|누가|얼마|몇\s|왜")
+_FP_ASK_FOR_RE = re.compile(r"(들려|말씀해|알려|짚어|전해|옮겨|설명해|풀어|떠올려|나눠|꺼내)\s*주|궁금|여쭙|여쭤")
+# (2026-11-15 P13e-4) 맺지 않은 문장 — 말줄임표로 끝나거나 '…습니다만', '…지만', '…는데'로 끝난다(p13d Lucas: '…짚어 주시겠습니다만…')
+_FP_UNFINISHED_RE = re.compile(r"(…|\.{2,})\s*$|(습니다만|니다만|지만|는데|은데|인데)[.?!]*\s*$|[,，]\s*$")
+
+
 def first_probe_question_ok(question: str | None) -> tuple[bool, str]:
-    """사례의 첫 꼬리 질문이 리더가 직접 한 말·조치를 묻는가. (합격 여부, 사유: ok | no_question | no_action | off:<걸린 말>)"""
+    """사례의 첫 꼬리 질문이 리더가 직접 한 말·조치를 묻는가.
+    (합격 여부, 사유: ok | no_question | unfinished | closed | no_action | off:<걸린 말>)"""
     q = (question or "").strip()
     if not q:
         return False, "no_question"
+    if _FP_UNFINISHED_RE.search(q):
+        return False, "unfinished"
     part = first_probe_asking_part(q)
     off = _FP_OFF_RE.search(part)
     if off:
         return False, f"off:{off.group(0).strip()}"
+    if not _FP_WH_RE.search(q) and not _FP_ASK_FOR_RE.search(q):
+        return False, "closed"
     if not _FP_ACTION_RE.search(part):
         return False, "no_action"
     return True, "ok"
+
+
+# ── (2026-11-15 P13e-1) 첫 꼬리 질문의 각도 넷 ─────────────────────────────────────────
+#   said 그때 한 말 · did 직접 취한 조치 · order 일을 진행한 순서 · prep 그 전에 준비하거나 확인한 것.
+#   리더의 여는 답에 이미 나온 각도와, 이번 세션에서 직전에 쓴 각도는 피한다. 남은 것 가운데 세션에서 가장 적게 쓴 각도를 고른다(코드가 고른다 —
+#   전용 호출에는 고른 각도 하나만 넘긴다. 기록 first_probe_angle).
+FIRST_PROBE_ANGLES: tuple[str, ...] = ("said", "did", "order", "prep")
+FIRST_PROBE_ANGLE_LABELS: dict[str, str] = {"said": "그때 한 말", "did": "직접 취한 조치", "order": "일을 진행한 순서", "prep": "그 전에 준비하거나 확인한 것"}
+_ANGLE_IN_ANSWER: dict[str, re.Pattern] = {
+    "said": re.compile(r"자고\s?(제안|했|말|이야기|얘기|요청|청했)|(라고|다고|냐고|달라고)\s?(말|했|이야기|얘기|물|요청|설명)|말씀드렸|이야기했|얘기했|물었|물어봤|물어보고|설명했|설명하고|[\"“”]"),
+    "did": re.compile(r"맡겼|미뤘|나눴|나누고|바꿨|줄였|늘렸|만들었|골랐|조정했|반영했|반영하면서|도입했|배정했|넘겼|시범\s?운영(했|하고)|진행하도록\s?했|쓰기로\s?했|다시\s?잡았"),
+    "order": re.compile(r"먼저[^.]{0,40}(뒤|다음|이후|나서)|[가-힣]\s?뒤(에)?[ ,]|고\s?나서|그다음|그\s다음|이후(에)?\s"),
+    "prep": re.compile(r"미리|사전에|(전에|앞서)[^.]{0,14}(확인|준비|정리|살펴|점검)"),
+}
+
+
+def first_probe_angles_in(answer: str | None) -> list[str]:
+    """리더 답에 이미 나온 각도(낱말 기준)."""
+    t = answer or ""
+    return [a for a in FIRST_PROBE_ANGLES if _ANGLE_IN_ANSWER[a].search(t)]
+
+
+def pick_first_probe_angle(answer: str | None, used: list[str] | None = None) -> str:
+    """이번 첫 꼬리 질문의 각도 — 답에 이미 나온 각도와 직전에 쓴 각도를 뺀 것 가운데 세션에서 가장 적게 쓴 것(같으면 목록 순서).
+    다 빠지면 직전 각도만 피한다."""
+    used = [u for u in (used or []) if u in FIRST_PROBE_ANGLES]
+    last = used[-1] if used else None
+    present = set(first_probe_angles_in(answer))
+    cand = [a for a in FIRST_PROBE_ANGLES if a not in present and a != last] or [a for a in FIRST_PROBE_ANGLES if a != last]
+    return min(cand, key=lambda a: (used.count(a), FIRST_PROBE_ANGLES.index(a)))
+
+
+# ── (2026-11-15 P13e-4) 문장 마무리 — 뜻을 바꾸지 않는 부호 수선만 ─────────────────────────
+_WONDER_Q_RE = re.compile(r"(궁금(해요|합니다|하네요|했어요|했습니다))\?")
+_ASK_END_STRICT_RE = re.compile(r"(까요|나요|니까|는지요|실래요|인가요|던가요|[을를]\s*수\s*있(을까요|나요|습니까|겠습니까))$")
+
+
+def finish_sentence_marks(text: str | None) -> tuple[str, int]:
+    """① '…궁금해요?'·'…궁금합니다?' 의 물음표를 마침표로 ② 묻는 어미로 끝나는데 끝 부호가 없으면 물음표를 붙인다. (고친 글, 고친 수)"""
+    t = (text or "")
+    n = 0
+    t2, k = _WONDER_Q_RE.subn(r"\1.", t)
+    n += k
+    tail = t2.rstrip()
+    if tail and tail[-1] not in ".?!…\"'”’)" and _ASK_END_STRICT_RE.search(tail):
+        t2 = tail + "?"
+        n += 1
+    return t2, n
 
 
 # ── (2026-11-13 P12-1·4) 질문이 스스로 서는가 · 질문 끝맺음 ─────────────────────────────

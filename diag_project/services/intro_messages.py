@@ -434,31 +434,36 @@ ALIGN_FIXED_RECEIVE: dict[str, list[str]] = {
 #   리더 답에서 뽑은 낱말을 끼워 넣지 않는다(끼워 넣다 문장이 깨진 전례가 있다).
 # (2026-11-15 P13d-2) 말투별 3종 → 6종. 시작 낱말과 끝맺음이 서로 겹치지 않게 썼다(모두 '그 일에서'로 시작하지 않는다) —
 #   p13c Daniel: 대체 문장·여는 질문·LLM 질문이 모두 '말씀해 주시겠습니까'로 끝나 같은 끝맺음이 한 영역에 몰렸다.
-_FP_POLITE = ["그 일에서 리더님이 직접 하신 말이나 조치를 순서대로 들려주시겠어요?",
-              "리더님이 직접 꺼내신 말과 하신 조치는 무엇이었나요?",
-              "방금 말씀하신 일에서 직접 하신 일을 처음부터 차례로 말씀해 주세요.",
-              "직접 하신 말과 조치를 하나씩 떠올려 주실 수 있을까요?",
-              "먼저 리더님이 뭐라고 말씀하셨고 무엇을 하셨는지 알려 주실래요?",
-              "거기서 리더님 본인은 어떤 말을 하고 어떤 조치를 하셨어요?"]
-_FP_FORMAL = ["그 일에서 리더님께서 직접 하신 말씀이나 조치를 순서대로 들려주시겠습니까?",
-              "리더님께서 직접 꺼내신 말씀과 하신 조치는 무엇이었습니까?",
-              "방금 말씀하신 일에서 직접 하신 일을 처음부터 차례로 말씀해 주십시오.",
-              "직접 하신 말씀과 조치를 하나씩 짚어 주실 수 있겠습니까?",
-              "먼저 리더님께서 뭐라고 말씀하셨고 무엇을 하셨습니까?",
-              "거기서 리더님 본인은 어떤 말씀을 하고 어떤 조치를 하셨는지 궁금합니다."]
-FIRST_PROBE_FALLBACK: dict[str, list[str]] = {
-    "Ella": _FP_POLITE, "Olivia": _FP_POLITE, "Michael": _FP_POLITE, "Jessica": _FP_FORMAL, "Daniel": _FP_FORMAL,
-    "Lucas": ["그 일에서 직접 하신 말이나 조치를 순서대로 말씀해 주시겠습니까?",
-              "직접 꺼내신 말과 하신 조치는 무엇이었습니까?",
-              "방금 말씀하신 일에서 직접 하신 일을 처음부터 차례로 들려주세요.",
-              "본인이 하신 말과 조치를 하나씩 짚어 주실 수 있습니까?",
-              "먼저 뭐라고 말씀하셨고 무엇을 하셨나요?",
-              "거기서 어떤 말을 하고 어떤 조치를 하셨는지 궁금합니다."],
+# (2026-11-15 P13e-1) 네 각도(said 그때 한 말 · did 직접 취한 조치 · order 진행한 순서 · prep 그 전에 준비·확인한 것)가 들어가게 다시 썼다 — (각도, 문장).
+#   여는 답에는 한 말·조치가 이미 나와 있는 일이 많아 순서·준비 쪽을 둘씩 두었다. 전용 호출이 고른 각도와 같은 각도의 문장을 쓴다.
+_FP_POLITE = [("said", "그때 상대에게 리더님이 직접 하신 말은 무엇이었나요?"),
+              ("did", "리더님이 직접 취하신 조치를 하나씩 들려주시겠어요?"),
+              ("order", "그 일을 무엇부터 시작해 어떤 순서로 진행하셨는지 말씀해 주세요."),
+              ("order", "처음 하신 일부터 마지막에 하신 일까지 차례로 짚어 주실 수 있을까요?"),
+              ("prep", "들어가기 전에 미리 준비하신 것은 무엇이었어요?"),
+              ("prep", "시작하기에 앞서 리더님이 직접 확인하신 것을 알려 주실래요?")]
+_FP_FORMAL = [("said", "그때 상대에게 리더님께서 직접 하신 말씀은 무엇이었습니까?"),
+              ("did", "리더님께서 직접 취하신 조치를 하나씩 들려주시겠습니까?"),
+              ("order", "그 일을 무엇부터 시작해 어떤 순서로 진행하셨는지 말씀해 주십시오."),
+              ("order", "처음 하신 일부터 마지막에 하신 일까지 차례로 짚어 주실 수 있겠습니까?"),
+              ("prep", "들어가기 전에 미리 준비하신 것이 무엇이었는지 궁금합니다."),
+              ("prep", "시작하기에 앞서 리더님께서 직접 확인하신 것은 무엇입니까?")]
+_FP_LUCAS = [("said", "그때 상대에게 직접 하신 말은 무엇이었습니까?"),
+             ("did", "직접 취하신 조치를 하나씩 말씀해 주시겠습니까?"),
+             ("order", "그 일을 무엇부터 시작해 어떤 순서로 진행하셨는지 들려주세요."),
+             ("order", "처음 하신 일부터 마지막에 하신 일까지 차례로 짚어 주실 수 있습니까?"),
+             ("prep", "들어가기 전에 미리 준비하신 것이 무엇이었는지 궁금합니다."),
+             ("prep", "시작하기에 앞서 본인이 직접 확인하신 것은 무엇이었나요?")]
+FIRST_PROBE_FALLBACK_BY_ANGLE: dict[str, list[tuple[str, str]]] = {
+    "Ella": _FP_POLITE, "Olivia": _FP_POLITE, "Michael": _FP_POLITE, "Jessica": _FP_FORMAL, "Daniel": _FP_FORMAL, "Lucas": _FP_LUCAS,
 }
+FIRST_PROBE_FALLBACK: dict[str, list[str]] = {k: [t for _a, t in v] for k, v in FIRST_PROBE_FALLBACK_BY_ANGLE.items()}
 
 
-def first_probe_fallback(persona_name: str | None, n: int = 0) -> str:
-    pool = FIRST_PROBE_FALLBACK[persona_key(persona_name)]
+def first_probe_fallback(persona_name: str | None, n: int = 0, angle: str | None = None) -> str:
+    """대체 문장 — angle 이 주어지면 그 각도의 문장 가운데서, 아니면 여섯 개를 차례로(세션에서 쓴 횟수 n 으로 돌린다)."""
+    pairs = FIRST_PROBE_FALLBACK_BY_ANGLE[persona_key(persona_name)]
+    pool = [t for a, t in pairs if a == angle] or [t for _a, t in pairs]
     return pool[int(n) % len(pool)]
 
 
@@ -771,22 +776,22 @@ _FINAL_DEFAULT = ("긴 시간 함께해 주셔서 감사합니다. 오늘 나눈
 
 
 # (2026-11-11 P10-2) 페르소나 슬롯 — 고정 문장 금지. 문장은 LLM 이 그 사례의 구체 내용(리더가 고른 선택과 버린 선택)을 넣어 쓴다(services/slot_render.py).
-#   여기에는 '코치마다 무엇을 하는가'(종류)와 상한만 둔다. 챕터당 1회·세션 5회, Michael 실행 의지 질문은 세션 3회. Ella 는 슬롯 없음.
-#   Jessica 기준 / Lucas 한 줄 이유 / Olivia 버린 선택 가정·상대 자리 / Michael 응원(+다음 턴 실행 의지) / Daniel 선배 관찰.
+#   여기에는 '코치마다 무엇을 하는가'(종류)와 상한만 둔다. 챕터당 1회·세션 5회, Michael 실행 의지 질문은 세션 3회. Ella·Olivia 는 슬롯 없음.
+#   Jessica 기준 / Lucas 한 줄 이유 / Michael 응원(+다음 턴 실행 의지) / Daniel 선배 관찰.
 SLOT_KINDS: dict[str, tuple[str, ...]] = {
     "Jessica": ("criterion",), "Lucas": ("reason",),
-    # (2026-11-14 P12e-1) 반사실 질문('그렇게 하지 않으셨다면 …')은 삭제 — 일어나지 않은 일을 가정해 묻지 않는다. Olivia 는 '그 사람 자리' 한 종류만.
-    "Olivia": ("other_side",),
+    # (2026-11-14 P12e-1) 반사실 질문('그렇게 하지 않으셨다면 …')은 삭제 — 일어나지 않은 일을 가정해 묻지 않는다.
+    # (2026-11-15 P13e-3) '그 사람 자리' 질문도 삭제 — 다른 사람의 속을 짐작하게 하는 질문이다(p13d: '강사님들은 그 조정이 어떻게 보였을까요?'). Olivia 는 슬롯 없음.
     "Michael": ("cheer",), "Daniel": ("observation",),
 }
 # 슬롯 질문이 겨냥하는 사례 슬롯(이미 찼으면 넣지 않는다). 평서문 종류(응원·관찰)는 겨냥 슬롯 없음.
-SLOT_KIND_TARGET: dict[str, str] = {"criterion": "criterion", "reason": "criterion", "counterfactual": "criterion", "other_side": "reaction"}
+SLOT_KIND_TARGET: dict[str, str] = {"criterion": "criterion", "reason": "criterion"}
 MICHAEL_WILL_SESSION_CAP = 3
 SLOT_SESSION_CAP = 5
 
 
 def slot_kind_for(persona_name: str | None, n_used: int = 0) -> str | None:
-    """이 코치가 이번에 쓸 슬롯 종류 — 세션에서 이미 쓴 횟수로 돌린다(Olivia 만 두 종류). 슬롯 없는 코치는 None."""
+    """이 코치가 이번에 쓸 슬롯 종류 — 세션에서 이미 쓴 횟수로 돌린다. 슬롯 없는 코치(Ella·Olivia)는 None."""
     kinds = SLOT_KINDS.get(persona_key(persona_name))
     return kinds[int(n_used) % len(kinds)] if kinds else None
 

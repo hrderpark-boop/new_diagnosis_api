@@ -82,7 +82,6 @@ def test_p10_2_definition_questions_are_complete_sentences():
 def test_p10_2_slot_sentence_must_carry_case_words():
     from diag_project.services.slot_render import slot_sentence_ok as ok
     good = [("counterfactual", "시범 운영 없이 바로 전면 도입하셨다면 팀원들은 어떻게 움직였을까요?", "Olivia"),
-            ("other_side", "전면 도입을 원했던 강사들 자리에서는 시범 운영 결정이 어떤 장면이었을까요?", "Olivia"),
             ("criterion", "전면 도입 대신 두 과정 시범 운영으로 정하실 때 무엇을 기준으로 삼으셨습니까?", "Jessica"),
             ("reason", "전면 도입 말고 시범 운영을 고른 이유, 한 줄로 하면 무엇입니까?", "Lucas"),
             ("cheer", "강사들 반발이 있는데도 시범 운영부터 가신 그 선택, 응원해요.", "Michael"),
@@ -91,7 +90,7 @@ def test_p10_2_slot_sentence_must_carry_case_words():
     for kind, text, p in good:
         assert ok(kind, text, CASE, persona_name=p) == (True, ""), (kind, text)
     # 옛 고정 슬롯 문장은 전부 불합격 — 사례 낱말이 없다
-    for kind, text, p in (("counterfactual", "반대로 하셨다면 어떻게 됐을까요?", "Olivia"), ("other_side", "그 팀원 입장에서는 어떤 장면이었을까요?", "Olivia"),
+    for kind, text, p in (("counterfactual", "반대로 하셨다면 어떻게 됐을까요?", "Olivia"),
                           ("criterion", "그 결정의 기준은 무엇이었습니까?", "Jessica"), ("reason", "그 방법을 고른 이유, 한 줄로 하면요?", "Lucas"),
                           ("cheer", "그 선택, 응원합니다.", "Michael"), ("observation", "그 자리, 저도 압니다. 쉽지 않지요.", "Daniel"),
                           ("will", "다음에 비슷한 상황이 오면 어떻게 하실 생각이세요?", "Michael")):

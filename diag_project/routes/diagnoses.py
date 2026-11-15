@@ -1459,6 +1459,12 @@ async def _submit_message_phase3a(
         if instruction_used == "EPISODE_PROBE" and _bei_ep is not None and not state.get("bei_reask_only"):
             # (2026-11-15 P13b-1) 리더가 떠오르지 않는다·옮기기 어렵다고 답한 것은 다시 캐묻지 않는다 — 방금 물은 것을 다 물은 것으로 치고 다음 것으로
             _prev_slot_nr = _bei_ep.get("ask_slot")
+            # (2026-11-15 P13e-3) 다른 사람의 반응은 사례당 한 번만 묻는다 — 직전 코치 질문이 반응을 물었으면 사례에 적어 둔다.
+            #   적힌 뒤에는 방향 후보에서 반응 칸이 빠지고(bei_engine.next_slot), 사례 카드에 '이미 물었다'는 한 줄이 들어간다.
+            _prev_coach_rx = next((m.content or "" for m in reversed(history_messages) if (m.role == MessageRole.MODEL or m.role == "model")), "")
+            if _bei.asks_reaction(_prev_coach_rx):
+                _bei_ep = _bei.note_reaction_asked(_bei_ep)
+                _tm["reaction_asked"] = int(_bei_ep.get("reaction_asked") or 0)
             if _prev_slot_nr and _bei.is_no_recall_text(_bei_user_text):
                 _bei_ep = _bei.exhaust_slot(_bei_ep, _prev_slot_nr)
                 _tm["no_recall_skip"] = _prev_slot_nr
@@ -1810,28 +1816,34 @@ async def _submit_message_phase3a(
             #   기록 first_probe: llm | fallback, first_probe_why: 불합격 사유, first_probe_s: 전용 호출에 걸린 시간(초).
             from diag_project.services.first_probe_render import render_first_probe as _rfp_fp
             from diag_project.services.intro_messages import first_probe_fallback as _fpf_fp
-            from diag_project.services.turn_checks import ending_counts as _ec_fp, ending_label as _el_fp, first_probe_question_ok as _fpok_fp
+            from diag_project.services.turn_checks import (ending_counts as _ec_fp, ending_label as _el_fp, first_probe_question_ok as _fpok_fp,
+                                                             pick_first_probe_angle as _pick_fp)
             _pn_fp = (state.get("coach_persona") or {}).get("name")
+            # (2026-11-15 P13e-1) 묻는 각도는 넷 — 리더 답에 이미 나온 각도와 이번 세션에서 직전에 쓴 각도를 피해 하나를 고른다. 기록 first_probe_angle.
+            _sd_fp = dict(session.self_assessment_data or {})
+            _angles_fp = [str(x) for x in (_sd_fp.get("first_probe_angles") or [])]
+            _angle_fp = _pick_fp(_llm_user_text, _angles_fp)
+            _tm["first_probe_angle"] = _angle_fp
             _ends_fp = [_el_fp(k) for k, _v in sorted(_ec_fp(_chapter_questions()).items(), key=lambda kv: -kv[1])]
             _t0_fp = _time.perf_counter()
-            _q_fp, _mode_fp = await _rfp_fp(llm, leader_answer=_llm_user_text, persona_name=_pn_fp, used_endings=_ends_fp)
+            _q_fp, _mode_fp = await _rfp_fp(llm, leader_answer=_llm_user_text, persona_name=_pn_fp, used_endings=_ends_fp, angle=_angle_fp)
             _tm["first_probe_s"] = round(_time.perf_counter() - _t0_fp, 2)
             _ok_fp, _why_fp = _fpok_fp(_q_fp) if _q_fp else (False, _mode_fp)
             if _ok_fp:
                 _fp_final = _q_fp
                 _tm["first_probe"] = "llm"
             else:
-                _sd_fp = dict(session.self_assessment_data or {})
                 _n_fp = int(_sd_fp.get("first_probe_fb_n") or 0)
-                _fp_final = _fpf_fp(_pn_fp, _n_fp)
+                _fp_final = _fpf_fp(_pn_fp, _n_fp, _angle_fp)      # (P13e-1) 고른 각도와 같은 각도의 대체 문장
                 _sd_fp["first_probe_fb_n"] = _n_fp + 1
-                session.self_assessment_data = _sd_fp
-                from sqlalchemy.orm.attributes import flag_modified as _fm_fp
-                _fm_fp(session, "self_assessment_data")
                 _tm["first_probe"] = "fallback"; _tm["first_probe_why"] = _why_fp
                 if _q_fp:
                     _tm["first_probe_cut"] = _q_fp[:200]      # 떨어진 LLM 질문(보고용)
                 logger.info("🎯 첫 꼬리 질문 불합격(%s) → 대체 문장 %d번", _why_fp, _n_fp)
+            _sd_fp["first_probe_angles"] = (_angles_fp + [_angle_fp])[-40:]
+            session.self_assessment_data = _sd_fp
+            from sqlalchemy.orm.attributes import flag_modified as _fm_fp
+            _fm_fp(session, "self_assessment_data")
             llm_output = {"reply": _fp_final}
             _tm["no_regen"] = 1
         elif instruction_used == "COMPETENCY_ALIGN":
@@ -3072,7 +3084,7 @@ async def _submit_message_phase3a(
                                                rounds=1, avoid_text=(_q_now_s if _stmt_slot else None))
             _tm["slot_render"] = _slot_mode
             if _slot_txt:
-                if _slot_kind in ("criterion", "reason", "counterfactual", "other_side"):
+                if _slot_kind in ("criterion", "reason"):
                     clean_reply = " ".join(_lead_s + [_slot_txt]).strip()                      # LLM 질문을 슬롯 질문으로 대체
                 else:
                     clean_reply = " ".join([_slot_txt] + ([_q_now_s] if _q_now_s else [])).strip()   # (P11b-4) 관찰·응원 문장 + LLM 질문 — 받는 문장은 뺀다
@@ -3554,6 +3566,12 @@ async def _submit_message_phase3a(
 
     if _reask_kind and _reask_final and system_override_text is None and not _llm_error and not needs_user_decision:
         clean_reply = _reask_final          # (P11d-1) 다시 묻기 턴은 사과 1문장 + 질문 1개(또는 질문 1개)로 고정
+    if system_override_text is None and not _llm_error and (clean_reply or "").strip():
+        # (2026-11-15 P13e-4) 문장 마무리 — 뜻을 바꾸지 않는 부호 수선만: '…궁금해요?' 의 물음표를 마침표로, 묻는 어미로 끝나는데 끝 부호가 없으면 물음표
+        from diag_project.services.turn_checks import finish_sentence_marks as _fsm_e
+        clean_reply, _n_fsm = _fsm_e(clean_reply)
+        if _n_fsm:
+            _tm["mark_fix"] = _n_fsm
     if _fp_final and system_override_text is None and not _llm_error and not needs_user_decision:
         clean_reply = _fp_final             # (P13d-2) 첫 꼬리 질문 턴은 질문 한 문장으로 고정
 
@@ -3855,6 +3873,8 @@ async def _submit_message_phase3a(
             "first_probe": _tm.get("first_probe"), "first_probe_why": _tm.get("first_probe_why"),
             # (P13d) first_probe_s 첫 꼬리 전용 호출 시간(초) · first_probe_cut 떨어진 LLM 질문 · recv_allow 허용 목록에서 떨어진 받는 말 [[사유, 문장], …]
             "first_probe_s": _tm.get("first_probe_s"), "first_probe_cut": _tm.get("first_probe_cut"), "recv_allow": _tm.get("recv_allow"),
+            # (P13e) first_probe_angle 첫 꼬리 질문의 각도(said·did·order·prep) · reaction_asked 이 사례에서 반응을 물은 횟수 · mark_fix 부호 수선 수
+            "first_probe_angle": _tm.get("first_probe_angle"), "reaction_asked": _tm.get("reaction_asked"), "mark_fix": _tm.get("mark_fix"),
             # (P12e) same_judge '같은 사건' 판정(후보 표지·판정 결과) · reframe_fixed 재질문을 사전 문안으로 조립
             "same_judge": _tm.get("same_judge"), "reframe_fixed": _tm.get("reframe_fixed"), "close_clause_cut": _tm.get("close_clause_cut"),
         })

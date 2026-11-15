@@ -1006,7 +1006,7 @@ def test_p13_1_first_probe_is_leader_action_and_ask_order():
     assert ep["ask_first"] is True and B.ask_slot(ep) == "action"
     card = build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=ep, bei_turns=2, budget=18)
     from diag_project.prompts.phase3a.episode_card import FIRST_PROBE_HEADER
-    assert card.startswith(FIRST_PROBE_HEADER) and "이 턴에 묻는 것은 하나다" in card and "한 줄로 줄여 말한 행동이 있으면" in card
+    assert card == FIRST_PROBE_HEADER      # (P13e) 전용 호출이 질문을 만든다 — 카드는 머리 한 줄
     assert "들음:" not in card and "아직:" not in card and "때와 함께 있던 사람" not in card           # (P13b-1) 전용 지시 — 들은 것·남은 것 목록을 주지 않는다
     assert B.next_slot(ep) == "criterion"                                                              # 그 뒤로는 기준 → 결과 → 반응
     ep = B.bump_slot_ask(ep, "criterion"); ep["slots"]["criterion"] = {"status": "filled", "quote": "x"}
@@ -1135,12 +1135,10 @@ def test_p13b_first_probe_turn_has_its_own_instruction():
     ep["slots"]["action"] = {"status": "filled", "quote": "출고 순서를 바꾸자고 했습니다"}
     ep = B.bump_slot_ask(ep, B.next_slot(ep))
     card = EC.build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=ep, bei_turns=2, budget=18, used_endings=["말씀해 주시겠습니까"])
-    assert card.startswith(EC.FIRST_PROBE_HEADER) and "이 턴에 묻지 않는 것: 때·자리·장면, 다른 사람의 반응, 판단 기준, 결과" in card
-    assert "출고 순서" not in card and "끝맺음" not in card and "누가 무엇을 했을 때인지" not in card      # (P13c-1) 괄호 설명 삭제
-    txt = EC.bei_turn_text({"instruction_for_this_turn": "EPISODE_PROBE", "bei_card": card, "coach_persona": {"name": "Daniel"}})
-    assert EC.FIRST_PROBE_GUIDE in txt and EC.BEI_GUIDES["EPISODE_PROBE"] not in txt
-    assert "다음 질문은 아직 듣지 못한 것(" not in txt and "이 턴에 묻는 것은 리더 본인이 직접 한 말이나 조치 하나다" in txt
-    assert "한 턴에 질문 문장은 하나다" in txt and "가정해서 묻지 않는다" in txt                       # 나머지 공통 규칙은 그대로
+    # (P13d-2 → P13e) 첫 꼬리 질문은 전용 호출이 만든다 — 본 호출용 전용 카드·가이드·형식 규칙은 삭제, 카드는 머리 한 줄뿐
+    assert card == EC.FIRST_PROBE_HEADER
+    for gone in ("FIRST_PROBE_GUIDE", "first_probe_format_rules", "_first_probe_lines", "_FIRST_RULE_WHAT"):
+        assert not hasattr(EC, gone), gone
     # 둘째 꼬리 질문부터는 종전 카드·규칙
     ep2 = B.bump_slot_ask(ep, B.next_slot(ep))
     card2 = EC.build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=ep2, bei_turns=3, budget=18)
@@ -1149,7 +1147,7 @@ def test_p13b_first_probe_turn_has_its_own_instruction():
     # 꼬리 질문이 하나뿐인 훑는 질문도 같은 지시
     card3 = EC.build_episode_card(instruction="SWEEP_FOLLOWUP", chapter="work_management", ep=ep, bei_turns=9, budget=18)
     txt3 = EC.bei_turn_text({"instruction_for_this_turn": "SWEEP_FOLLOWUP", "bei_card": card3, "coach_persona": {"name": "Daniel"}})
-    assert card3.startswith(EC.FIRST_PROBE_HEADER) and "다음 질문은 아직 듣지 못한 것(" not in txt3
+    assert card3 == EC.FIRST_PROBE_HEADER and txt3
     # 기준 칸 지시문 — 출력에 옮겨지던 낱말을 뺐다
     assert "판단의 근거" not in B.SLOT_HINTS["criterion"] and "리더가 먼저 말했을 때만" in B.SLOT_HINTS["criterion"]
     # 떠오르지 않는다·옮기기 어렵다 → 방금 향한 칸은 더 묻지 않는다
@@ -1297,7 +1295,7 @@ def test_p13d_ending_regen_gone_and_first_probe_dedicated_call():
     assert '_tm["first_probe"] = "llm"' in blk and '_tm["first_probe"] = "fallback"' in blk and '_tm["no_regen"] = 1' in blk and '_tm["first_probe_s"]' in blk
     assert src.count("clean_reply = _fp_final") == 2
     # 넘기는 것: 리더의 직전 답 · 말투 · 이번 영역에서 쓴 끝맺음. 넘기지 않는 것: 칸 상태 · 방향 힌트 · 코치 프로필 · 영역 정의
-    assert set(inspect.signature(FP.render_first_probe).parameters) == {"llm", "leader_answer", "persona_name", "used_endings"}
+    assert set(inspect.signature(FP.render_first_probe).parameters) == {"llm", "leader_answer", "persona_name", "used_endings", "angle"}
     pr = FP.build_first_probe_prompt(leader_answer="야간 조 반장과 출고표를 다시 짰습니다.", persona_name="Daniel (다니엘)", used_endings=["말씀해 주시겠습니까"])
     assert "야간 조 반장과 출고표를 다시 짰습니다." in pr and "합쇼체" in pr and "'말씀해 주시겠습니까'" in pr
     assert "묻지 않는 것: 때·자리·장면, 다른 사람의 반응, 리더의 생각·기준, 결과" in pr
@@ -1327,7 +1325,7 @@ def test_p13d_ending_regen_gone_and_first_probe_dedicated_call():
     # 대체 문장 6종: 시작 낱말·끝맺음이 서로 겹치지 않고, '그 일에서'로 시작하는 것은 하나뿐
     for coach, pool in IM.FIRST_PROBE_FALLBACK.items():
         assert len({x.split()[0] for x in pool}) == 6 and len({tail_key(x) for x in pool}) == 6, coach
-        assert sum(1 for x in pool if x.startswith("그 일에서")) == 1, coach
+        assert sum(1 for x in pool if x.startswith("그 일에서")) <= 1, coach      # (P13e-1) 각도별로 다시 써서 지금은 0개
 
 
 def test_p13d_receive_allow_list_and_request_forms():
@@ -1364,3 +1362,57 @@ def test_p13d_receive_allow_list_and_request_forms():
     for s in ("그렇게 표를 옮겨 주셨군요.", "말씀해 주셔서 감사합니다."):
         assert not is_question(s), s
     assert keep_first_question("표가 막힌 곳은 어디였습니까? 그때 꺼내신 말씀을 그대로 옮겨 주십시오.") == ("표가 막힌 곳은 어디였습니까?", 1)
+
+
+def test_p13e_first_probe_angles_reaction_cap_and_marks():
+    """(2026-11-15 P13e) 첫 꼬리 질문의 각도 넷 · 닫힌 질문·맺지 않은 문장은 대체 · 반응 질문 사례당 1회 · 부호 수선 · Olivia 슬롯 없음."""
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B, first_probe_render as FP, intro_messages as IM, slot_judge as SJ, turn_checks as TC
+    from diag_project.services.output_guard import is_question
+    # 각도 — 답에 이미 나온 각도와 직전 각도는 피한다
+    ans = "출고가 밀려서 제가 먼저 야간조에 물량을 넘기자고 제안했습니다."
+    assert "said" in TC.first_probe_angles_in(ans) and TC.pick_first_probe_angle(ans, []) != "said"
+    assert TC.pick_first_probe_angle("창고 일이 밀린 적이 있습니다.", ["said"]) == "did"
+    used = []
+    for _ in range(8):
+        a = TC.pick_first_probe_angle("창고 일이 밀린 적이 있습니다.", used)
+        assert not used or a != used[-1]
+        used.append(a)
+    assert set(used) == set(TC.FIRST_PROBE_ANGLES)
+    for a in TC.FIRST_PROBE_ANGLES:
+        pr = FP.build_first_probe_prompt(leader_answer=ans, persona_name="Daniel", angle=a)
+        assert FP.ANGLE_ASK[a] in pr and "지어내지 않는다" in pr and "그렇다·아니다로 답하게 되는 꼴" in pr and "높임은 리더에게만" in pr
+    # 확인 — 조치·순서·준비 표지, 닫힌 질문, 맺지 않은 문장
+    ok = TC.first_probe_question_ok
+    for q in ("창고 물량을 넘기기 전에 미리 확인하신 것은 무엇이었습니까?", "그 일을 무엇부터 시작해 어떤 순서로 진행하셨는지 말씀해 주십시오.",
+              "야간조에 물량을 넘기면서 직접 취하신 조치를 들려주시겠습니까?"):
+        assert ok(q) == (True, "ok"), (q, ok(q))
+    assert ok("야간조 반장에게 먼저 말을 건네셨습니까?") == (False, "closed")
+    assert ok("그 자리에서 하신 조치가 있었나요?") == (False, "closed")
+    assert ok("그 자리에서 직접 어떤 말을 건네셨는지 짚어 주시겠습니다만…") == (False, "unfinished")
+    # 대체 문장 — 말투별 6종, 네 각도가 모두 들어 있고 각도를 주면 그 각도의 문장
+    for coach, pairs in IM.FIRST_PROBE_FALLBACK_BY_ANGLE.items():
+        assert len(pairs) == 6 and {a for a, _t in pairs} == set(TC.FIRST_PROBE_ANGLES), coach
+        for a, t in pairs:
+            assert ok(t) == (True, "ok") and is_question(t), (coach, t)
+            assert IM.first_probe_fallback(coach, 0, a) in [x for y, x in pairs if y == a]
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "first_probe_angle" in src and "_pick_fp(_llm_user_text, _angles_fp)" in src and "_fpf_fp(_pn_fp, _n_fp, _angle_fp)" in src
+    # 반응 질문 — 사례당 한 번: 물은 것이 적히면 방향 후보에서 빠진다
+    assert B.asks_reaction("그 말을 듣고 반장은 어떤 반응을 보였습니까?") and B.asks_reaction("그 제안을 야간조가 어떻게 받아들였는지 말씀해 주시겠습니까?")
+    assert not B.asks_reaction("그 제안을 리더님은 어떻게 받아들이셨습니까?") and not B.asks_reaction("팀 분위기가 가라앉았던 일이 최근에 있으셨습니까?")
+    ep = {"idx": 1, "slots": {k: {"status": "filled", "quote": "x"} for k in B.SLOT_KEYS}, "slot_asks": {"action": 1}}
+    ep["slots"]["reaction"] = {"status": "empty", "quote": ""}
+    assert B.next_slot(ep) == "reaction"
+    assert B.next_slot(B.note_reaction_asked(ep)) is None
+    assert "_bei.asks_reaction(_prev_coach_rx)" in src
+    # 부호 수선 — 뜻은 그대로
+    assert TC.finish_sentence_marks("어떤 말로 전하셨는지 궁금해요?") == ("어떤 말로 전하셨는지 궁금해요.", 1)
+    assert TC.finish_sentence_marks("어떤 말씀을 하셨는지 들려주실 수 있을까요") == ("어떤 말씀을 하셨는지 들려주실 수 있을까요?", 1)
+    assert TC.finish_sentence_marks("그렇게 정하셨군요. 그 뒤에 무엇을 하셨습니까?")[1] == 0
+    # 같은 장면 — 기준은 리더의 결정·행동, 애매하면 다른 장면
+    sj = inspect.getsource(SJ.judge_slots)
+    assert "리더의 결정·행동이 그 이야기의 결정·행동과 같은 것" in sj and "애매하면 다른 장면으로 본다" in sj and "같은 때·같은 사람·같은 일" not in sj.split("same_as: 아래")[1]
+    # Olivia — '그 사람 자리' 슬롯 삭제
+    assert IM.slot_kind_for("Olivia", 0) is None and "Olivia" not in IM.SLOT_KINDS

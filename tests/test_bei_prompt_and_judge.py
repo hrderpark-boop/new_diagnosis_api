@@ -53,7 +53,7 @@ def test_episode_card_open_and_sweep_carry_system_anchor():
     assert "②의 힌트: 아까 1번째 사례" in card2
     ep = _ep(kind="sweep", leader_turns=1)
     card3 = EC.build_episode_card(instruction="SWEEP_FOLLOWUP", chapter=CH, ep=ep, bei_turns=13, budget=16)
-    assert card3.startswith(EC.FIRST_PROBE_HEADER) and "리더 본인이 직접 한 말이나 조치" in card3 and "마무리한다" in card3      # (P13b-1) 첫 꼬리 질문과 같은 전용 지시
+    assert card3 == EC.FIRST_PROBE_HEADER      # (P13e) 훑는 질문의 꼬리 질문도 전용 호출이 만든다 — 카드는 머리 한 줄
 
 
 def test_bei_turn_text_has_persona_card_guide_and_rules():
@@ -183,10 +183,10 @@ def test_p4_1_slot_variants_rotate_per_session_and_caps():
     assert SLOT_SESSION_CAP == 5 and MICHAEL_WILL_SESSION_CAP == 3
     for gone in ("PERSONA_SLOT_VARIANTS", "MICHAEL_WILL_QUESTIONS", "next_slot_sentence", "michael_will_question", "slot_variants_for"):
         assert not hasattr(M, gone), gone                       # 고정 슬롯 문장·순환 함수는 전부 삭제
-    assert set(SLOT_KINDS) == {"Jessica", "Lucas", "Olivia", "Michael", "Daniel"} and slot_kind_for("Ella", 0) is None
+    assert set(SLOT_KINDS) == {"Jessica", "Lucas", "Michael", "Daniel"} and slot_kind_for("Ella", 0) is None
     assert slot_kind_for("Jessica", 0) == "criterion" and slot_kind_for("Lucas", 2) == "reason" and slot_kind_for("Michael", 1) == "cheer"
-    assert [slot_kind_for("Olivia", i) for i in range(5)] == ["other_side"] * 5      # (P12e-1) 반사실 질문은 삭제 — 일어나지 않은 일을 가정해 묻지 않는다
-    assert SLOT_KIND_TARGET["other_side"] == "reaction" and SLOT_KIND_TARGET["counterfactual"] == "criterion" and "cheer" not in SLOT_KIND_TARGET
+    assert [slot_kind_for("Olivia", i) for i in range(5)] == [None] * 5      # (P12e-1) 반사실 질문 삭제 · (P13e-3) '그 사람 자리' 질문 삭제 — Olivia 는 슬롯 없음
+    assert set(SLOT_KIND_TARGET) == {"criterion", "reason"} and "cheer" not in SLOT_KIND_TARGET
     # 정의 질문 5종 — 코치마다 5개 서로 다르고 {cn_eul} 자리 포함
     for k, pool in DEFINITION_VARIANTS.items():
         assert len(pool) == 5 == len(set(pool)) and all(("{cn_eul}" in v or "{cn_eun}" in v or "{cn_iga}" in v or "{cn}" in v) for v in pool), k

@@ -42,17 +42,6 @@ def _quote_line(ep: dict, key: str) -> str:
 FIRST_PROBE_HEADER = "# 방금 들은 일에서 리더가 직접 한 것을 묻는 턴"
 
 
-def _first_probe_lines() -> list[str]:
-    """(P13b-1) 사례의 첫 꼬리 질문 턴 전용 지시 — 묻는 것은 하나, 리더가 방금 말한 일에서 본인이 직접 한 말이나 조치."""
-    return [
-        "이 턴에 묻는 것은 하나다 — 리더가 방금 말한 일에서 리더 본인이 직접 한 말이나 조치.",
-        # (2026-11-15 P13c-1) 괄호 설명('누가 무엇을 했을 때인지')을 뺐다 — 시뮬 p13b Daniel: 그 말을 '누가·언제를 물으라'로 읽어 때·장면을 물었다(9건 중 3건)
-        "질문 문장에는 리더가 방금 말한 일의 낱말 하나를 넣는다. 리더가 한 줄로 줄여 말한 행동이 있으면 그 행동을 실제로 어떻게 했는지 묻는다.",
-        "이 턴에 묻지 않는 것: 때·자리·장면, 다른 사람의 반응, 판단 기준, 결과 — 다음 턴들에서 묻는다.",
-        "질문 문장은 하나만 쓴다. 질문 앞 평서문은 쓰지 않아도 된다.",
-    ]
-
-
 def build_episode_card(
     *,
     instruction: str,
@@ -73,11 +62,8 @@ def build_episode_card(
     sweep_seq = 연속 SWEEP 순번(2 이상이면 앵커 앞 다리 문장 필수, P4-5). bridge_material = 앞 사례에서 리더가 쓴 말(다리 재료)."""
     L: list[str] = []
     if instruction == "EPISODE_PROBE" and ep and ep.get("ask_first"):
-        # (2026-11-15 P13b-1) 사례의 첫 꼬리 질문 턴은 전용 지시 — 들은 것·남은 것 목록을 주지 않고 물을 것 하나만 준다.
-        #   종전: 방향을 힌트 한 줄로 넘겼더니 9건 중 4건이 기준·결과·반응을 먼저 물었다(시뮬 p13_1).
-        L.append(FIRST_PROBE_HEADER)
-        L.extend(_first_probe_lines())
-        return "\n".join(L)
+        # (2026-11-15 P13d-2 → P13e) 사례의 첫 꼬리 질문 턴 — 질문은 전용 호출(first_probe_render)이 만든다. 본 호출을 부르지 않으므로 카드는 머리 한 줄뿐.
+        return FIRST_PROBE_HEADER
     if instruction in ("EPISODE_PROBE", "NO_CASE_REFRAME") and ep:
         n = ep.get("idx", 1)
         k = int(ep.get("leader_turns") or 0)
@@ -101,6 +87,9 @@ def build_episode_card(
             if nxt in partial:
                 L.append("이 한 가지는 리더가 이미 일부를 말했다(위 '반쯤'의 인용). 이미 말한 것은 다시 묻지 않고 빠진 것만 묻는다.")
             L.append("때·사람(언제였는지, 누가 함께 있었는지)만 따로 묻는 질문은 하지 않는다.")
+            # (2026-11-15 P13e-3) 다른 사람의 반응은 사례당 한 번 — 이미 물었으면 이번 질문에서는 묻지 않게 한 줄을 넣는다(물은 적이 없으면 넣지 않는다)
+            if int(ep.get("reaction_asked") or 0) >= 1 and nxt != "reaction":
+                L.append("이 사례에서 다른 사람이 어떻게 받았는지는 이미 한 번 물었다 — 이번 질문에서는 다시 묻지 않는다. 리더 본인이 한 것만 묻는다.")
             # (P13-2 → P13b-1) 상황이 아직 비어 있으면 둘째 꼬리 질문에 한 번만 곁들인다 — 첫 꼬리 질문 턴은 물을 것이 하나뿐이라 거기에는 싣지 않는다
             if (((ep.get("slots") or {}).get("context") or {}).get("status", "empty") == "empty"
                     and sum(int(v or 0) for v in (ep.get("slot_asks") or {}).values()) == 2):
@@ -128,11 +117,7 @@ def build_episode_card(
         if weak_hint:
             L.append(f"②의 힌트: {weak_hint}")
     elif instruction == "SWEEP_FOLLOWUP" and ep:
-        # (P13b-1) 꼬리 질문이 하나뿐인 경로도 첫 꼬리 질문과 같은 전용 지시
-        L.append(FIRST_PROBE_HEADER)
-        L.extend(_first_probe_lines())
-        L.append("이 장면은 이 질문으로 마무리한다(더 파지 않는다).")
-        return "\n".join(L)
+        return FIRST_PROBE_HEADER      # 훑는 질문의 꼬리 질문도 전용 호출이 만든다
     # (2026-11-15 P13-3) 지난 사례 목록은 넘기지 않는다 — 코치가 앞 이야기를 끌어오거나 "이전 … 같은 장면으로 보이네요" 처럼 판정을 입 밖에 냈다.
     #   리더가 닫힌 이야기를 다시 말하는 경우는 사례 단계(같은 장면 판정)가 따로 받는다.
     _ = prev_episodes
@@ -173,11 +158,6 @@ BEI_GUIDES: dict[str, str] = {
         "방금 꺼낸 장면에 질문 하나만 더합니다. 질문 문장 1개(앞의 평서문 1문장은 없어도 됩니다). 묻는 것은 카드에 적힌 한 가지뿐입니다. 그 뒤 시스템이 다음으로 넘어갑니다."
     ),
 }
-# (P13b-1) 사례의 첫 꼬리 질문 턴 — EPISODE_PROBE 가운데 카드 머리가 FIRST_PROBE_HEADER 인 턴에 쓰는 가이드
-FIRST_PROBE_GUIDE = (
-    "방금 들은 일에 첫 질문을 하는 턴입니다. 질문 문장 1개만 씁니다(앞의 평서문 1문장은 없어도 됩니다). 묻는 것은 카드에 적힌 한 가지뿐입니다 — "
-    "다른 것은 이 턴에 묻지 않습니다. 새 사례·다른 장면을 청하지 않습니다."
-)
 
 TURN_FORMAT_RULES = (
     "[턴 형식]\n"
@@ -196,6 +176,8 @@ TURN_FORMAT_RULES = (
     #   (완성 문장 예시가 아니라 어미만 적는다 — 따옴표로 묶은 문장 꼴은 그대로 베낀다)
     "- 질문 앞의 평서문을 쓸 때는 리더가 한 말을 그대로 다시 말하는 꼴로 끝낸다 — 끝을 -셨군요, -말씀이군요, -거군요 가운데 하나로 맺는다. "
     "리더가 쓴 낱말을 둘 이상 넣고 12어절을 넘기지 않는다. 평가·짐작을 말하는 끝맺음으로 끝내지 않는다(그런 문장은 지워진다).\n"
+    # (2026-11-15 P13e-5) 높임 방향 — p13d: 팀원의 행동에 높임 어미를 붙이거나, 리더가 팀원에게 한 행동에 낮춤말을 썼다. 설명으로만 적는다.
+    "- 높임은 리더에게만 쓴다. 팀원·강사처럼 리더가 아닌 사람이 한 행동에는 높임 어미를 붙이지 않고, 리더가 그 사람에게 한 행동을 낮춤말로 옮기지 않는다.\n"
     "- 리더가 쓰지 않은 낱말을 리더가 한 말처럼 따옴표에 넣지 않는다. 리더의 말과 질문을 잇기만 하는 문구도 쓰지 않는다.\n"
     "- 리더의 말을 옮길 때 누가 한 일인지를 바꾸지 않는다 — 리더가 한 일은 리더가 한 일로, 다른 사람이 한 일은 그 사람이 한 일로 쓴다.\n"
     "- 리더가 이미 말한 때·사람·일은 다시 묻지 않는다. 아직 나오지 않은 것만 묻는다.\n"
@@ -222,22 +204,6 @@ TURN_FORMAT_RULES = (
 
 _RULE_WHAT = "- 묻는 것은 리더 본인이 한 말·조치와 그 까닭·결과다."
 _RULE_NEXT = "- 다음 질문은 아직 듣지 못한 것("
-_FIRST_RULE_WHAT = ("- 이 턴에 묻는 것은 리더 본인이 직접 한 말이나 조치 하나다. 때·자리·장면, 다른 사람의 반응, 판단 기준, 결과는 이 턴에 묻지 않는다. "
-                    "리더가 이끌거나 함께 일하는 사람이 아닌 사람(가르친 사람, 고객)의 장면은 캐묻지 않는다.")
-
-
-def first_probe_format_rules() -> str:
-    """(P13b-1) 첫 꼬리 질문 턴의 형식 규칙 — 공통 규칙에서 '묻는 것'·'다음 질문' 두 줄만 바꾼다(까닭·결과 쪽으로 끄는 문장을 뺀다)."""
-    out = []
-    for ln in TURN_FORMAT_RULES.split("\n"):
-        if ln.startswith(_RULE_WHAT):
-            out.append(_FIRST_RULE_WHAT)
-        elif ln.startswith(_RULE_NEXT):
-            continue
-        else:
-            out.append(ln)
-    return "\n".join(out)
-
 
 def bei_turn_text(state: dict) -> str:
     """BEI 턴의 Layer3 본문: 페르소나 상기 + 사례 카드 + instruction 가이드 + 턴 형식·금지."""
@@ -257,9 +223,6 @@ def bei_turn_text(state: dict) -> str:
     card = state.get("bei_card") or ""
     guide = BEI_GUIDES.get(instruction, "")
     rules = TURN_FORMAT_RULES
-    if card.startswith(FIRST_PROBE_HEADER):      # (P13b-1) 사례의 첫 꼬리 질문 턴(꼬리 질문이 하나뿐인 훑는 질문 포함) — 전용 가이드·형식 규칙
-        guide = BEI_GUIDES["SWEEP_FOLLOWUP"] if instruction == "SWEEP_FOLLOWUP" else FIRST_PROBE_GUIDE
-        rules = first_probe_format_rules()
     return f"{persona_block}{card}\n\n[Instruction for this turn]\n{instruction}\n\n{guide}\n\n{rules}"
 
 

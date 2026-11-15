@@ -167,7 +167,25 @@ def next_slot(ep: dict | None) -> str | None:
     남은 것을 모두 상한만큼 물었으면 None."""
     if first_probe_pending(ep):
         return "action"
-    return next((k for k in unfilled_slots(ep) if slot_asks(ep, k) < slot_ask_max(k)), None)
+    skip = {"reaction"} if int((ep or {}).get("reaction_asked") or 0) >= 1 else set()      # (P13e-3) 반응은 이미 한 번 물었다
+    return next((k for k in unfilled_slots(ep) if k not in skip and slot_asks(ep, k) < slot_ask_max(k)), None)
+
+
+# (2026-11-15 P13e-3) 코치 질문이 다른 사람의 반응을 물었는가 — 사례당 한 번만 묻게 하려고 센다(p13d: 6코치 24턴, 한 사례에서 두 번 물은 것 3건).
+#   리더 본인이 어떻게 받아들였는지를 묻는 질문('…받아들이셨')은 세지 않는다.
+_REACTION_Q_RE = re.compile(
+    r"(어떤|무슨)\s*반응|반응(은|이|을|이나|도)?\s*[^,.?]{0,12}(어땠|어떠|어떻게|보였|보이|있었|나왔|알려|말씀|들려|떠올)"
+    r"|(어떻게|어찌)\s*받아들(였|이던|이는지|였는지|여졌)|받아들여졌|분위기(는|가)\s*[^,.?]{0,8}(어땠|어떠)|분위기부터|태도(에|는|가)\s*[^,.?]{0,10}(변화|달라|어땠|어떠)")
+
+
+def asks_reaction(text: str | None) -> bool:
+    return bool(_REACTION_Q_RE.search(text or ""))
+
+
+def note_reaction_asked(ep: dict) -> dict:
+    ep = dict(ep)
+    ep["reaction_asked"] = int(ep.get("reaction_asked") or 0) + 1
+    return ep
 
 
 # (2026-11-15 P13b-1) 리더가 떠오르지 않는다·옮기기 어렵다고 답한 것은 다시 캐묻지 않는다 — 방금 물은 것을 다 물은 것으로 치고 다음으로 넘어간다
