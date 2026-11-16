@@ -1357,7 +1357,9 @@ def test_p13d_receive_allow_list_and_request_forms():
     blk = src[i: src.index("# 8-w00.", i)]
     assert "_timed_regen" not in blk and "await" not in blk and '_tm["recv_allow"]' in blk and "_fp_final is None" in blk
     assert src.count("_recv_allow_pass()") == 3 and '"recv_allow": _tm.get("recv_allow")' in src      # 정의 1 + 호출 2(금지 꼴 앞 · 8-w5 앞)
-    assert "끝을 -셨군요, -말씀이군요, -거군요 가운데 하나로 맺는다" in TURN_FORMAT_RULES
+    # (P14-1) 받는 말은 전용 호출이 쓴다 — 본 호출 지시문에는 '질문만 쓴다'가 들어가고 받는 말 꼴 지시는 전용 호출 쪽으로 갔다
+    from diag_project.services.turn_checks import RECEIVE_ENDING_HINT as _REH
+    assert "질문 문장만 쓴다" in TURN_FORMAT_RULES and "-셨군요" in _REH and "-말씀이군요" in _REH.replace("다는 ", "")
     # 청하는 꼴도 질문 문장 — 물음 + 청함이 함께 있으면 첫 문장만 남는다
     for s in ("그 자리에서 실제로 꺼내신 말씀을 그대로 옮겨 주십시오.", "순서대로 말씀해 주십시오.", "하나씩 들려주세요.", "그 일을 풀어 주세요.", "먼저 한 일을 짚어 주세요."):
         assert is_question(s), s
@@ -1476,7 +1478,8 @@ def test_p13f_addressee_check_three_angles_and_parallel_close():
     assert asyncio.run(CR.render_close_receive(_Boom(), leader_answer="물량을 넘겼습니다.", persona_name="Ella")) == (None, "miss:error")
     assert asyncio.run(CR.render_close_receive(None, leader_answer="물량을 넘겼습니다.", persona_name="Ella")) == (None, "miss:no_llm")
     src = inspect.getsource(D._submit_message_phase3a)
-    assert "_mar_c(" in src and "_pre_recv_text and instruction_used in (\"EPISODE_OPEN\", \"SWEEP_ANCHOR\")" in src
+    # (P14-1) 받는 말은 이제 슬롯 판정과 함께 받는다 — 사례를 닫을 때는 매핑만 돈다. 닫는 턴이 받아 둔 받는 말만 쓰는 것은 그대로.
+    assert "_mar_c(" not in src and "_aio_r.gather(" in src and 'instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and chapter:' in src
     assert "state[\"_pre_recv_text\"]" not in src                                           # 세션 상태에 남기지 않는다
 
 
@@ -1536,7 +1539,75 @@ def test_regression_check_judge_limits():
     spec = importlib.util.spec_from_file_location("regression_check", pathlib.Path(__file__).resolve().parent.parent / "tools" / "regression_check.py")
     rc = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rc)
-    good = {"p50": 3.4, "p95": 8.0, "regen_turns": 8, "format_miss": 0, "broken_total": 0, "fp_fallback": 1, "short_q": 2}
-    assert all(ok for _n, _v, ok in rc.judge(good)) and len(rc.judge(good)) == 7
-    for key, bad in (("p50", 4.1), ("p95", 8.2), ("regen_turns", 9), ("format_miss", 1), ("broken_total", 1), ("fp_fallback", 2), ("short_q", 3), ("p95", None)):
+    good = {"p50": 3.4, "p95": 8.0, "regen_turns": 8, "format_miss": 0, "broken_total": 0, "fp_fallback": 1, "short_q": 2,
+            "recv_missing_pct": 20.0, "recv_top_end_pct": 50.0, "specify_multi": 0}      # (P14) 추가 3항목(p50 은 원래 있다)
+    assert all(ok for _n, _v, ok in rc.judge(good)) and len(rc.judge(good)) == 10
+    rows = [{"role": "model", "instr": "EPISODE_PROBE", "guard": {"recv_out": "셨군요"}}, {"role": "model", "instr": "EPISODE_PROBE", "guard": {"recv_out": None}},
+            {"role": "model", "instr": "SWEEP_ANCHOR", "guard": {"recv_out": "셨네요"}}, {"role": "model", "instr": "EPISODE_PROBE", "guard": {"recv_out": "slot"}}]
+    st = rc.receive_stats(rows)
+    assert st["recv_missing_pct"] == 33.3 and st["recv_top_end_pct"] == 50.0 and st["recv_by_instr"] == {"EPISODE_PROBE": "1/2", "SWEEP_ANCHOR": "1/1"}
+    for key, bad in (("p50", 4.1), ("p95", 8.2), ("regen_turns", 9), ("format_miss", 1), ("broken_total", 1), ("fp_fallback", 2), ("short_q", 3), ("p95", None),
+                     ("recv_missing_pct", 21.0), ("recv_top_end_pct", 51.0), ("specify_multi", 1)):
         assert not all(ok for _n, _v, ok in rc.judge(dict(good, **{key: bad}))), key
+
+
+def test_p14_receive_call_everywhere_specificity_and_rapport():
+    """(2026-11-16 P14) 받는 말 전용 호출을 모든 본론 턴으로 · 구체화 질문 · 라포 되묻기 답 · 호칭 '리더님' · 질문 문구."""
+    import asyncio
+    import inspect
+    from diag_project.llm_schemas import slot_judge_schema
+    from diag_project.prompts.phase3a import episode_card as EC
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B, intro_messages as IM, receive_render as RR, slot_judge as SJ, turn_checks as TC
+    from diag_project.services.output_guard import find_state_leak
+    ans = "출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 반장에게 제안했습니다. 반장은 인력이 모자란다고 했습니다."
+    # 1. 받는 말 확인 — 되짚는 끝맺음(넓힌 목록)·12어절·겹치는 낱말·금지 꼴·직전 두 번과 같은 끝맺음
+    assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans) == (True, "ok")
+    assert RR.check_receive("물량 삼백 상자를 넘기자고 하셨지요.", ans) == (True, "ok") and TC.receive_ending_key("물량을 넘기자고 하셨지요.") == "셨지요"
+    assert RR.check_receive("쉽지 않은 결정이었을 것으로 보입니다.", ans)[1] == "ending"
+    assert RR.check_receive("그 일을 어떻게 하셨습니까?", ans)[1] == "question"
+    assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans, avoid_endings=["셨군요", "셨군요"])[1] == "same_ending"
+    assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans, avoid_endings=["셨네요", "셨군요"]) == (True, "ok")
+    assert not RR.receivable("네") and not RR.receivable("없어요") and not RR.receivable(ans, prev_answer=ans) and RR.receivable(ans)
+    pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Lucas", kind="probe", avoid_endings=["셨군요", "셨네요"])
+    assert "가장 구체적인 대목 하나" in pr and "평가·짐작·감상·칭찬" in pr and "리더님" in pr and "바로 앞에서 쓴 끝맺음: 셨군요, 셨네요" in pr
+    assert "출력: 평서문 한 문장만." in pr and "'" + "출고" not in pr      # 완성 문장 예시는 넣지 않는다
+    # 라포 — 내용 낱말이 모두 리더 답에 있어야 한다(숫자·직함을 다른 뜻으로 풀면 불합격)
+    assert RR.check_receive("나른하시군요.", "나른하네", kind="smalltalk") == (True, "ok")
+    assert RR.check_receive("오늘 많이 피곤하시군요.", "나른하네", kind="smalltalk")[1] == "words"
+    assert RR.check_receive("교육팀장으로 팀원 4명과 교육기획을 맡고 계시군요.", "교육팀장 4명 팀원 교육기획", kind="role") == (True, "ok")
+    assert RR.check_receive("팀장 네 분과 교육기획을 하시는군요.", "교육팀장 4명 팀원 교육기획", kind="role")[1] == "words"
+    assert TC.is_counter_question("그게 왜 궁금함?") and TC.is_counter_question("왜 물어?") and not TC.is_counter_question("나른하네")
+    assert IM.rapport_counter_reply("Lucas") == "본론 전에 가볍게 여쭌 겁니다." and IM.rapport_counter_reply("Ella") in IM.all_fixed_sentences()
+    # 실패 경로 — 전용 호출이 실패해도 예외를 올리지 않고 None
+    class _Boom:
+        async def _generate_with_retry(self, **kw):
+            raise RuntimeError("llm down")
+    assert asyncio.run(RR.render_receive(_Boom(), leader_answer=ans, persona_name="Ella")) == (None, "miss:error")
+    assert asyncio.run(RR.render_receive(_Boom(), leader_answer="네", persona_name="Ella")) == (None, "skip:empty")
+    class _Twice:
+        n = 0
+        async def _generate_with_retry(self, **kw):
+            _Twice.n += 1
+            return "쉽지 않은 결정이었을 것으로 보입니다." if _Twice.n == 1 else "야간조에 물량 삼백 상자를 넘기자고 제안하셨군요."
+    assert asyncio.run(RR.render_receive(_Twice(), leader_answer=ans, persona_name="Ella")) == ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "llm_retry")
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "_aio_r.gather(" in src and "f\"{_pre_recv_text} {clean_reply}\"" in src and '_rapport_recv("smalltalk")' in src and 'kind="align"' in src
+    assert "질문 문장만 쓴다" in EC.TURN_FORMAT_RULES and "'리더님'이라고만" in EC.TURN_FORMAT_RULES and "묻는 절을 쉼표나 '그리고'로 이어 붙이지 않는다" in EC.TURN_FORMAT_RULES
+    # 호칭
+    assert TC.fix_leader_address("리더께서 그 자리에서 리더가 하신 말") == "리더님께서 그 자리에서 리더님이 하신 말" and TC.fix_leader_address("리더님께서") == "리더님께서"
+    # 2. 구체화 질문 — 판정 항목·카드 한 줄
+    assert "specific" in slot_judge_schema()["properties"] and "specific: 리더의 **마지막 답**에 구체 표지" in inspect.getsource(SJ.judge_slots)
+    ep = {"idx": 1, "leader_turns": 2, "slots": {k: {"status": "empty", "quote": ""} for k in B.SLOT_KEYS}, "slot_asks": {"action": 1}, "specify_now": "result", "ask_slot": "result"}
+    card = EC.build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=ep, bei_turns=3, budget=18)
+    assert "리더가 방금 한 답을 구체로 만드는 질문 하나" in card and "눈에 보인 장면 하나여도 된다" in card and "다른 것으로 넘어가지 않는다" in card
+    card2 = EC.build_episode_card(instruction="EPISODE_PROBE", chapter="work_management", ep=dict(ep, specify_now=None), bei_turns=3, budget=18)
+    assert "구체로 만드는 질문" not in card2
+    assert '_tm.get("specific") is False' in src and "_sp_n_ch < 3" in src and '"specificity_probe"' in src
+    # 4. 질문 문구 — 방향 낱말이 그대로 나온 꼴, 묻는 꼴이 아닌 끝, 높임 없는 질문
+    assert find_state_leak("이번에는 결과 쪽을 여쭙겠습니다.") and find_state_leak("근거 쪽으로 넘어가겠습니다.") and not find_state_leak("그 결과를 누구와 나누셨습니까?")
+    ok = TC.first_probe_question_ok
+    assert ok("그 자리에서 직접 어떤 말을 건네셨는지 궁금하네요.", ans) == (False, "wonder") and ok("직접 어떤 말을 건네셨는지 여쭤봐도 될까요?", ans) == (False, "wonder")
+    assert ok("본인이 반장에게 직접 어떤 말을 건넸는지 알려줄 수 있나요?", ans) == (False, "no_honorific")
+    for coach, pairs in IM.FIRST_PROBE_FALLBACK_BY_ANGLE.items():
+        assert all(ok(t, "창고 일이 밀렸습니다.") == (True, "ok") for _a, t in pairs), coach

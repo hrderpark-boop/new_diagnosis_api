@@ -414,6 +414,17 @@ def rapport_fixed_receive(persona_name: str | None, prev_coach_text: str | None,
     return next((x for x in order if re.sub(r"\s+", "", x) not in prev), order[0])
 
 
+# (2026-11-16 P14-3) 라포에서 리더가 되물었을 때('그게 왜 궁금함?') 한 문장으로 답하고 다음 질문으로 넘어간다 — 종전에는 '네.'로 받고 넘어갔다(11/16 운영 Lucas).
+RAPPORT_COUNTER_REPLY: dict[str, str] = {
+    "Ella": "본론에 들어가기 전에 가볍게 여쭤본 거예요.", "Olivia": "본론에 들어가기 전에 가볍게 여쭤본 거예요.", "Michael": "본론에 들어가기 전에 가볍게 여쭤본 거예요.",
+    "Jessica": "본론에 들어가기 전에 가볍게 여쭌 것입니다.", "Daniel": "본론에 들어가기 전에 가볍게 여쭌 것입니다.", "Lucas": "본론 전에 가볍게 여쭌 겁니다.",
+}
+
+
+def rapport_counter_reply(persona_name: str | None) -> str:
+    return RAPPORT_COUNTER_REPLY[persona_key(persona_name)]
+
+
 def role_fixed_receive(persona_name: str | None) -> str:
     return ROLE_FLAT[persona_key(persona_name)]
 
@@ -443,13 +454,13 @@ _FP_POLITE = [("said", "거기서 리더님이 직접 하신 말은 무엇이었
               ("order", "그 일을 무엇부터 시작해 어떤 순서로 진행하셨는지 말씀해 주세요."),
               ("order", "처음 하신 일부터 마지막에 하신 일까지 차례로 짚어 주실 수 있을까요?")]
 _FP_FORMAL = [("said", "거기서 리더님께서 직접 하신 말씀은 무엇이었습니까?"),
-              ("said", "뭐라고 말씀하셨는지 궁금합니다."),
+              ("said", "뭐라고 말씀하셨는지 그대로 옮겨 주시겠습니까?"),
               ("did", "리더님께서 직접 취하신 조치를 하나씩 들려주시겠습니까?"),
               ("did", "본인이 직접 하신 일은 무엇입니까?"),
               ("order", "그 일을 무엇부터 시작해 어떤 순서로 진행하셨는지 말씀해 주십시오."),
               ("order", "처음 하신 일부터 마지막에 하신 일까지 차례로 짚어 주실 수 있겠습니까?")]
 _FP_LUCAS = [("said", "거기서 직접 하신 말은 무엇이었습니까?"),
-             ("said", "뭐라고 말씀하셨는지 궁금합니다."),
+             ("said", "뭐라고 말씀하셨는지 그대로 옮겨 주시겠어요?"),
              ("did", "직접 취하신 조치를 하나씩 말씀해 주시겠습니까?"),
              ("did", "본인이 직접 하신 일은 무엇이었나요?"),
              ("order", "그 일을 무엇부터 시작해 어떤 순서로 진행하셨는지 들려주세요."),
@@ -813,6 +824,7 @@ def slot_kind_for(persona_name: str | None, n_used: int = 0) -> str | None:
 def all_fixed_sentences() -> list[str]:
     """린트·가드가 '고정 문장'으로 제외할 문장 전부 — (P10-2) 슬롯 문장은 더 이상 고정이 아니라 ALIGN 다리만 남는다."""
     out: list[str] = []
+    out.extend(RAPPORT_COUNTER_REPLY.values())      # (P14-3) 라포 되묻기 답
     for v in ALIGN_OPEN_VARIANTS.values():
         out.extend(v)                      # '먼저 하나부터.'(Lucas) 같은 서술어 없는 고정 다리는 흉터가 아니다
     for v in ALIGN_FIXED_RECEIVE.values():

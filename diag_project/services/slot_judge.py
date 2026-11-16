@@ -66,7 +66,7 @@ def _stub_slots(transcript: list[tuple[str, str]], prev_slots: dict | None) -> d
     for i, k in enumerate(SLOT_KEYS):
         st = "filled" if i < len(substantive) else "empty"
         slots[k] = {"status": st, "quote": substantive[i][:30] if st == "filled" else ""}
-    return {"slots": slots, "no_case": no_case, "switched_case": False, "incident": not no_case, "stub": True}
+    return {"slots": slots, "no_case": no_case, "switched_case": False, "incident": not no_case, "stub": True, "specific": True}
 
 
 async def judge_slots(llm, *, transcript: list[tuple[str, str]], prev_slots: dict | None, closed_cases: dict | None = None) -> dict:
@@ -94,6 +94,8 @@ async def judge_slots(llm, *, transcript: list[tuple[str, str]], prev_slots: dic
         f"[슬롯 기준]\n{_SLOT_RULES}\n"
         "quote 는 그 슬롯을 채운 리더의 말을 원문 그대로(공백·조사까지 그대로, 40자 이내) 옮기세요. 없으면 빈 문자열.\n"
         "no_case: 리더가 이 질문에 해당하는 일이 없다·기억이 안 난다고 답했으면 true.\n"
+        "specific: 리더의 **마지막 답**에 구체 표지가 있으면 true — 숫자·수량, 구체 시점(날짜·요일·몇 주 뒤), 실제로 한 말의 인용, "
+        "특정 산출물이나 눈에 보이는 장면 가운데 어느 것이든. 방향만 말하고 그런 표지가 없으면 false.\n"
         "incident: 리더의 답(지금까지 전체)에 시점·인물·리더가 한 구체 행동 중 하나라도 있으면 true. 하나도 없고 '없어요·글쎄요·특별히·그 정도·"
         "보통은·대체로' 류의 일반론·회피만이면 false.\n"
         "switched_case: 리더의 마지막 답이 지금 듣던 사례가 아니라 전혀 다른 사례로 넘어갔으면 true(같은 사례의 다른 장면은 false).\n"
@@ -117,7 +119,8 @@ async def judge_slots(llm, *, transcript: list[tuple[str, str]], prev_slots: dic
     return {"same_as": (_sa if (_cc and _sa in _cc) else None),
             "slots": {k: (slots.get(k) or {}) for k in SLOT_KEYS},
             "no_case": bool(out.get("no_case")), "switched_case": bool(out.get("switched_case")),
-            "incident": (bool(_inc) if isinstance(_inc, bool) else None), "error": not bool(slots)}
+            "incident": (bool(_inc) if isinstance(_inc, bool) else None), "error": not bool(slots),
+            "specific": (out.get("specific") if isinstance(out.get("specific"), bool) else None)}
 
 
 MAP_STRONG_MIN_CONFIDENCE = 0.8

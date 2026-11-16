@@ -383,6 +383,8 @@ def first_probe_addressee_fix(question: str | None, leader_answer: str | None) -
 # (2026-11-15 P13g-2·3) 혼잣말·지시문 낱말이 섞인 질문, 코치 자신이 주어인 동사에 묻는 어미가 붙은 꼴
 _FP_META_RE = re.compile(r"규칙|지시|한\s*문장이어야|—|아니,")
 _FP_SELF_VERB_RE = re.compile(r"(여쭙고|여쭤보고|묻고|듣고|알고)\s*싶습니까|여쭙겠습니까|묻겠습니까|궁금합니까|궁금하십니까")
+_FP_WONDER_END_RE = re.compile(r"(궁금하네요|궁금합니다|궁금해요|궁금하군요)[.?!]*\s*$|여쭤(봐)?도\s*될까요\??\s*$|여쭙고\s*싶습니다[.?!]*\s*$")
+_FP_HONORIFIC_RE = re.compile(r"셨|세요|십시오|시(겠|는|고|며|면|어|나|지|던|ㄹ)|하신|으신|[가-힣]신\s|실\s|실까|실래|리더님")
 FIRST_PROBE_RETRY_NOTES: dict[str, str] = {
     "closed": "그렇다·아니다로 답하게 되는 꼴이었다",
     "off": "리더 본인이 한 것이 아니라 때·다른 사람의 반응·기준·결과를 물었다",
@@ -392,6 +394,8 @@ FIRST_PROBE_RETRY_NOTES: dict[str, str] = {
     "self_verb": "코치 자신이 하는 일에 묻는 어미를 붙였다",
     "no_question": "질문 문장이 없었다",
     "who": "리더가 말을 건넨 상대로 말하지 않은 사람을 질문에 넣었다",
+    "wonder": "묻는 꼴이 아니라 궁금하다거나 여쭤봐도 되느냐는 말로 끝났다",
+    "no_honorific": "리더가 한 일을 높임 없이 적었다",
 }
 
 
@@ -429,6 +433,10 @@ def first_probe_question_ok(question: str | None, leader_answer: str | None = No
         return False, "closed"
     if not _FP_ACTION_RE.search(part):
         return False, "no_action"
+    if _FP_WONDER_END_RE.search(q):
+        return False, "wonder"          # (P14-4) '…궁금하네요.', '…여쭤봐도 될까요?' — 묻는 꼴로 다시 쓴다
+    if not _FP_HONORIFIC_RE.search(q):
+        return False, "no_honorific"    # (P14-4) 리더 높임('-시-')이 하나도 없다(p13g: '본인이 … 건넸는지', '리더가 … 취한 조치는')
     return True, "ok"
 
 
@@ -617,7 +625,7 @@ RECEIVE_ALLOWED_ENDINGS: dict[str, tuple[str, ...]] = {
     # 합쇼체 코치(Jessica·Daniel)만 더 — 리더가 한 일을 그대로 되짚는 평서 꼴
     "formal": ("…셨습니다", "…다고 하셨습니다", "…다는/라는 말씀이십니다"),
 }
-_RECV_END_COMMON_RE = re.compile(r"(셨(군요|네요)|말씀이(시)?(군요|네요)|(거|것이)(군요|네요|죠|지요))[.!…]*$")
+_RECV_END_COMMON_RE = re.compile(r"(셨(군요|네요|지요|죠)|말씀이(시)?(군요|네요|지요|죠)|(거|것이)(군요|네요|죠|지요))[.!…]*$")      # (P14-1) '…셨지요/셨죠', '…말씀이지요' 추가
 _RECV_END_FORMAL_RE = re.compile(r"(셨습니다|말씀이십니다)[.!…]*$")
 RECEIVE_MIN_SHARED = 2             # 리더 직전 답과 겹치는 내용 낱말 수
 
@@ -625,6 +633,40 @@ RECEIVE_MIN_SHARED = 2             # 리더 직전 답과 겹치는 내용 낱�
 def receive_shared_words(receive: str | None, user_text: str | None) -> list[str]:
     """받는 말의 내용 낱말 가운데 리더 직전 답에도 있는 것(앞 두 글자 기준, 흔한 낱말 제외)."""
     return question_overlap(receive, user_text)
+
+
+# (2026-11-16 P14-1) 받는 말 전용 호출의 지시문에 넣는 끝맺음 꼴(어미만 — 따옴표로 묶은 완성 문장 꼴은 넣지 않는다)
+RECEIVE_ENDING_HINT = "-셨군요, -셨네요, -셨지요, -다는 말씀이군요, -다는 말씀이네요, -신 거군요, -신 거네요"
+_RECV_KEY_RES: tuple[tuple[str, re.Pattern], ...] = (
+    ("말씀이군요", re.compile(r"말씀이(시)?군요[.!…]*$")), ("말씀이네요", re.compile(r"말씀이(시)?네요[.!…]*$")), ("말씀이지요", re.compile(r"말씀이(시)?(지요|죠)[.!…]*$")),
+    ("셨군요", re.compile(r"셨군요[.!…]*$")), ("셨네요", re.compile(r"셨네요[.!…]*$")), ("셨지요", re.compile(r"셨(지요|죠)[.!…]*$")),
+    ("거군요", re.compile(r"(거|것이)군요[.!…]*$")), ("거네요", re.compile(r"(거|것이)네요[.!…]*$")), ("거죠", re.compile(r"(거|것이)(죠|지요)[.!…]*$")),
+    ("셨습니다", re.compile(r"셨습니다[.!…]*$")), ("말씀이십니다", re.compile(r"말씀이십니다[.!…]*$")),
+)
+
+
+def receive_ending_key(sentence: str | None) -> str | None:
+    """받는 말의 끝맺음 갈래(셨군요·셨네요·셨지요·말씀이군요·말씀이네요·말씀이지요·거군요·거네요·거죠·셨습니다·말씀이십니다). 목록 밖이면 None."""
+    t = (sentence or "").strip()
+    return next((k for k, rx in _RECV_KEY_RES if rx.search(t)), None)
+
+
+# (2026-11-16 P14-3) 라포에서 리더가 코치에게 되묻거나 되받아친 말 — '그게 왜 궁금함?', '왜 물어?', '그건 왜요?'
+_COUNTER_Q_RE = re.compile(r"왜\s*[^.!]{0,10}(궁금|물어|묻|여쭤|질문|알고\s*싶)|(그게|그건|그걸|이게|이건)\s*왜|왜요\s*\??\s*$|^\s*왜\s*\??\s*$|뭐가\s*궁금|뭘\s*(물어|묻)")
+
+
+def is_counter_question(text: str | None) -> bool:
+    return bool(_COUNTER_Q_RE.search(text or ""))
+
+
+# (2026-11-16 P14-1) 호칭은 '리더님' — 출력의 '리더께서'·'리더가'를 '리더님께서'·'리더님이'로 바꾼다(11/16 운영 Lucas·p13g Daniel)
+_LEADER_BARE_RE = re.compile(r"(?<![가-힣])리더(?=(께서|가)(?![가-힣]))")
+
+
+def fix_leader_address(text: str | None) -> str:
+    t = text or ""
+    t = _LEADER_BARE_RE.sub("리더님", t)
+    return t.replace("리더님가", "리더님이")
 
 
 RECEIVE_KEEP_LONG_MAX = 20      # (P13g-4) 남은 질문이 8어절 미만일 때 길이만으로 떨어진 받는 말을 남기는 상한

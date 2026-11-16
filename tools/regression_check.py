@@ -19,6 +19,7 @@
 조건(코치마다, 하나라도 넘으면 종료 코드 1):
     p50 ≤ 4.0초 · p95 ≤ 8.0초(점검표 값 — 올림 순위) · 재생성 걸린 턴 ≤ 8 · 형식미해결 0 · 깨진 문장 0
     첫 꼬리 질문 fallback ≤ 1 · 8어절 미만 질문 ≤ 2
+    (P14) 받는 말 없는 본론 턴 ≤ 20% · 받는 말 끝맺음 한 가지 ≤ 50% · 구체화 질문이 2회 이상인 사례 0
   '첫 꼬리 질문이 리더 본인의 말·조치를 물었는가'(사례의 78% 이상)는 사람이 읽어 판정한다 — 이 스크립트는 문장만 뽑아 준다.
 
 산출물(결과 폴더):
@@ -49,7 +50,45 @@ PROFILE = "tools/sim_profiles/summary_team_lead.json"
 LIMITS: tuple[tuple[str, str, float], ...] = (
     ("p50 ≤ 4.0초", "p50", 4.0), ("p95 ≤ 8.0초", "p95", 8.0), ("재생성 턴 ≤ 8", "regen_turns", 8), ("형식미해결 0", "format_miss", 0),
     ("깨진 문장 0", "broken_total", 0), ("첫 꼬리 fallback ≤ 1", "fp_fallback", 1), ("8어절 미만 질문 ≤ 2", "short_q", 2),
+    # (2026-11-16 P14) 받는 말 없는 본론 턴 ≤ 20% · 받는 말 끝맺음 한 가지 ≤ 50% · 구체화 질문이 2회 이상인 사례 0
+    ("받는 말 없는 본론 턴 ≤ 20%", "recv_missing_pct", 20), ("받는 말 끝맺음 최다 ≤ 50%", "recv_top_end_pct", 50), ("구체화 질문 2회 이상인 사례 0", "specify_multi", 0),
 )
+MAIN_INSTR = ("EPISODE_PROBE", "SWEEP_FOLLOWUP", "EPISODE_OPEN", "SWEEP_ANCHOR")
+
+
+def receive_stats(rows: list[dict]) -> dict:
+    """본론 턴(탐침·훑는 질문·여는 턴)의 받는 말 유무와 끝맺음 분포 — 서버가 남긴 recv_out(끝맺음 갈래 | other | slot | None)을 읽는다.
+    슬롯 문장(관찰·응원)이 들어간 턴은 받는 말 자리가 없으므로 분모에서 뺀다."""
+    from collections import Counter
+    by_instr: dict[str, list[int]] = {}
+    ends: Counter = Counter()
+    for r in rows:
+        if r.get("role") != "model" or r.get("instr") not in MAIN_INSTR:
+            continue
+        g = r.get("guard") or {}
+        out = g.get("recv_out")
+        if out == "slot":
+            continue
+        a = by_instr.setdefault(r["instr"], [0, 0])
+        a[1] += 1
+        if out:
+            a[0] += 1
+            ends[out] += 1
+    have = sum(v[0] for v in by_instr.values()); total = sum(v[1] for v in by_instr.values())
+    top = ends.most_common(1)[0][1] if ends else 0
+    return {"recv_missing_pct": round(100 * (total - have) / total, 1) if total else None, "recv_top_end_pct": round(100 * top / have, 1) if have else None,
+            "recv_by_instr": {k: f"{v[0]}/{v[1]}" for k, v in by_instr.items()}, "recv_ends": dict(ends.most_common())}
+
+
+def specify_stats(data: dict) -> dict:
+    """구체화 질문 — 턴 기록(guard.specify)과 원장(사례의 specificity_probe)."""
+    from collections import Counter
+    per: Counter = Counter()
+    for r in data.get("rows") or []:
+        g = (r.get("guard") or {}) if r.get("role") == "model" else {}
+        if g.get("specify"):
+            per[(r.get("chapter"), g.get("ep_kind"), g.get("episode"))] += 1
+    return {"specify_n": sum(per.values()), "specify_multi": sum(1 for v in per.values() if v >= 2)}
 SHORT_Q_EOJEOL = 8
 
 
@@ -94,6 +133,7 @@ def collect(path: Path) -> dict:
     sq = short_questions(rows)
     return {"p50": res.get("p50"), "p95": res.get("p95"), "max": res.get("max"), "regen_turns": res.get("regen_turns"), "format_miss": res.get("format_miss"),
             "broken_total": res.get("broken_total"), "fp_fallback": int((res.get("fp_mode") or {}).get("fallback", 0)), "fp_mode": res.get("fp_mode") or {},
+            **receive_stats(rows), **specify_stats(data),
             "short_q": len(sq), "short_list": sq, "first_probes": first_probes(rows), "status": data.get("status"), "cost_usd": float(data.get("cost_usd") or 0.0),
             "turns": data.get("turns")}
 
@@ -157,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
         L.append(f"| {name} | " + " | ".join(cells) + " |")
     L.append("| 세션 상태 | " + " | ".join(str(ms[c]["status"]) for c in coaches) + " |")
     all_ok = all_ok and all(str(ms[c]["status"]) == "completed" for c in coaches)
+    L.append("| 받는 말(턴 종류별 있음/전체) | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["recv_by_instr"].items()) or "-" for c in coaches) + " |")
+    L.append("| 받는 말 끝맺음 분포 | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["recv_ends"].items()) or "-" for c in coaches) + " |")
+    L.append("| 구체화 질문 수 | " + " | ".join(str(ms[c]["specify_n"]) for c in coaches) + " |")
     L.append("| 첫 꼬리 질문 기록 | " + " | ".join(" · ".join(f"{k} {v}" for k, v in sorted(ms[c]["fp_mode"].items())) or "-" for c in coaches) + " |")
     coach_cost = sum(ms[c]["cost_usd"] for c in coaches)
     L += ["", f"실제 USD: 코치 쪽 ${coach_cost:.4f}" + ("" if args.no_run else f" + 시뮬 리더 쪽 ${leader_cost:.4f} = ${coach_cost + leader_cost:.4f}"),

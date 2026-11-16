@@ -44,6 +44,8 @@ def build_first_probe_prompt(*, leader_answer: str, persona_name: str | None, us
         "- 질문에 사람을 넣을 때는 리더가 방금 한 말에 나온 사람만 넣는다. 리더가 말하지 않은 상대를 지어내지 않는다.\n"
         "- 그렇다·아니다로 답하게 되는 꼴로 묻지 않는다 — 무엇을 했는지, 어떻게 했는지를 묻는 꼴로 쓴다.\n"
         "- 같은 것을 한 문장 안에서 두 번 겹쳐 묻지 않는다 — 무엇을 했는지 물었으면 어떻게 했는지를 덧붙이지 않는다.\n"
+        "- 리더를 부를 때는 '리더님'이라고만 한다. 리더가 한 일에는 높임을 붙인다.\n"
+        "- 묻는 꼴로 끝낸다 — 알고 싶다거나 여쭤봐도 되겠느냐는 말로 끝내지 않는다.\n"
         "- 높임은 리더에게만 쓴다. 리더가 아닌 사람이 한 행동에는 높임 어미를 붙이지 않는다.\n"
         "- 온전한 문장으로 끝내고 물음표로 맺는다.\n"
         "- 묻지 않는 것: 때·자리·장면, 다른 사람의 반응, 리더의 생각·기준, 결과.\n"
@@ -78,4 +80,5 @@ async def render_first_probe(llm, *, leader_answer: str, persona_name: str | Non
         return None, "miss:no_question"
     # (2026-11-15 P13g-2) 문장이 둘 이상이면 호출자의 확인에서 떨어진다(한 번 더 쓴다) — 여기서 첫 문장만 골라내지 않는다. p13f Daniel: 혼잣말이 섞인 원문.
     full = " ".join(x.strip() for x in split_sentences(text) if x.strip())
-    return apply_register(persona_name, full, scope="questions")[0], "llm"
+    from diag_project.services.turn_checks import fix_leader_address
+    return fix_leader_address(apply_register(persona_name, full, scope="questions")[0]), "llm"
