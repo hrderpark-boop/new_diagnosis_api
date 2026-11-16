@@ -425,6 +425,20 @@ def rapport_counter_reply(persona_name: str | None) -> str:
     return RAPPORT_COUNTER_REPLY[persona_key(persona_name)]
 
 
+# (2026-11-16 P14b-4) 조사 없는 낱말 나열 답('교육팀장 4명 팀원 교육기획')은 뜻을 풀어 옮기지 않는다 — 리더가 쓴 말을 그대로 넣고 '알겠습니다'로 받는다.
+#   p14 Ella: 전용 호출이 '교육팀장 4명이 팀원 교육기획을 맡으신다'로 옮겼다(낱말은 모두 리더 답에 있어 확인을 통과했다).
+ROLE_ECHO_TAIL: dict[str, str] = {"Ella": "알겠어요.", "Olivia": "알겠어요.", "Michael": "알겠어요.", "Jessica": "알겠습니다.", "Daniel": "알겠습니다.", "Lucas": "알겠습니다."}
+ROLE_ECHO_MAX_CHARS = 40
+
+
+def role_echo_receive(persona_name: str | None, answer: str | None) -> str | None:
+    """'{리더 답}, 알겠습니다.' — 답이 길거나 비었으면 None(호출자가 고정 받기를 쓴다)."""
+    t = re.sub(r"\s+", " ", (answer or "").strip()).rstrip(".!?…~ ")
+    if not t or len(t) > ROLE_ECHO_MAX_CHARS or "\n" in (answer or ""):
+        return None
+    return f"{t}, {ROLE_ECHO_TAIL[persona_key(persona_name)]}"
+
+
 def role_fixed_receive(persona_name: str | None) -> str:
     return ROLE_FLAT[persona_key(persona_name)]
 

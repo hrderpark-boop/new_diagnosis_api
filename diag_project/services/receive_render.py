@@ -25,10 +25,16 @@ logger = logging.getLogger(__name__)
 
 ANSWER_TAIL_CHARS = 700
 ALIGN_MAX_EOJEOL = 16
+PROBE_PROMPT_EOJEOL = 9            # (P14b-2) 본론 받는 말은 9어절 이내로 쓰게 한다(확인의 상한은 종전대로 12어절)
+QUOTE_SHARE_MAX = 1 / 3            # (P14b-2) '…다는 말씀이네요/이군요' 꼴은 세션 받는 말의 1/3 이하
+# (P14b-2) 리더가 아닌 사람이 주어인 절에 높임이 붙은 꼴 — '팀원들이 … 우려하셨다는', '강사분들이 … 내셨다는'
+_THIRD_HONORIFIC_RE = re.compile(r"(팀원|강사|교육생|직원|담당자|구성원)[가-힣]{0,3}(이|가)\s[^.,]{0,40}?[가-힣]셨다")
+_LEAD_ADDRESS_RE = re.compile(r"^리더님(께서는|께서|이|은|,)?\s*")
 ALIGN_MIN_SHARED = 3
 SMALL_MAX_EOJEOL = 12
 _KIND_WHAT: dict[str, str] = {
-    "probe": ("리더가 방금 한 말에서 가장 구체적인 대목 하나를 집어 한 문장으로 다시 말한다. 답 전체를 줄여 옮기지 않는다 — 대목 하나만.",),
+    # (2026-11-16 P14b-2) 대목 하나 → 낱말 하나. p14: 답 전체를 옮겨 12어절을 넘긴 탈락이 10건 중 9건, 받는 말과 질문 앞 절이 같은 내용을 되풀이했다.
+    "probe": ("리더가 방금 한 말에서 가장 구체적인 낱말 하나만 집어 짧은 한 문장으로 다시 말한다. 답 전체를 옮기지 않는다.",),
     "align": ("리더가 방금 말한 뜻풀이에서 구절 하나를 그대로 집어 한 문장으로 다시 말한다. 뜻풀이 전체를 줄여 옮기지 않는다.",),
     "smalltalk": ("리더의 짧은 답에서 낱말 하나를 그대로 받아 한 문장으로 다시 말한다. 리더가 쓰지 않은 낱말을 보태지 않는다.",),
     "role": ("리더가 늘어놓은 낱말을 그대로 넣어 한 문장으로 다시 말한다. 숫자와 직함은 리더가 쓴 그대로 쓰고 다른 뜻으로 풀지 않는다.",),
@@ -41,6 +47,9 @@ RETRY_NOTES: dict[str, str] = {
     "question": "묻는 문장이었다",
     "words": "리더가 쓰지 않은 낱말이 들어갔다",
     "same_ending": "바로 앞에서 쓴 끝맺음과 같았다",
+    "third_honorific": "리더가 아닌 사람이 한 일에 높임을 붙였다",
+    "dup": "'말씀'을 두 번 썼다",
+    "quote_cap": "'-다는 말씀이네요' 꼴을 너무 자주 썼다",
     "empty": "문장이 없었다",
 }
 
@@ -51,18 +60,18 @@ def receivable(answer: str | None, prev_answer: str | None = None) -> bool:
     a = re.sub(r"\s+", " ", (answer or "").strip())
     if len([c for c in _content_chunks(a) if len(c) >= 2]) < 2:
         return False
-    if is_no_recall_text(a) and len(a) < 40:
+    if is_no_recall_text(a):      # (P14b-2) 모른다·기억나지 않는다는 답은 되받지 않는다(길이와 무관)
         return False
     return not (prev_answer and re.sub(r"\s+", "", prev_answer) == re.sub(r"\s+", "", a))
 
 
 def build_receive_prompt(*, leader_answer: str, persona_name: str | None, kind: str = "probe", avoid_endings: list[str] | None = None,
-                         retry_note: str | None = None) -> str:
+                         retry_note: str | None = None, no_quote: bool = False) -> str:
     from diag_project.services.persona_register import register_hint
     from diag_project.services.turn_checks import RECEIVE_ENDING_HINT
     ans = re.sub(r"\s+", " ", (leader_answer or "").strip())[-ANSWER_TAIL_CHARS:]
     avoid = [x for x in (avoid_endings or []) if x][:2]
-    limit = ALIGN_MAX_EOJEOL if kind == "align" else 12
+    limit = ALIGN_MAX_EOJEOL if kind == "align" else (PROBE_PROMPT_EOJEOL if kind == "probe" else 12)
     return (
         "당신은 리더십 코치입니다. 리더가 방금 한 말을 한 문장으로 받습니다.\n\n"
         f"[리더가 방금 한 말]\n{ans}\n\n"
@@ -72,7 +81,9 @@ def build_receive_prompt(*, leader_answer: str, persona_name: str | None, kind: 
         f"- {limit}어절을 넘기지 않는다.\n"
         + (f"- 끝은 리더의 말을 다시 말하는 꼴로 맺는다 — {RECEIVE_ENDING_HINT} 가운데 하나.\n" if kind in ("probe", "align") else "")
         + ("- 바로 앞에서 쓴 끝맺음: " + ", ".join(avoid) + " — 이것과 다른 끝맺음으로 맺는다.\n" if avoid and kind in ("probe", "align") else "")
-        + "- 누가 한 일인지 분명하지 않으면 높이지 않고 '-다는 말씀이네요' 꼴로 옮긴다. 높임은 리더에게만 쓴다.\n"
+        + ("- 이번에는 '-다는 말씀이네요', '-다는 말씀이군요' 꼴을 쓰지 않는다.\n" if no_quote and kind == "probe" else "")
+        + "- 높임은 리더에게만 쓴다. 팀원·강사·교육생처럼 리더가 아닌 사람이 한 일에는 높임 어미를 붙이지 않는다.\n"
+        "- 문장을 '리더님'으로 시작하지 않는다. '말씀'이라는 낱말은 한 번만 쓴다.\n"
         "- 리더를 부를 때는 '리더님'이라고만 한다.\n"
         f"- 말투: {register_hint(persona_name)}\n"
         + (f"- 앞서 쓴 문장은 쓸 수 없었다 — {retry_note}. 그 점을 고쳐 새로 쓴다.\n" if retry_note else "")
@@ -103,8 +114,16 @@ def words_from_answer(sentence: str | None, answer: str | None) -> bool:
     return all(re.sub(r"\s+", "", m.group(0)) in ans for m in _KOR_COUNT_RE.finditer(sentence or ""))
 
 
-def check_receive(sentence: str | None, answer: str | None, *, kind: str = "probe", formal: bool = False, avoid_endings: list[str] | None = None) -> tuple[bool, str]:
-    """(통과 여부, 사유: ok | empty | question | ending | long | overlap | ban | words | same_ending)"""
+def strip_lead_address(sentence: str | None) -> str:
+    """(P14b-2) 끝맺음이 인용꼴('…말씀이네요' 등)인 문장 머리의 '리더님,/리더님이/리더님께서'를 뗀다 — '리더님이 … 말씀이네요' 겹친 꼴."""
+    from diag_project.services.turn_checks import receive_ending_key
+    t = (sentence or "").strip()
+    return _LEAD_ADDRESS_RE.sub("", t, count=1) if (receive_ending_key(t) or "").startswith("말씀") else t
+
+
+def check_receive(sentence: str | None, answer: str | None, *, kind: str = "probe", formal: bool = False, avoid_endings: list[str] | None = None,
+                  no_quote: bool = False) -> tuple[bool, str]:
+    """(통과 여부, 사유: ok | empty | question | ending | long | overlap | ban | words | third_honorific | dup | quote_cap | same_ending)"""
     from diag_project.services.turn_checks import receive_allowed, receive_ban_reason, receive_ending_key, receive_shared_words
     s = (sentence or "").strip()
     if not s:
@@ -124,8 +143,15 @@ def check_receive(sentence: str | None, answer: str | None, *, kind: str = "prob
         return False, "overlap"
     if receive_ban_reason(s):
         return False, "ban"
+    if _THIRD_HONORIFIC_RE.search(s):
+        return False, "third_honorific"
+    if s.count("말씀") >= 2:
+        return False, "dup"
+    key = receive_ending_key(s) or ""
+    if no_quote and key.startswith("말씀"):
+        return False, "quote_cap"
     av = [x for x in (avoid_endings or []) if x][:2]
-    if len(av) == 2 and av[0] == av[1] == receive_ending_key(s):
+    if len(av) == 2 and av[0] == av[1] == key:
         return False, "same_ending"
     return True, "ok"
 
@@ -138,9 +164,11 @@ async def _one(llm, prompt: str) -> str | None:
 
 
 async def render_receive(llm, *, leader_answer: str, persona_name: str | None, kind: str = "probe", avoid_endings: list[str] | None = None,
-                         prev_answer: str | None = None) -> tuple[str | None, str]:
+                         prev_answer: str | None = None, session_keys: list[str] | None = None) -> tuple[str | None, str]:
     """(받는 말 한 문장 | None, 모드). 모드 'llm' | 'llm_retry' | 'stub' | 'skip:empty' | 'miss:<사유>'.
-    'miss:<사유>' 의 사유는 마지막 확인에서 떨어진 까닭 또는 no_llm·error."""
+    'miss:<사유>' 의 사유는 마지막 확인에서 떨어진 까닭 또는 no_llm·error.
+    (P14b-2) 본론 받는 말(kind probe)은 다시 쓰지 않는다 — 확인에서 떨어지면 그 턴은 받는 말 없이. 라포·영역 정의는 종전대로 한 번 더 쓴다.
+    session_keys = 이번 세션에서 나간 받는 말의 끝맺음 갈래 — 인용꼴이 1/3 을 넘으면 이번에는 그 꼴을 쓰지 않게 한다."""
     from diag_project.services.persona_register import register_of
     from diag_project.services.turn_checks import fix_leader_address
     if kind == "probe" and not receivable(leader_answer, prev_answer):
@@ -152,17 +180,20 @@ async def render_receive(llm, *, leader_answer: str, persona_name: str | None, k
     if llm is None:
         return None, "miss:no_llm"
     formal = register_of(persona_name) == "formal"
+    keys = [k for k in (session_keys or []) if k]
+    no_quote = kind == "probe" and len(keys) >= 2 and (sum(1 for k in keys if k.startswith("말씀")) + 1) / (len(keys) + 1) > QUOTE_SHARE_MAX
     note = None
     why = "empty"
-    for attempt in (0, 1):
+    for attempt in ((0,) if kind == "probe" else (0, 1)):
         try:
-            s = await _one(llm, build_receive_prompt(leader_answer=leader_answer, persona_name=persona_name, kind=kind, avoid_endings=avoid_endings, retry_note=note))
+            s = await _one(llm, build_receive_prompt(leader_answer=leader_answer, persona_name=persona_name, kind=kind, avoid_endings=avoid_endings,
+                                                     retry_note=note, no_quote=no_quote))
         except Exception as e:  # noqa: BLE001
             logger.warning("receive render failed: %s", e)
             return None, "miss:error"
-        s = fix_leader_address(s or "")
-        ok, why = check_receive(s, leader_answer, kind=kind, formal=formal, avoid_endings=avoid_endings)
-        if ok or (attempt == 1 and why == "same_ending"):      # 끝맺음만 겹친 것은 두 번째에는 그대로 쓴다(받는 말이 없는 것보다 낫다)
+        s = strip_lead_address(fix_leader_address(s or ""))
+        ok, why = check_receive(s, leader_answer, kind=kind, formal=formal, avoid_endings=avoid_endings, no_quote=no_quote)
+        if ok or (attempt == 1 and why == "same_ending"):      # 끝맺음만 겹친 것은 두 번째에는 그대로 쓴다(라포·영역 정의)
             return s, ("llm_retry" if attempt else "llm")
         note = RETRY_NOTES.get(why, "쓸 수 없는 문장이었다")
     return None, f"miss:{why}"

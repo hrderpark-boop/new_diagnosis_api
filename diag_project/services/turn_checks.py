@@ -651,6 +651,59 @@ def receive_ending_key(sentence: str | None) -> str | None:
     return next((k for k, rx in _RECV_KEY_RES if rx.search(t)), None)
 
 
+# ── (2026-11-16 P14b-1) 한 턴에 리더 말을 되짚는 것은 한 번 — 받아 둔 받는 말을 붙일지는 질문이 나온 뒤 정한다 ──────────
+#   (가) A  질문이 리더 직전 답의 내용을 담은 앞 절로 시작한다(앞 절과 리더 답의 내용 낱말이 2개 이상 겹친다) → 붙이지 않는다
+#   (나) B  질문이 10어절 미만이거나 '그/이/그때/그렇게'로 시작해 맥락이 없다 → 붙인다
+#   (다) C  사례를 닫고 다음으로 넘어가는 턴 → 붙인다(호출자가 정한다)
+#   (라) D  그 밖 → 직전 코치 턴에 받는 말이 나갔으면 붙이지 않고(D-), 아니면 붙인다(D+)
+RECV_ATTACH_SHORT_EOJEOL = 10
+_BARE_START_RE = re.compile(r"^(그|이|그때|그렇게|그런|그러면|그럼|그래서|그것|그걸|그건)(\s|$)")
+
+
+def question_front_clause(question: str | None) -> str:
+    """질문 문장에서 실제로 묻는 자리 앞에 놓인 절('…하셨을 때,', '…하신 뒤')."""
+    q = (question or "").strip()
+    part = first_probe_asking_part(q)
+    return q[:len(q) - len(part)].strip() if part and part != q else ""
+
+
+def receive_attach_rule(question: str | None, leader_answer: str | None, *, prev_had_receive: bool = False) -> tuple[bool, str]:
+    """(붙이는가, 규칙: A | B | D+ | D-). 사례를 닫는 턴(C)은 호출자가 따로 정한다."""
+    q = (question or "").strip()
+    front = question_front_clause(q)
+    if front and len(question_overlap(front, leader_answer)) >= 2:
+        return False, "A"
+    if len(q.split()) < RECV_ATTACH_SHORT_EOJEOL or _BARE_START_RE.search(q):
+        return True, "B"
+    return (False, "D-") if prev_had_receive else (True, "D+")
+
+
+# ── (2026-11-16 P14b-3) 구체화 질문 확인 — 숫자·횟수·기간이나 실제 있었던 장면 하나를 청하는가 ─────────────────────
+SPECIFY_MARKS = ("얼마나", "어느 정도", "몇 …", "예를 들어·예로", "한 가지", "하나만", "하나를", "구체적으로 어떤/무엇", "어떤 장면·한 장면·장면 하나",
+                 "숫자·수치·횟수·기간", "며칠·몇 주·몇 달")
+_SPECIFY_RE = re.compile(r"얼마나|어느\s*정도|몇\s?[가-힣]|예를\s*들|예로|한\s*가지|하나만|하나를|구체적으로\s*(어떤|무엇|뭐)|(어떤|한)\s*장면|장면\s*하나|숫자|수치|횟수|기간|며칠")
+_SPECIFY_OFF_RE = re.compile(r"반응|받아들|어떻게\s*(보였|답했|말했)|왜\s|이유|까닭|기준|근거|어떤\s*(생각|마음)|우려|걱정")
+
+
+def specify_question_ok(question: str | None) -> tuple[bool, str]:
+    """(합격 여부, 사유: ok | no_question | meta | unfinished | off:<걸린 말> | no_mark). 묻는 자리(앞 절 제외)만 본다."""
+    q = (question or "").strip()
+    if not q:
+        return False, "no_question"
+    from diag_project.services.output_guard import split_sentences as _ss_sp
+    if _FP_META_RE.search(q) or len([x for x in _ss_sp(q) if x.strip()]) >= 2:
+        return False, "meta"
+    if _FP_UNFINISHED_RE.search(q):
+        return False, "unfinished"
+    part = first_probe_asking_part(q)
+    off = _SPECIFY_OFF_RE.search(part)
+    if off:
+        return False, f"off:{off.group(0).strip()}"
+    if not _SPECIFY_RE.search(part):
+        return False, "no_mark"
+    return True, "ok"
+
+
 # (2026-11-16 P14-3) 라포에서 리더가 코치에게 되묻거나 되받아친 말 — '그게 왜 궁금함?', '왜 물어?', '그건 왜요?'
 _COUNTER_Q_RE = re.compile(r"왜\s*[^.!]{0,10}(궁금|물어|묻|여쭤|질문|알고\s*싶)|(그게|그건|그걸|이게|이건)\s*왜|왜요\s*\??\s*$|^\s*왜\s*\??\s*$|뭐가\s*궁금|뭘\s*(물어|묻)")
 

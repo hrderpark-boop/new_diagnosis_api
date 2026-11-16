@@ -17,9 +17,10 @@
       코치는 한 명씩 차례로 돌린다(동시에 돌리면 지연 수치가 서로 섞인다).
 
 조건(코치마다, 하나라도 넘으면 종료 코드 1):
-    p50 ≤ 4.0초 · p95 ≤ 8.0초(점검표 값 — 올림 순위) · 재생성 걸린 턴 ≤ 8 · 형식미해결 0 · 깨진 문장 0
-    첫 꼬리 질문 fallback ≤ 1 · 8어절 미만 질문 ≤ 2
-    (P14) 받는 말 없는 본론 턴 ≤ 20% · 받는 말 끝맺음 한 가지 ≤ 50% · 구체화 질문이 2회 이상인 사례 0
+    p50 ≤ 3.8초 · p95 ≤ 8.0초(점검표 값 — 올림 순위) · 재생성 걸린 턴 ≤ 8 · 형식미해결 0 · 깨진 문장 0 · 첫 꼬리 질문 fallback ≤ 1
+    (P14b) 받는 말 있는 본론 턴 40~75% · 받는 말 평균 9어절 이하 · 12어절 초과 0 · 받는 말과 질문 앞 절이 겹친 턴 0(낱말 겹침 60% 이상)
+           받는 말 끝맺음 한 가지 ≤ 40% · 8어절 미만 질문 중 받는 말 없이 나간 것 ≤ 1 · 구체화 질문이 2회 이상인 사례 0
+    '구체화 질문이 구체화를 물었는가'도 사람이 읽어 판정한다.
   '첫 꼬리 질문이 리더 본인의 말·조치를 물었는가'(사례의 78% 이상)는 사람이 읽어 판정한다 — 이 스크립트는 문장만 뽑아 준다.
 
 산출물(결과 폴더):
@@ -47,37 +48,65 @@ COACH_NAMES = {"1": "ella", "2": "jessica", "3": "olivia", "4": "daniel", "5": "
 TOPICS = "조직관리,사람관리"
 PROFILE = "tools/sim_profiles/summary_team_lead.json"
 # (조건 이름, 결과 키, 상한) — 값이 상한 이하면 통과
-LIMITS: tuple[tuple[str, str, float], ...] = (
-    ("p50 ≤ 4.0초", "p50", 4.0), ("p95 ≤ 8.0초", "p95", 8.0), ("재생성 턴 ≤ 8", "regen_turns", 8), ("형식미해결 0", "format_miss", 0),
-    ("깨진 문장 0", "broken_total", 0), ("첫 꼬리 fallback ≤ 1", "fp_fallback", 1), ("8어절 미만 질문 ≤ 2", "short_q", 2),
-    # (2026-11-16 P14) 받는 말 없는 본론 턴 ≤ 20% · 받는 말 끝맺음 한 가지 ≤ 50% · 구체화 질문이 2회 이상인 사례 0
-    ("받는 말 없는 본론 턴 ≤ 20%", "recv_missing_pct", 20), ("받는 말 끝맺음 최다 ≤ 50%", "recv_top_end_pct", 50), ("구체화 질문 2회 이상인 사례 0", "specify_multi", 0),
+# (조건 이름, 결과 키, 하한, 상한) — 하한 ≤ 값 ≤ 상한이면 통과(하한 None = 하한 없음)
+LIMITS: tuple[tuple[str, str, float | None, float], ...] = (
+    ("p50 ≤ 3.8초", "p50", None, 3.8), ("p95 ≤ 8.0초", "p95", None, 8.0), ("재생성 턴 ≤ 8", "regen_turns", None, 8), ("형식미해결 0", "format_miss", None, 0),
+    ("깨진 문장 0", "broken_total", None, 0), ("첫 꼬리 fallback ≤ 1", "fp_fallback", None, 1),
+    # (2026-11-16 P14 → P14b) 받는 말: 한 턴에 리더 말을 되짚는 것은 한 번 — 있는 턴 40~75%, 평균 9어절 이하, 12어절 초과 0, 질문 앞 절과 겹친 턴 0, 끝맺음 최다 40% 이하
+    ("받는 말 있는 본론 턴 40~75%", "recv_have_pct", 40, 75), ("받는 말 평균 ≤ 9어절", "recv_avg_eojeol", None, 9), ("받는 말 12어절 초과 0", "recv_over12", None, 0),
+    ("받는 말·질문 앞 절 겹침 0", "recv_echo_n", None, 0), ("받는 말 끝맺음 최다 ≤ 40%", "recv_top_end_pct", None, 40),
+    ("8어절 미만 질문 중 받는 말 없는 것 ≤ 1", "short_bare", None, 1), ("구체화 질문 2회 이상인 사례 0", "specify_multi", None, 0),
 )
 MAIN_INSTR = ("EPISODE_PROBE", "SWEEP_FOLLOWUP", "EPISODE_OPEN", "SWEEP_ANCHOR")
 
 
+ECHO_RATIO = 0.6
+
+
 def receive_stats(rows: list[dict]) -> dict:
-    """본론 턴(탐침·훑는 질문·여는 턴)의 받는 말 유무와 끝맺음 분포 — 서버가 남긴 recv_out(끝맺음 갈래 | other | slot | None)을 읽는다.
-    슬롯 문장(관찰·응원)이 들어간 턴은 받는 말 자리가 없으므로 분모에서 뺀다."""
+    """본론 턴(탐침·훑는 질문·여는 턴)의 받는 말 — 유무, 끝맺음 분포, 어절 수, 같은 턴 질문의 앞 절과 겹친 턴, 받는 말 없이 나간 짧은 질문.
+    서버가 남긴 recv_out(끝맺음 갈래 | other | slot | None)을 읽는다. 슬롯 문장(관찰·응원) 턴은 받는 말 자리가 없으므로 분모에서 뺀다."""
     from collections import Counter
+    import regression_table as rt
+    from diag_project.services.output_guard import _content_chunks, is_question
+    from diag_project.services.turn_checks import question_front_clause
     by_instr: dict[str, list[int]] = {}
     ends: Counter = Counter()
+    rules: Counter = Counter()
+    lens: list[int] = []
+    echo: list[str] = []
+    short_bare: list[str] = []
     for r in rows:
         if r.get("role") != "model" or r.get("instr") not in MAIN_INSTR:
             continue
         g = r.get("guard") or {}
         out = g.get("recv_out")
+        if g.get("recv_rule"):
+            rules[str(g.get("recv_rule"))] += 1
         if out == "slot":
             continue
+        sents = [x.strip() for x in rt.sentences(r.get("content") or "") if x.strip()]
+        qs = [x for x in sents if is_question(x)]
         a = by_instr.setdefault(r["instr"], [0, 0])
         a[1] += 1
         if out:
             a[0] += 1
             ends[out] += 1
+            recv = next((x for x in sents if not is_question(x)), "")
+            lens.append(len(recv.split()))
+            front = question_front_clause(qs[0]) if qs else ""
+            fw = {c[:2] for c in _content_chunks(front) if len(c) >= 2}
+            rw = {c[:2] for c in _content_chunks(recv) if len(c) >= 2}
+            if len(fw) >= 2 and len(fw & rw) / len(fw) >= ECHO_RATIO:
+                echo.append(f"{recv} ↔ {front}")
+        elif qs and r["instr"] in ("EPISODE_PROBE", "SWEEP_FOLLOWUP") and len(qs[-1].split()) < SHORT_Q_EOJEOL:
+            short_bare.append(qs[-1])
     have = sum(v[0] for v in by_instr.values()); total = sum(v[1] for v in by_instr.values())
     top = ends.most_common(1)[0][1] if ends else 0
-    return {"recv_missing_pct": round(100 * (total - have) / total, 1) if total else None, "recv_top_end_pct": round(100 * top / have, 1) if have else None,
-            "recv_by_instr": {k: f"{v[0]}/{v[1]}" for k, v in by_instr.items()}, "recv_ends": dict(ends.most_common())}
+    return {"recv_have_pct": round(100 * have / total, 1) if total else None, "recv_top_end_pct": round(100 * top / have, 1) if have else None,
+            "recv_avg_eojeol": round(sum(lens) / len(lens), 1) if lens else None, "recv_over12": sum(1 for n in lens if n > 12),
+            "recv_echo_n": len(echo), "recv_echo": echo, "short_bare": len(short_bare), "short_bare_list": short_bare,
+            "recv_by_instr": {k: f"{v[0]}/{v[1]}" for k, v in by_instr.items()}, "recv_ends": dict(ends.most_common()), "recv_rules": dict(rules.most_common())}
 
 
 def specify_stats(data: dict) -> dict:
@@ -95,9 +124,9 @@ SHORT_Q_EOJEOL = 8
 def judge(metrics: dict) -> list[tuple[str, object, bool]]:
     """조건별 (이름, 값, 통과 여부). 값이 없으면(None) 통과로 보지 않는다."""
     out = []
-    for name, key, limit in LIMITS:
+    for name, key, lo, hi in LIMITS:
         v = metrics.get(key)
-        out.append((name, v, v is not None and float(v) <= float(limit)))
+        out.append((name, v, v is not None and float(v) <= float(hi) and (lo is None or float(v) >= float(lo))))
     return out
 
 
@@ -188,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     L.append("|---|" + "---|" * len(coaches))
     all_ok = True
     verdicts = {c: judge(ms[c]) for c in coaches}
-    for i, (name, _key, _lim) in enumerate(LIMITS):
+    for i, (name, _key, _lo, _hi) in enumerate(LIMITS):
         cells = []
         for c in coaches:
             _n, v, ok = verdicts[c][i]
@@ -199,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     all_ok = all_ok and all(str(ms[c]["status"]) == "completed" for c in coaches)
     L.append("| 받는 말(턴 종류별 있음/전체) | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["recv_by_instr"].items()) or "-" for c in coaches) + " |")
     L.append("| 받는 말 끝맺음 분포 | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["recv_ends"].items()) or "-" for c in coaches) + " |")
+    L.append("| 받는 말 붙인 규칙 | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["recv_rules"].items()) or "-" for c in coaches) + " |")
     L.append("| 구체화 질문 수 | " + " | ".join(str(ms[c]["specify_n"]) for c in coaches) + " |")
     L.append("| 첫 꼬리 질문 기록 | " + " | ".join(" · ".join(f"{k} {v}" for k, v in sorted(ms[c]["fp_mode"].items())) or "-" for c in coaches) + " |")
     coach_cost = sum(ms[c]["cost_usd"] for c in coaches)
@@ -209,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
         L += [f"{n}. [{a} · {mode}] {t}" for n, (a, mode, t) in enumerate(ms[c]["first_probes"], 1)]
         if ms[c]["short_list"]:
             L.append("8어절 미만 질문: " + " / ".join(ms[c]["short_list"]))
+        if ms[c]["short_bare_list"]:
+            L.append("그중 받는 말 없이 나간 것: " + " / ".join(ms[c]["short_bare_list"]))
+        if ms[c]["recv_echo"]:
+            L.append("받는 말과 질문 앞 절이 겹친 턴: " + " / ".join(ms[c]["recv_echo"]))
         L.append("")
     text = "\n".join(L)
     (out_dir / f"regression_{args.tag}_summary.md").write_text(text, encoding="utf-8")

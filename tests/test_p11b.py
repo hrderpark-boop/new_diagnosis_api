@@ -1290,7 +1290,7 @@ def test_p13d_ending_regen_gone_and_first_probe_dedicated_call():
     # 전용 호출 분기: 본 호출보다 먼저, 다른 재생성 없이, 끝에서 다시 놓는다
     i = src.index('elif ((instruction_used == "SWEEP_FOLLOWUP" or (instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("ask_first"))) and chapter):')
     j = src.index('elif instruction_used == "COMPETENCY_ALIGN":', i)
-    blk = src[i:j]
+    blk = src[i:j].split('elif instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("specify_now")')[0]      # (P14b-3) 뒤에 구체화 전용 호출 분기가 생겼다
     assert "render_first_probe" in blk and "generate_phase3a_interaction" not in blk and "_timed_regen" not in blk
     assert '_tm["first_probe"] = "llm_retry" if _retry_fp else "llm"' in blk and '_tm["first_probe"] = "fallback"' in blk and '_tm["no_regen"] = 1' in blk and '_tm["first_probe_s"]' in blk
     assert src.count("clean_reply = _fp_final") == 2
@@ -1539,16 +1539,20 @@ def test_regression_check_judge_limits():
     spec = importlib.util.spec_from_file_location("regression_check", pathlib.Path(__file__).resolve().parent.parent / "tools" / "regression_check.py")
     rc = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rc)
-    good = {"p50": 3.4, "p95": 8.0, "regen_turns": 8, "format_miss": 0, "broken_total": 0, "fp_fallback": 1, "short_q": 2,
-            "recv_missing_pct": 20.0, "recv_top_end_pct": 50.0, "specify_multi": 0}      # (P14) 추가 3항목(p50 은 원래 있다)
-    assert all(ok for _n, _v, ok in rc.judge(good)) and len(rc.judge(good)) == 10
-    rows = [{"role": "model", "instr": "EPISODE_PROBE", "guard": {"recv_out": "셨군요"}}, {"role": "model", "instr": "EPISODE_PROBE", "guard": {"recv_out": None}},
-            {"role": "model", "instr": "SWEEP_ANCHOR", "guard": {"recv_out": "셨네요"}}, {"role": "model", "instr": "EPISODE_PROBE", "guard": {"recv_out": "slot"}}]
-    st = rc.receive_stats(rows)
-    assert st["recv_missing_pct"] == 33.3 and st["recv_top_end_pct"] == 50.0 and st["recv_by_instr"] == {"EPISODE_PROBE": "1/2", "SWEEP_ANCHOR": "1/1"}
-    for key, bad in (("p50", 4.1), ("p95", 8.2), ("regen_turns", 9), ("format_miss", 1), ("broken_total", 1), ("fp_fallback", 2), ("short_q", 3), ("p95", None),
-                     ("recv_missing_pct", 21.0), ("recv_top_end_pct", 51.0), ("specify_multi", 1)):
+    good = {"p50": 3.8, "p95": 8.0, "regen_turns": 8, "format_miss": 0, "broken_total": 0, "fp_fallback": 1, "recv_have_pct": 60.0, "recv_avg_eojeol": 9.0,
+            "recv_over12": 0, "recv_echo_n": 0, "recv_top_end_pct": 40.0, "short_bare": 1, "specify_multi": 0}      # (P14b) 조건표
+    assert all(ok for _n, _v, ok in rc.judge(good)) and len(rc.judge(good)) == 13
+    for key, bad in (("p50", 3.9), ("p95", 8.2), ("regen_turns", 9), ("format_miss", 1), ("broken_total", 1), ("fp_fallback", 2), ("p95", None),
+                     ("recv_have_pct", 39.0), ("recv_have_pct", 76.0), ("recv_avg_eojeol", 9.1), ("recv_over12", 1), ("recv_echo_n", 1), ("recv_top_end_pct", 41.0),
+                     ("short_bare", 2), ("specify_multi", 1)):
         assert not all(ok for _n, _v, ok in rc.judge(dict(good, **{key: bad}))), key
+    rows = [{"role": "model", "instr": "EPISODE_PROBE", "content": "야간조에 물량을 넘기셨군요. 그 뒤에 무엇을 하셨습니까?", "guard": {"recv_out": "셨군요", "recv_rule": "B"}},
+            {"role": "model", "instr": "EPISODE_PROBE", "content": "그 뒤에 무엇이 달라졌습니까?", "guard": {"recv_out": None, "recv_rule": "D-"}},
+            {"role": "model", "instr": "SWEEP_ANCHOR", "content": "반장과 물량을 나누셨네요. 요즘 새로 시도하신 일이 있습니까?", "guard": {"recv_out": "셨네요", "recv_rule": "C"}},
+            {"role": "model", "instr": "EPISODE_PROBE", "content": "그 자리를 지키셨습니다. 그렇게 정하신 기준은 무엇이었습니까?", "guard": {"recv_out": "slot"}}]
+    st = rc.receive_stats(rows)
+    assert st["recv_have_pct"] == 66.7 and st["recv_top_end_pct"] == 50.0 and st["recv_by_instr"] == {"EPISODE_PROBE": "1/2", "SWEEP_ANCHOR": "1/1"}
+    assert st["short_bare"] == 1 and st["recv_over12"] == 0 and st["recv_rules"] == {"B": 1, "D-": 1, "C": 1}
 
 
 def test_p14_receive_call_everywhere_specificity_and_rapport():
@@ -1570,7 +1574,7 @@ def test_p14_receive_call_everywhere_specificity_and_rapport():
     assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans, avoid_endings=["셨네요", "셨군요"]) == (True, "ok")
     assert not RR.receivable("네") and not RR.receivable("없어요") and not RR.receivable(ans, prev_answer=ans) and RR.receivable(ans)
     pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Lucas", kind="probe", avoid_endings=["셨군요", "셨네요"])
-    assert "가장 구체적인 대목 하나" in pr and "평가·짐작·감상·칭찬" in pr and "리더님" in pr and "바로 앞에서 쓴 끝맺음: 셨군요, 셨네요" in pr
+    assert "가장 구체적인 낱말 하나만" in pr and "9어절을 넘기지 않는다" in pr and "평가·짐작·감상·칭찬" in pr and "리더님" in pr and "바로 앞에서 쓴 끝맺음: 셨군요, 셨네요" in pr
     assert "출력: 평서문 한 문장만." in pr and "'" + "출고" not in pr      # 완성 문장 예시는 넣지 않는다
     # 라포 — 내용 낱말이 모두 리더 답에 있어야 한다(숫자·직함을 다른 뜻으로 풀면 불합격)
     assert RR.check_receive("나른하시군요.", "나른하네", kind="smalltalk") == (True, "ok")
@@ -1590,7 +1594,10 @@ def test_p14_receive_call_everywhere_specificity_and_rapport():
         async def _generate_with_retry(self, **kw):
             _Twice.n += 1
             return "쉽지 않은 결정이었을 것으로 보입니다." if _Twice.n == 1 else "야간조에 물량 삼백 상자를 넘기자고 제안하셨군요."
-    assert asyncio.run(RR.render_receive(_Twice(), leader_answer=ans, persona_name="Ella")) == ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "llm_retry")
+    # (P14b-2) 본론 받는 말은 다시 쓰지 않는다 — 한 번 떨어지면 받는 말 없이. 영역 정의·라포는 종전대로 한 번 더 쓴다
+    assert asyncio.run(RR.render_receive(_Twice(), leader_answer=ans, persona_name="Ella")) == (None, "miss:ending") and _Twice.n == 1
+    _Twice.n = 0
+    assert asyncio.run(RR.render_receive(_Twice(), leader_answer=ans, persona_name="Ella", kind="align"))[1] == "llm_retry"
     src = inspect.getsource(D._submit_message_phase3a)
     assert "_aio_r.gather(" in src and "f\"{_pre_recv_text} {clean_reply}\"" in src and '_rapport_recv("smalltalk")' in src and 'kind="align"' in src
     assert "질문 문장만 쓴다" in EC.TURN_FORMAT_RULES and "'리더님'이라고만" in EC.TURN_FORMAT_RULES and "묻는 절을 쉼표나 '그리고'로 이어 붙이지 않는다" in EC.TURN_FORMAT_RULES
@@ -1611,3 +1618,58 @@ def test_p14_receive_call_everywhere_specificity_and_rapport():
     assert ok("본인이 반장에게 직접 어떤 말을 건넸는지 알려줄 수 있나요?", ans) == (False, "no_honorific")
     for coach, pairs in IM.FIRST_PROBE_FALLBACK_BY_ANGLE.items():
         assert all(ok(t, "창고 일이 밀렸습니다.") == (True, "ok") for _a, t in pairs), coach
+
+
+def test_p14b_one_receive_per_turn_specify_call_and_role_echo():
+    """(2026-11-16 P14b) 한 턴에 리더 말을 되짚는 것은 한 번 · 받는 말 9어절·다시 쓰기 없음 · 구체화 전용 호출 · 낱말 나열 답은 그대로 넣어 조립 · 두 물음 다시 쓰기."""
+    import asyncio
+    import inspect
+    from diag_project.prompts.phase3a import episode_card as EC
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import intro_messages as IM, receive_render as RR, specify_render as SP, turn_checks as TC
+    ans = "출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 반장에게 제안했습니다. 반장은 인력이 모자란다고 했습니다."
+    # 1. 붙이는 규칙 — A 앞 절이 리더 답의 내용을 담는다 / B 짧거나 맥락 없이 시작 / D 직전 턴에 받는 말이 나갔는가
+    assert TC.receive_attach_rule("야간조에 물량을 넘기자고 제안하셨을 때, 반장에게 직접 어떤 말로 꺼내셨습니까?", ans) == (False, "A")
+    assert TC.receive_attach_rule("그 뒤에 무엇이 달라졌습니까?", ans) == (True, "B")
+    assert TC.receive_attach_rule("그렇게 정하신 다음 창고 일정은 리더님께서 직접 어떤 차례로 다시 짜셨는지 들려주시겠습니까?", ans) == (True, "B")      # '그렇게'로 시작
+    long_q = "창고 일정은 리더님께서 직접 어떤 차례로 다시 짜셨는지 처음부터 하나씩 들려주시겠습니까?"
+    assert TC.receive_attach_rule(long_q, ans, prev_had_receive=True) == (False, "D-") and TC.receive_attach_rule(long_q, ans, prev_had_receive=False) == (True, "D+")
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "_rar_b(_qs_b[0], _llm_user_text, prev_had_receive=_prev_recv_b)" in src and '_tm["main_stmt_cut"] = len(_cut_b)' in src and '_tm["recv_rule"] = "C"' in src
+    # 2. 받는 말 — 리더가 아닌 사람에게 높임, '말씀' 두 번, 인용꼴 상한, 머리의 호칭
+    assert RR.check_receive("담당자가 인력이 모자란다고 하셨다는 말씀이네요.", ans)[1] == "third_honorific"
+    assert RR.check_receive("리더님이 말씀하신 것은 물량을 넘기자는 말씀이네요.", ans)[1] == "dup"
+    assert RR.check_receive("물량 삼백 상자를 넘기자고 하셨다는 말씀이네요.", ans, no_quote=True)[1] == "quote_cap"
+    assert RR.strip_lead_address("리더님이 물량을 넘기자고 하셨다는 말씀이네요.") == "물량을 넘기자고 하셨다는 말씀이네요."
+    assert RR.strip_lead_address("리더님께서 물량을 넘기자고 제안하셨군요.") == "리더님께서 물량을 넘기자고 제안하셨군요."      # 인용꼴이 아니면 그대로
+    assert not RR.receivable("그 부분은 따로 기억나는 게 없습니다. 다만 그 뒤에 반장과 물량을 다시 나눴습니다.")
+    pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Ella", kind="probe", no_quote=True)
+    assert "이번에는 '-다는 말씀이네요'" in pr and "문장을 '리더님'으로 시작하지 않는다" in pr
+    # 3. 구체화 질문 — 전용 호출, 확인(구체화 표지가 있고 반응·이유 표지가 묻는 자리에 없다), 한 번 더 쓰기
+    ok = TC.specify_question_ok
+    assert ok("물량을 넘기셨다고 하셨는데, 몇 상자를 며칠에 걸쳐 넘기셨습니까?") == (True, "ok")
+    assert ok("물량을 넘긴 뒤 달라진 것을 보여 주는 장면 하나를 들려주시겠습니까?") == (True, "ok")
+    assert ok("물량을 넘기자고 했을 때 반장은 어떤 반응을 보였습니까?")[1].startswith("off:") and ok("그때 어떻게 하셨습니까?") == (False, "no_mark")
+    psp = SP.build_specify_prompt(leader_answer=ans, target="result", persona_name="Daniel")
+    assert "리더가 방금 말한 결과 가운데 두루뭉술한 대목 하나" in psp and "다른 사람의 반응·생각, 리더의 이유는 묻지 않는다" in psp and "'" + "몇 상자" not in psp
+    class _Two:
+        n = 0
+        async def _generate_with_retry(self, **kw):
+            _Two.n += 1
+            return "그때 반장은 어떤 반응을 보였습니까?" if _Two.n == 1 else "야간조에 넘기신 물량이 몇 상자였는지 말씀해 주시겠습니까?"
+    q, mode = asyncio.run(SP.render_specify(_Two(), leader_answer=ans, target="action", persona_name="Daniel"))
+    assert mode == "llm_retry" and "몇 상자" in q
+    class _Bad:
+        async def _generate_with_retry(self, **kw):
+            return "그때 반장은 어떤 반응을 보였습니까?"
+    assert asyncio.run(SP.render_specify(_Bad(), leader_answer=ans, target="action", persona_name="Daniel")) == (None, "miss:off:어떤 반응") or \
+        asyncio.run(SP.render_specify(_Bad(), leader_answer=ans, target="action", persona_name="Daniel"))[0] is None
+    assert '(_bei_ep or {}).get("specify_now") and chapter:' in src and "_rsp_s(llm, leader_answer=_llm_user_text" in src
+    assert "_ep = dict(_ep, specificity_probe=dict(_sp_j, after_specific=_jd.get(\"specific\")))" in src      # 닫히는 턴에도 원장에 남는다
+    # 4. 낱말 나열 답 — 리더가 쓴 말을 그대로 넣는다
+    assert IM.role_echo_receive("Ella", "교육팀장 4명 팀원 교육기획") == "교육팀장 4명 팀원 교육기획, 알겠어요."
+    assert IM.role_echo_receive("Lucas", "교육팀장 4명 팀원 교육기획.") == "교육팀장 4명 팀원 교육기획, 알겠습니다." and IM.role_echo_receive("Ella", "가" * 41) is None
+    assert "_rer3(_pn_s3, request.content)" in src and '_rapport_recv("role")' not in src
+    # 5. 한 문장 두 물음 — 지시문 맨 끝 한 줄 + 걸리면 본 호출 한 번 다시
+    assert EC.TURN_FORMAT_RULES.rstrip().endswith("- 묻는 것은 하나다. 쉼표로 두 번째 물음을 잇지 않는다.")
+    assert '_timed_regen(why="two_q"' in src and '"two_questions" in _qi_2(_qs_2[-1])' in src
