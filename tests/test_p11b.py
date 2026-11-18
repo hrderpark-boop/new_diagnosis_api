@@ -1292,11 +1292,11 @@ def test_p13d_ending_regen_gone_and_first_probe_dedicated_call():
     j = src.index('elif instruction_used == "COMPETENCY_ALIGN":', i)
     blk = src[i:j].split('elif instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("specify_now")')[0]      # (P14b-3) 뒤에 구체화 전용 호출 분기가 생겼다
     assert "render_first_probe" in blk and "generate_phase3a_interaction" not in blk and "_timed_regen" not in blk
-    # (P15 판정 2) 다시 쓰기는 없다 — 한 번의 호출에서 후보 둘을 받아 먼저 통과하는 것을 쓴다
-    assert '_tm["first_probe"] = "llm"' in blk and "llm_retry" not in blk and '_tm["first_probe"] = "fallback"' in blk and '_tm["no_regen"] = 1' in blk and '_tm["first_probe_s"]' in blk
+    # (P15 판정 2 → P15b 판정 1) 한 번의 호출에서 후보 둘을 받아 먼저 통과하는 것을 쓴다. 둘 다 떨어졌을 때만 한 번 더 부른다
+    assert '_tm["first_probe"] = "llm_retry" if _retry_fp else "llm"' in blk and '_tm["first_probe"] = "fallback"' in blk and '_tm["no_regen"] = 1' in blk and '_tm["first_probe_s"]' in blk
     assert src.count("clean_reply = _fp_final") == 2
     # 넘기는 것: 리더의 직전 답 · 말투 · 이번 영역에서 쓴 끝맺음. 넘기지 않는 것: 칸 상태 · 방향 힌트 · 코치 프로필 · 영역 정의
-    assert set(inspect.signature(FP.render_first_probe).parameters) == {"llm", "leader_answer", "persona_name", "used_endings", "angle"}
+    assert set(inspect.signature(FP.render_first_probe).parameters) == {"llm", "leader_answer", "persona_name", "used_endings", "angle", "retry_note"}
     pr = FP.build_first_probe_prompt(leader_answer="야간 조 반장과 출고표를 다시 짰습니다.", persona_name="Daniel (다니엘)", used_endings=["말씀해 주시겠습니까"])
     assert "야간 조 반장과 출고표를 다시 짰습니다." in pr and "합쇼체" in pr and "'말씀해 주시겠습니까'" in pr
     assert "묻지 않는 것: 때·자리·장면, 다른 사람의 반응, 리더의 생각·기준, 결과" in pr
@@ -1508,12 +1508,14 @@ def test_p13g_addressee_partial_cut_retry_marks_and_short_question_context():
     assert ok("순서대로 말씀해 주십시오 — 아니, 규칙상 질문 한 문장이어야 하므로: 무엇부터 하셨습니까?", a1) == (False, "meta")
     assert ok("무엇을 하셨습니까? 그다음에는 무엇을 하셨습니까?", a1) == (False, "meta")
     assert ok("물량을 어떤 순서로 넘기셨는지 여쭙고 싶습니까?", a1) == (False, "self_verb")
-    # (P15 판정 2) 사유를 넘겨 한 번 더 쓰던 것은 없앴다 — 한 번의 호출에서 후보 둘을 받아 차례로 확인한다. 사유 문구는 본 호출 다시 쓰기에만 쓴다
-    assert all(TC.first_probe_retry_note(why) for why in ("closed", "off:어떤 반응", "no_action", "unfinished", "meta", "self_verb", "who"))
+    # (P15 판정 2 → P15b 판정 1) 후보 둘이 다 떨어졌을 때만(하나만 온 경우 포함) 사유를 한 줄로 넘겨 한 번 더 부른다
+    for why in ("closed", "off:어떤 반응", "no_action", "unfinished", "meta", "self_verb", "who", "register", "short", "no_noun", "borrow"):
+        note = TC.first_probe_retry_note(why)
+        assert note and note in FP.build_first_probe_prompt(leader_answer=a1, persona_name="Daniel", angle="did", retry_note=note)
     assert "앞서 쓴 질문은 쓸 수 없었다" not in FP.build_first_probe_prompt(leader_answer=a1, persona_name="Daniel", angle="did")
-    assert "retry_note" not in inspect.signature(FP.build_first_probe_prompt).parameters
     src = inspect.getsource(D._submit_message_phase3a)
-    assert "_one_fp(" not in src and "llm_retry" not in src[src.index("render_first_probe as _rfp_fp"): src.index('_sd_fp["first_probe_angles"] = ')]
+    assert "_one_fp(" not in src and "retry_note=_note_fp(_whys_fp[0] if _whys_fp else \"no_question\")" in src
+    assert 'if not _q_fp and _mode_fp not in ("stub", "miss:no_llm", "miss:no_material"):' in src
     # 대체 문장 — 세션에서 같은 문장은 한 번만
     used = []
     for _ in range(6):
@@ -1545,19 +1547,20 @@ def test_regression_check_judge_limits():
     spec = importlib.util.spec_from_file_location("regression_check", pathlib.Path(__file__).resolve().parent.parent / "tools" / "regression_check.py")
     rc = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rc)
-    # (P15) 조건표 — (B)·(C)·'짧은 질문 중 받는 말 없는 것'은 삭제. (A) 10% · a 되짚는 턴 · b 꼬리 턴 받는 말 · c 청하는 꼴 · d 호칭으로 시작 · 전환 턴 · 짧은 꼬리 질문
-    good = {"p50": 3.8, "p95": 8.0, "regen_turns": 8, "format_miss": 0, "broken_total": 0, "fp_fallback": 1, "ctx_bare_pct": 10.0, "echo_pct": 30.0,
-            "tail_recv_n": 0, "req_tail_pct": 30.0, "lead_addr_n": 0, "trans_cover_pct": 100.0, "echo_trans_max": 2, "tail_short_n": 0,
-            "recv_avg_eojeol": 9.0, "recv_over12": 0, "recv_echo_n": 0, "recv_top_end_pct": 40.0, "specify_multi": 0}
-    assert all(ok for _n, _v, ok in rc.judge(good)) and len(rc.judge(good)) == 19
-    assert not any(k in ("trans_recv_pct", "recv_have_pct", "recv_streak4", "short_bare", "bare_pct") for _n, k, _lo, _hi in rc.LIMITS)
-    for key, bad in (("p50", 3.9), ("p95", 8.2), ("regen_turns", 9), ("format_miss", 1), ("broken_total", 1), ("fp_fallback", 2), ("p95", None),
-                     ("ctx_bare_pct", 10.5), ("echo_pct", 30.5), ("tail_recv_n", 1), ("req_tail_pct", 31.0), ("lead_addr_n", 1), ("trans_cover_pct", 90.0),
-                     ("echo_trans_max", 3), ("tail_short_n", 1), ("recv_avg_eojeol", 9.1), ("recv_over12", 1), ("recv_echo_n", 1), ("recv_top_end_pct", 41.0),
-                     ("specify_multi", 1), ("ctx_bare_pct", None), ("echo_pct", None)):
+    # (P15 → P15b 판정) 조건표 15항목 — p50 4.6초(이번 묶음) · 대체 문장 ≤ 1 · (A) 10% · a 되짚는 턴 · b 꼬리 턴 받는 말 ·
+    #   c 사례당 청하는 꼴 2회 이상인 사례 0 · d 호칭으로 시작 · 전환 턴 · 8어절 미만 꼬리 질문 ≤ 1 · 구체화. 받는 말 어절·끝맺음은 참고로만 표시한다
+    good = {"p50": 4.6, "p95": 8.0, "regen_turns": 8, "format_miss": 0, "broken_total": 0, "fp_fallback": 1, "ctx_bare_pct": 10.0, "echo_pct": 30.0,
+            "tail_recv_n": 0, "req_case_multi": 0, "lead_addr_n": 0, "trans_cover_pct": 100.0, "echo_trans_max": 2, "tail_short_n": 1, "specify_multi": 0}
+    assert all(ok for _n, _v, ok in rc.judge(good)) and len(rc.judge(good)) == 15
+    lim_keys = {k for _n, k, _lo, _hi in rc.LIMITS}
+    assert not lim_keys & {"trans_recv_pct", "recv_have_pct", "recv_streak4", "short_bare", "bare_pct", "req_tail_pct", "recv_avg_eojeol", "recv_top_end_pct"}
+    assert {k for _n, k in rc.INFO_ROWS} >= {"req_tail_pct", "recv_avg_eojeol", "recv_top_end_pct"}
+    for key, bad in (("p50", 4.7), ("p95", 8.2), ("regen_turns", 9), ("format_miss", 1), ("broken_total", 1), ("fp_fallback", 2), ("p95", None),
+                     ("ctx_bare_pct", 10.5), ("echo_pct", 30.5), ("tail_recv_n", 1), ("req_case_multi", 1), ("lead_addr_n", 1), ("trans_cover_pct", 90.0),
+                     ("echo_trans_max", 3), ("tail_short_n", 2), ("specify_multi", 1), ("ctx_bare_pct", None), ("echo_pct", None)):
         assert not all(ok for _n, _v, ok in rc.judge(dict(good, **{key: bad}))), key
-    # 받는 말이 한 번도 안 나간 세션 — 받는 말 어절·끝맺음 값이 없어도 통과로 본다
-    assert all(ok for _n, _v, ok in rc.judge(dict(good, recv_avg_eojeol=None, recv_top_end_pct=None)))
+    # 참고 값(받는 말 어절·끝맺음·청하는 꼴 %)은 판정에 들어가지 않는다
+    assert all(ok for _n, _v, ok in rc.judge(dict(good, recv_avg_eojeol=12.0, recv_top_end_pct=100.0, req_tail_pct=60.0)))
     rows = [{"role": "model", "instr": "EPISODE_PROBE", "content": "야간조에 물량을 넘기셨군요. 그 뒤에 무엇을 하셨습니까?", "guard": {"recv_out": "셨군요", "recv_rule": "B"}},
             {"role": "model", "instr": "EPISODE_PROBE", "content": "그 뒤에 무엇이 달라졌습니까?", "guard": {"recv_out": None, "recv_rule": "D-"}},
             {"role": "model", "instr": "SWEEP_ANCHOR", "content": "반장과 물량을 나누셨네요. 요즘 새로 시도하신 일이 있습니까?", "guard": {"recv_out": "셨네요", "recv_rule": "C"}},
@@ -1977,7 +1980,12 @@ def test_p15_no_receive_in_tail_turns_transition_pass_first_probe_shape_and_dire
     assert TC.first_probe_echo_issue("그때 직접 건네신 말은 무엇이었습니까?", ans) == "no_noun"
     assert TC.first_probe_echo_issue("야간조에 넘기신 실제로 어떤 말씀을 하셨습니까?", ans) == "short"                       # 비문·길이 미달은 쓰지 않는다
     assert FP.split_candidates("1. 가 질문입니까?\n2) 나 질문입니까?") == ["가 질문입니까?", "나 질문입니까?"]
-    assert '_tm["first_probe_pick"] = _pick_fp' in src and "for _i_fp, _c_fp in enumerate(_cands_fp[:2], 1):" in src
+    assert '_tm["first_probe_pick"] = _pick_fp' in src and "for _i_fp, _c_fp in enumerate(_cands[:2], 1):" in src
+    # (P15b 판정 2) 후보 확인에 기존 말투 검사 — 합쇼체 코치의 '-ㄹ래요/-어요?' 끝맺음은 탈락(Lucas 는 섞어 쓰므로 걸리지 않는다)
+    from diag_project.services.persona_register import register_violations as _rv
+    assert '_rv_fp(_pn_fp, _q2, scope="questions")' in src and '_ok, _why = False, "register"' in src
+    assert _rv("Daniel", "반장에게 물량을 두고 직접 어떤 말을 건네셨는지 짚어 주실래요?", scope="questions") and _rv("Jessica", "야간조 물량은 어떻게 나누셨어요?", scope="questions")
+    assert not _rv("Daniel", "반장에게 물량을 두고 직접 어떤 말을 건네셨습니까?", scope="questions") and not _rv("Lucas", "반장에게 직접 어떤 말을 건네셨는지 짚어 주실래요?", scope="questions")
     assert TC.strip_lead_address_q("리더님께서는 야간조 물량을 두고 무엇을 하셨습니까?") == "야간조 물량을 두고 무엇을 하셨습니까?"
     assert TC.strip_lead_address_q("물량을 넘기셨군요. 리더님이 직접 하신 말은 무엇이었나요?") == "물량을 넘기셨군요. 직접 하신 말은 무엇이었나요?"
     assert TC.strip_lead_address_q("리더님의 판단은 무엇이었나요?") == "리더님의 판단은 무엇이었나요?"
@@ -2036,6 +2044,22 @@ def test_p15_no_receive_in_tail_turns_transition_pass_first_probe_shape_and_dire
               {"role": "model", "instr": "SWEEP_FOLLOWUP", "chapter": "pm", "content": "거기서 직접 하신 말은 무엇이었나요?", "guard": {"first_probe": "fallback", "first_probe_pick": 0, "regen_why": []}}]
     assert rc.echo_stats(rows_r)["ctx_bare_list"] == ["거기서 직접 하신 말은 무엇이었나요?"]
     assert rc.first_probe_pick_stats(rows_r)["fp_pick"] == {"2번 통과": 1, "대체 문장": 1}
+    # (P15b 판정) c) 사례당 청하는 꼴 2회 이상인 사례 수 — 전환 턴에서 사례를 끊어 센다. 다시 써서 통과한 첫 꼬리 질문
+    rows_c = [{"role": "user", "content": ans},
+              {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "반장에게 물량을 두고 무엇을 맡기셨는지 말씀해 주시겠습니까?", "guard": {"first_probe": "llm_retry", "first_probe_pick": 1}},
+              {"role": "user", "content": ans},
+              {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "야간조 물량이 그 뒤에 어떻게 나뉘었는지 들려주시겠습니까?", "guard": {}},
+              {"role": "user", "content": ans},
+              {"role": "model", "instr": "SWEEP_ANCHOR", "chapter": "pm", "content": frm[0] + " 최근에 일정을 다시 짜신 적이 있습니까?", "guard": {"recv_out": "fixed"}},
+              {"role": "user", "content": ans},
+              {"role": "model", "instr": "SWEEP_FOLLOWUP", "chapter": "pm", "content": "반장과 일정을 놓고 직접 하신 말씀이 무엇이었는지 알려 주시겠습니까?", "guard": {"first_probe": "llm", "first_probe_pick": 1}}]
+    st_c = rc.echo_stats(rows_c)
+    assert st_c["req_case_multi"] == 1 and st_c["req_case_max"] == 2 and st_c["req_tail_pct"] == 100.0
+    assert rc.first_probe_pick_stats(rows_c)["fp_pick"] == {"1번 통과": 1, "다시 써서 통과": 1}
+    # (P15b 판정 3) 대체 문장 — 말투마다 여섯 개 모두 직접 묻는 꼴·8어절 이상, 호칭으로 시작하지 않는다
+    for coach, pairs in IM.FIRST_PROBE_FALLBACK_BY_ANGLE.items():
+        for _a, t in pairs:
+            assert not TC.is_request_ending(t) and len(t.split()) >= 8 and "리더님" not in t and TC.strip_lead_address_q(t) == t, (coach, t)
 
 
 def test_p15b_reason_slot_direct_form_and_no_repeated_frame():

@@ -1948,41 +1948,59 @@ async def _submit_message_phase3a(
             _tm["first_probe_angle"] = _angle_fp
             _ends_fp = [_el_fp(k) for k, _v in sorted(_ec_fp(_chapter_questions()).items(), key=lambda kv: -kv[1])]
             # (2026-11-15 P13g-1) 질문에 넣은 상대가 걸리면 그 어절만 지우고 나머지는 그대로 쓴다(first_probe_addressee_fix).
-            # (2026-11-18 P15 판정 2) 순차 다시 쓰기를 없앴다 — 한 번의 호출에서 후보 둘을 받아 차례로 확인하고 먼저 통과하는 것을 쓴다.
-            #   둘 다 떨어지면 대체 문장. 걸린 후보(비문·길이 미달·조각난 문장 포함)는 어떤 경우에도 그대로 내보내지 않는다.
-            #   기록 first_probe: llm | fallback · first_probe_pick: 통과한 후보의 순번(1·2, 대체 문장이면 0) ·
-            #   first_probe_why: 떨어진 후보의 사유('첫째>둘째') · first_probe_who: [[지운 어절, 지우기 전 질문], …].
+            # (2026-11-18 P15 판정 2) 한 번의 호출에서 후보 둘을 받아 차례로 확인하고 먼저 통과하는 것을 쓴다.
+            #   (P15b 판정 1) 둘 다 떨어졌을 때만 한 번 더 부르고, 그래도 떨어지면 대체 문장. 걸린 후보(비문·길이 미달·조각난 문장 포함)는 그대로 내보내지 않는다.
+            #   기록 first_probe: llm | llm_retry | fallback · first_probe_pick: 통과한 후보의 순번(1·2, 대체 문장이면 0) ·
+            #   first_probe_why: 떨어진 후보의 사유('첫째>둘째>/>다시 쓴 첫째>…') · first_probe_who: [[지운 어절, 지우기 전 질문], …].
             from diag_project.services.intro_messages import first_probe_fallback_pick as _fpp_fp
             from diag_project.services.turn_checks import (first_probe_addressee_fix as _afix_fp, first_probe_echo_issue as _fpei_fp,
                                                              strip_lead_address_q as _slq_fp)
             _t0_fp = _time.perf_counter()
-            _cands_fp, _mode_fp = await _rfp_fp(llm, leader_answer=_llm_user_text, persona_name=_pn_fp, used_endings=_ends_fp, angle=_angle_fp)
-            _q_fp, _pick_fp, _whys_fp = None, 0, []
-            for _i_fp, _c_fp in enumerate(_cands_fp[:2], 1):
-                _q2, _rm, _clean = _afix_fp(_c_fp, _llm_user_text)
-                if _rm:
-                    _tm["first_probe_who"] = list(_tm.get("first_probe_who") or []) + [[" / ".join(_rm), _c_fp[:200]]]
-                _q2 = _slq_fp(_q2)      # (P15-3) 문장 머리의 '리더님께서'는 뗀다
-                if not _clean:
-                    _ok, _why = False, "who"
-                else:
-                    _ok, _why = _fpok_fp(_q2, _llm_user_text)
+            from diag_project.services.persona_register import register_violations as _rv_fp
+            from diag_project.services.turn_checks import first_probe_retry_note as _note_fp
+
+            def _pick_cand_fp(_cands: list[str]) -> tuple[str | None, int, list[str]]:
+                """후보를 차례로 확인해 먼저 통과하는 것을 고른다. (질문 | None, 순번, 떨어진 사유들)"""
+                _whys: list[str] = []
+                for _i_fp, _c_fp in enumerate(_cands[:2], 1):
+                    _q2, _rm, _clean = _afix_fp(_c_fp, _llm_user_text)
+                    if _rm:
+                        _tm["first_probe_who"] = list(_tm.get("first_probe_who") or []) + [[" / ".join(_rm), _c_fp[:200]]]
+                    _q2 = _slq_fp(_q2)      # (P15-3) 문장 머리의 '리더님께서'는 뗀다
+                    if not _clean:
+                        _ok, _why = False, "who"
+                    else:
+                        _ok, _why = _fpok_fp(_q2, _llm_user_text)
+                        if _ok and _rv_fp(_pn_fp, _q2, scope="questions"):
+                            _ok, _why = False, "register"      # (P15b 판정 2) 기존 말투 검사 — 합쇼체 코치의 '-ㄹ래요/-어요?' 끝맺음
+                        if _ok:
+                            _iss_fp = _fpei_fp(_q2, _llm_user_text)      # 리더 낱말 · 8~20어절 · 옮긴 부분 6어절 이하 · 조각난 문장
+                            if _iss_fp:
+                                _ok, _why = False, _iss_fp
                     if _ok:
-                        _iss_fp = _fpei_fp(_q2, _llm_user_text)      # 리더 낱말 · 8~20어절 · 옮긴 부분 6어절 이하 · 조각난 문장
-                        if _iss_fp:
-                            _ok, _why = False, _iss_fp
-                if _ok:
-                    _q_fp, _pick_fp = _q2, _i_fp
-                    break
-                _whys_fp.append(_why)
-                _call_drops.append(["first_probe", _why, (_q2 or _c_fp)[:200]])
+                        return _q2, _i_fp, _whys
+                    _whys.append(_why)
+                    _call_drops.append(["first_probe", _why, (_q2 or _c_fp)[:200]])
+                return None, 0, _whys
+
+            _cands_fp, _mode_fp = await _rfp_fp(llm, leader_answer=_llm_user_text, persona_name=_pn_fp, used_endings=_ends_fp, angle=_angle_fp)
+            _q_fp, _pick_fp, _whys_fp = _pick_cand_fp(_cands_fp)
+            _retry_fp = False
+            if not _q_fp and _mode_fp not in ("stub", "miss:no_llm", "miss:no_material"):
+                # (2026-11-18 P15b 판정 1) 후보가 모두 떨어졌을 때만(후보가 하나만 온 경우·질문이 없던 경우 포함) 사유를 넘겨 한 번 더 부른다.
+                #   p15b: 다시 쓰기를 없앴더니 대체 문장이 코치당 2~3개 — 다섯 건 가운데 세 건은 후보가 사실상 하나였다.
+                _retry_fp = True
+                _cands_fp, _mode_fp = await _rfp_fp(llm, leader_answer=_llm_user_text, persona_name=_pn_fp, used_endings=_ends_fp, angle=_angle_fp,
+                                                    retry_note=_note_fp(_whys_fp[0] if _whys_fp else "no_question"))
+                _q_fp, _pick_fp, _whys2_fp = _pick_cand_fp(_cands_fp)
+                _whys_fp = _whys_fp + ["/"] + _whys2_fp
             _tm["first_probe_s"] = round(_time.perf_counter() - _t0_fp, 2)
             _tm["first_probe_pick"] = _pick_fp
             if _whys_fp or not _cands_fp:
                 _tm["first_probe_why"] = ">".join(_whys_fp) if _whys_fp else _mode_fp
             if _q_fp:
                 _fp_final = _q_fp
-                _tm["first_probe"] = "llm"
+                _tm["first_probe"] = "llm_retry" if _retry_fp else "llm"
             else:
                 _used_fb_fp = [str(x) for x in (_sd_fp.get("first_probe_fb_used") or [])]
                 _fp_final = _fpp_fp(_pn_fp, _angle_fp, _used_fb_fp)      # (P13g-4) 같은 대체 문장은 세션에서 한 번만

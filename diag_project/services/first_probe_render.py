@@ -8,7 +8,8 @@ p13b·p13c: 본 호출에 전용 지시를 줘도 9건 가운데 4건이 때·�
 (2026-11-15 P13e-1 → P13f-2) 묻는 각도는 셋(그때 한 말 / 직접 취한 조치 / 일을 진행한 순서) — 호출자가 리더 답에 이미 나온 각도와
 직전에 쓴 각도를 피해 하나를 골라 넘긴다(turn_checks.pick_first_probe_angle). p13d: 57개 가운데 44개가 '직접 어떤 말(씀)을 …' 한 뼈대였다.
 받는 말은 만들지 않는다. (2026-11-18 P15 판정 2) 한 번의 호출에서 질문 후보를 둘 받는다 — 호출자가 차례로 확인해 먼저 통과하는 것을 쓰고,
-둘 다 떨어지면 대체 문장을 쓴다. 다시 부르지 않는다(p15: 첫 꼬리 턴 21개 가운데 19개가 한 번 더 써서 지연이 1초 늘었다).
+둘 다 떨어졌을 때만(후보가 하나만 온 경우 포함) 사유를 넘겨 한 번 더 부르고, 그래도 떨어지면 대체 문장을 쓴다
+(p15: 후보 하나에 매번 다시 쓰기 — 21턴 가운데 19턴이 한 번 더 써 지연이 1초 늘었다. p15b: 다시 쓰기 없음 — 대체 문장이 코치당 2~3개).
 """
 from __future__ import annotations
 
@@ -31,7 +32,8 @@ ANGLE_ASK: dict[str, str] = {
 }
 
 
-def build_first_probe_prompt(*, leader_answer: str, persona_name: str | None, used_endings: list[str] | None = None, angle: str = "said") -> str:
+def build_first_probe_prompt(*, leader_answer: str, persona_name: str | None, used_endings: list[str] | None = None, angle: str = "said",
+                             retry_note: str | None = None) -> str:
     from diag_project.services.persona_register import register_hint
     ans = re.sub(r"\s+", " ", (leader_answer or "").strip())[-ANSWER_TAIL_CHARS:]
     ends = [x for x in (used_endings or []) if x][:6]
@@ -54,7 +56,8 @@ def build_first_probe_prompt(*, leader_answer: str, persona_name: str | None, us
         "- 고를 것을 늘어놓지 않는다. 한 문장에 두 가지를 묻지 않는다.\n"
         f"- 말투: {register_hint(persona_name)}\n"
         + ("- 이번 영역에서 이미 쓴 질문 끝맺음: " + " / ".join(f"'{x}'" for x in ends) + " — 이것과 다른 끝맺음으로 끝낸다.\n" if ends else "")
-        # (P15 판정 2) 순차 다시 쓰기 대신 한 번에 후보 둘 — 코드가 먼저 통과하는 것을 고른다
+        + (f"- 앞서 쓴 질문은 쓸 수 없었다 — {retry_note}. 그 점을 고쳐 새로 쓴다.\n" if retry_note else "")
+        # (P15 판정 2) 한 번에 후보 둘 — 코드가 먼저 통과하는 것을 고른다. (P15b 판정 1) 둘 다 떨어졌을 때만 사유를 넘겨 한 번 더 부른다
         + "\n출력: 서로 다른 질문 두 개를 한 줄에 하나씩. 번호와 설명은 붙이지 않는다."
     )
 
@@ -74,9 +77,10 @@ def split_candidates(raw: str | None) -> list[str]:
 
 
 async def render_first_probe(llm, *, leader_answer: str, persona_name: str | None, used_endings: list[str] | None = None,
-                             angle: str = "said") -> tuple[list[str], str]:
+                             angle: str = "said", retry_note: str | None = None) -> tuple[list[str], str]:
     """(질문 후보 목록(최대 2), 모드). 모드 'llm' | 'stub' | 'miss:<사유>'(no_material·no_llm·error·no_question).
-    (2026-11-18 P15 판정 2) 호출은 한 번뿐이다 — 확인에서 떨어져도 다시 부르지 않는다. 후보의 합격 여부는 호출자가 차례로 본다."""
+    (2026-11-18 P15 판정 2 → P15b 판정 1) 후보의 합격 여부는 호출자가 차례로 본다. 후보가 모두 떨어졌을 때만(하나만 온 경우 포함)
+    호출자가 사유(retry_note)를 넘겨 한 번 더 부른다."""
     from diag_project.services.persona_register import apply_register
     from diag_project.services.turn_checks import finish_sentence_marks, fix_leader_address
     if not (leader_answer or "").strip():
@@ -85,7 +89,7 @@ async def render_first_probe(llm, *, leader_answer: str, persona_name: str | Non
         return [], "stub"
     if llm is None:
         return [], "miss:no_llm"
-    prompt = build_first_probe_prompt(leader_answer=leader_answer, persona_name=persona_name, used_endings=used_endings, angle=angle)
+    prompt = build_first_probe_prompt(leader_answer=leader_answer, persona_name=persona_name, used_endings=used_endings, angle=angle, retry_note=retry_note)
     try:
         out = await llm._generate_with_retry(prompt=prompt, max_tokens=280, thinking_budget=0, call_type="first_probe_render", temperature=0.4)
     except Exception as e:  # noqa: BLE001
