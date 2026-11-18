@@ -131,7 +131,7 @@ def build_episode_card(
     _ = prev_episodes
     if instruction == "EPISODE_PROBE" and ep:
         # (2026-11-18 P15 덧붙임) 꼬리 질문의 길이 — 못 채우면 한 번 다시 쓴다(turn_checks.tail_question_issue)
-        L.append("질문은 한 문장, 8어절 이상 20어절 이하로 쓴다.")
+        L.append("질문은 한 문장, 8어절 이상 20어절 이하로 쓴다. 리더가 한 말을 다시 쓰는 부분은 절 하나, 6어절 이하다.")
     if direct_only and instruction in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
         # (2026-11-18 P15-4) 청하는 꼴은 사례당 한 번까지 — 이미 썼으면 직접 묻는 어미로 끝낸다(이때는 아래 '이미 쓴 끝맺음' 목록을 넘기지 않는다)
         L.append("이 사례에서 청하는 말(-해 주시겠-, -주실 수 있-, 궁금-)로 끝난 질문은 이미 썼다 — 이번 질문은 직접 묻는 어미로 끝낸다.")

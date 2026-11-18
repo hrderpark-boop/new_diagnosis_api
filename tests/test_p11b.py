@@ -1292,10 +1292,11 @@ def test_p13d_ending_regen_gone_and_first_probe_dedicated_call():
     j = src.index('elif instruction_used == "COMPETENCY_ALIGN":', i)
     blk = src[i:j].split('elif instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("specify_now")')[0]      # (P14b-3) 뒤에 구체화 전용 호출 분기가 생겼다
     assert "render_first_probe" in blk and "generate_phase3a_interaction" not in blk and "_timed_regen" not in blk
-    assert '_tm["first_probe"] = "llm_retry" if _retry_fp else "llm"' in blk and '_tm["first_probe"] = "fallback"' in blk and '_tm["no_regen"] = 1' in blk and '_tm["first_probe_s"]' in blk
+    # (P15 판정 2) 다시 쓰기는 없다 — 한 번의 호출에서 후보 둘을 받아 먼저 통과하는 것을 쓴다
+    assert '_tm["first_probe"] = "llm"' in blk and "llm_retry" not in blk and '_tm["first_probe"] = "fallback"' in blk and '_tm["no_regen"] = 1' in blk and '_tm["first_probe_s"]' in blk
     assert src.count("clean_reply = _fp_final") == 2
     # 넘기는 것: 리더의 직전 답 · 말투 · 이번 영역에서 쓴 끝맺음. 넘기지 않는 것: 칸 상태 · 방향 힌트 · 코치 프로필 · 영역 정의
-    assert set(inspect.signature(FP.render_first_probe).parameters) == {"llm", "leader_answer", "persona_name", "used_endings", "angle", "retry_note"}
+    assert set(inspect.signature(FP.render_first_probe).parameters) == {"llm", "leader_answer", "persona_name", "used_endings", "angle"}
     pr = FP.build_first_probe_prompt(leader_answer="야간 조 반장과 출고표를 다시 짰습니다.", persona_name="Daniel (다니엘)", used_endings=["말씀해 주시겠습니까"])
     assert "야간 조 반장과 출고표를 다시 짰습니다." in pr and "합쇼체" in pr and "'말씀해 주시겠습니까'" in pr
     assert "묻지 않는 것: 때·자리·장면, 다른 사람의 반응, 리더의 생각·기준, 결과" in pr
@@ -1311,15 +1312,20 @@ def test_p13d_ending_regen_gone_and_first_probe_dedicated_call():
             self.calls.append(kw)
             return self.out
     llm = _LLM("반장과 출고표를 다시 짜실 때 리더님께서 먼저 꺼내신 말씀은 무엇이었습니까?")
-    q, mode = asyncio.run(FP.render_first_probe(llm, leader_answer="야간 조 반장과 출고표를 다시 짰습니다.", persona_name="Daniel (다니엘)"))
-    assert mode == "llm" and ok(q) == (True, "ok") and llm.calls[0]["call_type"] == "first_probe_render"
-    # 질문 문장이 둘이면 첫 문장만 · 질문이 없으면 None
-    q2, _ = asyncio.run(FP.render_first_probe(_LLM("출고표를 다시 짜실 때 뭐라고 하셨나요? 반장은 어떻게 받아들였나요?"), leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)"))
-    # (P13g-2) 문장이 둘이면 첫 문장만 골라내지 않는다 — 쓴 글 전체를 돌려주고 호출자의 확인에서 떨어져 한 번 더 쓴다
+    # (P15 판정 2) 전용 호출은 질문 후보 목록을 돌려준다(최대 둘) — 한 줄에 하나씩
+    qs, mode = asyncio.run(FP.render_first_probe(llm, leader_answer="야간 조 반장과 출고표를 다시 짰습니다.", persona_name="Daniel (다니엘)"))
+    assert mode == "llm" and len(qs) == 1 and ok(qs[0]) == (True, "ok") and llm.calls[0]["call_type"] == "first_probe_render" and len(llm.calls) == 1
+    two = _LLM("1. 출고표를 다시 짜실 때 반장에게 직접 뭐라고 하셨나요?\n2. 반장과 출고표를 놓고 직접 어떤 말을 건네셨나요?")
+    qs2, _ = asyncio.run(FP.render_first_probe(two, leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)"))
+    assert qs2 == ["출고표를 다시 짜실 때 반장에게 직접 뭐라고 하셨나요?", "반장과 출고표를 놓고 직접 어떤 말을 건네셨나요?"] and len(two.calls) == 1
+    # 한 줄에 두 질문을 이어 쓰면 문장으로 갈라 후보 둘로 본다. 한 후보 안에 혼잣말이 섞여 문장이 둘 이상이면 그대로 돌려줘 확인에서 떨어지게 한다
+    qs3, _ = asyncio.run(FP.render_first_probe(_LLM("출고표를 다시 짜실 때 뭐라고 하셨나요? 반장에게는 무엇을 맡기셨나요?"), leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)"))
+    assert qs3 == ["출고표를 다시 짜실 때 뭐라고 하셨나요?", "반장에게는 무엇을 맡기셨나요?"]
     from diag_project.services.turn_checks import first_probe_question_ok as _ok_g
-    assert q2 == "출고표를 다시 짜실 때 뭐라고 하셨나요? 반장은 어떻게 받아들였나요?" and _ok_g(q2, "출고표를 다시 짰습니다.") == (False, "meta")
-    assert asyncio.run(FP.render_first_probe(_LLM("출고표를 다시 짜셨군요."), leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)")) == (None, "miss:no_question")
-    assert asyncio.run(FP.render_first_probe(None, leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)")) == (None, "miss:no_llm")
+    qs4, _ = asyncio.run(FP.render_first_probe(_LLM("끝맺음을 바꿉니다. 출고표를 다시 짜실 때 뭐라고 하셨나요?\n반장에게는 무엇을 맡기셨나요?"), leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)"))
+    assert len(qs4) == 2 and _ok_g(qs4[0], "출고표를 다시 짰습니다.") == (False, "meta")
+    assert asyncio.run(FP.render_first_probe(_LLM("출고표를 다시 짜셨군요."), leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)")) == ([], "miss:no_question")
+    assert asyncio.run(FP.render_first_probe(None, leader_answer="출고표를 다시 짰습니다.", persona_name="Ella (엘라)")) == ([], "miss:no_llm")
     # (나) 표지 추가: 시점 · 어떤 생각 · 어떤 마음
     assert ok("반장이 반대하는 것을 보고 어떤 생각이 드셨는지, 그리고 말을 꺼내신 시점이 조회 직후였는지 말씀해 주시겠습니까?")[0] is False
     assert ok("그 표를 꺼내신 시점은 조회 뒤였습니까?") == (False, "off:시점") and ok("어떤 마음으로 그 말을 꺼내셨습니까?") == (False, "off:어떤 마음")
@@ -1502,12 +1508,12 @@ def test_p13g_addressee_partial_cut_retry_marks_and_short_question_context():
     assert ok("순서대로 말씀해 주십시오 — 아니, 규칙상 질문 한 문장이어야 하므로: 무엇부터 하셨습니까?", a1) == (False, "meta")
     assert ok("무엇을 하셨습니까? 그다음에는 무엇을 하셨습니까?", a1) == (False, "meta")
     assert ok("물량을 어떤 순서로 넘기셨는지 여쭙고 싶습니까?", a1) == (False, "self_verb")
-    for why in ("closed", "off:어떤 반응", "no_action", "unfinished", "meta", "self_verb", "who"):
-        note = TC.first_probe_retry_note(why)
-        assert note and note in FP.build_first_probe_prompt(leader_answer=a1, persona_name="Daniel", angle="did", retry_note=note)
+    # (P15 판정 2) 사유를 넘겨 한 번 더 쓰던 것은 없앴다 — 한 번의 호출에서 후보 둘을 받아 차례로 확인한다. 사유 문구는 본 호출 다시 쓰기에만 쓴다
+    assert all(TC.first_probe_retry_note(why) for why in ("closed", "off:어떤 반응", "no_action", "unfinished", "meta", "self_verb", "who"))
     assert "앞서 쓴 질문은 쓸 수 없었다" not in FP.build_first_probe_prompt(leader_answer=a1, persona_name="Daniel", angle="did")
+    assert "retry_note" not in inspect.signature(FP.build_first_probe_prompt).parameters
     src = inspect.getsource(D._submit_message_phase3a)
-    assert "await _one_fp(_note_fp(_why1_fp))" in src and '"llm_retry" if _retry_fp else "llm"' in src
+    assert "_one_fp(" not in src and "llm_retry" not in src[src.index("render_first_probe as _rfp_fp"): src.index('_sd_fp["first_probe_angles"] = ')]
     # 대체 문장 — 세션에서 같은 문장은 한 번만
     used = []
     for _ in range(6):
@@ -1687,7 +1693,7 @@ def test_p14b_one_receive_per_turn_specify_call_and_role_echo():
     assert "_rer3(_pn_s3, request.content)" in src and '_rapport_recv("role")' not in src
     # 5. 한 문장 두 물음 — 지시문 맨 끝 한 줄 + 걸리면 본 호출 한 번 다시
     assert EC.TURN_FORMAT_RULES.rstrip().endswith("- 묻는 것은 하나다. 쉼표로 두 번째 물음을 잇지 않는다.")
-    assert '_why_2.append(("two_q"' in src and '"two_questions" in _qi_2(_qs_2[-1])' in src      # (P15) 두 물음과 꼬리 질문 한계를 한 번의 다시 쓰기로
+    assert '_why_2.append(("two_q"' in src and '"two_questions" in _qi_2(_qs_2[0])' in src      # (P15) 두 물음과 꼬리 질문 한계를 한 번의 다시 쓰기로 — 실제로 남는 첫 문장을 본다
 
 
 def test_p14c_ending_ban_streak_cap_third_honorific_and_empty_open_turn():
@@ -1764,7 +1770,7 @@ def test_p14d_plain_past_endings_drop_trace_and_specify_at_decision():
     tr2 = []
     assert asyncio.run(SP.render_specify(_BadQ(), leader_answer=ans, target="result", persona_name="Daniel", trace=tr2))[0] is None and len(tr2) == 2 and tr2[0][0] == "specify"
     src = inspect.getsource(D._submit_message_phase3a)
-    assert '"call_drops": (_call_drops or None)' in src and '_call_drops.append(["first_probe", _why, _q2[:200]])' in src
+    assert '"call_drops": (_call_drops or None)' in src and '_call_drops.append(["first_probe", _why, (_q2 or _c_fp)[:200]])' in src
     # 5. 구체화 — 방향을 정하는 자리에서 호출하고 합격했을 때만 구체화 턴. 본 호출에 맡기는 길은 없다
     i = src.index("_specify_q_text, _mode_s = await _rsp_s(")
     assert src.index("if _specify_q_text:", i) < src.index('_bei_ep["specify_now"] = _specify_slot', i)
@@ -1925,8 +1931,20 @@ def test_p15_no_receive_in_tail_turns_transition_pass_first_probe_shape_and_dire
     assert TC.tail_question_issue("야간조에 물량을 넘긴 뒤 창고 출고 일정은 실제로 어떻게 달라졌습니까?", ans) is None
     assert TC.tail_question_issue("야간조에 물량을 넘긴 뒤 " + "창고 " * 16 + "어떻게 달라졌습니까?", ans) == "long"
     assert TC.leader_nouns("반장에게 물량 이야기를 꺼내셨을 때 무엇이 달라졌습니까?", ans) == ["반장에게", "물량"]      # 서술어('꺼내셨을')·흔한 낱말은 세지 않는다
-    assert '_tqi_2(_qs_2[-1], _case_leader_text(_tr, _llm_user_text))' in src and '_tm["tail_regen"] = _iss_2' in src
-    assert "질문은 한 문장, 8어절 이상 20어절 이하로 쓴다." in EC.build_episode_card(instruction="EPISODE_PROBE", chapter="people_management",
+    # (판정 3) 확인 대상은 실제로 남는 첫 질문 문장 · '다시 한다면·배운 것' 질문은 리더 낱말 요건에서 뺀다
+    assert '_tqi_2(_qs_2[0], _case_leader_text(_tr, _llm_user_text), need_noun=(_tm.get("ask_slot") != "reflection"))' in src and '_tm["tail_regen"] = _iss_2' in src
+    assert TC.tail_question_issue("이 일을 돌아보실 때 지금이라면 다르게 해 보고 싶은 것이 있습니까?", ans, need_noun=False) is None
+    assert TC.tail_question_issue("이 일을 돌아보실 때 지금이라면 다르게 해 보고 싶은 것이 있습니까?", ans) == "no_noun"
+    # (판정 1) 리더 답을 옮긴 부분은 6어절 이하 — 끊기지 않고 이어진 가장 긴 구간으로 잰다
+    assert TC.BORROW_MAX_EOJEOL == 6
+    assert TC.borrowed_run("출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 반장에게 제안하신 뒤 무엇이 달라졌습니까?", ans) == 9
+    assert TC.tail_question_issue("출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 반장에게 제안하신 뒤 무엇이 달라졌습니까?", ans) == "borrow"
+    assert TC.borrowed_run("야간조에 물량을 넘기자고 하셨을 때 창고 일정은 실제로 어떻게 다시 짜셨습니까?", ans) == 3
+    # (판정 5) 질문 머리의 '그럼', '다음은'
+    assert TC.strip_head_filler("그럼 야간조 물량은 그 뒤에 어떻게 나누셨습니까?") == "야간조 물량은 그 뒤에 어떻게 나누셨습니까?"
+    assert TC.strip_head_filler("다음은 반장과 일정을 어떻게 맞추셨습니까?") == "반장과 일정을 어떻게 맞추셨습니까?" and TC.strip_head_filler("그럼에도 하셨습니까?") == "그럼에도 하셨습니까?"
+    assert "_shf_e(clean_reply)" in src
+    assert "질문은 한 문장, 8어절 이상 20어절 이하로 쓴다. 리더가 한 말을 다시 쓰는 부분은 절 하나, 6어절 이하다." in EC.build_episode_card(instruction="EPISODE_PROBE", chapter="people_management",
                                                                           ep={"idx": 1, "leader_turns": 2, "slots": {}}, bei_turns=3, budget=24)
     # 2. 전환 턴 — 받는 말은 매핑과 함께, 영역당 두 번까지·직전 답이 리더 본인의 행동이나 배운 점일 때만. 그 밖은 넘김말
     assert D.TRANS_ECHO_MAX == 2 and '_asked_c in ("action", "reflection")' in src and "_echo_n_c < TRANS_ECHO_MAX" in src
@@ -1949,16 +1967,21 @@ def test_p15_no_receive_in_tail_turns_transition_pass_first_probe_shape_and_dire
     assert IM.transition_fixed_receive("Ella", [plain[0] + " 다음 질문"], plain=True) == plain[1]
     # 3. 첫 꼬리 질문 — 되짚는 앞 절 금지, 리더 낱말은 명사구 하나, 호칭으로 시작하지 않는다, 8~20어절, 순서 표지가 있으면 '순서' 각도 제외
     fp = FP.build_first_probe_prompt(leader_answer=ans, persona_name="Lucas", angle="did")
-    assert "명사구 하나(4어절 이하)만 질문에 넣는다" in fp and "앞 절로 다시 말하지 않는다" in fp and "문장을 '리더님'으로 시작하지 않는다" in fp
+    # (판정 1·2) 앞 절 금지는 철회 — 옮기는 것은 절 하나·6어절 이하. 한 번의 호출에서 후보 둘, 걸린 후보는 쓰지 않는다
+    assert "다시 쓰는 부분은 절 하나, 6어절 이하다" in fp and "앞 절로 다시 말하지 않는다" not in fp and "문장을 '리더님'으로 시작하지 않는다" in fp
     assert "8어절 이상 20어절 이하로 쓴다" in fp and "\"" not in fp.split("[규칙]")[1]                # 지시문에 따옴표로 묶은 예시 문장 없음
-    assert TC.first_probe_echo_issue("야간조에 물량을 넘기자고 제안하셨을 때, 반장에게 직접 어떤 말을 건네셨습니까?", ans) == "front"
-    assert TC.first_probe_echo_issue("물량을 넘기자고 제안하신 뒤 반장에게 직접 무엇을 맡기셨습니까?", ans) == "front"
+    assert "서로 다른 질문 두 개를 한 줄에 하나씩" in fp and "질문을 두 개 씁니다" in fp
+    assert TC.first_probe_echo_issue("야간조에 물량을 넘기자고 제안하셨을 때, 반장에게 직접 어떤 말을 건네셨습니까?", ans) is None      # 앞 절이 있어도 6어절 이하면 통과
+    assert TC.first_probe_echo_issue("출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 반장에게 제안하실 때 직접 어떤 말을 건네셨습니까?", ans) == "borrow"
     assert TC.first_probe_echo_issue("야간조 물량을 두고 반장에게 직접 건네신 말은 무엇이었습니까?", ans) is None
     assert TC.first_probe_echo_issue("그때 직접 건네신 말은 무엇이었습니까?", ans) == "no_noun"
+    assert TC.first_probe_echo_issue("야간조에 넘기신 실제로 어떤 말씀을 하셨습니까?", ans) == "short"                       # 비문·길이 미달은 쓰지 않는다
+    assert FP.split_candidates("1. 가 질문입니까?\n2) 나 질문입니까?") == ["가 질문입니까?", "나 질문입니까?"]
+    assert '_tm["first_probe_pick"] = _pick_fp' in src and "for _i_fp, _c_fp in enumerate(_cands_fp[:2], 1):" in src
     assert TC.strip_lead_address_q("리더님께서는 야간조 물량을 두고 무엇을 하셨습니까?") == "야간조 물량을 두고 무엇을 하셨습니까?"
     assert TC.strip_lead_address_q("물량을 넘기셨군요. 리더님이 직접 하신 말은 무엇이었나요?") == "물량을 넘기셨군요. 직접 하신 말은 무엇이었나요?"
     assert TC.strip_lead_address_q("리더님의 판단은 무엇이었나요?") == "리더님의 판단은 무엇이었나요?"
-    assert TC.FIRST_PROBE_SOFT_REASONS == {"front", "no_noun", "short", "long"} and "_why_fp in _soft_fp" in src
+    assert not hasattr(TC, "FIRST_PROBE_SOFT_REASONS") and "_soft_fp" not in src      # 걸린 질문을 그대로 쓰던 길은 없앴다
     for txt in ("먼저 반장과 이야기했습니다.", "이후 물량을 넘겼습니다.", "그다음 일정을 다시 짰습니다.", "그 뒤 창고를 정리했습니다."):
         assert "order" in TC.first_probe_angles_in(txt) and TC.pick_first_probe_angle(txt, []) != "order", txt
     assert "order" not in TC.first_probe_angles_in("반장에게 물량을 넘기자고 제안했습니다.")
@@ -1989,7 +2012,7 @@ def test_p15_no_receive_in_tail_turns_transition_pass_first_probe_shape_and_dire
     rows = [{"role": "user", "content": ans},
             {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "야간조에 물량을 넘기자고 제안하셨군요. 그 뒤에 무엇을 하셨습니까?", "guard": {}},
             {"role": "user", "content": ans},
-            {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "리더님께서 야간조에 물량 삼백 상자를 넘기자고 제안하셨을 때, 반장에게 무엇을 맡기셨는지 말씀해 주시겠습니까?", "guard": {}},
+            {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "리더님께서 출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 제안하셨을 때, 반장에게 무엇을 맡기셨는지 말씀해 주시겠습니까?", "guard": {}},
             {"role": "user", "content": ans},
             {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "야간조 물량을 두고 반장과는 그 뒤에 일정을 어떻게 다시 맞추셨습니까?", "guard": {}},
             {"role": "user", "content": ans},
@@ -2003,4 +2026,28 @@ def test_p15_no_receive_in_tail_turns_transition_pass_first_probe_shape_and_dire
     assert st["tail_recv_n"] == 1 and st["tail_n"] == 4 and st["req_tail_pct"] == 25.0 and st["lead_addr_n"] == 1
     assert st["tail_short_n"] == 2 and st["tail_len_min"] == 4 and st["ctx_bare_pct"] == 16.7 and st["ctx_bare_list"] == ["그때 무엇을 기준으로 삼으셨습니까?"]
     assert [k for k, _c, _t in st["trans2"]] == ["넘김말", "받는 말"] and st["trans_cover_pct"] == 100.0 and st["echo_trans_max"] == 1
-    assert [x["nouns"][:2] for x in st["tail_rows"]][2] == ["야간조", "물량을"]
+    assert [x["nouns"][:2] for x in st["tail_rows"]][2] == ["야간조", "물량을"] and [x["borrow"] for x in st["tail_rows"]] == [0, 8, 2, 0]
+    # '다시 한다면·배운 것' 질문은 리더 낱말이 없어도 (A)에 넣지 않는다 · 첫 꼬리 후보 통과 내역
+    rows_r = [{"role": "user", "content": ans},
+              {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "이 일을 돌아보실 때 지금이라면 다르게 해 보고 싶은 것이 있습니까?", "guard": {"ask_slot": "reflection"}},
+              {"role": "user", "content": ans},
+              {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "반장에게 물량을 두고 직접 건네신 말은 무엇이었습니까?", "guard": {"first_probe": "llm", "first_probe_pick": 2}},
+              {"role": "user", "content": ans},
+              {"role": "model", "instr": "SWEEP_FOLLOWUP", "chapter": "pm", "content": "거기서 직접 하신 말은 무엇이었나요?", "guard": {"first_probe": "fallback", "first_probe_pick": 0, "regen_why": []}}]
+    assert rc.echo_stats(rows_r)["ctx_bare_list"] == ["거기서 직접 하신 말은 무엇이었나요?"]
+    assert rc.first_probe_pick_stats(rows_r)["fp_pick"] == {"2번 통과": 1, "대체 문장": 1}
+
+
+def test_p15b_reason_slot_direct_form_and_no_repeated_frame():
+    """(2026-11-18 P15 판정 4) 이유를 묻는 슬롯 질문 — '이유를 한 줄로 말씀해 주시겠습니까' 틀 삭제, 직접 묻는 꼴, 같은 틀은 세션에 한 번."""
+    from diag_project.services import slot_render as SR
+    lead = ["야간조에 물량 삼백 상자를 넘기기로 정했습니다. 반장은 인력이 모자란다고 했습니다."]
+    spec, example = SR._SPEC["reason"]
+    assert "한 줄로" not in spec and "직접 묻는 어미" in spec and example == ""
+    ok = SR.slot_sentence_ok
+    assert ok("reason", "야간조에 물량을 넘기기로 정하신 이유를 한 줄로 말씀해 주시겠습니까?", lead, persona_name="Lucas")[1] == "request_ending"
+    assert ok("reason", "야간조에 물량을 넘기기로 정하신 이유는 무엇이었습니까?", lead, persona_name="Lucas") == (True, "")
+    used = ["반장에게 일정을 맡기신 이유는 무엇이었습니까?"]
+    assert ok("reason", "야간조에 물량을 넘기기로 정하신 이유는 무엇입니까?", lead, persona_name="Lucas", used=used)[1] == "same_frame"
+    assert ok("reason", "야간조에 물량을 넘기기로 하신 까닭이 어디에 있었습니까?", lead, persona_name="Lucas", used=used) == (True, "")
+    assert ok("criterion", "야간조에 물량을 넘기기로 정하실 때 무엇을 기준으로 삼으셨는지 말씀해 주시겠습니까?", lead, persona_name="Jessica")[1] == "request_ending"

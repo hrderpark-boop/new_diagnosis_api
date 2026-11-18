@@ -23,7 +23,9 @@
     (P15 — 2026-11-18, '받는 말이 붙었는가'가 아니라 '리더 말을 되짚는가'를 센다)
       (A) 맥락 없는 본론 턴 ≤ 10% — 꼬리 질문 턴: 평서문도 없고 질문에 이 사례의 리더 답에서 온 명사 어절이 하나도 없는 턴('그때'·'그 결정'만으로 가리킴)
                                     전환 턴: 받는 말도 넘김말도 없는 턴
-      a) 되짚는 턴 ≤ 30% — 본론 턴 중 되짚는 평서문(받는 말·슬롯 문장)이 있거나 질문의 첫 절이 리더 직전 답과 내용 낱말 3개 이상 겹치는 턴
+      a) 되짚는 턴 ≤ 30% — 본론 턴 중 되짚는 평서문(받는 말·슬롯 문장)이 있거나 질문에서 리더 답을 옮긴 부분이 6어절을 넘는 턴
+         (P15 판정: 앞 절 기준을 철회하고 옮긴 부분의 길이로 바꿨다 — 옮긴 부분 = 리더 답에도 있는 어절이 끊기지 않고 이어진 가장 긴 구간)
+      (A)에서 '다시 한다면·배운 것'을 묻는 질문은 리더 낱말이 없어도 맥락 없는 턴으로 세지 않는다
       b) 사례 안(꼬리 질문 턴) 받는 말 0 · c) 꼬리 질문 끝맺음 중 청하는 꼴 ≤ 30% · d) '리더님께서'로 시작하는 문장이 있는 턴 0
       전환 턴에 받는 말 또는 넘김말 100% · 영역당 되짚기형 전환 ≤ 2 · 8어절 미만 꼬리 질문 0
     (P14b) 받는 말 평균 9어절 이하 · 12어절 초과 0 · 받는 말과 질문 앞 절이 겹친 턴 0(낱말 겹침 60% 이상) · 받는 말 끝맺음 한 가지 ≤ 40%
@@ -160,7 +162,6 @@ def receive_stats(rows: list[dict]) -> dict:
 #   11/18 운영 Lucas 사람관리: 본론 21턴 중 12턴이 되짚는 문장으로 시작했고 6턴은 질문 앞머리 절에서 되짚었다. p14f 조건은 받는 말이 붙었는지만 세어 통과시켰다.
 TAIL_INSTR = ("EPISODE_PROBE", "SWEEP_FOLLOWUP")          # 사례 안 꼬리 질문 턴
 OPEN_INSTR = ("EPISODE_OPEN", "SWEEP_ANCHOR")             # 사례를 닫고 다음을 여는 전환 턴
-FRONT_ECHO_WORDS = 3                                      # 질문의 첫 절이 리더 직전 답과 이만큼 겹치면 되짚은 것으로 본다
 TAIL_MIN_EOJEOL = 8
 def overlap_keys(text: str | None) -> set[str]:
     from diag_project.services.turn_checks import content_keys
@@ -181,7 +182,7 @@ def echo_stats(rows: list[dict]) -> dict:
     from diag_project.services.intro_messages import all_fixed_sentences
     from diag_project.services.output_guard import is_question
     from diag_project.services.receive_render import receivable
-    from diag_project.services.turn_checks import REQUEST_END_RE, leader_nouns, receive_ending_key
+    from diag_project.services.turn_checks import BORROW_MAX_EOJEOL, REQUEST_END_RE, borrowed_run, leader_nouns, receive_ending_key
     fixed = {re.sub(r"\s+", "", x) for x in all_fixed_sentences()}
     case_ans: list[str] = []          # 이 사례에서 리더가 한 말(사례를 여는 코치 턴에서 비운다)
     ctx_bare: list[str] = []          # (A) 맥락 없는 본론 턴(원문)
@@ -210,15 +211,15 @@ def echo_stats(rows: list[dict]) -> dict:
         is_tail = r["instr"] in TAIL_INSTR
         main_n += 1
         nouns = leader_nouns(qs[-1], " ".join(case_ans)) if (qs and is_tail) else []
-        if (is_tail and not stmts and not nouns) or (not is_tail and not stmts):
+        borrow = borrowed_run(qs[-1], " ".join(case_ans)) if (qs and is_tail) else 0      # 질문에서 리더 답을 옮긴 부분의 어절 수
+        reflect = g.get("ask_slot") == "reflection"
+        if (is_tail and not stmts and not nouns and not reflect) or (not is_tail and not stmts):
             ctx_bare.append(text)
-        front = question_first_clause(qs[0]) if qs else ""
-        shared = sorted(overlap_keys(front) & overlap_keys(prev_ans)) if front else []
         if retell:
             (echo_slot if g.get("slot") else echo_stmt).append(text)
             if not g.get("slot"):
                 ends[receive_ending_key(retell[0]) or "other"] += 1
-        elif len(shared) >= FRONT_ECHO_WORDS:
+        elif borrow > BORROW_MAX_EOJEOL:
             echo_front.append(text)
         if any(x.startswith("리더님께서") for x in sents):
             lead_addr.append(text)
@@ -239,7 +240,8 @@ def echo_stats(rows: list[dict]) -> dict:
                 req_tail += 1 if REQUEST_END_RE.search(qs[-1]) else 0
                 if n < TAIL_MIN_EOJEOL:
                     tail_short.append(qs[-1])
-                tail_rows.append({"t": r.get("t"), "chapter": r.get("chapter"), "q": qs[-1], "nouns": nouns, "first": bool(g.get("first_probe")),
+                tail_rows.append({"t": r.get("t"), "chapter": r.get("chapter"), "q": qs[-1], "nouns": nouns, "borrow": borrow, "first": bool(g.get("first_probe")),
+                                  "pick": g.get("first_probe_pick"), "fallback": g.get("first_probe") == "fallback", "slot": bool(g.get("slot")),
                                   "specify": bool(g.get("specify")), "regen": g.get("tail_regen"), "direct": g.get("direct_fix")})
         else:
             kind = "받는 말" if retell else ("넘김말" if stmts else ("받을 내용 없음" if not receivable(prev_ans) else "없음"))
@@ -277,6 +279,20 @@ def call_stats(rows: list[dict]) -> dict:
         for kind, why, text in (g.get("call_drops") or []):
             drops.setdefault(f"{kind}·{why}", []).append(str(text))
     return {"recv_calls": dict(modes.most_common()), "call_drops": drops}
+
+
+def first_probe_pick_stats(rows: list[dict]) -> dict:
+    """(P15 판정 2) 첫 꼬리 전용 호출의 후보 통과 내역 — 1번 통과 · 2번 통과 · 둘 다 탈락(대체 문장). 본 호출 꼬리 질문의 다시 쓰기 수도 함께."""
+    from collections import Counter
+    pick: Counter = Counter()
+    regen: Counter = Counter()
+    for r in rows:
+        g = (r.get("guard") or {}) if r.get("role") == "model" else {}
+        if g.get("first_probe"):
+            pick["대체 문장" if g.get("first_probe") == "fallback" else (f"{g.get('first_probe_pick')}번 통과" if g.get("first_probe_pick") else str(g.get("first_probe")))] += 1
+        for w in (g.get("regen_why") or []):
+            regen[str(w)] += 1
+    return {"fp_pick": dict(sorted(pick.items())), "regen_why": dict(regen.most_common()), "regen_total": sum(regen.values())}
 
 
 def specify_stats(data: dict) -> dict:
@@ -334,7 +350,7 @@ def collect(path: Path) -> dict:
     sq = short_questions(rows)
     return {"p50": res.get("p50"), "p95": res.get("p95"), "max": res.get("max"), "regen_turns": res.get("regen_turns"), "format_miss": res.get("format_miss"),
             "broken_total": res.get("broken_total"), "fp_fallback": int((res.get("fp_mode") or {}).get("fallback", 0)), "fp_mode": res.get("fp_mode") or {},
-            **receive_stats(rows), **specify_stats(data), **call_stats(rows), **echo_stats(rows),
+            **receive_stats(rows), **specify_stats(data), **call_stats(rows), **echo_stats(rows), **first_probe_pick_stats(rows),
             "short_q": len(sq), "short_list": sq, "first_probes": first_probes(rows), "status": data.get("status"), "cost_usd": float(data.get("cost_usd") or 0.0),
             "turns": data.get("turns")}
 
@@ -403,7 +419,9 @@ def main(argv: list[str] | None = None) -> int:
     all_ok = all_ok and all(str(ms[c]["status"]) == "completed" for c in coaches)
     L.append("| 받는 말(턴 종류별 있음/전체) | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["recv_by_instr"].items()) or "-" for c in coaches) + " |")
     L.append("| 받는 말 끝맺음 분포 | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["recv_ends"].items()) or "-" for c in coaches) + " |")
-    L.append("| 되짚는 턴 구성(받는 말 문장 / 슬롯 문장 / 질문 앞 절) | " + " | ".join(f"{ms[c]['echo_stmt_n']} / {ms[c]['echo_slot_n']} / {ms[c]['echo_front_n']}" for c in coaches) + " |")
+    L.append("| 되짚는 턴 구성(받는 말 문장 / 슬롯 문장 / 옮긴 부분 6어절 초과) | " + " | ".join(f"{ms[c]['echo_stmt_n']} / {ms[c]['echo_slot_n']} / {ms[c]['echo_front_n']}" for c in coaches) + " |")
+    L.append("| 첫 꼬리 후보 통과 내역 | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["fp_pick"].items()) or "-" for c in coaches) + " |")
+    L.append("| 다시 쓰기(사유별) | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["regen_why"].items()) or "0" for c in coaches) + " |")
     L.append("| 꼬리 질문 어절 수(최소·중앙·최대) | " + " | ".join(f"{ms[c]['tail_len_min']}·{ms[c]['tail_len_med']}·{ms[c]['tail_len_max']}" for c in coaches) + " |")
     L.append("| 받는 말 끝맺음 종류 수 / 최다 % | " + " | ".join(f"{ms[c]['recv_end_kinds']} / {ms[c]['recv_end_top_pct']}" for c in coaches) + " |")
     L.append("| '리더님'으로 시작(조사 무관) | " + " | ".join(str(ms[c]['lead_any_n']) for c in coaches) + " |")
@@ -427,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
             L.append(f"탈락 [{k}] {len(v)}건: " + " / ".join(v[:3]))
         L.append(f"(A) 맥락 없는 본론 턴 {len(ms[c]['ctx_bare_list'])}/{ms[c]['echo_main_n']}:")
         L += [f"   - {q}" for q in ms[c]["ctx_bare_list"]]
-        L.append(f"a) 질문 앞 절에서 되짚은 턴 {ms[c]['echo_front_n']}:")
+        L.append(f"a) 리더 답을 6어절 넘게 옮긴 질문 {ms[c]['echo_front_n']}:")
         L += [f"   - {q}" for q in ms[c]["echo_front_list"]]
         if ms[c]["tail_recv_list"]:
             L.append("b) 받는 말이 붙은 꼬리 질문 턴: " + " / ".join(ms[c]["tail_recv_list"]))
@@ -437,9 +455,10 @@ def main(argv: list[str] | None = None) -> int:
             L.append("8어절 미만 꼬리 질문: " + " / ".join(ms[c]["tail_short_list"]))
         L.append(f"전환 턴 {len(ms[c]['trans2'])}개(영역별 되짚기형 {ms[c]['echo_trans_by_ch']}):")
         L += [f"   - [{k}] {t}" for k, _ch, t in ms[c]["trans2"]]
-        L.append("꼬리 질문 전체(턴 · 어절 수 · 질문 · 가져온 리더 낱말):")
-        L += [f"   - t{x['t']} · {len(x['q'].split())}어절 · {x['q']} · [{', '.join(x['nouns'][:4]) or '없음'}]"
-              + (" (첫 꼬리)" if x['first'] else "") + (" (구체화)" if x['specify'] else "") + (f" (다시 씀: {x['regen']})" if x['regen'] else "")
+        L.append("꼬리 질문 전체(턴 · 어절 수 · 질문 · 리더 답을 옮긴 부분의 어절 수):")
+        L += [f"   - t{x['t']} · {len(x['q'].split())}어절 · {x['q']} · 옮긴 부분 {x['borrow']}어절"
+              + ((" (첫 꼬리: 대체 문장)" if x['fallback'] else f" (첫 꼬리: 후보 {x['pick']})") if x['first'] else "")
+              + (" (슬롯)" if x['slot'] else "") + (" (구체화)" if x['specify'] else "") + (f" (다시 씀: {x['regen']})" if x['regen'] else "")
               + (" (직접 묻는 꼴로 바꿈)" if x['direct'] else "") for x in ms[c]["tail_rows"]]
         if ms[c]["recv_echo"]:
             L.append("받는 말과 질문 앞 절이 겹친 턴: " + " / ".join(ms[c]["recv_echo"]))

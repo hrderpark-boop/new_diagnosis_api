@@ -4,7 +4,7 @@
 리더가 고른 선택과 버린 선택을 낱말로 넣어야 한다 — "시범 운영 없이 바로 전면 도입하셨다면 팀원들은 어떻게 움직였을까요?"
 같은 원칙(Ella·Olivia 는 슬롯 없음 — Olivia 의 '그 사람 자리' 질문은 P13e 에서 삭제, 가정 질문은 P12e 부터 쓰지 않는다):
   criterion       Jessica  실제로 내린 결정을 짚고 기준을 묻는 질문
-  reason          Lucas    고른 쪽·버린 쪽을 짚고 이유를 한 줄로 청하는 질문
+  reason          Lucas    실제로 내린 결정을 짚고 이유를 직접 묻는 질문(P15: '한 줄로 청하는' 틀 삭제)
   counterfactual  Olivia   버린 선택(또는 하지 않았을 경우)을 짚은 가정 질문
   cheer           Michael  실제로 한 선택을 짚고 응원하는 평서문(질문은 LLM 본문이 잇는다)
   observation     Daniel   리더가 놓였던 자리를 짚고 선배로서 건네는 평서문
@@ -36,11 +36,12 @@ _SPEC: dict[str, tuple[str, str]] = {
                   "견줄 다른 길은 리더가 직접 말한 것일 때만 넣는다 — 말하지 않은 대안을 지어내지 않는다.",
                   "이사 날짜를 한 달 앞당기기로 정하실 때 무엇을 기준으로 삼으셨습니까?"),
     # (2026-11-14 P12e-2) 대상은 리더 본인이 실제로 한 결정뿐 — p12d: 다른 사람(김선임)의 이유를 리더에게 물었고, 리더가 '그랬어야 했다'고 한 일을 한 것으로 물었다
-    "reason": ("리더 본인이 직전 답에서 실제로 내린 결정 하나를 리더의 낱말로 짚고, 그렇게 정한 이유를 한 줄로 청하는 짧은 질문 한 문장. "
+    # (2026-11-18 P15 판정 4) '이유를 한 줄로 청하는' 틀을 없앴다 — 세션마다 '…이유를 한 줄로 말씀해 주시겠습니까?'가 되풀이됐다. 결 예시도 주지 않는다.
+    "reason": ("리더 본인이 직전 답에서 실제로 내린 결정 하나를 리더의 낱말로 짚고, 그렇게 정한 이유를 직접 묻는 어미로 끝나는 짧은 질문 한 문장. "
                "다른 사람이 한 일의 이유는 묻지 않는다. 리더가 하지 않은 일(그랬어야 했다고 아쉬워한 일)은 대상이 아니다. "
                "견줄 다른 길은 리더가 직접 말한 것일 때만 넣는다 — 말하지 않은 대안을 지어내 '무엇을 고르고 무엇을 접었다'는 꼴로 묻지 않는다. "
                "직전 답에 리더 본인이 내린 결정이 없으면 질문을 쓰지 말고 '없음' 한 낱말만 출력한다.",
-               "이사 날짜를 한 달 앞당기신 이유, 한 줄로 하면 무엇입니까?"),
+               ""),
     "counterfactual": ("리더가 실제로 고른 쪽 대신 '고르지 않은 쪽'을 했다고 가정하고, 그랬다면 그 자리의 사람들이 어떻게 움직였을지 묻는 질문 한 문장. "
                        "꼴: '[고른 쪽] 대신(없이) [고르지 않은 쪽]을 하셨다면, [사람]은 어떻게 …했을까요?' — 가정하는 것은 반드시 '고르지 않은 쪽'이다.",
                        "월세 대신 전세로 무리해서 들어가셨다면 식구들은 어떻게 움직였을까요?"),
@@ -78,6 +79,12 @@ def _shape_key(text: str | None) -> str:
     """문형 = 쉼표 앞 마지막 낱말(명사로 끊고 서술을 붙이는 꼴 '…했던 자리, …')."""
     m = re.search(r"([가-힣]{1,6})[,，]\s*[^,，]{2,30}$", (text or "").strip())
     return m.group(1) if m else ""
+
+
+def _frame_key(text: str | None) -> str:
+    """질문의 틀 = 끝에서 둘째 어절 + 마지막 어절의 앞 두 음절('이유는 무엇', '기준으로 삼으') — 같은 틀의 질문을 한 세션에 두 번 쓰지 않는다."""
+    toks = re.sub(r"[.?!…~\"'”’]+$", "", (text or "").strip()).split()
+    return f"{toks[-2]} {toks[-1][:2]}" if len(toks) >= 2 else ""
 
 
 def repeats_used_shape(text: str | None, used: list[str] | None) -> str | None:
@@ -132,6 +139,15 @@ def slot_sentence_ok(kind: str, text: str | None, leader_texts: list[str] | None
     if kind in QUESTION_KINDS:
         if not (is_question(t) and t.endswith("?")) or count_question_markers(t) != 1:
             return False, "not_one_question"
+        if kind in ("reason", "criterion"):
+            # (2026-11-18 P15 판정 4) 이유·기준을 묻는 슬롯 질문은 직접 묻는 꼴로 — 청하는 말('…말씀해 주시겠습니까')로 끝나면 불합격.
+            #   같은 틀(끝 두 어절)의 질문을 이번 세션에서 이미 썼어도 불합격 — 다시 써도 같으면 이 턴은 슬롯 없이 나간다.
+            from diag_project.services.turn_checks import is_request_ending
+            if is_request_ending(t):
+                return False, "request_ending"
+            fk = _frame_key(t)
+            if fk and any(fk == _frame_key(u) for u in (used or []) if is_question(u or "")):
+                return False, "same_frame"
     elif is_question(t) or "?" in t:
         return False, "question_in_statement"
     shape = _KIND_SHAPE.get(kind)

@@ -413,8 +413,8 @@ FIRST_PROBE_RETRY_NOTES: dict[str, str] = {
     "who": "리더가 말을 건넨 상대로 말하지 않은 사람을 질문에 넣었다",
     "wonder": "묻는 꼴이 아니라 궁금하다거나 여쭤봐도 되느냐는 말로 끝났다",
     "no_honorific": "리더가 한 일을 높임 없이 적었다",
-    # (2026-11-18 P15-3) 되짚는 앞 절 · 리더 낱말 · 길이
-    "front": "리더가 한 일을 앞 절로 다시 말했다 — 리더가 쓴 낱말은 명사구 하나로만 넣는다",
+    # (2026-11-18 P15-3 → 판정) 리더 답을 옮긴 부분의 길이 · 리더 낱말 · 질문 길이
+    "borrow": "리더가 한 말을 6어절 넘게 다시 썼다 — 다시 쓰는 부분은 절 하나, 6어절 이하다",
     "no_noun": "리더가 쓴 낱말이 질문에 없었다 — 리더가 말한 일이나 사람을 가리키는 명사구 하나를 넣는다",
     "short": "질문이 8어절에 못 미쳤다 — 8어절 이상 20어절 이하로 쓴다",
     "long": "질문이 20어절을 넘겼다 — 8어절 이상 20어절 이하로 쓴다",
@@ -462,19 +462,16 @@ def first_probe_question_ok(question: str | None, leader_answer: str | None = No
     return True, "ok"
 
 
-# (2026-11-18 P15-3) 첫 꼬리 질문의 메아리·길이 확인 — first_probe_question_ok 를 지난 질문에만 건다(호출자).
-#   되짚는 앞 절('…하셨는데,', '…하신 뒤') 금지: 첫 절이 리더 답과 내용 낱말 둘 이상 겹치면 front.
-#   리더 낱말은 명사구 하나 이상 · 8어절 이상 20어절 이하(tail_question_issue: no_noun | short | long).
-#   한 번 더 써도 이 사유로만 걸리면 대체 문장으로 바꾸지 않고 그 질문을 쓴다 — 대체 문장에는 리더 낱말이 없다.
-FIRST_PROBE_SOFT_REASONS = frozenset(("front", "no_noun", "short", "long"))
-
-
+# (2026-11-18 P15-3 → 판정 1·2) 첫 꼬리 질문 후보의 확인 — first_probe_question_ok 를 지난 후보에만 건다(호출자).
+#   리더 낱말 하나 이상 · 8어절 이상 20어절 이하 · 리더 답을 옮긴 부분 6어절 이하(tail_question_issue) · 조각난 문장·두 물음 아님(question_issues).
+#   앞 절 금지('…하셨는데,')는 철회했다. 하나라도 걸린 후보는 쓰지 않는다 — 후보 둘이 다 걸리면 대체 문장.
 def first_probe_echo_issue(question: str | None, leader_answer: str | None) -> str | None:
     q = strip_lead_address_q(question)
-    fc = question_first_clause(q)
-    if fc and len(content_keys(fc) & content_keys(leader_answer)) >= 2:
-        return "front"
-    return tail_question_issue(q, leader_answer)
+    issue = tail_question_issue(q, leader_answer)
+    if issue:
+        return issue
+    bad = [x for x in question_issues(q) if x in ("fragment", "two_questions")]
+    return bad[0] if bad else None
 
 
 # ── (2026-11-15 P13e-1) 첫 꼬리 질문의 각도 넷 ─────────────────────────────────────────
@@ -776,6 +773,8 @@ def question_front_clause(question: str | None) -> str:
 #   받는 말을 붙이는 규칙(P14b A·B·D)과 연속 상한(P14c)은 지웠다 — 사례 안 꼬리 질문 턴에는 받는 말을 부르지 않는다.
 TAIL_MIN_EOJEOL = 8
 TAIL_MAX_EOJEOL = 20
+BORROW_MAX_EOJEOL = 6      # (P15 판정) 질문 안에서 리더 답을 옮긴 부분은 절 하나, 6어절 이하 — 앞 절 금지는 철회했다(전용 호출이 지키지 못했다: p15 탈락 13·17건)
+_HEAD_FILLER_RE = re.compile(r"(^|(?<=[.?!…]\s))(그럼|다음은)[,，]?\s+")
 # 청하는 꼴로 끝나는 질문('…말씀해/들려/설명해 주시겠-', '…주실 수 있-', '…주세요/주십시오', '…궁금합니다', '…여쭤봐도 될까요') — 사례당 한 번까지
 REQUEST_END_RE = re.compile(r"(주시겠[가-힣]*|주실\s*수\s*있[가-힣]*|주실래요|주실까요|주세요|주십시오|주시죠|주시지요|바랍니다|"
                             r"궁금(합니다|해요|하네요|했습니다|했어요)|여쭤(봐)?도\s*(될까요|되겠습니까|괜찮을까요)|여쭙(니다|고\s*싶습니다))[?.!…\s]*$")
@@ -829,17 +828,40 @@ def leader_nouns(question: str | None, leader_text: str | None) -> list[str]:
     return out
 
 
-def tail_question_issue(question: str | None, leader_text: str | None) -> str | None:
-    """꼬리 질문의 아래·위 한계 — 리더 답에서 온 명사구가 하나 이상, 8어절 이상 20어절 이하. 어긋나면 no_noun | short | long, 아니면 None."""
+def borrowed_run(question: str | None, leader_text: str | None) -> int:
+    """질문 안에서 리더 답을 옮긴 부분의 어절 수 — 리더 답에도 있는 어절(앞 두 음절의 어간 꼴 기준)이 끊기지 않고 이어진 가장 긴 구간.
+    지시어·흔한 낱말('그', '그때', '직접')과 리더 답에 없는 어절에서 끊긴다."""
+    src = content_keys(leader_text)
+    generic = _OVERLAP_GENERIC | {overlap_stem(g) for g in _OVERLAP_GENERIC} | {"리더"}
+    best = run = 0
+    for tok in _TOK_SPLIT_RE.split(strip_lead_address_q(question)):
+        if not tok:
+            continue
+        hit = len(tok) >= 2 and tok[:2] not in generic and overlap_stem(tok) in src
+        run = run + 1 if hit else 0
+        best = max(best, run)
+    return best
+
+
+def tail_question_issue(question: str | None, leader_text: str | None, *, need_noun: bool = True) -> str | None:
+    """꼬리 질문의 한계 — 리더 답에서 온 명사구가 하나 이상(need_noun), 8어절 이상 20어절 이하, 리더 답을 옮긴 부분은 6어절 이하.
+    어긋나면 no_noun | short | long | borrow, 아니면 None. '다시 한다면·배운 것' 질문은 리더 낱말 요건을 보지 않는다(호출자가 need_noun=False)."""
     q = strip_lead_address_q(question)
     n = len(q.split())
-    if not leader_nouns(q, leader_text):
+    if need_noun and not leader_nouns(q, leader_text):
         return "no_noun"
     if n < TAIL_MIN_EOJEOL:
         return "short"
     if n > TAIL_MAX_EOJEOL:
         return "long"
+    if borrowed_run(q, leader_text) > BORROW_MAX_EOJEOL:
+        return "borrow"
     return None
+
+
+def strip_head_filler(text: str | None) -> str:
+    """질문 머리의 '그럼', '다음은'을 뗀다(P15 판정 5) — 다음으로 넘어간다는 것을 알리는 말이다."""
+    return _HEAD_FILLER_RE.sub("", (text or "").lstrip())
 
 
 def tail_issue_note(issue: str | None) -> str:

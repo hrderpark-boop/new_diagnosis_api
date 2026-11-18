@@ -1947,59 +1947,48 @@ async def _submit_message_phase3a(
             _angle_fp = _pick_fp(_llm_user_text, _angles_fp)
             _tm["first_probe_angle"] = _angle_fp
             _ends_fp = [_el_fp(k) for k, _v in sorted(_ec_fp(_chapter_questions()).items(), key=lambda kv: -kv[1])]
-            # (2026-11-15 P13g-1·2) ① 질문에 넣은 상대가 걸리면 그 어절만 지우고 나머지는 그대로 쓴다(first_probe_addressee_fix).
-            #   ② 확인에서 떨어지면 사유를 한 줄로 넘겨 전용 호출을 한 번 더 한다. 두 번째도 떨어질 때만 대체 문장.
-            #   기록 first_probe: llm | llm_retry | fallback · first_probe_who: [[지운 어절, 지우기 전 질문], …] · first_probe_why: 떨어진 사유(둘이면 '첫째>둘째').
+            # (2026-11-15 P13g-1) 질문에 넣은 상대가 걸리면 그 어절만 지우고 나머지는 그대로 쓴다(first_probe_addressee_fix).
+            # (2026-11-18 P15 판정 2) 순차 다시 쓰기를 없앴다 — 한 번의 호출에서 후보 둘을 받아 차례로 확인하고 먼저 통과하는 것을 쓴다.
+            #   둘 다 떨어지면 대체 문장. 걸린 후보(비문·길이 미달·조각난 문장 포함)는 어떤 경우에도 그대로 내보내지 않는다.
+            #   기록 first_probe: llm | fallback · first_probe_pick: 통과한 후보의 순번(1·2, 대체 문장이면 0) ·
+            #   first_probe_why: 떨어진 후보의 사유('첫째>둘째') · first_probe_who: [[지운 어절, 지우기 전 질문], …].
             from diag_project.services.intro_messages import first_probe_fallback_pick as _fpp_fp
-            from diag_project.services.turn_checks import (FIRST_PROBE_SOFT_REASONS as _soft_fp, first_probe_addressee_fix as _afix_fp,
-                                                             first_probe_echo_issue as _fpei_fp, first_probe_retry_note as _note_fp,
+            from diag_project.services.turn_checks import (first_probe_addressee_fix as _afix_fp, first_probe_echo_issue as _fpei_fp,
                                                              strip_lead_address_q as _slq_fp)
             _t0_fp = _time.perf_counter()
-
-            async def _one_fp(note=None):
-                _q, _mode = await _rfp_fp(llm, leader_answer=_llm_user_text, persona_name=_pn_fp, used_endings=_ends_fp, angle=_angle_fp, retry_note=note)
-                if not _q:
-                    return None, False, _mode, _mode
-                _q2, _rm, _clean = _afix_fp(_q, _llm_user_text)
-                _q2 = _slq_fp(_q2)      # (P15-3) 문장 머리의 '리더님께서'는 뗀다
+            _cands_fp, _mode_fp = await _rfp_fp(llm, leader_answer=_llm_user_text, persona_name=_pn_fp, used_endings=_ends_fp, angle=_angle_fp)
+            _q_fp, _pick_fp, _whys_fp = None, 0, []
+            for _i_fp, _c_fp in enumerate(_cands_fp[:2], 1):
+                _q2, _rm, _clean = _afix_fp(_c_fp, _llm_user_text)
                 if _rm:
-                    _tm["first_probe_who"] = list(_tm.get("first_probe_who") or []) + [[" / ".join(_rm), _q[:200]]]
+                    _tm["first_probe_who"] = list(_tm.get("first_probe_who") or []) + [[" / ".join(_rm), _c_fp[:200]]]
+                _q2 = _slq_fp(_q2)      # (P15-3) 문장 머리의 '리더님께서'는 뗀다
                 if not _clean:
-                    _call_drops.append(["first_probe", "who", _q[:200]])
-                    return _q, False, "who", _mode
-                _ok, _why = _fpok_fp(_q2, _llm_user_text)
+                    _ok, _why = False, "who"
+                else:
+                    _ok, _why = _fpok_fp(_q2, _llm_user_text)
+                    if _ok:
+                        _iss_fp = _fpei_fp(_q2, _llm_user_text)      # 리더 낱말 · 8~20어절 · 옮긴 부분 6어절 이하 · 조각난 문장
+                        if _iss_fp:
+                            _ok, _why = False, _iss_fp
                 if _ok:
-                    _iss_fp = _fpei_fp(_q2, _llm_user_text)      # (P15-3) 되짚는 앞 절 · 리더 낱말 · 8~20어절
-                    if _iss_fp:
-                        _ok, _why = False, _iss_fp
-                if not _ok:
-                    _call_drops.append(["first_probe", _why, _q2[:200]])
-                return _q2, _ok, _why, _mode
-
-            _q_fp, _ok_fp, _why_fp, _mode_fp = await _one_fp()
-            _retry_fp = False
-            if not _ok_fp and _mode_fp not in ("stub", "miss:no_llm", "miss:no_material"):
-                _q1_fp, _why1_fp = _q_fp, _why_fp
-                _q_fp, _ok_fp, _why_fp, _mode_fp = await _one_fp(_note_fp(_why1_fp))
-                _retry_fp = True
-                _tm["first_probe_why"] = _why1_fp if _ok_fp else f"{_why1_fp}>{_why_fp}"
-                if _q1_fp:
-                    _tm["first_probe_cut"] = _q1_fp[:200]      # 처음에 떨어진 LLM 질문(보고용)
+                    _q_fp, _pick_fp = _q2, _i_fp
+                    break
+                _whys_fp.append(_why)
+                _call_drops.append(["first_probe", _why, (_q2 or _c_fp)[:200]])
             _tm["first_probe_s"] = round(_time.perf_counter() - _t0_fp, 2)
-            if _ok_fp or (_retry_fp and _q_fp and _why_fp in _soft_fp):
-                # (P15-3) 한 번 더 쓰고도 되짚는 앞 절·길이·리더 낱말에서만 걸렸으면 그 질문을 그대로 쓴다 — 대체 문장에는 리더 낱말이 없다
+            _tm["first_probe_pick"] = _pick_fp
+            if _whys_fp or not _cands_fp:
+                _tm["first_probe_why"] = ">".join(_whys_fp) if _whys_fp else _mode_fp
+            if _q_fp:
                 _fp_final = _q_fp
-                _tm["first_probe"] = "llm_retry" if _retry_fp else "llm"
-                if not _ok_fp:
-                    _tm["first_probe_soft"] = _why_fp
+                _tm["first_probe"] = "llm"
             else:
                 _used_fb_fp = [str(x) for x in (_sd_fp.get("first_probe_fb_used") or [])]
                 _fp_final = _fpp_fp(_pn_fp, _angle_fp, _used_fb_fp)      # (P13g-4) 같은 대체 문장은 세션에서 한 번만
                 _sd_fp["first_probe_fb_used"] = (_used_fb_fp + [_fp_final])[-12:]
                 _sd_fp["first_probe_fb_n"] = int(_sd_fp.get("first_probe_fb_n") or 0) + 1
                 _tm["first_probe"] = "fallback"
-                if not _retry_fp:
-                    _tm["first_probe_why"] = _why_fp
                 logger.info("first probe fallback (%s)", _tm.get("first_probe_why"))
             _sd_fp["first_probe_angles"] = (_angles_fp + [_angle_fp])[-40:]
             session.self_assessment_data = _sd_fp
@@ -2042,10 +2031,13 @@ async def _submit_message_phase3a(
                 #   같은 다시 쓰기 한 번에 사유를 함께 넘긴다(턴당 재생성 1회 예산 그대로). 그래도 남으면 그대로 내보낸다.
                 from diag_project.services.turn_checks import question_issues as _qi_2, tail_issue_note as _tin_2, tail_question_issue as _tqi_2
                 _qs_2 = [x for x in split_sentences(llm_output.get("reply") or "") if x.strip() and is_question_sentence(x)]
+                # (P15 판정 3) 확인 대상은 실제로 남는 문장 — 질문 문장이 둘이면 뒤 단계가 첫 문장만 남긴다(first_q_kept).
+                #   p15: 마지막 문장을 봐서 짧거나 조각난 첫 문장이 그대로 나갔다(Ella 3건). '다시 한다면·배운 것' 질문은 리더 낱말 요건을 보지 않는다.
                 _why_2 = []
-                if _qs_2 and "two_questions" in _qi_2(_qs_2[-1]):
+                if _qs_2 and "two_questions" in _qi_2(_qs_2[0]):
                     _why_2.append(("two_q", "한 문장에 두 가지를 물었다 — 하나만 묻는다"))
-                _iss_2 = _tqi_2(_qs_2[-1], _case_leader_text(_tr, _llm_user_text)) if _qs_2 else None
+                _iss_2 = (_tqi_2(_qs_2[0], _case_leader_text(_tr, _llm_user_text), need_noun=(_tm.get("ask_slot") != "reflection"))
+                          if _qs_2 else None)
                 if _iss_2:
                     _why_2.append((f"tail_{_iss_2}", _tin_2(_iss_2)))
                     _tm["tail_issue"] = _iss_2
@@ -3844,8 +3836,10 @@ async def _submit_message_phase3a(
         _tm["trans_echo_n"] = _te[chapter]
     if chapter and instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP", "EPISODE_OPEN", "SWEEP_ANCHOR") and (clean_reply or "").strip():
         # (2026-11-17 P14c-3 → 2026-11-18 P15-3) 문장 머리의 호칭은 뗀다 — '리더님, ', '리더님께서(는) ', '리더님은/이 '(받는 말·질문 모두)
-        from diag_project.services.turn_checks import strip_lead_address_q as _slq_e
+        from diag_project.services.turn_checks import strip_head_filler as _shf_e, strip_lead_address_q as _slq_e
         clean_reply = _slq_e(re.sub(r"(^|(?<=[.?!…]\s))리더님,\s*", "", clean_reply.lstrip()))
+        if instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP"):
+            clean_reply = _slq_e(_shf_e(clean_reply))      # (P15 판정 5) 질문 머리의 '그럼', '다음은'을 뗀다
     if (instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP") and chapter and system_override_text is None and not _llm_error
             and not needs_user_decision and not _reask_kind and (clean_reply or "").strip()):
         # (2026-11-18 P15-4) 청하는 꼴('…말씀해 주시겠-', '…주실 수 있-', '…궁금합니다')은 사례당 한 번까지 — 이미 썼으면 직접 묻는 꼴로 바꾼다
@@ -3862,9 +3856,11 @@ async def _submit_message_phase3a(
                     _tm["direct_fix"] = 1
                 else:
                     _tm["req_over"] = 1
-            # 보고용 — 이 질문에 들어간 리더 낱말(명사 어절)과 어절 수
+            # 보고용 — 이 질문에 들어간 리더 낱말(명사 어절)·어절 수·리더 답을 옮긴 부분의 어절 수
+            from diag_project.services.turn_checks import borrowed_run as _br_e
             _tm["q_noun"] = _ln_e(_sents_e[_qi_e], _case_leader_text(_tr, _llm_user_text))[:4]
             _tm["q_eojeol"] = len(_sents_e[_qi_e].split())
+            _tm["q_borrow"] = _br_e(_sents_e[_qi_e], _case_leader_text(_tr, _llm_user_text))
     if system_override_text is None and not _llm_error and (clean_reply or "").strip():
         from diag_project.services.turn_checks import fix_leader_address as _fla_e
         clean_reply = _fla_e(clean_reply)   # (P14-1) 호칭은 '리더님' — '리더께서'·'리더가' 치환
@@ -4185,7 +4181,7 @@ async def _submit_message_phase3a(
             #   direct_fix 청하는 꼴을 직접 묻는 꼴로 바꿈 · req_over 한도를 넘긴 청하는 꼴(바꾸지 못함) · trans_echo_n 이 영역의 되짚는 전환 턴 수
             "q_noun": _tm.get("q_noun"), "q_eojeol": _tm.get("q_eojeol"), "tail_issue": _tm.get("tail_issue"), "tail_regen": _tm.get("tail_regen"),
             "direct_fix": _tm.get("direct_fix"), "req_over": _tm.get("req_over"), "trans_echo_n": _tm.get("trans_echo_n"),
-            "first_probe_soft": _tm.get("first_probe_soft"),
+            "first_probe_pick": _tm.get("first_probe_pick"), "q_borrow": _tm.get("q_borrow"),
             # (P14b → P15) recv_rule 전환 턴에 붙인 것: C·C+ 받는 말 | pass 넘김말 · main_stmt_cut 본 호출이 쓴 평서문을 지운 수 · specify_q 구체화 전용 호출 결과 · two_q_regen 두 물음 다시 쓰기
             "recv_rule": _tm.get("recv_rule"), "main_stmt_cut": _tm.get("main_stmt_cut"), "specify_q": _tm.get("specify_q"), "two_q_regen": _tm.get("two_q_regen"),
             "call_drops": (_call_drops or None),      # (P14d-4) 전용 호출에서 탈락한 문장 [[호출, 사유, 문장], …]
