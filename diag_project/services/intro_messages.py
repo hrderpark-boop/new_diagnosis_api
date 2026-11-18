@@ -506,24 +506,31 @@ def first_probe_fallback_pick(persona_name: str | None, angle: str | None, used:
     return pool[len(seen) % len(pool)]
 
 
-# (2026-11-18 P14f-2) 전환 턴(사례를 닫고 다음 사례·훑는 질문을 여는 턴)의 고정 받기 — 받는 말이 두 번 다 떨어졌거나, 모른다는 답을 되받은 받는 말일 때 쓴다.
-#   뜻은 '방금 이야기를 잘 들었다'는 한마디뿐이다 — 평가·감사는 넣지 않는다. 말투별 3종, 이번 세션에서 가장 최근에 쓴 것은 빼고 덜 쓴 것부터 고른다.
-#   답 전체가 모른다·없다인 턴(받을 내용 없는 답)에는 붙이지 않는다.
+# (2026-11-18 P14f-2 → P15-2) 전환 턴(사례를 닫고 다음 사례·훑는 질문을 여는 턴)의 넘김말 — 리더 말을 되짚지 않는 짧은 고정 문구.
+#   P15: 되짚는 받는 말은 영역당 두 번까지(직전 답이 리더 본인의 행동·배운 점일 때)만 쓰고, 그 밖의 전환 턴은 모두 이 넘김말로 넘어간다.
+#   평가·감사는 넣지 않는다. 말투별 8종 — 이번 영역에서 아직 쓰지 않은 것을 목록 순서로 고르고, 다 썼으면 가장 오래전에 쓴 것부터 다시 쓴다.
+#   받을 내용이 없는 답('없습니다', '기억나지 않습니다') 뒤에는 '잘 들었다'는 문구를 빼고 고른다(TRANSITION_PASS_PLAIN 의 순번).
 TRANSITION_FIXED_RECEIVE: dict[str, list[str]] = {
-    "polite": ["네, 잘 들었어요.", "그 이야기는 여기까지 잘 들었어요.", "말씀해 주신 내용 잘 들었어요."],
-    "formal": ["네, 잘 들었습니다.", "그 이야기는 여기까지 잘 들었습니다.", "말씀해 주신 내용 잘 들었습니다."],
+    "polite": ["네, 잘 들었어요.", "이번에는 다른 일을 여쭤볼게요.", "그 이야기는 여기까지 잘 들었어요.", "네, 알겠어요.",
+               "말씀해 주신 내용 잘 들었어요.", "다른 장면도 하나 여쭤볼게요.", "그 일은 잘 알겠어요.", "네, 다른 일도 여쭤볼게요."],
+    "formal": ["네, 잘 들었습니다.", "이번에는 다른 일을 여쭙겠습니다.", "그 이야기는 여기까지 잘 들었습니다.", "네, 알겠습니다.",
+               "말씀해 주신 내용 잘 들었습니다.", "다른 장면도 하나 여쭙겠습니다.", "그 일은 잘 알겠습니다.", "네, 다른 일도 여쭙겠습니다."],
 }
+TRANSITION_PASS_PLAIN: tuple[int, ...] = (3, 1, 5, 7)      # '잘 들었다'가 아닌 문구의 순번 — 받을 내용이 없는 답 뒤에 쓴다
 
 
-def transition_fixed_receive(persona_name: str | None, coach_texts_latest_first: list[str] | None = None) -> str:
-    """전환 턴 고정 받기 한마디 — 가장 최근에 쓴 것은 빼고, 남은 것 가운데 이번 세션에서 덜 쓴 것(같으면 목록 순서)."""
+def transition_fixed_receive(persona_name: str | None, chapter_coach_texts_latest_first: list[str] | None = None, *, plain: bool = False) -> str:
+    """전환 턴 넘김말 한마디 — 이번 영역에서 아직 쓰지 않은 것(목록 순서), 다 썼으면 가장 오래전에 쓴 것. plain = 받을 내용이 없는 답 뒤."""
     from diag_project.services.persona_register import register_of
     pool = TRANSITION_FIXED_RECEIVE["polite" if register_of(persona_name) == "polite" else "formal"]      # Lucas(섞어 씀)의 고정 문장은 합쇼체
-    texts = [re.sub(r"\s+", "", t or "") for t in (coach_texts_latest_first or [])]
-    keys = [re.sub(r"\s+", "", x) for x in pool]
-    last = next((x for t in texts for x, k in zip(pool, keys) if t.startswith(k)), None)
-    cand = [x for x in pool if x != last] or pool
-    return min(cand, key=lambda x: (sum(1 for t in texts if t.startswith(re.sub(r"\s+", "", x))), pool.index(x)))
+    cand = [pool[i] for i in TRANSITION_PASS_PLAIN] if plain else list(pool)
+    texts = [re.sub(r"\s+", "", t or "") for t in (chapter_coach_texts_latest_first or [])]
+
+    def _last_used(x: str) -> int:      # 가장 최근에 쓴 자리(0 = 직전 코치 턴), 쓴 적 없으면 -1
+        k = re.sub(r"\s+", "", x)
+        return next((i for i, t in enumerate(texts) if t.startswith(k)), -1)
+    unused = [x for x in cand if _last_used(x) < 0]
+    return unused[0] if unused else max(cand, key=_last_used)
 
 
 def align_fixed_receive(persona_name: str | None, variant: int = 0) -> str:

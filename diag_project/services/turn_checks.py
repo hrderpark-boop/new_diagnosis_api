@@ -413,6 +413,11 @@ FIRST_PROBE_RETRY_NOTES: dict[str, str] = {
     "who": "리더가 말을 건넨 상대로 말하지 않은 사람을 질문에 넣었다",
     "wonder": "묻는 꼴이 아니라 궁금하다거나 여쭤봐도 되느냐는 말로 끝났다",
     "no_honorific": "리더가 한 일을 높임 없이 적었다",
+    # (2026-11-18 P15-3) 되짚는 앞 절 · 리더 낱말 · 길이
+    "front": "리더가 한 일을 앞 절로 다시 말했다 — 리더가 쓴 낱말은 명사구 하나로만 넣는다",
+    "no_noun": "리더가 쓴 낱말이 질문에 없었다 — 리더가 말한 일이나 사람을 가리키는 명사구 하나를 넣는다",
+    "short": "질문이 8어절에 못 미쳤다 — 8어절 이상 20어절 이하로 쓴다",
+    "long": "질문이 20어절을 넘겼다 — 8어절 이상 20어절 이하로 쓴다",
 }
 
 
@@ -457,6 +462,21 @@ def first_probe_question_ok(question: str | None, leader_answer: str | None = No
     return True, "ok"
 
 
+# (2026-11-18 P15-3) 첫 꼬리 질문의 메아리·길이 확인 — first_probe_question_ok 를 지난 질문에만 건다(호출자).
+#   되짚는 앞 절('…하셨는데,', '…하신 뒤') 금지: 첫 절이 리더 답과 내용 낱말 둘 이상 겹치면 front.
+#   리더 낱말은 명사구 하나 이상 · 8어절 이상 20어절 이하(tail_question_issue: no_noun | short | long).
+#   한 번 더 써도 이 사유로만 걸리면 대체 문장으로 바꾸지 않고 그 질문을 쓴다 — 대체 문장에는 리더 낱말이 없다.
+FIRST_PROBE_SOFT_REASONS = frozenset(("front", "no_noun", "short", "long"))
+
+
+def first_probe_echo_issue(question: str | None, leader_answer: str | None) -> str | None:
+    q = strip_lead_address_q(question)
+    fc = question_first_clause(q)
+    if fc and len(content_keys(fc) & content_keys(leader_answer)) >= 2:
+        return "front"
+    return tail_question_issue(q, leader_answer)
+
+
 # ── (2026-11-15 P13e-1) 첫 꼬리 질문의 각도 넷 ─────────────────────────────────────────
 #   said 그때 한 말 · did 직접 취한 조치 · order 일을 진행한 순서.
 #   리더의 여는 답에 이미 나온 각도와, 이번 세션에서 직전에 쓴 각도는 피한다. 남은 것 가운데 세션에서 가장 적게 쓴 각도를 고른다(코드가 고른다 —
@@ -467,7 +487,8 @@ FIRST_PROBE_ANGLE_LABELS: dict[str, str] = {"said": "그때 한 말", "did": "�
 _ANGLE_IN_ANSWER: dict[str, re.Pattern] = {
     "said": re.compile(r"자고\s?(제안|했|말|이야기|얘기|요청|청했)|(라고|다고|냐고|달라고)\s?(말|했|이야기|얘기|물|요청|설명)|말씀드렸|이야기했|얘기했|물었|물어봤|물어보고|설명했|설명하고|[\"“”]"),
     "did": re.compile(r"맡겼|미뤘|나눴|나누고|바꿨|줄였|늘렸|만들었|골랐|조정했|반영했|반영하면서|도입했|배정했|넘겼|시범\s?운영(했|하고)|진행하도록\s?했|쓰기로\s?했|다시\s?잡았"),
-    "order": re.compile(r"먼저[^.]{0,40}(뒤|다음|이후|나서)|[가-힣]\s?뒤(에)?[ ,]|고\s?나서|그다음|그\s다음|이후(에)?\s"),
+    # (2026-11-18 P15-3) 순서 표지(먼저·이후·다음·그 뒤)가 하나라도 있으면 순서는 이미 나온 것으로 본다(종전: '먼저 … 뒤'처럼 짝을 이룰 때만)
+    "order": re.compile(r"먼저|이후|다음|그\s?뒤|[가-힣]\s?뒤(에)?[ ,]|고\s?나서"),
 }
 
 
@@ -707,20 +728,6 @@ def most_used_receive_ending(keys: list[str] | None) -> str | None:
     return next(k for k in reversed(ks) if cnt[k] == top)
 
 
-def receive_streak(coach_texts_latest_first: list[str] | None) -> int:
-    """(P14c-2) 직전 코치 턴부터 거슬러 받는 말(되짚는 끝맺음의 첫 평서문)이 이어진 턴 수."""
-    from diag_project.services.output_guard import is_question as _iq_s, split_sentences as _ss_s
-    n = 0
-    for t in (coach_texts_latest_first or []):
-        first = (_ss_s(t or "") or [""])[0].strip()
-        if first and not _iq_s(first) and receive_ending_key(first):
-            n += 1
-        else:
-            break
-    return n
-
-
-RECEIVE_STREAK_MAX = 3
 _RECV_KEY_RES: tuple[tuple[str, re.Pattern], ...] = (
     ("말씀이군요", re.compile(r"말씀이(시)?군요[.!…]*$")), ("말씀이네요", re.compile(r"말씀이(시)?네요[.!…]*$")), ("말씀이지요", re.compile(r"말씀이(시)?(지요|죠)[.!…]*$")),
     ("셨군요", re.compile(r"셨군요[.!…]*$")), ("셨네요", re.compile(r"셨네요[.!…]*$")), ("셨지요", re.compile(r"셨(지요|죠)[.!…]*$")),
@@ -757,15 +764,6 @@ def receive_ending_key(sentence: str | None) -> str | None:
     return f"했{e}" if e else None
 
 
-# ── (2026-11-16 P14b-1) 한 턴에 리더 말을 되짚는 것은 한 번 — 받아 둔 받는 말을 붙일지는 질문이 나온 뒤 정한다 ──────────
-#   (가) A  질문이 리더 직전 답의 내용을 담은 앞 절로 시작한다(앞 절과 리더 답의 내용 낱말이 2개 이상 겹친다) → 붙이지 않는다
-#   (나) B  질문이 10어절 미만이거나 '그/이/그때/그렇게'로 시작해 맥락이 없다 → 붙인다
-#   (다) C  사례를 닫고 다음으로 넘어가는 턴 → 붙인다(호출자가 정한다)
-#   (라) D  그 밖 → 직전 코치 턴에 받는 말이 나갔으면 붙이지 않고(D-), 아니면 붙인다(D+)
-RECV_ATTACH_SHORT_EOJEOL = 10
-_BARE_START_RE = re.compile(r"^(그|이|그때|그렇게|그런|그러면|그럼|그래서|그것|그걸|그건)(\s|$)")
-
-
 def question_front_clause(question: str | None) -> str:
     """질문 문장에서 실제로 묻는 자리 앞에 놓인 절('…하셨을 때,', '…하신 뒤')."""
     q = (question or "").strip()
@@ -773,15 +771,111 @@ def question_front_clause(question: str | None) -> str:
     return q[:len(q) - len(part)].strip() if part and part != q else ""
 
 
-def receive_attach_rule(question: str | None, leader_answer: str | None, *, prev_had_receive: bool = False) -> tuple[bool, str]:
-    """(붙이는가, 규칙: A | B | D+ | D-). 사례를 닫는 턴(C)은 호출자가 따로 정한다."""
+# ── (2026-11-18 P15) 메아리 줄이기 — 꼬리 질문은 받는 말 없이 질문만, 리더 낱말은 명사구 하나로 ─────────────────────────
+#   11/18 운영 Lucas 사람관리: 본론 21턴 중 12턴이 되짚는 문장으로 시작했고 6턴은 질문 앞머리 절('…하셨는데,')에서 되짚었다(회귀 p14f 로 세면 76~92%).
+#   받는 말을 붙이는 규칙(P14b A·B·D)과 연속 상한(P14c)은 지웠다 — 사례 안 꼬리 질문 턴에는 받는 말을 부르지 않는다.
+TAIL_MIN_EOJEOL = 8
+TAIL_MAX_EOJEOL = 20
+# 청하는 꼴로 끝나는 질문('…말씀해/들려/설명해 주시겠-', '…주실 수 있-', '…주세요/주십시오', '…궁금합니다', '…여쭤봐도 될까요') — 사례당 한 번까지
+REQUEST_END_RE = re.compile(r"(주시겠[가-힣]*|주실\s*수\s*있[가-힣]*|주실래요|주실까요|주세요|주십시오|주시죠|주시지요|바랍니다|"
+                            r"궁금(합니다|해요|하네요|했습니다|했어요)|여쭤(봐)?도\s*(될까요|되겠습니까|괜찮을까요)|여쭙(니다|고\s*싶습니다))[?.!…\s]*$")
+_TOK_SPLIT_RE = re.compile(r"[\s,.!?…~\"'‘’“”()\[\]/·:—-]+")
+# 서술어로 끝난 어절 — 명사구로 세지 않는다('나누셨을', '보였나요', '제안하실')
+_PREDICATE_TOK_RE = re.compile(r"(습니까|입니까|나요|가요|까요|어요|아요|세요|는지|은지|인지|[가-힣]*[았었였했셨겠][가-힣]*|하고|하며|하면|해서|하신|하실|하는|하던|한다|된다|되는|시고|시며|시면)$")
+_LEAD_ADDRESS_Q_RE = re.compile(r"(^|(?<=[.?!…]\s))리더님(께서는|께서|은|는|이|도)?,?\s+")
+
+
+def is_request_ending(question: str | None) -> bool:
+    return bool(REQUEST_END_RE.search((question or "").strip()))
+
+
+def content_keys(text: str | None) -> set[str]:
+    """겹침을 세는 열쇠 — 어절의 앞 두 음절(어간 꼴). question_overlap 과 달리 '팀원'·'따로'·'만나'도 센다(불용어·조사 떼기를 거치지 않는다).
+    의문사·지시어·흔한 낱말('그때', '결정', '과정')과 호칭 '리더님'은 뺀다."""
+    generic = _OVERLAP_GENERIC | {overlap_stem(g) for g in _OVERLAP_GENERIC} | {"리더"}
+    out: set[str] = set()
+    for tok in _TOK_SPLIT_RE.split(text or ""):
+        if len(tok) >= 2 and tok[:2] not in generic and overlap_stem(tok) not in generic:
+            out.add(overlap_stem(tok))
+    return out
+
+
+def question_first_clause(question: str | None) -> str:
+    """질문의 첫 절 — 때·배경 절('…하셨을 때,', '…하셨는데,', '…하신 뒤')이 있으면 그 절, 없고 쉼표가 있으면 첫 쉼표 앞(3어절 이상일 때)."""
     q = (question or "").strip()
     front = question_front_clause(q)
-    if front and len(question_overlap(front, leader_answer)) >= 2:
-        return False, "A"
-    if len(q.split()) < RECV_ATTACH_SHORT_EOJEOL or _BARE_START_RE.search(q):
-        return True, "B"
-    return (False, "D-") if prev_had_receive else (True, "D+")
+    words = front.rstrip(",， ").split()
+    if words and re.match(r"(때|뒤|후|전|동안|순간|시점)", words[-1]):
+        # '그 뒤에', '회의 후'처럼 서술어 없이 때만 가리키는 말은 절이 아니다 — 때를 꾸미는 말이 관형형(받침 ㄴ·ㄹ: '넘긴 뒤', '제안하실 때')일 때만 절로 본다
+        prev = words[-2] if len(words) >= 2 else ""
+        code = ord(prev[-1]) - 0xAC00 if prev else -1
+        if not (prev and prev not in ("그", "이", "그런", "이런") and 0 <= code < 11172 and code % 28 in (4, 8)):
+            front = ""
+    if front:
+        return front
+    head = re.split(r"[,，]", q, maxsplit=1)[0].strip() if re.search(r"[,，]", q) else ""
+    return head if len(head.split()) >= 3 else ""
+
+
+def leader_nouns(question: str | None, leader_text: str | None) -> list[str]:
+    """질문에 들어 있는, 리더의 답에서 온 명사 어절(질문 쪽 표기). 서술어로 끝난 어절과 지시어·흔한 낱말('그때', '그 결정', '그 일')은 세지 않는다."""
+    generic = _OVERLAP_GENERIC | {"리더"}
+    src = {tok[:2] for tok in _TOK_SPLIT_RE.split(leader_text or "") if len(tok) >= 2}
+    out: list[str] = []
+    for tok in _TOK_SPLIT_RE.split(question or ""):
+        if len(tok) < 2 or tok[:2] in generic or tok[:2] not in src or _PREDICATE_TOK_RE.search(tok) or tok in out:
+            continue
+        out.append(tok)
+    return out
+
+
+def tail_question_issue(question: str | None, leader_text: str | None) -> str | None:
+    """꼬리 질문의 아래·위 한계 — 리더 답에서 온 명사구가 하나 이상, 8어절 이상 20어절 이하. 어긋나면 no_noun | short | long, 아니면 None."""
+    q = strip_lead_address_q(question)
+    n = len(q.split())
+    if not leader_nouns(q, leader_text):
+        return "no_noun"
+    if n < TAIL_MIN_EOJEOL:
+        return "short"
+    if n > TAIL_MAX_EOJEOL:
+        return "long"
+    return None
+
+
+def tail_issue_note(issue: str | None) -> str:
+    return FIRST_PROBE_RETRY_NOTES.get(str(issue or ""), "질문으로 쓸 수 없는 문장이었다")
+
+
+def strip_lead_address_q(text: str | None) -> str:
+    """문장 머리의 '리더님께서(는)/리더님은/리더님이'를 뗀다 — 질문을 호칭으로 시작하지 않는다(주어 없이도 뜻이 선다)."""
+    return _LEAD_ADDRESS_Q_RE.sub("", (text or "").lstrip())
+
+
+_DIRECT_RE = re.compile(
+    r"^(?P<head>.*[가-힣])(?P<nj>는지|인지)(?:를|가|도)?,?\s*(?:(?:한번|조금\s*더|편하게|구체적으로|기억나는\s*대로|순서대로|그대로)\s+)*"
+    r"(?P<req>(?:(?:말씀|이야기|얘기|설명)해\s*|들려\s*|알려\s*|짚어\s*|떠올려\s*|꺼내\s*|풀어\s*|옮겨\s*)주[가-힣]*(?:\s*수\s*있[가-힣]*)?|"
+    r"궁금[가-힣]+|여쭤(?:봐)?도\s*[가-힣]+|여쭙[가-힣]+(?:\s*싶[가-힣]+)?)[?.!…\s]*$")
+
+
+def request_to_direct(question: str | None) -> str | None:
+    """청하는 꼴로 끝난 질문을 직접 묻는 꼴로 — '…하셨는지 말씀해 주시겠습니까?' → '…하셨습니까?', '…달라졌는지 궁금해요.' → '…달라졌나요?'.
+    '-는지/-인지' 바로 뒤에 청하는 말이 올 때만 바꾼다. 그 꼴이 아니면 None(그대로 둔다). 말투는 청하는 말의 어미를 따른다."""
+    q = (question or "").strip()
+    m = _DIRECT_RE.match(q)
+    if not m:
+        return None
+    head, formal = m.group("head"), bool(re.search(r"습니까|십시오|니다", m.group("req")))
+    if m.group("nj") == "인지":
+        return head + ("입니까?" if formal else "인가요?")
+    ch = head[-1]
+    code = ord(ch) - 0xAC00
+    if not 0 <= code < 11172:
+        return None
+    if not formal:
+        return head + "나요?"
+    if code % 28 == 0:      # 받침 없는 어간('하는지' → '합니까', '보시는지' → '보십니까')
+        return head[:-1] + chr(ord(ch) + 17) + "니까?"
+    return head + "습니까?"
 
 
 # ── (2026-11-16 P14b-3) 구체화 질문 확인 — 숫자·횟수·기간이나 실제 있었던 장면 하나를 청하는가 ─────────────────────

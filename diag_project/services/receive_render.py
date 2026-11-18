@@ -13,6 +13,8 @@
 확인에서 떨어지면 사유를 한 줄로 넘겨 한 번 더 쓴다. 그래도 떨어지면 None — 호출자는 받는 말 없이(라포·영역 정의·사례를 닫는 전환 턴은 고정 받기로) 내보낸다.
 (2026-11-18 P14f) 제3자 높임 확인은 없앴다 — p14e 탈락 23건 가운데 13건이 오탐이었고(높임이 리더 행동에 붙은 문장), 팀원·강사를 높여 말하는 것 자체는 틀린 말이 아니다.
 받을 내용이 없는 답('네', '없어요', 떠오르지 않는다는 답)에는 부르지 않는다.
+(2026-11-18 P15) 본론에서는 사례를 닫는 전환 턴에만 부른다(영역당 두 번까지, 직전 답이 리더 본인의 행동·배운 점일 때) — 사례 안 꼬리 질문 턴에는 부르지 않는다.
+  11/18 운영 Lucas: 본론 21턴 중 12턴이 되짚는 문장으로 시작했다. 슬롯 판정과 함께 돌리던 호출(render_receive_gated)과 미룬 다시 쓰기는 지웠다.
 """
 from __future__ import annotations
 
@@ -260,34 +262,3 @@ async def render_receive(llm, *, leader_answer: str, persona_name: str | None, k
             return None, "miss:error"
         extra = _retry_args(why, kind, failed)
     return None, f"miss:{why}"
-
-
-async def render_receive_gated(llm, *, leader_answer: str, persona_name: str | None, gate=None, avoid_endings: list[str] | None = None,
-                               prev_answer: str | None = None, session_keys: list[str] | None = None,
-                               trace: list | None = None) -> tuple[str | None, str, str | None, str | None]:
-    """(P14e-2) 본론 받는 말 — 슬롯 판정과 함께 돈다. 반환 (받는 말 | None, 모드, 미룬 다시 쓰기의 사유 | None, 그때 떨어진 문장 | None).
-    한 번 떨어졌을 때 판정(gate)이 아직 끝나지 않았으면 그 자리에서 한 번 더 쓴다(지연이 늘지 않는다).
-    판정이 이미 끝났으면 다시 쓰지 않고 사유를 돌려준다 — 호출자가 전환 턴일 때만 render_receive_retry 로 한 번 더 쓴다."""
-    pre = _pre(leader_answer, prev_answer, "probe", llm)
-    if pre:
-        return None, pre, None, None
-    nq = _no_quote("probe", session_keys)
-    s, why, failed = await _attempt(llm, leader_answer=leader_answer, persona_name=persona_name, kind="probe", avoid_endings=avoid_endings, no_quote=nq,
-                                    note=None, trace=trace)
-    if s:
-        return s, "llm", None, None
-    if why == "error":
-        return None, "miss:error", None, None
-    if gate is not None and gate.done():
-        return None, f"miss:{why}", why, failed
-    s, why2, _f = await _attempt(llm, leader_answer=leader_answer, persona_name=persona_name, kind="probe", avoid_endings=avoid_endings, no_quote=nq,
-                                 trace=trace, **_retry_args(why, "probe", failed))
-    return (s, "llm_retry", None, None) if s else (None, f"miss:{why2}", None, None)
-
-
-async def render_receive_retry(llm, *, leader_answer: str, persona_name: str | None, why: str, avoid_endings: list[str] | None = None,
-                               session_keys: list[str] | None = None, trace: list | None = None, failed: str | None = None) -> tuple[str | None, str]:
-    """(P14e-2) 미뤄 둔 다시 쓰기 한 번 — 전환 턴에서만 부른다. failed = 처음에 떨어진 문장(길이로 떨어졌을 때 앞 문장으로 보여 준다)."""
-    s, why2, _f = await _attempt(llm, leader_answer=leader_answer, persona_name=persona_name, kind="probe", avoid_endings=avoid_endings,
-                                 no_quote=_no_quote("probe", session_keys), trace=trace, **_retry_args(why, "probe", failed))
-    return (s, "llm_retry") if s else (None, f"miss:{why2}")

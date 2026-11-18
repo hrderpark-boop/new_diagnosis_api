@@ -57,6 +57,7 @@ def build_episode_card(
     sweep_seq: int = 0,
     bridge_material: str | None = None,
     used_endings: list[str] | None = None,
+    direct_only: bool = False,
 ) -> str:
     """사례 카드 본문(300토큰 이내). prev_episodes = [{"idx", "summary"}] 이 챕터·이전 챕터에서 끝난 사례.
     sweep_seq = 연속 SWEEP 순번(2 이상이면 앵커 앞 다리 문장 필수, P4-5). bridge_material = 앞 사례에서 리더가 쓴 말(다리 재료)."""
@@ -128,7 +129,13 @@ def build_episode_card(
     # (2026-11-15 P13-3) 지난 사례 목록은 넘기지 않는다 — 코치가 앞 이야기를 끌어오거나 "이전 … 같은 장면으로 보이네요" 처럼 판정을 입 밖에 냈다.
     #   리더가 닫힌 이야기를 다시 말하는 경우는 사례 단계(같은 장면 판정)가 따로 받는다.
     _ = prev_episodes
-    if used_endings and instruction in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
+    if instruction == "EPISODE_PROBE" and ep:
+        # (2026-11-18 P15 덧붙임) 꼬리 질문의 길이 — 못 채우면 한 번 다시 쓴다(turn_checks.tail_question_issue)
+        L.append("질문은 한 문장, 8어절 이상 20어절 이하로 쓴다.")
+    if direct_only and instruction in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
+        # (2026-11-18 P15-4) 청하는 꼴은 사례당 한 번까지 — 이미 썼으면 직접 묻는 어미로 끝낸다(이때는 아래 '이미 쓴 끝맺음' 목록을 넘기지 않는다)
+        L.append("이 사례에서 청하는 말(-해 주시겠-, -주실 수 있-, 궁금-)로 끝난 질문은 이미 썼다 — 이번 질문은 직접 묻는 어미로 끝낸다.")
+    elif used_endings and instruction in ("EPISODE_PROBE", "NO_CASE_REFRAME", "SWEEP_FOLLOWUP"):
         # (2026-11-13 P12-4) 이번 영역에서 이미 여러 번 쓴 질문 끝맺음 — 치환표가 아니라 목록을 넘겨 다른 끝맺음을 쓰게 한다
         L.append("이번 영역에서 이미 여러 번 쓴 질문 끝맺음: " + " / ".join(f"'{x}'" for x in used_endings[:6])
                  + " — 이번 질문은 이 꼴로 끝내지 않는다. 무엇을·어떻게로 바로 묻는 꼴처럼 다른 끝맺음을 쓴다.")
@@ -142,7 +149,7 @@ def build_episode_card(
 BEI_GUIDES: dict[str, str] = {
     "EPISODE_PROBE": (
         "사례 하나를 끝까지 듣는 턴입니다. 질문 1개로 끝냅니다. 질문은 카드의 '이번 턴' 한 가지만 향합니다. "
-        "질문만 씁니다 — 질문 앞에 평서문을 두지 않습니다(리더의 말을 받는 말은 따로 붙습니다). "
+        "질문만 씁니다 — 질문 앞에 평서문을 두지 않습니다. "
         "새 사례·다른 장면을 청하지 않습니다. 질문은 열린 질문으로 — 고를 것을 늘어놓거나 가정을 걸어 답을 고르게 하지 않습니다."
     ),
     "NO_CASE_REFRAME": (
@@ -182,7 +189,8 @@ TURN_FORMAT_RULES = (
     # (2026-11-15 P13d-3) 받는 말은 허용 목록(되짚는 끝맺음·리더 낱말 둘 이상·12어절 이하)을 넘을 때만 나간다 — 그 꼴을 지시문에도 적는다
     #   (완성 문장 예시가 아니라 어미만 적는다 — 따옴표로 묶은 문장 꼴은 그대로 베낀다)
     # (2026-11-16 P14-1) 받는 말은 전용 호출이 쓴다 — 본 호출은 질문만 쓴다(종전: 받는 말 꼴을 지시했고 허용 목록이 절반을 지웠다)
-    "- 질문 문장만 쓴다. 질문 앞에 리더의 말을 받는 평서문을 쓰지 않는다 — 받는 말은 따로 붙는다.\n"
+    # (2026-11-18 P15-1) 사례 안 꼬리 질문 턴에는 받는 말을 붙이지 않는다 — '받는 말은 따로 붙는다'는 말을 뺐다
+    "- 질문 문장만 쓴다. 질문 앞에 리더의 말을 받는 평서문을 쓰지 않는다.\n"
     "- 리더를 부를 때는 '리더님'이라고만 한다.\n"
     "- 다음에 묻는 것을 가리키는 말을 리더에게 하지 않는다 — 무슨 쪽을 묻겠다, 무슨 쪽으로 넘어가겠다는 식의 말을 쓰지 않는다.\n"
     "- 한 문장에 두 가지를 묻지 않는다. 묻는 절을 쉼표나 '그리고'로 이어 붙이지 않는다 — 둘 가운데 더 알고 싶은 하나만 묻는다.\n"

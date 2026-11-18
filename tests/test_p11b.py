@@ -816,7 +816,7 @@ def test_p12b_3_repeat_answer_asks_once_then_closes_as_repeat():
     src = inspect.getsource(D._submit_message_phase3a)
     assert "_repeat_ask_now = True" in src and 'await _close_and_map(_ep, "repeat")' in src and "'repeat_heard')} 그 일 말고, " in src
     assert '"sub": _ep.get("opener_sub"), "quote": _s_r[:200]' in src                         # 그 답의 문장을 전부, 묻던 칸을 붙여 원래 사례에 남긴다
-    assert 'if status not in ("no_case", "repeat") and _bei.filled_slots(ep):' in src
+    assert '_do_map = status not in ("no_case", "repeat") and bool(_bei.filled_slots(ep))' in src
 
 
 def test_p12b_4_wording():
@@ -1478,8 +1478,8 @@ def test_p13f_addressee_check_three_angles_and_parallel_close():
     assert asyncio.run(CR.render_close_receive(_Boom(), leader_answer="물량을 넘겼습니다.", persona_name="Ella")) == (None, "miss:error")
     assert asyncio.run(CR.render_close_receive(None, leader_answer="물량을 넘겼습니다.", persona_name="Ella")) == (None, "miss:no_llm")
     src = inspect.getsource(D._submit_message_phase3a)
-    # (P14-1) 받는 말은 이제 슬롯 판정과 함께 받는다 — 사례를 닫을 때는 매핑만 돈다. 닫는 턴이 받아 둔 받는 말만 쓰는 것은 그대로.
-    assert "_mar_c(" not in src and "_aio_r.gather(" in src and 'instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and chapter:' in src
+    # (P14-1 → P15-1) 받는 말은 사례를 닫을 때 매핑과 함께(조건이 맞을 때만) 받는다. 닫는 턴이 본 호출 없이 나가는 것은 그대로.
+    assert "_mar_c(" not in src and "_aio_c.gather(" in src and "_aio_r.gather(" not in src and 'instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and chapter:' in src
     assert "state[\"_pre_recv_text\"]" not in src                                           # 세션 상태에 남기지 않는다
 
 
@@ -1539,15 +1539,19 @@ def test_regression_check_judge_limits():
     spec = importlib.util.spec_from_file_location("regression_check", pathlib.Path(__file__).resolve().parent.parent / "tools" / "regression_check.py")
     rc = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rc)
-    good = {"p50": 3.8, "p95": 8.0, "regen_turns": 8, "format_miss": 0, "broken_total": 0, "fp_fallback": 1, "bare_pct": 20.0, "trans_recv_pct": 80.0,
-            "recv_have_pct": 75.0, "recv_streak4": 0, "recv_avg_eojeol": 9.0, "recv_over12": 0, "recv_echo_n": 0, "recv_top_end_pct": 40.0, "short_bare": 1,
-            "specify_multi": 0}      # (P14e) 조건표 — (A) 맥락 없는 턴 · (B) 전환 턴 받는 말 · (C) 상한·연속
-    assert all(ok for _n, _v, ok in rc.judge(good)) and len(rc.judge(good)) == 16
+    # (P15) 조건표 — (B)·(C)·'짧은 질문 중 받는 말 없는 것'은 삭제. (A) 10% · a 되짚는 턴 · b 꼬리 턴 받는 말 · c 청하는 꼴 · d 호칭으로 시작 · 전환 턴 · 짧은 꼬리 질문
+    good = {"p50": 3.8, "p95": 8.0, "regen_turns": 8, "format_miss": 0, "broken_total": 0, "fp_fallback": 1, "ctx_bare_pct": 10.0, "echo_pct": 30.0,
+            "tail_recv_n": 0, "req_tail_pct": 30.0, "lead_addr_n": 0, "trans_cover_pct": 100.0, "echo_trans_max": 2, "tail_short_n": 0,
+            "recv_avg_eojeol": 9.0, "recv_over12": 0, "recv_echo_n": 0, "recv_top_end_pct": 40.0, "specify_multi": 0}
+    assert all(ok for _n, _v, ok in rc.judge(good)) and len(rc.judge(good)) == 19
+    assert not any(k in ("trans_recv_pct", "recv_have_pct", "recv_streak4", "short_bare", "bare_pct") for _n, k, _lo, _hi in rc.LIMITS)
     for key, bad in (("p50", 3.9), ("p95", 8.2), ("regen_turns", 9), ("format_miss", 1), ("broken_total", 1), ("fp_fallback", 2), ("p95", None),
-                     ("bare_pct", 20.5), ("trans_recv_pct", 79.0), ("recv_have_pct", 76.0), ("recv_streak4", 1), ("recv_avg_eojeol", 9.1), ("recv_over12", 1),
-                     ("recv_echo_n", 1), ("recv_top_end_pct", 41.0), ("short_bare", 2), ("specify_multi", 1)):
+                     ("ctx_bare_pct", 10.5), ("echo_pct", 30.5), ("tail_recv_n", 1), ("req_tail_pct", 31.0), ("lead_addr_n", 1), ("trans_cover_pct", 90.0),
+                     ("echo_trans_max", 3), ("tail_short_n", 1), ("recv_avg_eojeol", 9.1), ("recv_over12", 1), ("recv_echo_n", 1), ("recv_top_end_pct", 41.0),
+                     ("specify_multi", 1), ("ctx_bare_pct", None), ("echo_pct", None)):
         assert not all(ok for _n, _v, ok in rc.judge(dict(good, **{key: bad}))), key
-    assert all(ok for _n, _v, ok in rc.judge(dict(good, recv_have_pct=10.0)))      # 하한은 없다
+    # 받는 말이 한 번도 안 나간 세션 — 받는 말 어절·끝맺음 값이 없어도 통과로 본다
+    assert all(ok for _n, _v, ok in rc.judge(dict(good, recv_avg_eojeol=None, recv_top_end_pct=None)))
     rows = [{"role": "model", "instr": "EPISODE_PROBE", "content": "야간조에 물량을 넘기셨군요. 그 뒤에 무엇을 하셨습니까?", "guard": {"recv_out": "셨군요", "recv_rule": "B"}},
             {"role": "model", "instr": "EPISODE_PROBE", "content": "그 뒤에 무엇이 달라졌습니까?", "guard": {"recv_out": None, "recv_rule": "D-"}},
             {"role": "model", "instr": "SWEEP_ANCHOR", "content": "반장과 물량을 나누셨네요. 요즘 새로 시도하신 일이 있습니까?", "guard": {"recv_out": "셨네요", "recv_rule": "C"}},
@@ -1612,7 +1616,7 @@ def test_p14_receive_call_everywhere_specificity_and_rapport():
     _Twice.n = 0
     assert asyncio.run(RR.render_receive(_Twice(), leader_answer=ans, persona_name="Ella", kind="align"))[1] == "llm_retry"
     src = inspect.getsource(D._submit_message_phase3a)
-    assert "_aio_r.gather(" in src and "f\"{_pre_recv_text} {clean_reply}\"" in src and '_rapport_recv("smalltalk")' in src and 'kind="align"' in src
+    assert "_aio_c.gather(" in src and "f\"{_pre_recv_text} {clean_reply}\"" in src and '_rapport_recv("smalltalk")' in src and 'kind="align"' in src
     assert "질문 문장만 쓴다" in EC.TURN_FORMAT_RULES and "'리더님'이라고만" in EC.TURN_FORMAT_RULES and "묻는 절을 쉼표나 '그리고'로 이어 붙이지 않는다" in EC.TURN_FORMAT_RULES
     # 호칭
     assert TC.fix_leader_address("리더께서 그 자리에서 리더가 하신 말") == "리더님께서 그 자리에서 리더님이 하신 말" and TC.fix_leader_address("리더님께서") == "리더님께서"
@@ -1641,14 +1645,10 @@ def test_p14b_one_receive_per_turn_specify_call_and_role_echo():
     from diag_project.routes import diagnoses as D
     from diag_project.services import intro_messages as IM, receive_render as RR, specify_render as SP, turn_checks as TC
     ans = "출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 반장에게 제안했습니다. 반장은 인력이 모자란다고 했습니다."
-    # 1. 붙이는 규칙 — A 앞 절이 리더 답의 내용을 담는다 / B 짧거나 맥락 없이 시작 / D 직전 턴에 받는 말이 나갔는가
-    assert TC.receive_attach_rule("야간조에 물량을 넘기자고 제안하셨을 때, 반장에게 직접 어떤 말로 꺼내셨습니까?", ans) == (False, "A")
-    assert TC.receive_attach_rule("그 뒤에 무엇이 달라졌습니까?", ans) == (True, "B")
-    assert TC.receive_attach_rule("그렇게 정하신 다음 창고 일정은 리더님께서 직접 어떤 차례로 다시 짜셨는지 들려주시겠습니까?", ans) == (True, "B")      # '그렇게'로 시작
-    long_q = "창고 일정은 리더님께서 직접 어떤 차례로 다시 짜셨는지 처음부터 하나씩 들려주시겠습니까?"
-    assert TC.receive_attach_rule(long_q, ans, prev_had_receive=True) == (False, "D-") and TC.receive_attach_rule(long_q, ans, prev_had_receive=False) == (True, "D+")
+    # 1. 붙이는 규칙(A·B·D)은 P15 에서 지웠다 — 사례 안 꼬리 질문 턴에는 받는 말을 붙이지 않는다. 본 호출이 쓴 평서문을 지우는 것과 전환 턴(C)만 남는다
+    assert not hasattr(TC, "receive_attach_rule")
     src = inspect.getsource(D._submit_message_phase3a)
-    assert "_rar_b(_qs_b[0], _llm_user_text, prev_had_receive=_prev_recv_b)" in src and '_tm["main_stmt_cut"] = len(_cut_b)' in src and '_tm["recv_rule"] = "C"' in src
+    assert "_rar_b(" not in src and '_tm["main_stmt_cut"] = len(_cut_b)' in src and '_tm["recv_rule"] = "C"' in src
     # 2. 받는 말 — 리더가 아닌 사람에게 높임, '말씀' 두 번, 인용꼴 상한, 머리의 호칭
     assert RR.check_receive("담당자가 인력이 모자란다고 하셨다는 말씀이네요.", ans) == (True, "ok")      # (P14f-1) 제3자 높임 확인은 없앴다
     assert RR.check_receive("리더님이 말씀하신 것은 물량을 넘기자는 말씀이네요.", ans)[1] == "dup"
@@ -1670,7 +1670,7 @@ def test_p14b_one_receive_per_turn_specify_call_and_role_echo():
         n = 0
         async def _generate_with_retry(self, **kw):
             _Two.n += 1
-            return "그때 반장은 어떤 반응을 보였습니까?" if _Two.n == 1 else "야간조에 넘기신 물량이 몇 상자였는지 말씀해 주시겠습니까?"
+            return "그때 반장은 어떤 반응을 보였습니까?" if _Two.n == 1 else "야간조에 넘기신 물량이 하루에 몇 상자였는지 말씀해 주시겠습니까?"
     q, mode = asyncio.run(SP.render_specify(_Two(), leader_answer=ans, target="action", persona_name="Daniel"))
     assert mode == "llm_retry" and "몇 상자" in q
     class _Bad:
@@ -1687,7 +1687,7 @@ def test_p14b_one_receive_per_turn_specify_call_and_role_echo():
     assert "_rer3(_pn_s3, request.content)" in src and '_rapport_recv("role")' not in src
     # 5. 한 문장 두 물음 — 지시문 맨 끝 한 줄 + 걸리면 본 호출 한 번 다시
     assert EC.TURN_FORMAT_RULES.rstrip().endswith("- 묻는 것은 하나다. 쉼표로 두 번째 물음을 잇지 않는다.")
-    assert '_timed_regen(why="two_q"' in src and '"two_questions" in _qi_2(_qs_2[-1])' in src
+    assert '_why_2.append(("two_q"' in src and '"two_questions" in _qi_2(_qs_2[-1])' in src      # (P15) 두 물음과 꼬리 질문 한계를 한 번의 다시 쓰기로
 
 
 def test_p14c_ending_ban_streak_cap_third_honorific_and_empty_open_turn():
@@ -1703,10 +1703,10 @@ def test_p14c_ending_ban_streak_cap_third_honorific_and_empty_open_turn():
     assert TC.most_used_receive_ending([]) is None
     pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Ella", kind="probe", avoid_endings=["셨군요"])
     assert "이번에는 끝을 -셨군요 꼴로 맺지 않는다" in pr and "그 사람을 주어로 밝혀 쓴다" in pr and "리더가 한 일처럼 읽히게 쓰지 않는다" in pr
-    # 2. 연속 상한 — 받는 말이 3턴 이어졌으면 4턴째는 붙이지 않는다(사례를 닫는 턴은 예외)
-    assert TC.receive_streak(["물량을 넘기셨군요. 그 뒤는요?", "그렇게 정하셨네요. 무엇을 하셨습니까?", "무엇을 하셨습니까?"]) == 2 and TC.RECEIVE_STREAK_MAX == 3
+    # 2. 연속 상한은 P15 에서 지웠다 — 꼬리 질문 턴에 받는 말이 없으니 이어질 일이 없다
+    assert not hasattr(TC, "receive_streak") and not hasattr(TC, "RECEIVE_STREAK_MAX")
     src = inspect.getsource(D._submit_message_phase3a)
-    assert '_att_b, _rule_b = False, "cap"' in src and src.index('_att_b, _rule_b = False, "cap"') < src.index('_tm["recv_rule"] = "C"')
+    assert '_rule_b = False, "cap"' not in src
     # 3. 제3자 높임 — '…셨군요', '…셨지만'도 탈락. 머리의 호칭은 모든 끝맺음에서 뗀다
     # (P14f-1) 제3자 높임 확인은 없앴다 — 높여 말해도 통과한다
     assert RR.check_receive("담당자가 인력이 모자란다고 걱정하셨지만 동의했다는 말씀이네요.", ans) == (True, "ok")
@@ -1714,13 +1714,14 @@ def test_p14c_ending_ban_streak_cap_third_honorific_and_empty_open_turn():
     assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans) == (True, "ok")
     assert RR.strip_lead_address("리더님은 물량을 넘기자고 하셨네요.") == "물량을 넘기자고 하셨네요." and "리더님,\\s*" in src
     # 4. 받는 말에도 엄격 누설 검사
-    assert '_pre_recv_text, _pr_mode_r = None, "miss:leak"' in src
+    assert '_pre_recv_text, _tm["pre_recv"] = None, "miss:leak"' in src
     # 5. 깨진 문장 — 지시어 바로 뒤에 서술어 / 받는 말에 끝 부호 / 빈 여는 턴
     assert "fragment" in TC.question_issues("어떤 기준으로 강점을 가늠하셨는지, 그 들려주시겠어요?") and not TC.question_issues("그 뒤에 무엇을 하셨습니까?")
     spec = importlib.util.spec_from_file_location("regression_table", pathlib.Path(__file__).resolve().parent.parent / "tools" / "regression_table.py")
     rt = importlib.util.module_from_spec(spec); spec.loader.exec_module(rt)
     assert rt.classify_broken("어떤 기준으로 강점을 가늠하셨는지, 그 들려주시겠어요?") == "d" and rt.classify_broken("그 뒤에 무엇을 하셨습니까?") is None
-    assert '_tm["recv_rule"] = "C-none"' in src and "clean_reply = str(_bei_anchor_text).strip()" in src
+    # (P15-2) 받는 말이 없는 전환 턴은 넘김말 + 시스템 질문으로 나간다(빈 턴이 되지 않는다)
+    assert '_tm["recv_rule"] = "pass"' in src and 'clean_reply = f"{_fixed_e} {str(_bei_anchor_text).strip()}".strip()' in src
     # 6. 길이 상한 — P14c 에서 10어절로 낮췄다가 P14d 에서 12어절로 되돌렸다(test_p14d 에서 확인)
     assert RR.PROBE_CHECK_EOJEOL == 12
 
@@ -1768,7 +1769,7 @@ def test_p14d_plain_past_endings_drop_trace_and_specify_at_decision():
     i = src.index("_specify_q_text, _mode_s = await _rsp_s(")
     assert src.index("if _specify_q_text:", i) < src.index('_bei_ep["specify_now"] = _specify_slot', i)
     j = src.index('elif _specify_q_text and instruction_used == "EPISODE_PROBE" and chapter:')
-    assert "generate_phase3a_interaction" not in src[j: src.index("elif _tm.get(\"pre_recv\") not in (None, \"stub\")", j)]
+    assert "generate_phase3a_interaction" not in src[j: src.index('elif instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and chapter:', j)]
     # 6. 첫 꼬리 — '…궁금합니다.'는 불합격이 아니다. '…여쭤봐도 될까요?'는 그대로
     ok = TC.first_probe_question_ok
     assert ok("야간조에 직접 어떤 말을 건네셨는지 궁금합니다.", ans) == (True, "ok") and ok("직접 어떤 말을 건네셨는지 여쭤봐도 될까요?", ans) == (False, "wonder")
@@ -1799,27 +1800,17 @@ def test_p14e_receive_prompt_meta_retry_gate_and_transition_receive():
     for bad in ("담당자가 걱정했다는 말씀이군요 — no, must avoid -셨군요 ending", "가장 구체적인 낱말은 '물량'입니다.",
                 "물량을 넘기자고 하셨다는 말씀이군요, 혹은 더 정확히는: 물량을 넘기기로 하신 거군요."):
         assert RR.check_receive(bad, ans)[1] == "meta", bad
-    # 2. 다시 쓰기 — 판정이 아직 안 끝났으면 그 자리에서, 끝났으면 사유만 돌려주고 미룬다
+    # 2. 다시 쓰기 — 떨어지면 사유를 넘겨 한 번 더 쓴다. (P15) 슬롯 판정과 함께 돌던 호출(render_receive_gated)과 미룬 다시 쓰기는 지웠다
     class _T:
         n = 0
         async def _generate_with_retry(self, **kw):
             _T.n += 1
             return "물량을 넘기기가 쉽지 않았겠군요." if _T.n == 1 else "야간조에 물량 삼백 상자를 넘기자고 제안하셨군요."
-    async def run():
-        f = asyncio.get_event_loop().create_future()
-        r1 = await RR.render_receive_gated(_T(), leader_answer=ans, persona_name="Ella", gate=f)
-        _T.n = 0
-        f.set_result(1)
-        r2 = await RR.render_receive_gated(_T(), leader_answer=ans, persona_name="Ella", gate=f)
-        r3 = await RR.render_receive_retry(_T(), leader_answer=ans, persona_name="Ella", why=r2[2])
-        return r1, r2, r3
-    r1, r2, r3 = asyncio.run(run())
-    # (P14f-3) 미룬 다시 쓰기에는 처음에 떨어진 문장도 함께 돌려준다(넷째 값)
-    assert r1 == ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "llm_retry", None, None) and r3[1] == "llm_retry"
-    assert r2 == (None, "miss:ending", "ending", "물량을 넘기기가 쉽지 않았겠군요.")
-    assert asyncio.run(RR.render_receive_gated(None, leader_answer="네.", persona_name="Ella")) == (None, "skip:empty", None, None)
+    assert asyncio.run(RR.render_receive(_T(), leader_answer=ans, persona_name="Ella")) == ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "llm_retry")
+    assert asyncio.run(RR.render_receive(None, leader_answer="네.", persona_name="Ella")) == (None, "skip:empty")
+    assert not hasattr(RR, "render_receive_gated") and not hasattr(RR, "render_receive_retry")
     src = inspect.getsource(D._submit_message_phase3a)
-    assert "_rrg_r(llm, gate=_jt_r" in src and "_rrr_o(llm, why=_recv_retry_why, failed=_recv_retry_prev, **_recv_args_r)" in src
+    assert "_rrg_r(" not in src and "_rrr_o(" not in src
     # 5. 전환 턴 — 통과한 받는 말은 끝에서 다시 놓는다
     assert '_tm["recv_rule"] = "C+"' in src
 
@@ -1855,23 +1846,14 @@ def test_p14f_no_third_honorific_check_transition_fixed_receive_long_retry_stem_
             seen.append(kw["prompt"])
             return long_s if _T.n == 1 else "야간조에 물량 삼백 상자를 넘기자고 제안하셨군요."
 
-    async def run():
-        f = asyncio.get_event_loop().create_future()
-        r1 = await RR.render_receive_gated(_T(), leader_answer=ans, persona_name="Ella", gate=f)      # 판정이 안 끝났으면 그 자리에서 다시
-        _T.n = 0
-        f.set_result(1)
-        r2 = await RR.render_receive_gated(_T(), leader_answer=ans, persona_name="Ella", gate=f)      # 끝났으면 사유와 떨어진 문장을 돌려준다
-        r3 = await RR.render_receive_retry(_T(), leader_answer=ans, persona_name="Ella", why=r2[2], failed=r2[3])
-        return r1, r2, r3
-    r1, r2, r3 = asyncio.run(run())
-    assert r1[1] == "llm_retry" and r2 == (None, "miss:long", "long", long_s) and r3 == ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "llm_retry")
+    r1 = asyncio.run(RR.render_receive(_T(), leader_answer=ans, persona_name="Ella"))
+    assert r1 == ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "llm_retry")
     assert f"- 앞서 쓴 문장: {long_s}" in seen[1] and "절 하나만 남겨 9어절 이내로" in seen[1] and "앞서 쓴 문장:" not in seen[0]
-    assert f"- 앞서 쓴 문장: {long_s}" in seen[-1]
     # 길이가 아닌 사유로 떨어졌을 때는 앞 문장을 보여 주지 않는다(베껴 쓰지 않게)
     pr_e = RR.build_receive_prompt(leader_answer=ans, persona_name="Ella", kind="probe", **{"retry_note": RR._retry_args("ending", "probe", "x")["note"],
                                                                                            "retry_prev": RR._retry_args("ending", "probe", "x")["prev"]})
     assert "앞서 쓴 문장:" not in pr_e and "앞서 쓴 문장은 쓸 수 없었다" in pr_e
-    # 2. 전환 턴 고정 받기 — 말투별 3종, 가장 최근에 쓴 것은 빼고 덜 쓴 것부터. 평가·감사 낱말 없음. 고정 문장 목록에 들어 있다
+    # 2. 전환 턴 넘김말 — (P15) 말투별 8종, 이번 영역에서 아직 쓰지 않은 것을 순서대로. 평가·감사 낱말 없음. 고정 문장 목록에 들어 있다
     pol, frm = IM.TRANSITION_FIXED_RECEIVE["polite"], IM.TRANSITION_FIXED_RECEIVE["formal"]
     assert len(pol) >= 3 and len(frm) >= 3 and len(set(pol + frm)) == len(pol + frm)
     assert not any(w in x for x in pol + frm for w in ("감사", "좋", "훌륭", "인상", "대단", "핵심"))
@@ -1880,13 +1862,10 @@ def test_p14f_no_third_honorific_check_transition_fixed_receive_long_retry_stem_
     assert IM.transition_fixed_receive("Lucas", []) == frm[0]                                    # Lucas 의 고정 문장은 합쇼체
     assert IM.transition_fixed_receive("Ella", [pol[0] + " 최근에 그런 일이 있었나요?"]) == pol[1]
     assert IM.transition_fixed_receive("Ella", [pol[1] + " 다음 질문", "다른 턴", pol[0] + " 앞 질문"]) == pol[2]
-    assert IM.transition_fixed_receive("Ella", [pol[2] + " c", pol[1] + " b", pol[0] + " a"]) == pol[0]      # 다 썼으면 가장 최근 것만 뺀다
     assert RR.echoes_no_recall("포장 순서를 어떻게 짰는지는 기억이 안 난다고 하셨군요.") and RR.echoes_no_recall("그 숫자는 잘 모르겠다고 하셨네요.")
     assert not RR.echoes_no_recall("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.")
     src = inspect.getsource(D._submit_message_phase3a)
-    assert '_tm["recv_rule"] = "C-fixed"' in src and '_tm["pre_recv"] = "miss:no_recall"' in src and '_tm["recv_out"] = "fixed"' in src
-    assert src.index('_tm["recv_rule"] = "C-none"') < src.index('_tm["recv_rule"] = "C-fixed"')
-    assert 'str(_tm.get("pre_recv") or "").startswith("miss:")' in src      # 받을 내용 없는 답(skip:empty)에는 붙이지 않는다
+    assert '_tm["recv_rule"] = "pass"' in src and '_pre_recv_text, _tm["pre_recv"] = None, "miss:no_recall"' in src and '_tm["recv_out"] = "fixed"' in src
     # 4. 낱말 겹침 — 앞 두 음절을 어간 꼴로 편다(줄어든 과거형 ↔ 높임 꼴)
     for a, b in (("넘겼고", "넘기셨을"), ("바꿨습니다", "바꾸신"), ("세웠고", "세우셨을"), ("골랐습니다", "고르셨는지"), ("줄였고", "줄이신"), ("정했습니다", "정하셨을"),
                  ("넘겨야", "넘기기로"), ("바꾼", "바꾸실"), ("정해서", "정하신"), ("맡길", "맡겼습니다")):      # 연결형·관형형도 같은 열쇠
@@ -1895,7 +1874,7 @@ def test_p14f_no_third_honorific_check_transition_fixed_receive_long_retry_stem_
     assert TC.overlap_stem("있었") == "있어" and TC.overlap_stem("하겠") == "하겠" and TC.overlap_stem("창고") == "창고"
     ans2 = "반장과 재고표를 다시 맞췄고 야간조 순번을 바꿨습니다."
     q2 = "재고표를 맞추시고 순번을 바꾸신 뒤, 반장에게는 무엇을 맡기셨습니까?"
-    assert len(TC.question_overlap(TC.question_front_clause(q2), ans2)) >= 2 and TC.receive_attach_rule(q2, ans2) == (False, "A")
+    assert len(TC.question_overlap(TC.question_front_clause(q2), ans2)) >= 2
     assert TC.question_overlap("그때 무엇을 하셨습니까?", "그때 제가 직접 했습니다.") == []      # 흔한 낱말은 어간으로 펴도 세지 않는다
     # 5. 혼잣말 표지 — 첫 꼬리·구체화·받는 말 전용 호출 공통, 60자를 넘으면서 쉼표 3개 이상도 다시 쓴다
     for bad in ("리더님께서 직접 하신 조치가 맞는지 여쭤봐도 되겠느냐는 뜻이 아니라, 반장의 말을 어떻게 들으셨는지 알려 주시겠습니까?",
@@ -1919,3 +1898,109 @@ def test_p14f_no_third_honorific_check_transition_fixed_receive_long_retry_stem_
     st = rc.receive_stats(rows)
     assert st["trans_recv_pct"] == 100.0 and len(st["trans_fixed"]) == 1 and st["recv_ends"] == {"셨군요": 1} and st["recv_top_end_pct"] == 100.0
     assert st["recv_have_pct"] == 100.0 and st["recv_avg_eojeol"] == 2.0
+
+
+def test_p15_no_receive_in_tail_turns_transition_pass_first_probe_shape_and_direct_endings():
+    """(2026-11-18 P15) 메아리 줄이기 — 꼬리 질문 턴에는 받는 말 없음 · 전환 턴 넘김말(되짚는 받는 말은 영역당 두 번) ·
+    첫 꼬리 질문의 꼴(되짚는 앞 절 금지·명사구 하나·8~20어절) · 청하는 꼴은 사례당 한 번."""
+    import inspect
+    import importlib.util
+    import pathlib
+    from diag_project.prompts.phase3a import episode_card as EC
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import first_probe_render as FP, intro_messages as IM, receive_render as RR, specify_render as SP, turn_checks as TC
+    from diag_project.services.leak_lexicon import find_leaks, find_state_report
+    from diag_project.services.output_guard import find_state_leak
+    ans = "출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 반장에게 제안했습니다. 반장은 인력이 모자란다고 했습니다."
+    src = inspect.getsource(D._submit_message_phase3a)
+    # 1. 꼬리 질문 턴 — 받는 말 호출이 슬롯 판정 자리에 없다. 붙이는 규칙·연속 상한 없음. 본 호출이 쓴 평서문만 지운다
+    i = src.index("_jd = await _judge_slots(llm, transcript=_tr")
+    assert "render_receive" not in src[i - 600: i + 200] and "_rar_b(" not in src and "receive_streak" not in src
+    assert not hasattr(TC, "receive_attach_rule") and not hasattr(RR, "render_receive_gated")
+    assert "받는 말은 따로 붙" not in EC.TURN_FORMAT_RULES and "따로 붙습니다" not in EC.BEI_GUIDES["EPISODE_PROBE"]
+    # 꼬리 질문의 아래·위 한계 — 리더 답에서 온 명사구 하나 이상, 8어절 이상 20어절 이하. 지시어만으로 가리키면 낱말 없음
+    assert TC.tail_question_issue("그때 직접 하신 조치는 무엇이었습니까?", ans) == "no_noun"
+    assert TC.tail_question_issue("그 결정을 하실 때 무엇을 기준으로 삼으셨습니까?", ans) == "no_noun"
+    assert TC.tail_question_issue("야간조 물량은 어떻게 됐습니까?", ans) == "short"
+    assert TC.tail_question_issue("야간조에 물량을 넘긴 뒤 창고 출고 일정은 실제로 어떻게 달라졌습니까?", ans) is None
+    assert TC.tail_question_issue("야간조에 물량을 넘긴 뒤 " + "창고 " * 16 + "어떻게 달라졌습니까?", ans) == "long"
+    assert TC.leader_nouns("반장에게 물량 이야기를 꺼내셨을 때 무엇이 달라졌습니까?", ans) == ["반장에게", "물량"]      # 서술어('꺼내셨을')·흔한 낱말은 세지 않는다
+    assert '_tqi_2(_qs_2[-1], _case_leader_text(_tr, _llm_user_text))' in src and '_tm["tail_regen"] = _iss_2' in src
+    assert "질문은 한 문장, 8어절 이상 20어절 이하로 쓴다." in EC.build_episode_card(instruction="EPISODE_PROBE", chapter="people_management",
+                                                                          ep={"idx": 1, "leader_turns": 2, "slots": {}}, bei_turns=3, budget=24)
+    # 2. 전환 턴 — 받는 말은 매핑과 함께, 영역당 두 번까지·직전 답이 리더 본인의 행동이나 배운 점일 때만. 그 밖은 넘김말
+    assert D.TRANS_ECHO_MAX == 2 and '_asked_c in ("action", "reflection")' in src and "_echo_n_c < TRANS_ECHO_MAX" in src
+    assert "_aio_c.gather(_map_c(), _recv_c(), return_exceptions=True)" in src and '_tm["recv_rule"] = "pass"' in src and '_te[chapter] = int(_te.get(chapter) or 0) + 1' in src
+    for reg in ("polite", "formal"):
+        pool = IM.TRANSITION_FIXED_RECEIVE[reg]
+        assert len(pool) == 8 and len(set(pool)) == 8 and all(x in IM.all_fixed_sentences() for x in pool)
+        for x in pool:      # 누설 낱말·상태 보고·평가 없음, 리더 말을 되짚지 않는다(리더 답과 겹치는 낱말 없음)
+            assert not find_leaks(x, [], strict=True) and not find_state_report(x) and not find_state_leak(x), x
+            assert not TC.content_keys(x) & TC.content_keys(ans) and not any(w in x for w in ("감사", "좋", "훌륭", "인상", "대단")), x
+    pol = IM.TRANSITION_FIXED_RECEIVE["polite"]
+    used: list[str] = []
+    for _ in range(8):      # 영역 안에서 여덟 번까지 겹치지 않는다
+        nxt = IM.transition_fixed_receive("Ella", used)
+        assert not any(u.startswith(nxt) for u in used)
+        used.insert(0, nxt + " 최근에 그런 일이 있으셨어요?")
+    assert IM.transition_fixed_receive("Ella", used) == pol[0]                                   # 다 썼으면 가장 오래전에 쓴 것부터
+    plain = [pol[i] for i in IM.TRANSITION_PASS_PLAIN]
+    assert IM.transition_fixed_receive("Ella", [], plain=True) == plain[0] and not any("들었" in x for x in plain)      # 받을 내용 없는 답 뒤
+    assert IM.transition_fixed_receive("Ella", [plain[0] + " 다음 질문"], plain=True) == plain[1]
+    # 3. 첫 꼬리 질문 — 되짚는 앞 절 금지, 리더 낱말은 명사구 하나, 호칭으로 시작하지 않는다, 8~20어절, 순서 표지가 있으면 '순서' 각도 제외
+    fp = FP.build_first_probe_prompt(leader_answer=ans, persona_name="Lucas", angle="did")
+    assert "명사구 하나(4어절 이하)만 질문에 넣는다" in fp and "앞 절로 다시 말하지 않는다" in fp and "문장을 '리더님'으로 시작하지 않는다" in fp
+    assert "8어절 이상 20어절 이하로 쓴다" in fp and "\"" not in fp.split("[규칙]")[1]                # 지시문에 따옴표로 묶은 예시 문장 없음
+    assert TC.first_probe_echo_issue("야간조에 물량을 넘기자고 제안하셨을 때, 반장에게 직접 어떤 말을 건네셨습니까?", ans) == "front"
+    assert TC.first_probe_echo_issue("물량을 넘기자고 제안하신 뒤 반장에게 직접 무엇을 맡기셨습니까?", ans) == "front"
+    assert TC.first_probe_echo_issue("야간조 물량을 두고 반장에게 직접 건네신 말은 무엇이었습니까?", ans) is None
+    assert TC.first_probe_echo_issue("그때 직접 건네신 말은 무엇이었습니까?", ans) == "no_noun"
+    assert TC.strip_lead_address_q("리더님께서는 야간조 물량을 두고 무엇을 하셨습니까?") == "야간조 물량을 두고 무엇을 하셨습니까?"
+    assert TC.strip_lead_address_q("물량을 넘기셨군요. 리더님이 직접 하신 말은 무엇이었나요?") == "물량을 넘기셨군요. 직접 하신 말은 무엇이었나요?"
+    assert TC.strip_lead_address_q("리더님의 판단은 무엇이었나요?") == "리더님의 판단은 무엇이었나요?"
+    assert TC.FIRST_PROBE_SOFT_REASONS == {"front", "no_noun", "short", "long"} and "_why_fp in _soft_fp" in src
+    for txt in ("먼저 반장과 이야기했습니다.", "이후 물량을 넘겼습니다.", "그다음 일정을 다시 짰습니다.", "그 뒤 창고를 정리했습니다."):
+        assert "order" in TC.first_probe_angles_in(txt) and TC.pick_first_probe_angle(txt, []) != "order", txt
+    assert "order" not in TC.first_probe_angles_in("반장에게 물량을 넘기자고 제안했습니다.")
+    # 4. 질문 끝맺음 — 청하는 꼴은 사례당 한 번까지, 그 뒤는 직접 묻는 꼴
+    for q in ("무엇을 하셨는지 말씀해 주시겠습니까?", "어떻게 달라졌는지 들려주실 수 있을까요?", "그 일이 궁금합니다.", "순서를 여쭤봐도 되겠습니까?", "하나만 알려 주세요."):
+        assert TC.is_request_ending(q), q
+    for q in ("무엇을 하셨습니까?", "어떻게 달라졌나요?", "기억나세요?"):
+        assert not TC.is_request_ending(q), q
+    for src_q, want in (("창고 일정이 어떻게 달라졌는지 말씀해 주시겠습니까?", "창고 일정이 어떻게 달라졌습니까?"),
+                        ("반장이 어떤 반응을 보였는지 들려주시겠어요?", "반장이 어떤 반응을 보였나요?"),
+                        ("그 기준이 무엇인지 알려 주실 수 있을까요?", "그 기준이 무엇인가요?"),
+                        ("창고에서 무엇을 보시는지 설명해 주시겠습니까?", "창고에서 무엇을 보십니까?"),
+                        ("물량이 어떻게 나뉘었는지 궁금합니다.", "물량이 어떻게 나뉘었습니까?"),
+                        ("일정을 어떤 순서로 짜셨는지 여쭤봐도 되겠습니까?", "일정을 어떤 순서로 짜셨습니까?")):
+        assert TC.request_to_direct(src_q) == want, src_q
+    assert TC.request_to_direct("그 일을 예 하나로 들어 주시겠습니까?") is None and TC.request_to_direct("무엇이 달라졌습니까?") is None
+    assert "_case_request_n(_tr) >= 1" in src and '_tm["direct_fix"] = 1' in src
+    card = EC.build_episode_card(instruction="EPISODE_PROBE", chapter="people_management", ep={"idx": 1, "leader_turns": 3, "slots": {}}, bei_turns=4, budget=24,
+                                 used_endings=["말씀해 주시겠습니까"], direct_only=True)
+    assert "직접 묻는 어미로 끝낸다" in card and "이미 여러 번 쓴 질문 끝맺음" not in card
+    assert "직접 묻는 어미로 끝낸다" in SP.build_specify_prompt(leader_answer=ans, target="action", persona_name="Ella", direct_only=True)
+    assert "직접 묻는 어미로 끝낸다" not in SP.build_specify_prompt(leader_answer=ans, target="action", persona_name="Ella")
+    # 회귀 점검 — a 되짚는 턴(받는 말 문장·질문 앞 절) · b 꼬리 턴 받는 말 · c 청하는 꼴 · d 호칭으로 시작 · (A) 리더 낱말 없는 질문 · 전환 턴 갈래
+    spec = importlib.util.spec_from_file_location("regression_check_p15", pathlib.Path(__file__).resolve().parent.parent / "tools" / "regression_check.py")
+    rc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rc)
+    frm = IM.TRANSITION_FIXED_RECEIVE["formal"]
+    rows = [{"role": "user", "content": ans},
+            {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "야간조에 물량을 넘기자고 제안하셨군요. 그 뒤에 무엇을 하셨습니까?", "guard": {}},
+            {"role": "user", "content": ans},
+            {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "리더님께서 야간조에 물량 삼백 상자를 넘기자고 제안하셨을 때, 반장에게 무엇을 맡기셨는지 말씀해 주시겠습니까?", "guard": {}},
+            {"role": "user", "content": ans},
+            {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "야간조 물량을 두고 반장과는 그 뒤에 일정을 어떻게 다시 맞추셨습니까?", "guard": {}},
+            {"role": "user", "content": ans},
+            {"role": "model", "instr": "EPISODE_PROBE", "chapter": "pm", "content": "그때 무엇을 기준으로 삼으셨습니까?", "guard": {}},
+            {"role": "user", "content": ans},
+            {"role": "model", "instr": "SWEEP_ANCHOR", "chapter": "pm", "content": frm[0] + " 최근에 일정을 다시 짜신 적이 있습니까?", "guard": {"recv_out": "fixed", "recv_rule": "pass"}},
+            {"role": "user", "content": ans},
+            {"role": "model", "instr": "EPISODE_OPEN", "chapter": "pm", "content": "반장에게 물량을 넘기자고 제안하셨군요. 최근에 새로 시도하신 일이 있습니까?", "guard": {"recv_rule": "C"}}]
+    st = rc.echo_stats(rows)
+    assert st["echo_main_n"] == 6 and st["echo_stmt_n"] == 2 and st["echo_front_n"] == 1 and st["echo_pct"] == 50.0
+    assert st["tail_recv_n"] == 1 and st["tail_n"] == 4 and st["req_tail_pct"] == 25.0 and st["lead_addr_n"] == 1
+    assert st["tail_short_n"] == 2 and st["tail_len_min"] == 4 and st["ctx_bare_pct"] == 16.7 and st["ctx_bare_list"] == ["그때 무엇을 기준으로 삼으셨습니까?"]
+    assert [k for k, _c, _t in st["trans2"]] == ["넘김말", "받는 말"] and st["trans_cover_pct"] == 100.0 and st["echo_trans_max"] == 1
+    assert [x["nouns"][:2] for x in st["tail_rows"]][2] == ["야간조", "물량을"]

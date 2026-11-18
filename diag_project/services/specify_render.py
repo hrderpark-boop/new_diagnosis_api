@@ -25,10 +25,13 @@ RETRY_NOTES: dict[str, str] = {
     "meta": "질문 말고 다른 말이 섞였거나 문장이 둘 이상이었다",
     "unfinished": "문장을 끝맺지 않았다",
     "no_question": "질문 문장이 없었다",
+    "short": "질문이 8어절에 못 미쳤다",
+    "long": "질문이 20어절을 넘겼다",
 }
 
 
-def build_specify_prompt(*, leader_answer: str, target: str, persona_name: str | None, used_endings: list[str] | None = None, retry_note: str | None = None) -> str:
+def build_specify_prompt(*, leader_answer: str, target: str, persona_name: str | None, used_endings: list[str] | None = None, retry_note: str | None = None,
+                         direct_only: bool = False) -> str:
     from diag_project.services.persona_register import register_hint
     ans = re.sub(r"\s+", " ", (leader_answer or "").strip())[-ANSWER_TAIL_CHARS:]
     ends = [x for x in (used_endings or []) if x][:6]
@@ -40,8 +43,9 @@ def build_specify_prompt(*, leader_answer: str, target: str, persona_name: str |
         "- 그 대목을 보여 주는 숫자·횟수·기간, 또는 실제로 있었던 장면 하나를 청한다. 둘 가운데 하나만 청한다.\n"
         "- 다른 사람의 반응·생각, 리더의 이유는 묻지 않는다. 새로운 주제로 넘어가지 않는다.\n"
         "- 리더가 말하지 않은 사실은 넣지 않는다. 리더를 부를 때는 '리더님'이라고만 한다.\n"
-        "- 묻는 꼴로 끝낸다. 온전한 문장으로 끝내고 물음표로 맺는다.\n"
-        f"- 말투: {register_hint(persona_name)}\n"
+        "- 묻는 꼴로 끝낸다. 온전한 문장으로 끝내고 물음표로 맺는다. 8어절 이상 20어절 이하로 쓴다.\n"
+        + ("- 청하는 말(-해 주시겠-, -주실 수 있-, 궁금-)로 끝내지 않는다 — 직접 묻는 어미로 끝낸다.\n" if direct_only else "")
+        + f"- 말투: {register_hint(persona_name)}\n"
         + ("- 이번 영역에서 이미 쓴 질문 끝맺음: " + " / ".join(f"'{x}'" for x in ends) + " — 이것과 다른 끝맺음으로 끝낸다.\n" if ends else "")
         + (f"- 앞서 쓴 질문은 쓸 수 없었다 — {retry_note}. 그 점을 고쳐 새로 쓴다.\n" if retry_note else "")
         + "\n출력: 질문 한 문장만."
@@ -49,10 +53,11 @@ def build_specify_prompt(*, leader_answer: str, target: str, persona_name: str |
 
 
 async def render_specify(llm, *, leader_answer: str, target: str, persona_name: str | None, used_endings: list[str] | None = None,
-                         trace: list | None = None) -> tuple[str | None, str]:
-    """(질문 한 문장 | None, 모드). 모드 'llm' | 'llm_retry' | 'stub' | 'miss:<사유>'."""
+                         trace: list | None = None, direct_only: bool = False) -> tuple[str | None, str]:
+    """(질문 한 문장 | None, 모드). 모드 'llm' | 'llm_retry' | 'stub' | 'miss:<사유>'. direct_only = 이 사례에서 청하는 꼴을 이미 썼다(P15-4)."""
     from diag_project.services.persona_register import apply_register
-    from diag_project.services.turn_checks import finish_sentence_marks, fix_leader_address, specify_question_ok
+    from diag_project.services.turn_checks import (TAIL_MAX_EOJEOL, TAIL_MIN_EOJEOL, finish_sentence_marks, fix_leader_address, specify_question_ok,
+                                                     strip_lead_address_q)
     if not (leader_answer or "").strip():
         return None, "miss:no_material"
     if os.getenv("FM_LLM_STUB"):
@@ -64,15 +69,19 @@ async def render_specify(llm, *, leader_answer: str, target: str, persona_name: 
     for attempt in (0, 1):
         try:
             out = await llm._generate_with_retry(
-                prompt=build_specify_prompt(leader_answer=leader_answer, target=target, persona_name=persona_name, used_endings=used_endings, retry_note=note),
+                prompt=build_specify_prompt(leader_answer=leader_answer, target=target, persona_name=persona_name, used_endings=used_endings, retry_note=note,
+                                            direct_only=direct_only),
                 max_tokens=160, thinking_budget=0, call_type="specify_render", temperature=0.4)
         except Exception as e:  # noqa: BLE001
             logger.warning("specify render failed: %s", e)
             return None, "miss:error"
         text = finish_sentence_marks(re.sub(r"\s*\n+\s*", " ", (out or "").strip().strip('"“”')))[0]
         full = " ".join(x.strip() for x in split_sentences(text) if x.strip())
-        q = fix_leader_address(apply_register(persona_name, full, scope="questions")[0]) if any(is_question(x) for x in split_sentences(full)) else ""
+        q = (strip_lead_address_q(fix_leader_address(apply_register(persona_name, full, scope="questions")[0]))
+             if any(is_question(x) for x in split_sentences(full)) else "")
         ok, why = specify_question_ok(q)
+        if ok and not (TAIL_MIN_EOJEOL <= len(q.split()) <= TAIL_MAX_EOJEOL):
+            ok, why = False, ("short" if len(q.split()) < TAIL_MIN_EOJEOL else "long")      # (P15) 꼬리 질문은 8어절 이상 20어절 이하
         if ok:
             return q, ("llm_retry" if attempt else "llm")
         if trace is not None:
