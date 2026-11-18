@@ -462,6 +462,9 @@ def _is_fixed_bridge(sentence: str) -> bool:
     return re.sub(r"[\s.,!?…]+", "", sentence or "") in _FIXED_BRIDGE_C
 
 
+_DEMO_GAP_RE = re.compile(r"(?<![가-힣])(그|이|저)\s+((들려|말씀해|알려|짚어|설명해|전해|옮겨|떠올려)\s*주|하셨|했|되었|됐|있었|있으셨)")      # turn_checks.DEMONSTRATIVE_GAP_RE 와 같다
+
+
 def classify_broken(sentence: str) -> str | None:
     """깨진 문장이면 꼴("a" 의문사+감탄 어미 | "b" 서술어 없는 조각 | "c" 쉼표·연결어미 끝)을, 아니면 None."""
     s = (sentence or "").strip()
@@ -471,6 +474,9 @@ def classify_broken(sentence: str) -> str | None:
     core = _core(bare)
     if not core or core.endswith(QUOTE_MARK):
         return None
+    # (d) (2026-11-17 P14c-5) 지시어(그·이·저) 바로 뒤에 서술어 — 사이의 말이 지워져 깨진 문장('…가늠하셨는지, 그 들려주시겠어요?')
+    if _DEMO_GAP_RE.search(bare):
+        return "d"
     # (a) 의문사 뒤 평서 감탄 어미
     if not s.endswith("?") and not is_question(s) and EXCLAIM_END_RE.search(core) and _wh_as_statement(bare):
         return "a"
@@ -808,7 +814,7 @@ def analyze(data: dict, label: str | None = None) -> dict:
     short_qs = [q for q in last_qs if eojeol_count(q) < SHORT_Q_EOJEOL]
 
     # ── 깨진 문장·속 판단 ──
-    broken: dict[str, list[str]] = {"a": [], "b": [], "c": []}
+    broken: dict[str, list[str]] = {"a": [], "b": [], "c": [], "d": []}
     inner: list[tuple[str, str]] = []
     for r in coach_rows:
         for s in sentences(r.get("content")):
@@ -935,6 +941,7 @@ def summary_rows(res: dict) -> list[tuple[str, str]]:
         ("└ (a) 의문사 뒤 평서 감탄 어미", str(len(b["a"]))),
         ("└ (b) 서술어 없는 조각", str(len(b["b"]))),
         ("└ (c) 쉼표·연결어미로 끝남", str(len(b["c"]))),
+        ("└ (d) 지시어 바로 뒤에 서술어", str(len(b.get("d") or []))),
         ("속 판단 노출 수", str(len(res["inner"]))),
         ("사례당 리더 턴 수(원장, 사례만)", " / ".join(res["ep_turns"]) or "-"),
         ("사례 닫힌 사유 분포", _dist(res["close_dist"])),
@@ -1004,7 +1011,7 @@ def render_sources(res: dict) -> list[str]:
 
 def render_detail(res: dict) -> list[str]:
     out = [f"## 상세 — {res['label']}", ""]
-    names = {"a": "(a) 의문사 뒤 평서 감탄 어미", "b": "(b) 서술어 없는 조각", "c": "(c) 쉼표·연결어미로 끝남"}
+    names = {"a": "(a) 의문사 뒤 평서 감탄 어미", "b": "(b) 서술어 없는 조각", "c": "(c) 쉼표·연결어미로 끝남", "d": "(d) 지시어 바로 뒤에 서술어"}
     out.append(f"### 깨진 문장·조각 {res['broken_total']}개")
     for k in ("a", "b", "c"):
         out.append(f"- {names[k]} {len(res['broken'][k])}개")

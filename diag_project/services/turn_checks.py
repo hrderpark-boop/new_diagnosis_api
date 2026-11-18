@@ -223,6 +223,11 @@ _FRAGMENT_RE = re.compile(r"[가-힣]+(였|이었)는지(가|도|를)?\s*(궁금
 #   이 검사였고 3턴은 다시 써도 안 풀려 기본 질문으로 끝났다. 가리키는 말을 쓰지 말라는 것은 프롬프트 규칙으로만 둔다.
 
 
+# (2026-11-17 P14c-5) 지시어(그·이·저) 바로 뒤에 서술어가 온 꼴 — 사이의 말이 지워져 문장이 깨졌다
+#   (p14b Ella: '…가늠하셨는지, 그 들려주시겠어요?' — 금지 문구 '판단의 근거를'을 낱말만 들어낸 결과)
+DEMONSTRATIVE_GAP_RE = re.compile(r"(?<![가-힣])(그|이|저)\s+((들려|말씀해|알려|짚어|설명해|전해|옮겨|떠올려)\s*주|하셨|했|되었|됐|있었|있으셨)")
+
+
 def question_issues(question: str | None, last_user_text: str | None = None) -> list[str]:
     """질문 한 문장의 완결성 위반 — 'dangling_start' | 'fragment' | 'two_questions'. (last_user_text 는 호환용 — 쓰지 않는다)"""
     q = (question or "").strip()
@@ -231,7 +236,7 @@ def question_issues(question: str | None, last_user_text: str | None = None) -> 
     out: list[str] = []
     if _Q_BAD_START_RE.match(q):
         out.append("dangling_start")
-    if _FRAGMENT_RE.search(q) and not _WH_RE.search(q):
+    if (_FRAGMENT_RE.search(q) and not _WH_RE.search(q)) or DEMONSTRATIVE_GAP_RE.search(q):
         out.append("fragment")
     if count_question_markers(q) > 1:
         out.append("two_questions")
@@ -637,6 +642,38 @@ def receive_shared_words(receive: str | None, user_text: str | None) -> list[str
 
 # (2026-11-16 P14-1) 받는 말 전용 호출의 지시문에 넣는 끝맺음 꼴(어미만 — 따옴표로 묶은 완성 문장 꼴은 넣지 않는다)
 RECEIVE_ENDING_HINT = "-셨군요, -셨네요, -셨지요, -다는 말씀이군요, -다는 말씀이네요, -신 거군요, -신 거네요"
+# (2026-11-17 P14c-1) 끝맺음 갈래 → 지시문에 적는 꼴
+RECEIVE_KEY_HINT: dict[str, str] = {"셨군요": "-셨군요", "셨네요": "-셨네요", "셨지요": "-셨지요", "말씀이군요": "-다는 말씀이군요", "말씀이네요": "-다는 말씀이네요",
+                                    "말씀이지요": "-다는 말씀이지요", "거군요": "-신 거군요", "거네요": "-신 거네요", "거죠": "-신 거죠", "셨습니다": "-셨습니다",
+                                    "말씀이십니다": "-말씀이십니다"}
+
+
+def most_used_receive_ending(keys: list[str] | None) -> str | None:
+    """(P14c-1) 이번 세션에서 가장 많이 쓴 받는 말 끝맺음 — 이번 턴에는 쓰지 않게 한다. 동률이면 가장 최근에 쓴 것. 쓴 적이 없으면 None."""
+    ks = [k for k in (keys or []) if k]
+    if not ks:
+        return None
+    cnt: dict[str, int] = {}
+    for k in ks:
+        cnt[k] = cnt.get(k, 0) + 1
+    top = max(cnt.values())
+    return next(k for k in reversed(ks) if cnt[k] == top)
+
+
+def receive_streak(coach_texts_latest_first: list[str] | None) -> int:
+    """(P14c-2) 직전 코치 턴부터 거슬러 받는 말(되짚는 끝맺음의 첫 평서문)이 이어진 턴 수."""
+    from diag_project.services.output_guard import is_question as _iq_s, split_sentences as _ss_s
+    n = 0
+    for t in (coach_texts_latest_first or []):
+        first = (_ss_s(t or "") or [""])[0].strip()
+        if first and not _iq_s(first) and receive_ending_key(first):
+            n += 1
+        else:
+            break
+    return n
+
+
+RECEIVE_STREAK_MAX = 3
 _RECV_KEY_RES: tuple[tuple[str, re.Pattern], ...] = (
     ("말씀이군요", re.compile(r"말씀이(시)?군요[.!…]*$")), ("말씀이네요", re.compile(r"말씀이(시)?네요[.!…]*$")), ("말씀이지요", re.compile(r"말씀이(시)?(지요|죠)[.!…]*$")),
     ("셨군요", re.compile(r"셨군요[.!…]*$")), ("셨네요", re.compile(r"셨네요[.!…]*$")), ("셨지요", re.compile(r"셨(지요|죠)[.!…]*$")),

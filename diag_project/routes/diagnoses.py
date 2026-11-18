@@ -1346,7 +1346,9 @@ async def _submit_message_phase3a(
                 _prev_user_r = next((m.content or "" for m in reversed(history_messages[:-1]) if not (m.role == MessageRole.MODEL or m.role == "model")), "")
                 _all_keys_r = [k for k in (_rek_r((split_sentences(m.content or "") or [""])[0]) for m in history_messages
                                            if (m.role == MessageRole.MODEL or m.role == "model")) if k]
-                _recv_keys_r = _all_keys_r[-2:]
+                from diag_project.services.turn_checks import most_used_receive_ending as _mure_r
+                _top_key_r = _mure_r(_all_keys_r)      # (2026-11-17 P14c-1) 이번 세션에서 가장 많이 쓴 끝맺음은 이번 턴에 쓰지 않는다(동률이면 가장 최근 것)
+                _recv_keys_r = [_top_key_r] if _top_key_r else []
                 _t0_r = _time.perf_counter()
                 _res_r = await _aio_r.gather(
                     _judge_slots(llm, transcript=_tr, prev_slots=_ep.get("slots"), closed_cases=(_cands_r or None)),
@@ -1357,6 +1359,12 @@ async def _submit_message_phase3a(
                     raise _res_r[0]
                 _jd = _res_r[0]
                 _pre_recv_text, _pr_mode_r = (None, "miss:error") if isinstance(_res_r[1], BaseException) else _res_r[1]
+                if _pre_recv_text:
+                    # (2026-11-17 P14c-4) 받는 말도 엄격 누설 검사를 거친다(호출 없음) — 걸리면 그 받는 말만 버린다. 끝에서 붙는 문장이라 8-y 를 지나지 않는다.
+                    from diag_project.services.leak_lexicon import find_leaks as _fl_r, find_state_report as _fsr_r
+                    from diag_project.services.output_guard import find_state_leak as _fsl_r
+                    if _fl_r(_pre_recv_text, [_bei_user_text], strict=True) or _fsr_r(_pre_recv_text) or _fsl_r(_pre_recv_text):
+                        _pre_recv_text, _pr_mode_r = None, "miss:leak"
                 _tm["pre_recv"] = _pr_mode_r
                 _tm["judge_par_s"] = round(_time.perf_counter() - _t0_r, 2)
                 _tm["specific"] = _jd.get("specific")
@@ -3739,6 +3747,10 @@ async def _submit_message_phase3a(
                 _prev_first_b = (split_sentences((_recent_coach_texts or [""])[0]) or [""])[0]
                 _prev_recv_b = bool(_prev_first_b.strip()) and not is_question_sentence(_prev_first_b) and bool(_rek_b(_prev_first_b))
                 _att_b, _rule_b = _rar_b(_qs_b[0], _llm_user_text, prev_had_receive=_prev_recv_b)
+                # (2026-11-17 P14c-2) 받는 말이 3턴 이어졌으면 4턴째는 붙이지 않는다(사례를 닫는 턴은 예외 — 이 분기 밖)
+                from diag_project.services.turn_checks import RECEIVE_STREAK_MAX as _rsm_b, receive_streak as _rs_b
+                if _att_b and _rs_b([(m.content or "") for m in reversed(history_messages) if (m.role == MessageRole.MODEL or m.role == "model")]) >= _rsm_b:
+                    _att_b, _rule_b = False, "cap"
                 _tm["recv_rule"] = _rule_b
                 if _att_b:
                     clean_reply = f"{_pre_recv_text} {clean_reply}".strip()
@@ -3747,6 +3759,16 @@ async def _submit_message_phase3a(
                 _tm["recv_rule"] = "none"
     elif instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and _tm.get("pre_recv") == "used":
         _tm["recv_rule"] = "C"              # 사례를 닫고 다음으로 넘어가는 턴 — 받는 말을 붙인다
+    if (instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and chapter and system_override_text is None and not _llm_error and not needs_user_decision
+            and _bei_anchor_text and not (clean_reply or "").strip()):
+        # (2026-11-17 P14c-5) 받는 말이 없는 여는 턴 — 본문이 비어 있으면 앞 단계(8-i 안의 시스템 질문 붙이기)를 지나지 못해 코치 턴이 통째로 비었다
+        #   (p14·p14b: 6건). 시스템 질문만 내보낸다.
+        clean_reply = str(_bei_anchor_text).strip()
+        _tm["anchor_attached"] = 1
+        _tm["recv_rule"] = "C-none"
+    if chapter and instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP", "EPISODE_OPEN", "SWEEP_ANCHOR") and (clean_reply or "").strip():
+        # (2026-11-17 P14c-3) 문장 머리의 호칭 '리더님, '(호칭 + 쉼표)은 뗀다 — 받는 말·질문 모두
+        clean_reply = re.sub(r"(^|(?<=[.?!…]\s))리더님,\s*", "", clean_reply.lstrip())
     if system_override_text is None and not _llm_error and (clean_reply or "").strip():
         from diag_project.services.turn_checks import fix_leader_address as _fla_e
         clean_reply = _fla_e(clean_reply)   # (P14-1) 호칭은 '리더님' — '리더께서'·'리더가' 치환

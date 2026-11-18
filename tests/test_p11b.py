@@ -1570,11 +1570,12 @@ def test_p14_receive_call_everywhere_specificity_and_rapport():
     assert RR.check_receive("물량 삼백 상자를 넘기자고 하셨지요.", ans) == (True, "ok") and TC.receive_ending_key("물량을 넘기자고 하셨지요.") == "셨지요"
     assert RR.check_receive("쉽지 않은 결정이었을 것으로 보입니다.", ans)[1] == "ending"
     assert RR.check_receive("그 일을 어떻게 하셨습니까?", ans)[1] == "question"
-    assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans, avoid_endings=["셨군요", "셨군요"])[1] == "same_ending"
-    assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans, avoid_endings=["셨네요", "셨군요"]) == (True, "ok")
+    # (P14c-1) '직전 두 번과 다른 꼴'에서 '이번 세션에서 가장 많이 쓴 꼴은 쓰지 않는다'로 — 넘긴 꼴과 같으면 탈락
+    assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans, avoid_endings=["셨군요"])[1] == "same_ending"
+    assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans, avoid_endings=["셨네요"]) == (True, "ok")
     assert not RR.receivable("네") and not RR.receivable("없어요") and not RR.receivable(ans, prev_answer=ans) and RR.receivable(ans)
     pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Lucas", kind="probe", avoid_endings=["셨군요", "셨네요"])
-    assert "가장 구체적인 낱말 하나만" in pr and "9어절을 넘기지 않는다" in pr and "평가·짐작·감상·칭찬" in pr and "리더님" in pr and "바로 앞에서 쓴 끝맺음: 셨군요, 셨네요" in pr
+    assert "가장 구체적인 낱말 하나만" in pr and "9어절을 넘기지 않는다" in pr and "평가·짐작·감상·칭찬" in pr and "리더님" in pr and "이번에는 끝을 -셨군요, -셨네요 꼴로 맺지 않는다" in pr
     assert "출력: 평서문 한 문장만." in pr and "'" + "출고" not in pr      # 완성 문장 예시는 넣지 않는다
     # 라포 — 내용 낱말이 모두 리더 답에 있어야 한다(숫자·직함을 다른 뜻으로 풀면 불합격)
     assert RR.check_receive("나른하시군요.", "나른하네", kind="smalltalk") == (True, "ok")
@@ -1641,7 +1642,7 @@ def test_p14b_one_receive_per_turn_specify_call_and_role_echo():
     assert RR.check_receive("리더님이 말씀하신 것은 물량을 넘기자는 말씀이네요.", ans)[1] == "dup"
     assert RR.check_receive("물량 삼백 상자를 넘기자고 하셨다는 말씀이네요.", ans, no_quote=True)[1] == "quote_cap"
     assert RR.strip_lead_address("리더님이 물량을 넘기자고 하셨다는 말씀이네요.") == "물량을 넘기자고 하셨다는 말씀이네요."
-    assert RR.strip_lead_address("리더님께서 물량을 넘기자고 제안하셨군요.") == "리더님께서 물량을 넘기자고 제안하셨군요."      # 인용꼴이 아니면 그대로
+    assert RR.strip_lead_address("리더님께서 물량을 넘기자고 제안하셨군요.") == "물량을 넘기자고 제안하셨군요."      # (P14c-3) 모든 끝맺음에서 뗀다
     assert not RR.receivable("그 부분은 따로 기억나는 게 없습니다. 다만 그 뒤에 반장과 물량을 다시 나눴습니다.")
     pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Ella", kind="probe", no_quote=True)
     assert "이번에는 '-다는 말씀이네요'" in pr and "문장을 '리더님'으로 시작하지 않는다" in pr
@@ -1673,3 +1674,38 @@ def test_p14b_one_receive_per_turn_specify_call_and_role_echo():
     # 5. 한 문장 두 물음 — 지시문 맨 끝 한 줄 + 걸리면 본 호출 한 번 다시
     assert EC.TURN_FORMAT_RULES.rstrip().endswith("- 묻는 것은 하나다. 쉼표로 두 번째 물음을 잇지 않는다.")
     assert '_timed_regen(why="two_q"' in src and '"two_questions" in _qi_2(_qs_2[-1])' in src
+
+
+def test_p14c_ending_ban_streak_cap_third_honorific_and_empty_open_turn():
+    """(2026-11-17 P14c) 가장 많이 쓴 끝맺음 금지 · 받는 말 연속 상한 · 제3자 높임 확인 넓힘 · 받는 말 누설 검사 · 깨진 문장 꼴 · 빈 여는 턴 수정."""
+    import inspect
+    import importlib.util
+    import pathlib
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import receive_render as RR, turn_checks as TC
+    ans = "출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 제안했습니다. 담당자는 인력이 모자란다고 걱정했지만 동의했습니다."
+    # 1. 가장 많이 쓴 끝맺음(동률이면 가장 최근 것)
+    assert TC.most_used_receive_ending(["셨군요", "셨네요", "셨군요", "말씀이네요"]) == "셨군요" and TC.most_used_receive_ending(["셨군요", "셨네요"]) == "셨네요"
+    assert TC.most_used_receive_ending([]) is None
+    pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Ella", kind="probe", avoid_endings=["셨군요"])
+    assert "이번에는 끝을 -셨군요 꼴로 맺지 않는다" in pr and "주어 없이 쓴다" in pr and "리더가 한 일인 것처럼 쓰지 않는다" in pr
+    # 2. 연속 상한 — 받는 말이 3턴 이어졌으면 4턴째는 붙이지 않는다(사례를 닫는 턴은 예외)
+    assert TC.receive_streak(["물량을 넘기셨군요. 그 뒤는요?", "그렇게 정하셨네요. 무엇을 하셨습니까?", "무엇을 하셨습니까?"]) == 2 and TC.RECEIVE_STREAK_MAX == 3
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert '_att_b, _rule_b = False, "cap"' in src and src.index('_att_b, _rule_b = False, "cap"') < src.index('_tm["recv_rule"] = "C"')
+    # 3. 제3자 높임 — '…셨군요', '…셨지만'도 탈락. 머리의 호칭은 모든 끝맺음에서 뗀다
+    assert RR.check_receive("담당자가 인력이 모자란다고 걱정하셨지만 동의했다는 말씀이네요.", ans)[1] == "third_honorific"
+    assert RR.check_receive("담당자는 물량을 넘기는 데 동의하셨군요.", ans)[1] == "third_honorific"
+    assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans) == (True, "ok")
+    assert RR.strip_lead_address("리더님은 물량을 넘기자고 하셨네요.") == "물량을 넘기자고 하셨네요." and "리더님,\\s*" in src
+    # 4. 받는 말에도 엄격 누설 검사
+    assert '_pre_recv_text, _pr_mode_r = None, "miss:leak"' in src
+    # 5. 깨진 문장 — 지시어 바로 뒤에 서술어 / 받는 말에 끝 부호 / 빈 여는 턴
+    assert "fragment" in TC.question_issues("어떤 기준으로 강점을 가늠하셨는지, 그 들려주시겠어요?") and not TC.question_issues("그 뒤에 무엇을 하셨습니까?")
+    spec = importlib.util.spec_from_file_location("regression_table", pathlib.Path(__file__).resolve().parent.parent / "tools" / "regression_table.py")
+    rt = importlib.util.module_from_spec(spec); spec.loader.exec_module(rt)
+    assert rt.classify_broken("어떤 기준으로 강점을 가늠하셨는지, 그 들려주시겠어요?") == "d" and rt.classify_broken("그 뒤에 무엇을 하셨습니까?") is None
+    assert '_tm["recv_rule"] = "C-none"' in src and "clean_reply = str(_bei_anchor_text).strip()" in src
+    # 6. 길이 상한 10어절
+    long10 = "어제 야간조에 물량 삼백 상자를 넘기자고 반장에게 먼저 꺼내 직접 제안하셨군요."      # 11어절
+    assert RR.PROBE_CHECK_EOJEOL == 10 and RR.check_receive(long10, ans + " 반장에게 먼저 꺼내 직접 말했습니다.")[1] == "long"

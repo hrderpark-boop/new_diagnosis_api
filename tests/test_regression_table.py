@@ -197,7 +197,7 @@ def test_broken_counts_in_analyze_skip_list_lines():
     d = make_fake()
     d["rows"].insert(1, _m("RAPPORT_BUILDING", "오늘 정한 순서는 무엇이었군요.\n· 칸가\n· 칸나\n\n먼저 상자부터. 그 상자를 실으셨고,"))
     r = rt.analyze(d, "가짜")
-    assert {k: len(v) for k, v in r["broken"].items()} == {"a": 1, "b": 1, "c": 1}
+    assert {k: len(v) for k, v in r["broken"].items()} == {"a": 1, "b": 1, "c": 1, "d": 0}      # (P14c-5) (d) 지시어 바로 뒤에 서술어 꼴 추가
     assert r["broken_total"] == 3
     assert "깨진 문장·조각 3개" in "\n".join(rt.render_detail(r))
 

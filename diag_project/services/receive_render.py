@@ -28,8 +28,12 @@ ALIGN_MAX_EOJEOL = 16
 PROBE_PROMPT_EOJEOL = 9            # (P14b-2) 본론 받는 말은 9어절 이내로 쓰게 한다(확인의 상한은 종전대로 12어절)
 QUOTE_SHARE_MAX = 1 / 3            # (P14b-2) '…다는 말씀이네요/이군요' 꼴은 세션 받는 말의 1/3 이하
 # (P14b-2) 리더가 아닌 사람이 주어인 절에 높임이 붙은 꼴 — '팀원들이 … 우려하셨다는', '강사분들이 … 내셨다는'
-_THIRD_HONORIFIC_RE = re.compile(r"(팀원|강사|교육생|직원|담당자|구성원)[가-힣]{0,3}(이|가)\s[^.,]{0,40}?[가-힣]셨다")
+# (2026-11-17 P14c-3) '…셨다' 꼴만 잡던 것을 넓혔다 — 주어가 제3자이고 같은 절(쉼표 앞)의 서술어에 높임이 있으면 탈락
+#   (p14b: '강사분들이 … 제안하기 시작하셨군요', '팀원이 … 동의하셨군요', '팀원들은 … 걱정하셨지만')
+_THIRD_HONORIFIC_RE = re.compile(r"(팀원|강사|교육생|직원|담당자|구성원|그분|그\s?사람|동료|상사|후배)[가-힣]{0,3}(이|가|은|는|도|께서)\s[^.,]{0,40}?"
+                                 r"([가-힣]셨|[가-힣]시(는|고|며|면|던|지)|하신|으신)")
 _LEAD_ADDRESS_RE = re.compile(r"^리더님(께서는|께서|이|은|,)?\s*")
+PROBE_CHECK_EOJEOL = 10            # (P14c-6) 본론 받는 말 확인의 길이 상한 12 → 10어절
 ALIGN_MIN_SHARED = 3
 SMALL_MAX_EOJEOL = 12
 _KIND_WHAT: dict[str, str] = {
@@ -46,7 +50,7 @@ RETRY_NOTES: dict[str, str] = {
     "ban": "평가·짐작·감상이 섞였다",
     "question": "묻는 문장이었다",
     "words": "리더가 쓰지 않은 낱말이 들어갔다",
-    "same_ending": "바로 앞에서 쓴 끝맺음과 같았다",
+    "same_ending": "이번에 쓰지 않기로 한 끝맺음을 썼다",
     "third_honorific": "리더가 아닌 사람이 한 일에 높임을 붙였다",
     "dup": "'말씀'을 두 번 썼다",
     "quote_cap": "'-다는 말씀이네요' 꼴을 너무 자주 썼다",
@@ -70,7 +74,8 @@ def build_receive_prompt(*, leader_answer: str, persona_name: str | None, kind: 
     from diag_project.services.persona_register import register_hint
     from diag_project.services.turn_checks import RECEIVE_ENDING_HINT
     ans = re.sub(r"\s+", " ", (leader_answer or "").strip())[-ANSWER_TAIL_CHARS:]
-    avoid = [x for x in (avoid_endings or []) if x][:2]
+    from diag_project.services.turn_checks import RECEIVE_KEY_HINT
+    avoid = [RECEIVE_KEY_HINT.get(x, x) for x in (avoid_endings or []) if x][:2]
     limit = ALIGN_MAX_EOJEOL if kind == "align" else (PROBE_PROMPT_EOJEOL if kind == "probe" else 12)
     return (
         "당신은 리더십 코치입니다. 리더가 방금 한 말을 한 문장으로 받습니다.\n\n"
@@ -80,10 +85,11 @@ def build_receive_prompt(*, leader_answer: str, persona_name: str | None, kind: 
         "- 리더가 쓴 낱말로만 쓴다. 평가·짐작·감상·칭찬을 보태지 않는다. 리더가 말하지 않은 사실은 넣지 않는다.\n"
         f"- {limit}어절을 넘기지 않는다.\n"
         + (f"- 끝은 리더의 말을 다시 말하는 꼴로 맺는다 — {RECEIVE_ENDING_HINT} 가운데 하나.\n" if kind in ("probe", "align") else "")
-        + ("- 바로 앞에서 쓴 끝맺음: " + ", ".join(avoid) + " — 이것과 다른 끝맺음으로 맺는다.\n" if avoid and kind in ("probe", "align") else "")
+        + ("- 이번에는 끝을 " + ", ".join(avoid) + " 꼴로 맺지 않는다 — 다른 꼴로 맺는다.\n" if avoid and kind in ("probe", "align") else "")
         + ("- 이번에는 '-다는 말씀이네요', '-다는 말씀이군요' 꼴을 쓰지 않는다.\n" if no_quote and kind == "probe" else "")
-        + "- 높임은 리더에게만 쓴다. 팀원·강사·교육생처럼 리더가 아닌 사람이 한 일에는 높임 어미를 붙이지 않는다.\n"
-        "- 문장을 '리더님'으로 시작하지 않는다. '말씀'이라는 낱말은 한 번만 쓴다.\n"
+        + "- 높임은 리더에게만 쓴다. 팀원·강사·교육생처럼 리더가 아닌 사람이 한 말·걱정·반응을 다시 말할 때는 높임 어미를 붙이지 않고, "
+        "그것을 리더가 한 일인 것처럼 쓰지 않는다.\n"
+        "- 주어 없이 쓴다 — 문장을 '리더님'으로 시작하지 않는다. '말씀'이라는 낱말은 한 번만 쓴다.\n"
         "- 리더를 부를 때는 '리더님'이라고만 한다.\n"
         f"- 말투: {register_hint(persona_name)}\n"
         + (f"- 앞서 쓴 문장은 쓸 수 없었다 — {retry_note}. 그 점을 고쳐 새로 쓴다.\n" if retry_note else "")
@@ -115,10 +121,8 @@ def words_from_answer(sentence: str | None, answer: str | None) -> bool:
 
 
 def strip_lead_address(sentence: str | None) -> str:
-    """(P14b-2) 끝맺음이 인용꼴('…말씀이네요' 등)인 문장 머리의 '리더님,/리더님이/리더님께서'를 뗀다 — '리더님이 … 말씀이네요' 겹친 꼴."""
-    from diag_project.services.turn_checks import receive_ending_key
-    t = (sentence or "").strip()
-    return _LEAD_ADDRESS_RE.sub("", t, count=1) if (receive_ending_key(t) or "").startswith("말씀") else t
+    """(P14b-2 → P14c-3) 받는 말 문장 머리의 '리더님,/리더님은/리더님이/리더님께서'를 뗀다(모든 끝맺음) — 받는 말은 주어 없이 쓴다."""
+    return _LEAD_ADDRESS_RE.sub("", (sentence or "").strip(), count=1)
 
 
 def check_receive(sentence: str | None, answer: str | None, *, kind: str = "probe", formal: bool = False, avoid_endings: list[str] | None = None,
@@ -136,7 +140,7 @@ def check_receive(sentence: str | None, answer: str | None, *, kind: str = "prob
         if receive_ban_reason(s):
             return False, "ban"
         return (True, "ok") if words_from_answer(s, answer) else (False, "words")
-    ok, why = receive_allowed(s, answer, formal=formal, max_eojeol=(ALIGN_MAX_EOJEOL if kind == "align" else None))
+    ok, why = receive_allowed(s, answer, formal=formal, max_eojeol=(ALIGN_MAX_EOJEOL if kind == "align" else PROBE_CHECK_EOJEOL))
     if not ok:
         return False, why
     if kind == "align" and len(receive_shared_words(s, answer)) < ALIGN_MIN_SHARED:
@@ -150,8 +154,7 @@ def check_receive(sentence: str | None, answer: str | None, *, kind: str = "prob
     key = receive_ending_key(s) or ""
     if no_quote and key.startswith("말씀"):
         return False, "quote_cap"
-    av = [x for x in (avoid_endings or []) if x][:2]
-    if len(av) == 2 and av[0] == av[1] == key:
+    if key and key in [x for x in (avoid_endings or []) if x]:      # (P14c-1) 이번 세션에서 가장 많이 쓴 꼴은 쓰지 않는다
         return False, "same_ending"
     return True, "ok"
 
@@ -160,7 +163,9 @@ async def _one(llm, prompt: str) -> str | None:
     out = await llm._generate_with_retry(prompt=prompt, max_tokens=120, thinking_budget=0, call_type="receive_render", temperature=0.4)
     text = re.sub(r"\s*\n+\s*", " ", (out or "").strip().strip('"“”'))
     ss = [x.strip() for x in split_sentences(text) if x.strip()]
-    return ss[0] if ss else None
+    if not ss:
+        return None
+    return ss[0] if ss[0][-1] in ".!?…" else ss[0] + "."      # (P14c-5) 끝 부호가 없으면 마침표 — 질문과 붙을 때 문장이 이어 붙지 않게
 
 
 async def render_receive(llm, *, leader_answer: str, persona_name: str | None, kind: str = "probe", avoid_endings: list[str] | None = None,
