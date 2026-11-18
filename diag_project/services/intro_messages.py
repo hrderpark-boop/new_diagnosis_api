@@ -506,6 +506,26 @@ def first_probe_fallback_pick(persona_name: str | None, angle: str | None, used:
     return pool[len(seen) % len(pool)]
 
 
+# (2026-11-18 P14f-2) 전환 턴(사례를 닫고 다음 사례·훑는 질문을 여는 턴)의 고정 받기 — 받는 말이 두 번 다 떨어졌거나, 모른다는 답을 되받은 받는 말일 때 쓴다.
+#   뜻은 '방금 이야기를 잘 들었다'는 한마디뿐이다 — 평가·감사는 넣지 않는다. 말투별 3종, 이번 세션에서 가장 최근에 쓴 것은 빼고 덜 쓴 것부터 고른다.
+#   답 전체가 모른다·없다인 턴(받을 내용 없는 답)에는 붙이지 않는다.
+TRANSITION_FIXED_RECEIVE: dict[str, list[str]] = {
+    "polite": ["네, 잘 들었어요.", "그 이야기는 여기까지 잘 들었어요.", "말씀해 주신 내용 잘 들었어요."],
+    "formal": ["네, 잘 들었습니다.", "그 이야기는 여기까지 잘 들었습니다.", "말씀해 주신 내용 잘 들었습니다."],
+}
+
+
+def transition_fixed_receive(persona_name: str | None, coach_texts_latest_first: list[str] | None = None) -> str:
+    """전환 턴 고정 받기 한마디 — 가장 최근에 쓴 것은 빼고, 남은 것 가운데 이번 세션에서 덜 쓴 것(같으면 목록 순서)."""
+    from diag_project.services.persona_register import register_of
+    pool = TRANSITION_FIXED_RECEIVE["polite" if register_of(persona_name) == "polite" else "formal"]      # Lucas(섞어 씀)의 고정 문장은 합쇼체
+    texts = [re.sub(r"\s+", "", t or "") for t in (coach_texts_latest_first or [])]
+    keys = [re.sub(r"\s+", "", x) for x in pool]
+    last = next((x for t in texts for x, k in zip(pool, keys) if t.startswith(k)), None)
+    cand = [x for x in pool if x != last] or pool
+    return min(cand, key=lambda x: (sum(1 for t in texts if t.startswith(re.sub(r"\s+", "", x))), pool.index(x)))
+
+
 def align_fixed_receive(persona_name: str | None, variant: int = 0) -> str:
     pool = ALIGN_FIXED_RECEIVE[persona_key(persona_name)]
     return pool[int(variant) % len(pool)]
@@ -846,6 +866,8 @@ def all_fixed_sentences() -> list[str]:
     out.extend(list(SMALLTALK_FLAT3.values()) + list(ROLE_FLAT.values()))   # (P12d-2) 라포 고정 받기
     for v in FIRST_PROBE_FALLBACK.values():
         out.extend(x for x in v if x not in out)   # (P13c-1) 첫 꼬리 질문 대체 문장
+    for v in TRANSITION_FIXED_RECEIVE.values():
+        out.extend(v)                      # (P14f-2) 전환 턴 고정 받기
     return out
 
 

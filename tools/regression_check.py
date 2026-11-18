@@ -22,6 +22,8 @@
     p50 ≤ 3.8초 · p95 ≤ 8.0초(점검표 값 — 올림 순위) · 재생성 걸린 턴 ≤ 8 · 형식미해결 0 · 깨진 문장 0 · 첫 꼬리 질문 fallback ≤ 1
     (P14e) (A) 맥락 없는 본론 턴 ≤ 20% — 받는 말도 없고 질문 앞 절이 리더 직전 답의 내용도 담지 않은 턴(받을 내용 없는 답 뒤의 턴은 뺀다)
            (B) 전환 턴(사례를 닫고 다음을 여는 턴)에 받는 말 ≥ 80% · (C) 받는 말 있는 본론 턴 ≤ 75%, 받는 말 연속 4턴 이상 0
+    (P14f) 전환 턴의 고정 받기(recv_out = fixed)는 (B)·(C)·연속 턴에는 받는 말로 세고, 끝맺음 분포·어절 수·앞 절 겹침에는 넣지 않는다.
+           낱말 겹침(질문 앞 절 ↔ 리더 직전 답)은 앞 두 음절의 어간 꼴로 견준다(turn_checks.overlap_stem).
     (P14b) 받는 말 평균 9어절 이하 · 12어절 초과 0 · 받는 말과 질문 앞 절이 겹친 턴 0(낱말 겹침 60% 이상)
            받는 말 끝맺음 한 가지 ≤ 40% · 8어절 미만 질문 중 받는 말 없이 나간 것 ≤ 1 · 구체화 질문이 2회 이상인 사례 0
     '구체화 질문이 구체화를 물었는가'도 사람이 읽어 판정한다.
@@ -72,7 +74,7 @@ ECHO_RATIO = 0.6
 
 def receive_stats(rows: list[dict]) -> dict:
     """본론 턴(탐침·훑는 질문·여는 턴)의 받는 말 — 유무, 끝맺음 분포, 어절 수, 같은 턴 질문의 앞 절과 겹친 턴, 받는 말 없이 나간 짧은 질문.
-    서버가 남긴 recv_out(끝맺음 갈래 | other | slot | None)을 읽는다. 슬롯 문장(관찰·응원) 턴은 받는 말 자리가 없으므로 분모에서 뺀다."""
+    서버가 남긴 recv_out(끝맺음 갈래 | other | fixed | slot | None)을 읽는다. 슬롯 문장(관찰·응원) 턴은 받는 말 자리가 없으므로 분모에서 뺀다."""
     from collections import Counter
     import regression_table as rt
     from diag_project.services.output_guard import _content_chunks, is_question
@@ -82,6 +84,7 @@ def receive_stats(rows: list[dict]) -> dict:
     bare: list[str] = []          # (A) 받는 말도 없고 질문 앞 절이 리더 직전 답의 내용도 담지 않은 턴(질문 문장)
     main_n = 0
     trans: list[tuple[bool, str]] = []      # (B) 전환 턴 (받는 말 있음, 원문) — 리더 직전 답이 받을 내용 없는 답이면 뺀다
+    trans_fixed: list[str] = []             # (P14f-2) 그 가운데 고정 받기가 붙은 턴(원문)
     streak = 0
     streak4 = 0
     ends: Counter = Counter()
@@ -106,6 +109,8 @@ def receive_stats(rows: list[dict]) -> dict:
             streak4 += 1
         if r["instr"] in ("EPISODE_OPEN", "SWEEP_ANCHOR") and can_recv:
             trans.append((has, (r.get("content") or "").strip()))
+            if out == "fixed":
+                trans_fixed.append((r.get("content") or "").strip())
         if can_recv:                       # (A) 받을 내용이 없는 답 뒤의 턴은 따지지 않는다
             main_n += 1
             front = question_front_clause(qs[0]) if qs else ""
@@ -116,7 +121,9 @@ def receive_stats(rows: list[dict]) -> dict:
             continue
         a = by_instr.setdefault(r["instr"], [0, 0])
         a[1] += 1
-        if out:
+        if out == "fixed":
+            a[0] += 1
+        elif out:
             a[0] += 1
             ends[out] += 1
             recv = next((x for x in sents if not is_question(x)), "")
@@ -130,9 +137,10 @@ def receive_stats(rows: list[dict]) -> dict:
             short_bare.append(qs[-1])
     have = sum(v[0] for v in by_instr.values()); total = sum(v[1] for v in by_instr.values())
     top = ends.most_common(1)[0][1] if ends else 0
+    n_ends = sum(ends.values())
     return {"bare_pct": round(100 * len(bare) / main_n, 1) if main_n else None, "bare_list": bare, "main_n": main_n,
-            "trans_recv_pct": round(100 * sum(1 for h, _t in trans if h) / len(trans), 1) if trans else None, "trans_list": trans, "recv_streak4": streak4,
-            "recv_have_pct": round(100 * have / total, 1) if total else None, "recv_top_end_pct": round(100 * top / have, 1) if have else None,
+            "trans_recv_pct": round(100 * sum(1 for h, _t in trans if h) / len(trans), 1) if trans else None, "trans_list": trans, "trans_fixed": trans_fixed, "recv_streak4": streak4,
+            "recv_have_pct": round(100 * have / total, 1) if total else None, "recv_top_end_pct": round(100 * top / n_ends, 1) if n_ends else None,
             "recv_avg_eojeol": round(sum(lens) / len(lens), 1) if lens else None, "recv_over12": sum(1 for n in lens if n > 12),
             "recv_echo_n": len(echo), "recv_echo": echo, "short_bare": len(short_bare), "short_bare_list": short_bare,
             "recv_by_instr": {k: f"{v[0]}/{v[1]}" for k, v in by_instr.items()}, "recv_ends": dict(ends.most_common()), "recv_rules": dict(rules.most_common())}
@@ -295,8 +303,8 @@ def main(argv: list[str] | None = None) -> int:
             L.append(f"탈락 [{k}] {len(v)}건: " + " / ".join(v[:3]))
         L.append(f"(A) 맥락 없는 본론 턴 {len(ms[c]['bare_list'])}/{ms[c]['main_n']}:")
         L += [f"   - {q}" for q in ms[c]["bare_list"]]
-        L.append(f"(B) 전환 턴 {len(ms[c]['trans_list'])}개(받는 말 있음 {sum(1 for h, _t in ms[c]['trans_list'] if h)}):")
-        L += [f"   - [{'받는 말' if h else '없음'}] {t}" for h, t in ms[c]["trans_list"]]
+        L.append(f"(B) 전환 턴 {len(ms[c]['trans_list'])}개(받는 말 있음 {sum(1 for h, _t in ms[c]['trans_list'] if h)}, 그중 고정 받기 {len(ms[c]['trans_fixed'])}):")
+        L += [f"   - [{('고정 받기' if t in ms[c]['trans_fixed'] else '받는 말') if h else '없음'}] {t}" for h, t in ms[c]["trans_list"]]
         if ms[c]["recv_echo"]:
             L.append("받는 말과 질문 앞 절이 겹친 턴: " + " / ".join(ms[c]["recv_echo"]))
         L.append("")

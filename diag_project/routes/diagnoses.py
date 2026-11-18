@@ -985,6 +985,7 @@ async def _submit_message_phase3a(
     _specify_q_text = None  # (2026-11-18 P14d-5) 구체화 전용 호출이 쓴 질문 — 방향을 정하는 자리에서 받아 두고, 합격했을 때만 그 턴을 구체화 턴으로 삼는다
     _recv_retry_why = None  # (2026-11-18 P14e-2) 받는 말이 한 번 떨어졌고 다시 쓰기를 미뤘을 때의 사유 — 전환 턴이면 여는 턴 분기에서 한 번 더 쓴다
     _recv_args_r = None
+    _recv_retry_prev = None  # (2026-11-18 P14f-3) 미룬 다시 쓰기에 넘길, 처음에 떨어진 문장(길이로 떨어졌을 때 앞 문장으로 보여 준다)
     _recv_leaks = None
     _call_drops: list = []  # (2026-11-18 P14d-4) 전용 호출(받는 말·첫 꼬리·구체화)에서 탈락한 문장 [[호출, 사유, 문장], …] — 턴 기록에 남긴다
     _reask_kind = None  # (2026-11-12 P11-A3·H) 'clarify'(되묻기) | 'contentless'(받을 내용 없는 답) — 사례 턴에서 원장·슬롯 판정 없이 직전 질문만 다시 쓴다
@@ -1365,7 +1366,7 @@ async def _submit_message_phase3a(
                 if isinstance(_res_r[0], BaseException):
                     raise _res_r[0]
                 _jd = _res_r[0]
-                _pre_recv_text, _pr_mode_r, _recv_retry_why = (None, "miss:error", None) if isinstance(_res_r[1], BaseException) else _res_r[1]
+                _pre_recv_text, _pr_mode_r, _recv_retry_why, _recv_retry_prev = (None, "miss:error", None, None) if isinstance(_res_r[1], BaseException) else _res_r[1]
 
                 def _recv_leaks(_t_rl: str) -> bool:
                     # (2026-11-17 P14c-4) 받는 말도 엄격 누설 검사를 거친다(호출 없음) — 걸리면 그 받는 말만 버린다. 끝에서 붙는 문장이라 8-y 를 지나지 않는다.
@@ -1970,13 +1971,19 @@ async def _submit_message_phase3a(
             if not _pre_recv_text and _recv_retry_why and _recv_args_r:
                 # (2026-11-18 P14e-2) 전환 턴은 반드시 한 번 더 쓴다 — 판정이 먼저 끝나 미뤄 둔 다시 쓰기
                 from diag_project.services.receive_render import render_receive_retry as _rrr_o
-                _pre_recv_text, _mode_o = await _rrr_o(llm, why=_recv_retry_why, **_recv_args_r)
+                _pre_recv_text, _mode_o = await _rrr_o(llm, why=_recv_retry_why, failed=_recv_retry_prev, **_recv_args_r)
                 if _pre_recv_text and _recv_leaks and _recv_leaks(_pre_recv_text):
                     _call_drops.append(["receive:probe", "leak", _pre_recv_text[:200]])
                     _pre_recv_text, _mode_o = None, "miss:leak"
                 _tm["pre_recv"] = _mode_o
+            from diag_project.services.receive_render import echoes_no_recall as _enr_o
+            if _pre_recv_text and _enr_o(_pre_recv_text):
+                # (2026-11-18 P14f-2) 모른다는 답을 되받은 받는 말은 전환 턴에서 쓰지 않는다 — 끝에서 고정 받기를 붙인다
+                _call_drops.append(["receive:probe", "no_recall", _pre_recv_text[:200]])
+                _pre_recv_text = None
+                _tm["pre_recv"] = "miss:no_recall"
             # (2026-11-15 P13f-4 → 2026-11-16 P14-1) 사례를 닫는 턴 — 받아 둔 받는 말만 쓴다(본 호출을 부르지 않는다). 다음 질문은 시스템이 붙인다.
-            #   받는 말을 받지 못했으면(확인 탈락·받을 내용 없음) 받는 말 없이 나간다.
+            #   받는 말을 받지 못했으면(받을 내용 없음) 받는 말 없이 나간다. (P14f-2) 두 번 다 확인에서 떨어졌으면 끝에서 고정 받기를 붙인다.
             llm_output = {"reply": str(_pre_recv_text or "")}
             if _pre_recv_text:
                 _tm["pre_recv_mode"] = _tm.get("pre_recv"); _tm["pre_recv"] = "used"
@@ -3789,6 +3796,14 @@ async def _submit_message_phase3a(
         clean_reply = str(_bei_anchor_text).strip()
         _tm["anchor_attached"] = 1
         _tm["recv_rule"] = "C-none"
+        if str(_tm.get("pre_recv") or "").startswith("miss:"):
+            # (2026-11-18 P14f-2) 전환 턴 안전망 — 받을 내용이 있는 답인데 받는 말이 없으면(두 번 다 탈락·누설·모른다는 답을 되받음) 짧은 고정 받기를 붙인다.
+            #   p14e: 받는 말 없는 전환 턴 4건(Jessica 1·Lucas 3). 답 전체가 모른다·없다인 턴(skip:empty)에는 붙이지 않는다.
+            from diag_project.services.intro_messages import transition_fixed_receive as _tfr_e
+            _fixed_e = _tfr_e((state.get("coach_persona") or {}).get("name"),
+                              [(m.content or "") for m in reversed(history_messages) if (m.role == MessageRole.MODEL or m.role == "model")])
+            clean_reply = f"{_fixed_e} {clean_reply}".strip()
+            _tm["recv_rule"] = "C-fixed"
     if chapter and instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP", "EPISODE_OPEN", "SWEEP_ANCHOR") and (clean_reply or "").strip():
         # (2026-11-17 P14c-3) 문장 머리의 호칭 '리더님, '(호칭 + 쉼표)은 뗀다 — 받는 말·질문 모두
         clean_reply = re.sub(r"(^|(?<=[.?!…]\s))리더님,\s*", "", clean_reply.lstrip())
@@ -3800,6 +3815,8 @@ async def _submit_message_phase3a(
         from diag_project.services.turn_checks import receive_ending_key as _rek_e
         _st_e = [x.strip() for x in split_sentences(clean_reply) if x.strip() and not is_question_sentence(x)]
         _tm["recv_out"] = ("slot" if _tm.get("slot") else (_rek_e(_st_e[0]) or "other")) if _st_e else None
+        if _tm.get("recv_rule") == "C-fixed":
+            _tm["recv_out"] = "fixed"       # (P14f-2) 고정 받기 — 끝맺음 분포·어절 수에는 넣지 않는다(회귀 점검이 따로 센다)
 
     # 9. 사례 행(Event) 저장 + AI 메시지 저장
     #   (2026-11-04 BEI) 탐침 종류는 instruction 으로만: 여는 턴·SWEEP 앵커·ALIGN = INCIDENT, 사례 탐침 = SPECIFICATION, META = META.
@@ -4106,7 +4123,7 @@ async def _submit_message_phase3a(
             # (P14) pre_recv_mode 받는 말 전용 호출 결과(llm | llm_retry) · judge_par_s 슬롯 판정+받는 말 동시 구간(초) · recv_out 나간 받는 말의 끝맺음 갈래 ·
             #   specific 직전 답의 구체 표지 판정 · specify 이번 질문이 구체화 질문(대상 칸) · rapport_recv·align_recv 라포·영역 정의 받는 말 처리
             "pre_recv_mode": _tm.get("pre_recv_mode"), "judge_par_s": _tm.get("judge_par_s"), "recv_out": _tm.get("recv_out"),
-            # (P14b) recv_rule 받는 말을 붙인 규칙(A·B·C·D+·D-·none) · main_stmt_cut 본 호출이 쓴 평서문을 지운 수 · specify_q 구체화 전용 호출 결과 · two_q_regen 두 물음 다시 쓰기
+            # (P14b) recv_rule 받는 말을 붙인 규칙(A·B·C·C+·C-none·C-fixed·D+·D-·cap·none) · main_stmt_cut 본 호출이 쓴 평서문을 지운 수 · specify_q 구체화 전용 호출 결과 · two_q_regen 두 물음 다시 쓰기
             "recv_rule": _tm.get("recv_rule"), "main_stmt_cut": _tm.get("main_stmt_cut"), "specify_q": _tm.get("specify_q"), "two_q_regen": _tm.get("two_q_regen"),
             "call_drops": (_call_drops or None),      # (P14d-4) 전용 호출에서 탈락한 문장 [[호출, 사유, 문장], …]
             "specific": _tm.get("specific"), "specify": _tm.get("specify"), "rapport_recv": _tm.get("rapport_recv"), "align_recv": _tm.get("align_recv"),

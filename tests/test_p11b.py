@@ -1650,7 +1650,7 @@ def test_p14b_one_receive_per_turn_specify_call_and_role_echo():
     src = inspect.getsource(D._submit_message_phase3a)
     assert "_rar_b(_qs_b[0], _llm_user_text, prev_had_receive=_prev_recv_b)" in src and '_tm["main_stmt_cut"] = len(_cut_b)' in src and '_tm["recv_rule"] = "C"' in src
     # 2. 받는 말 — 리더가 아닌 사람에게 높임, '말씀' 두 번, 인용꼴 상한, 머리의 호칭
-    assert RR.check_receive("담당자가 인력이 모자란다고 하셨다는 말씀이네요.", ans)[1] == "third_honorific"
+    assert RR.check_receive("담당자가 인력이 모자란다고 하셨다는 말씀이네요.", ans) == (True, "ok")      # (P14f-1) 제3자 높임 확인은 없앴다
     assert RR.check_receive("리더님이 말씀하신 것은 물량을 넘기자는 말씀이네요.", ans)[1] == "dup"
     assert RR.check_receive("물량 삼백 상자를 넘기자고 하셨다는 말씀이네요.", ans, no_quote=True) == (True, "ok")      # (P14e-3) 인용꼴 상한도 지시만
     assert RR.strip_lead_address("리더님이 물량을 넘기자고 하셨다는 말씀이네요.") == "물량을 넘기자고 하셨다는 말씀이네요."
@@ -1702,14 +1702,15 @@ def test_p14c_ending_ban_streak_cap_third_honorific_and_empty_open_turn():
     assert TC.most_used_receive_ending(["셨군요", "셨네요", "셨군요", "말씀이네요"]) == "셨군요" and TC.most_used_receive_ending(["셨군요", "셨네요"]) == "셨네요"
     assert TC.most_used_receive_ending([]) is None
     pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Ella", kind="probe", avoid_endings=["셨군요"])
-    assert "이번에는 끝을 -셨군요 꼴로 맺지 않는다" in pr and "그 사람을 주어로 밝혀 쓰고" in pr and "리더가 한 일처럼 읽히게 쓰지 않는다" in pr
+    assert "이번에는 끝을 -셨군요 꼴로 맺지 않는다" in pr and "그 사람을 주어로 밝혀 쓴다" in pr and "리더가 한 일처럼 읽히게 쓰지 않는다" in pr
     # 2. 연속 상한 — 받는 말이 3턴 이어졌으면 4턴째는 붙이지 않는다(사례를 닫는 턴은 예외)
     assert TC.receive_streak(["물량을 넘기셨군요. 그 뒤는요?", "그렇게 정하셨네요. 무엇을 하셨습니까?", "무엇을 하셨습니까?"]) == 2 and TC.RECEIVE_STREAK_MAX == 3
     src = inspect.getsource(D._submit_message_phase3a)
     assert '_att_b, _rule_b = False, "cap"' in src and src.index('_att_b, _rule_b = False, "cap"') < src.index('_tm["recv_rule"] = "C"')
     # 3. 제3자 높임 — '…셨군요', '…셨지만'도 탈락. 머리의 호칭은 모든 끝맺음에서 뗀다
-    assert RR.check_receive("담당자가 인력이 모자란다고 걱정하셨지만 동의했다는 말씀이네요.", ans)[1] == "third_honorific"
-    assert RR.check_receive("담당자는 물량을 넘기는 데 동의하셨군요.", ans)[1] == "third_honorific"
+    # (P14f-1) 제3자 높임 확인은 없앴다 — 높여 말해도 통과한다
+    assert RR.check_receive("담당자가 인력이 모자란다고 걱정하셨지만 동의했다는 말씀이네요.", ans) == (True, "ok")
+    assert RR.check_receive("담당자는 물량을 넘기는 데 동의하셨군요.", ans) == (True, "ok")
     assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans) == (True, "ok")
     assert RR.strip_lead_address("리더님은 물량을 넘기자고 하셨네요.") == "물량을 넘기자고 하셨네요." and "리더님,\\s*" in src
     # 4. 받는 말에도 엄격 누설 검사
@@ -1745,8 +1746,8 @@ def test_p14d_plain_past_endings_drop_trace_and_specify_at_decision():
     assert RR.check_receive("물량을 넘기자는 제안이 핵심이라고 하셨군요.", ans + " 그 제안이 핵심이었습니다.") == (True, "ok")
     # 2. 지시문 — 제3자는 주어로 밝혀 쓰고 높임 없이
     pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Jessica", kind="probe")
-    assert "그 사람을 주어로 밝혀 쓰고" in pr and "-했군요" in pr and "주어 없이 쓴다" not in pr
-    assert RR.check_receive("담당자가 물량을 넘기는 데 동의하셨군요.", ans)[1] == "third_honorific"      # P14c 확인은 그대로
+    assert "그 사람을 주어로 밝혀 쓴다" in pr and "-했군요" in pr and "주어 없이 쓴다" not in pr
+    assert RR.check_receive("담당자가 물량을 넘기는 데 동의하셨군요.", ans) == (True, "ok")      # (P14f-1) 제3자 높임 확인 삭제
     # 3. 길이 상한 12어절
     assert RR.PROBE_CHECK_EOJEOL == 12
     # 4. 탈락 문장 기록
@@ -1813,9 +1814,108 @@ def test_p14e_receive_prompt_meta_retry_gate_and_transition_receive():
         r3 = await RR.render_receive_retry(_T(), leader_answer=ans, persona_name="Ella", why=r2[2])
         return r1, r2, r3
     r1, r2, r3 = asyncio.run(run())
-    assert r1 == ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "llm_retry", None) and r2 == (None, "miss:ending", "ending") and r3[1] == "llm_retry"
-    assert asyncio.run(RR.render_receive_gated(None, leader_answer="네.", persona_name="Ella")) == (None, "skip:empty", None)
+    # (P14f-3) 미룬 다시 쓰기에는 처음에 떨어진 문장도 함께 돌려준다(넷째 값)
+    assert r1 == ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "llm_retry", None, None) and r3[1] == "llm_retry"
+    assert r2 == (None, "miss:ending", "ending", "물량을 넘기기가 쉽지 않았겠군요.")
+    assert asyncio.run(RR.render_receive_gated(None, leader_answer="네.", persona_name="Ella")) == (None, "skip:empty", None, None)
     src = inspect.getsource(D._submit_message_phase3a)
-    assert "_rrg_r(llm, gate=_jt_r" in src and "_rrr_o(llm, why=_recv_retry_why, **_recv_args_r)" in src
+    assert "_rrg_r(llm, gate=_jt_r" in src and "_rrr_o(llm, why=_recv_retry_why, failed=_recv_retry_prev, **_recv_args_r)" in src
     # 5. 전환 턴 — 통과한 받는 말은 끝에서 다시 놓는다
     assert '_tm["recv_rule"] = "C+"' in src
+
+
+def test_p14f_no_third_honorific_check_transition_fixed_receive_long_retry_stem_overlap_and_self_talk():
+    """(2026-11-18 P14f) 제3자 높임 확인 삭제 · 전환 턴 고정 받기 · 길이 탈락 다시 쓰기 · 낱말 겹침 어간 기준 · 혼잣말 표지."""
+    import asyncio
+    import inspect
+    import importlib.util
+    import pathlib
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import intro_messages as IM, receive_render as RR, turn_checks as TC
+    ans = "출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 제안했습니다. 담당자는 인력이 모자란다고 걱정했지만 동의했습니다."
+    # 1. 제3자 높임 확인 삭제 — 높임이 리더 행동에 붙은 문장(오탐)도, 제3자를 높인 문장도 통과한다. 지시문에는 '주어로 밝혀 쓴다'만 남긴다
+    assert not hasattr(RR, "_THIRD_HONORIFIC_RE") and "third_honorific" not in RR.RETRY_NOTES
+    assert RR.check_receive("담당자가 걱정했지만 물량을 넘기자고 제안하셨군요.", ans) == (True, "ok")
+    assert RR.check_receive("담당자가 인력이 모자란다고 걱정하셨군요.", ans) == (True, "ok")
+    assert RR.check_receive("담당자가 인력이 모자란다고 걱정했군요.", ans) == (True, "ok")      # 높임 없는 끝맺음도 그대로 허용
+    pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Jessica", kind="probe")
+    assert "그 사람을 주어로 밝혀 쓴다" in pr and "높임 어미를 붙이지 않는다" not in pr and "높임은 리더에게만" not in pr
+    # 3. 길이 — 지시문에 '쉼표로 두 절을 잇지 않는다', 길이로 떨어져 다시 쓸 때는 앞 문장을 보여 주고 절 하나만 남기게 한다
+    assert "쉼표로 두 절을 잇지 않는다" in pr and "가운데 하나만 골라" in pr
+    assert RR.retry_note("long") == "문장이 너무 길었다 — 앞 문장의 절 하나만 남겨 9어절 이내로 쓴다" and "16어절" in RR.retry_note("long", "align")
+    long_s = "출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 담당자에게 먼저 제안하셨고 담당자는 걱정했지만 결국 동의했다는 말씀이네요."
+    assert RR.check_receive(long_s, ans)[1] == "long"
+    seen: list[str] = []
+
+    class _T:
+        n = 0
+
+        async def _generate_with_retry(self, **kw):
+            _T.n += 1
+            seen.append(kw["prompt"])
+            return long_s if _T.n == 1 else "야간조에 물량 삼백 상자를 넘기자고 제안하셨군요."
+
+    async def run():
+        f = asyncio.get_event_loop().create_future()
+        r1 = await RR.render_receive_gated(_T(), leader_answer=ans, persona_name="Ella", gate=f)      # 판정이 안 끝났으면 그 자리에서 다시
+        _T.n = 0
+        f.set_result(1)
+        r2 = await RR.render_receive_gated(_T(), leader_answer=ans, persona_name="Ella", gate=f)      # 끝났으면 사유와 떨어진 문장을 돌려준다
+        r3 = await RR.render_receive_retry(_T(), leader_answer=ans, persona_name="Ella", why=r2[2], failed=r2[3])
+        return r1, r2, r3
+    r1, r2, r3 = asyncio.run(run())
+    assert r1[1] == "llm_retry" and r2 == (None, "miss:long", "long", long_s) and r3 == ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "llm_retry")
+    assert f"- 앞서 쓴 문장: {long_s}" in seen[1] and "절 하나만 남겨 9어절 이내로" in seen[1] and "앞서 쓴 문장:" not in seen[0]
+    assert f"- 앞서 쓴 문장: {long_s}" in seen[-1]
+    # 길이가 아닌 사유로 떨어졌을 때는 앞 문장을 보여 주지 않는다(베껴 쓰지 않게)
+    pr_e = RR.build_receive_prompt(leader_answer=ans, persona_name="Ella", kind="probe", **{"retry_note": RR._retry_args("ending", "probe", "x")["note"],
+                                                                                           "retry_prev": RR._retry_args("ending", "probe", "x")["prev"]})
+    assert "앞서 쓴 문장:" not in pr_e and "앞서 쓴 문장은 쓸 수 없었다" in pr_e
+    # 2. 전환 턴 고정 받기 — 말투별 3종, 가장 최근에 쓴 것은 빼고 덜 쓴 것부터. 평가·감사 낱말 없음. 고정 문장 목록에 들어 있다
+    pol, frm = IM.TRANSITION_FIXED_RECEIVE["polite"], IM.TRANSITION_FIXED_RECEIVE["formal"]
+    assert len(pol) >= 3 and len(frm) >= 3 and len(set(pol + frm)) == len(pol + frm)
+    assert not any(w in x for x in pol + frm for w in ("감사", "좋", "훌륭", "인상", "대단", "핵심"))
+    assert all(x in IM.all_fixed_sentences() for x in pol + frm)
+    assert IM.transition_fixed_receive("Ella", []) == pol[0] and IM.transition_fixed_receive("Jessica", []) == frm[0]
+    assert IM.transition_fixed_receive("Lucas", []) == frm[0]                                    # Lucas 의 고정 문장은 합쇼체
+    assert IM.transition_fixed_receive("Ella", [pol[0] + " 최근에 그런 일이 있었나요?"]) == pol[1]
+    assert IM.transition_fixed_receive("Ella", [pol[1] + " 다음 질문", "다른 턴", pol[0] + " 앞 질문"]) == pol[2]
+    assert IM.transition_fixed_receive("Ella", [pol[2] + " c", pol[1] + " b", pol[0] + " a"]) == pol[0]      # 다 썼으면 가장 최근 것만 뺀다
+    assert RR.echoes_no_recall("포장 순서를 어떻게 짰는지는 기억이 안 난다고 하셨군요.") and RR.echoes_no_recall("그 숫자는 잘 모르겠다고 하셨네요.")
+    assert not RR.echoes_no_recall("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.")
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert '_tm["recv_rule"] = "C-fixed"' in src and '_tm["pre_recv"] = "miss:no_recall"' in src and '_tm["recv_out"] = "fixed"' in src
+    assert src.index('_tm["recv_rule"] = "C-none"') < src.index('_tm["recv_rule"] = "C-fixed"')
+    assert 'str(_tm.get("pre_recv") or "").startswith("miss:")' in src      # 받을 내용 없는 답(skip:empty)에는 붙이지 않는다
+    # 4. 낱말 겹침 — 앞 두 음절을 어간 꼴로 편다(줄어든 과거형 ↔ 높임 꼴)
+    for a, b in (("넘겼고", "넘기셨을"), ("바꿨습니다", "바꾸신"), ("세웠고", "세우셨을"), ("골랐습니다", "고르셨는지"), ("줄였고", "줄이신"), ("정했습니다", "정하셨을"),
+                 ("넘겨야", "넘기기로"), ("바꾼", "바꾸실"), ("정해서", "정하신"), ("맡길", "맡겼습니다")):      # 연결형·관형형도 같은 열쇠
+        assert TC.overlap_stem(a) == TC.overlap_stem(b), (a, b)
+    assert TC.overlap_stem("순번") == TC.overlap_stem("순번을") and TC.overlap_stem("순번") != TC.overlap_stem("순서")      # 명사는 서로 그대로 맞고, 다른 낱말과 섞이지 않는다
+    assert TC.overlap_stem("있었") == "있어" and TC.overlap_stem("하겠") == "하겠" and TC.overlap_stem("창고") == "창고"
+    ans2 = "반장과 재고표를 다시 맞췄고 야간조 순번을 바꿨습니다."
+    q2 = "재고표를 맞추시고 순번을 바꾸신 뒤, 반장에게는 무엇을 맡기셨습니까?"
+    assert len(TC.question_overlap(TC.question_front_clause(q2), ans2)) >= 2 and TC.receive_attach_rule(q2, ans2) == (False, "A")
+    assert TC.question_overlap("그때 무엇을 하셨습니까?", "그때 제가 직접 했습니다.") == []      # 흔한 낱말은 어간으로 펴도 세지 않는다
+    # 5. 혼잣말 표지 — 첫 꼬리·구체화·받는 말 전용 호출 공통, 60자를 넘으면서 쉼표 3개 이상도 다시 쓴다
+    for bad in ("리더님께서 직접 하신 조치가 맞는지 여쭤봐도 되겠느냐는 뜻이 아니라, 반장의 말을 어떻게 들으셨는지 알려 주시겠습니까?",
+                "리더님께서 물량을 넘기자고 하신 것을 묻는 꼴로 쓰면, 반장에게 직접 무엇을 맡기셨습니까?"):
+        assert TC.first_probe_question_ok(bad, ans)[1] == "meta", bad
+        assert TC.specify_question_ok(bad)[1] == "meta", bad
+    assert RR.check_receive("담당자가 동의했다는 점을 골라, 끝을 다른 꼴로 맺어 한 문장으로 말합니다.", ans)[1] == "meta"
+    ramble = "리더님께서 출고가 밀렸을 때, 야간조에 물량을 넘기자고 하시면서, 반장에게 먼저 말을 꺼내셨는데, 그 자리에서 직접 어떤 조치를 취하셨습니까?"
+    assert len(ramble) > TC.RAMBLE_CHARS and ramble.count(",") >= TC.RAMBLE_COMMAS and TC.is_self_talk(ramble)
+    assert TC.first_probe_question_ok(ramble, ans)[1] == "meta"
+    assert TC.first_probe_question_ok("야간조에 물량을 넘기자고 하셨을 때, 반장에게 직접 어떤 말을 건네셨습니까?", ans) == (True, "ok")
+    assert not TC.is_self_talk("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.")
+    # 회귀 점검 — 고정 받기는 (B)·(C)에 받는 말로 세고 끝맺음 분포·어절 수에는 넣지 않는다
+    spec = importlib.util.spec_from_file_location("regression_check_p14f", pathlib.Path(__file__).resolve().parent.parent / "tools" / "regression_check.py")
+    rc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rc)
+    rows = [{"role": "user", "content": ans},
+            {"role": "model", "instr": "SWEEP_ANCHOR", "content": frm[0] + " 최근에 일정을 다시 짜신 적이 있습니까?", "guard": {"recv_out": "fixed", "recv_rule": "C-fixed"}},
+            {"role": "user", "content": ans2},
+            {"role": "model", "instr": "EPISODE_OPEN", "content": "순번을 바꾸셨군요. 최근에 새로 시도하신 일이 있습니까?", "guard": {"recv_out": "셨군요", "recv_rule": "C"}}]
+    st = rc.receive_stats(rows)
+    assert st["trans_recv_pct"] == 100.0 and len(st["trans_fixed"]) == 1 and st["recv_ends"] == {"셨군요": 1} and st["recv_top_end_pct"] == 100.0
+    assert st["recv_have_pct"] == 100.0 and st["recv_avg_eojeol"] == 2.0

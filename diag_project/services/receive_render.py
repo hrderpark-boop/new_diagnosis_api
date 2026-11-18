@@ -10,7 +10,8 @@
   smalltalk 짧은 답의 낱말 하나를 받아 한 문장                       내용 낱말이 모두 리더 답에 있는 낱말일 것
   role      낱말 나열 답의 낱말을 그대로 넣어 다시 말하는 한 문장          내용 낱말이 모두 리더 답에 있는 낱말일 것
 
-확인에서 떨어지면 사유를 한 줄로 넘겨 한 번 더 쓴다. 그래도 떨어지면 None — 호출자는 받는 말 없이(라포·영역 정의는 고정 받기로) 내보낸다.
+확인에서 떨어지면 사유를 한 줄로 넘겨 한 번 더 쓴다. 그래도 떨어지면 None — 호출자는 받는 말 없이(라포·영역 정의·사례를 닫는 전환 턴은 고정 받기로) 내보낸다.
+(2026-11-18 P14f) 제3자 높임 확인은 없앴다 — p14e 탈락 23건 가운데 13건이 오탐이었고(높임이 리더 행동에 붙은 문장), 팀원·강사를 높여 말하는 것 자체는 틀린 말이 아니다.
 받을 내용이 없는 답('네', '없어요', 떠오르지 않는다는 답)에는 부르지 않는다.
 """
 from __future__ import annotations
@@ -27,11 +28,6 @@ ANSWER_TAIL_CHARS = 700
 ALIGN_MAX_EOJEOL = 16
 PROBE_PROMPT_EOJEOL = 9            # (P14b-2) 본론 받는 말은 9어절 이내로 쓰게 한다(확인의 상한은 종전대로 12어절)
 QUOTE_SHARE_MAX = 1 / 3            # (P14b-2) '…다는 말씀이네요/이군요' 꼴은 세션 받는 말의 1/3 이하
-# (P14b-2) 리더가 아닌 사람이 주어인 절에 높임이 붙은 꼴 — '팀원들이 … 우려하셨다는', '강사분들이 … 내셨다는'
-# (2026-11-17 P14c-3) '…셨다' 꼴만 잡던 것을 넓혔다 — 주어가 제3자이고 같은 절(쉼표 앞)의 서술어에 높임이 있으면 탈락
-#   (p14b: '강사분들이 … 제안하기 시작하셨군요', '팀원이 … 동의하셨군요', '팀원들은 … 걱정하셨지만')
-_THIRD_HONORIFIC_RE = re.compile(r"(팀원|강사|교육생|직원|담당자|구성원|그분|그\s?사람|동료|상사|후배)[가-힣]{0,3}(이|가|은|는|도|께서)\s[^.,]{0,40}?"
-                                 r"([가-힣]셨|[가-힣]시(는|고|며|면|던|지)|하신|으신)")
 _LEAD_ADDRESS_RE = re.compile(r"^리더님(께서는|께서|이|은|,)?\s*")
 _META_RE = re.compile(r"—|(?<![A-Za-z])no,|규칙|혹은\s*더\s*정확히|다시\s*말하면|낱말은|must\s|ending")
 PROBE_CHECK_EOJEOL = 12            # (P14c-6 → P14d-3) 10어절로 낮췄다가 12어절로 되돌렸다(p14c: 길이 탈락 25건). 지시문은 9어절 이내 그대로
@@ -42,14 +38,15 @@ SMALL_MAX_EOJEOL = 12
 _KIND_WHAT: dict[str, str] = {
     # (2026-11-16 P14b-2) 대목 하나 → 낱말 하나. p14: 답 전체를 옮겨 12어절을 넘긴 탈락이 10건 중 9건, 받는 말과 질문 앞 절이 같은 내용을 되풀이했다.
     # (2026-11-18 P14e-1) '가장 구체적인 낱말 하나만 집어'를 글자 그대로 따라 '가장 구체적인 낱말은 …입니다'를 썼다(p14d) — 하나만 골라 짧게로 바꿨다
-    "probe": ("리더가 방금 말한 것 가운데 하나만 골라 짧은 한 문장으로 다시 말한다. 답 전체를 옮기지 않는다.",),
+    # (2026-11-18 P14f-3) 길이 탈락(p14e 24건)은 답을 통째로 옮기거나 두 절을 쉼표로 이은 문장이었다
+    "probe": ("리더가 방금 말한 것 가운데 하나만 골라 짧은 한 문장으로 다시 말한다. 답 전체를 옮기지 않는다. 쉼표로 두 절을 잇지 않는다.",),
     "align": ("리더가 방금 말한 뜻풀이에서 구절 하나를 그대로 집어 한 문장으로 다시 말한다. 뜻풀이 전체를 줄여 옮기지 않는다.",),
     "smalltalk": ("리더의 짧은 답에서 낱말 하나를 그대로 받아 한 문장으로 다시 말한다. 리더가 쓰지 않은 낱말을 보태지 않는다.",),
     "role": ("리더가 늘어놓은 낱말을 그대로 넣어 한 문장으로 다시 말한다. 숫자와 직함은 리더가 쓴 그대로 쓰고 다른 뜻으로 풀지 않는다.",),
 }
 RETRY_NOTES: dict[str, str] = {
     "ending": "끝맺음이 리더의 말을 다시 말하는 꼴이 아니었다",
-    "long": "문장이 너무 길었다",
+    "long": "문장이 너무 길었다 — 앞 문장의 절 하나만 남겨 {limit}어절 이내로 쓴다",
     "overlap": "리더가 쓴 낱말이 모자랐다",
     "ban": "평가·짐작·감상이 섞였다",
     "question": "묻는 문장이었다",
@@ -57,11 +54,19 @@ RETRY_NOTES: dict[str, str] = {
     "same_ending": "이번에 쓰지 않기로 한 끝맺음을 썼다",
     "praise": "평가하거나 칭찬하는 낱말이 들어갔다",
     "meta": "설명이나 고쳐 쓰기가 섞였다",
-    "third_honorific": "리더가 아닌 사람이 한 일에 높임을 붙였다",
     "dup": "'말씀'을 두 번 썼다",
     "quote_cap": "'-다는 말씀이네요' 꼴을 너무 자주 썼다",
     "empty": "문장이 없었다",
 }
+
+
+def _limit(kind: str) -> int:
+    return ALIGN_MAX_EOJEOL if kind == "align" else (PROBE_PROMPT_EOJEOL if kind == "probe" else SMALL_MAX_EOJEOL)
+
+
+def retry_note(why: str | None, kind: str = "probe") -> str:
+    """다시 쓸 때 넘기는 한 줄 사유."""
+    return RETRY_NOTES.get(str(why or ""), "쓸 수 없는 문장이었다").format(limit=_limit(kind))
 
 
 def receivable(answer: str | None, prev_answer: str | None = None) -> bool:
@@ -79,7 +84,7 @@ def receivable(answer: str | None, prev_answer: str | None = None) -> bool:
 
 
 def build_receive_prompt(*, leader_answer: str, persona_name: str | None, kind: str = "probe", avoid_endings: list[str] | None = None,
-                         retry_note: str | None = None, no_quote: bool = False) -> str:
+                         retry_note: str | None = None, no_quote: bool = False, retry_prev: str | None = None) -> str:
     from diag_project.services.persona_register import register_hint
     from diag_project.services.turn_checks import RECEIVE_ENDING_HINT
     ans = re.sub(r"\s+", " ", (leader_answer or "").strip())[-ANSWER_TAIL_CHARS:]
@@ -87,7 +92,7 @@ def build_receive_prompt(*, leader_answer: str, persona_name: str | None, kind: 
     avoid = [RECEIVE_KEY_HINT.get(x, x) for x in (avoid_endings or []) if x][:2]
     from diag_project.services.persona_register import register_of as _rof_p
     formal = _rof_p(persona_name) == "formal"
-    limit = ALIGN_MAX_EOJEOL if kind == "align" else (PROBE_PROMPT_EOJEOL if kind == "probe" else 12)
+    limit = _limit(kind)
     return (
         "당신은 리더십 코치입니다. 리더가 방금 한 말을 한 문장으로 받습니다.\n\n"
         f"[리더가 방금 한 말]\n{ans}\n\n"
@@ -100,11 +105,12 @@ def build_receive_prompt(*, leader_answer: str, persona_name: str | None, kind: 
         + "- 지난 일은 지난 일로 쓴다 — 지금 하고 있는 일처럼 옮기지 않는다.\n"
         + ("- 이번에는 끝을 " + ", ".join(avoid) + " 꼴로 맺지 않는다 — 다른 꼴로 맺는다.\n" if avoid and kind in ("probe", "align") else "")
         + ("- 이번에는 '-다는 말씀이네요', '-다는 말씀이군요' 꼴을 쓰지 않는다.\n" if no_quote and kind == "probe" else "")
-        + "- 높임은 리더에게만 쓴다. 팀원·강사·교육생처럼 리더가 아닌 사람이 한 말·걱정·반응을 다시 말할 때는 그 사람을 주어로 밝혀 쓰고 "
-        "높임 어미를 붙이지 않는다. 주어를 빼서 리더가 한 일처럼 읽히게 쓰지 않는다.\n"
+        + "- 팀원·강사·교육생처럼 리더가 아닌 사람이 한 말·걱정·반응을 다시 말할 때는 그 사람을 주어로 밝혀 쓴다. "
+        "주어를 빼서 리더가 한 일처럼 읽히게 쓰지 않는다.\n"
         "- 문장을 '리더님'으로 시작하지 않는다. '말씀'이라는 낱말은 한 번만 쓴다.\n"
         "- 리더를 부를 때는 '리더님'이라고만 한다.\n"
         + (f"- 말투: {register_hint(persona_name)}\n" if kind in ("smalltalk", "role") else "- 존댓말로 쓴다.\n")
+        + (f"- 앞서 쓴 문장: {retry_prev}\n" if retry_note and retry_prev else "")      # (P14f-3) 길이로 떨어졌을 때만 앞 문장을 보여 준다 — 절 하나만 남기게
         + (f"- 앞서 쓴 문장은 쓸 수 없었다 — {retry_note}. 그 점을 고쳐 새로 쓴다.\n" if retry_note else "")
         + "\n출력: 다시 말하는 한 문장만. 설명, 고쳐 쓰기, 따옴표 풀이를 덧붙이지 않는다."
     )
@@ -133,6 +139,16 @@ def words_from_answer(sentence: str | None, answer: str | None) -> bool:
     return all(re.sub(r"\s+", "", m.group(0)) in ans for m in _KOR_COUNT_RE.finditer(sentence or ""))
 
 
+# (2026-11-18 P14f-2) 모른다는 답을 되받은 받는 말 — p14e Jessica 전환 턴: '설문 항목을 어떻게 구성했는지는 기억이 안 난다고 하셨군요.'
+_NO_RECALL_ECHO_RE = re.compile(r"기억(이|은|도)?\s*(잘\s*)?(안\s*[나난날납]|나지\s*않|에\s*없)|떠오르지\s*않|안\s*떠오|모르겠|모른다고|생각(이|은)?\s*(잘\s*)?(안\s*[나난날납]|나지\s*않)")
+
+
+def echoes_no_recall(sentence: str | None) -> bool:
+    """받는 말이 '기억이 안 난다·모르겠다'는 리더의 말을 되받았는가 — 전환 턴에서는 이 받는 말 대신 고정 받기를 쓴다."""
+    from diag_project.services.bei_engine import is_no_recall_text
+    return bool(is_no_recall_text(sentence) or _NO_RECALL_ECHO_RE.search(sentence or ""))
+
+
 def strip_lead_address(sentence: str | None) -> str:
     """(P14b-2 → P14c-3) 받는 말 문장 머리의 '리더님,/리더님은/리더님이/리더님께서'를 뗀다(모든 끝맺음) — 받는 말은 주어 없이 쓴다."""
     return _LEAD_ADDRESS_RE.sub("", (sentence or "").strip(), count=1)
@@ -140,13 +156,15 @@ def strip_lead_address(sentence: str | None) -> str:
 
 def check_receive(sentence: str | None, answer: str | None, *, kind: str = "probe", formal: bool = False, avoid_endings: list[str] | None = None,
                   no_quote: bool = False) -> tuple[bool, str]:
-    """(통과 여부, 사유: ok | empty | question | ending | long | overlap | ban | words | third_honorific | dup | quote_cap | same_ending)"""
-    from diag_project.services.turn_checks import receive_allowed, receive_ban_reason, receive_ending_key, receive_shared_words
+    """(통과 여부, 사유: ok | empty | meta | question | ending | long | overlap | ban | praise | words | dup)"""
+    from diag_project.services.turn_checks import is_self_talk, receive_allowed, receive_ban_reason, receive_shared_words
     s = (sentence or "").strip()
     if not s:
         return False, "empty"
-    if _META_RE.search(s):
-        return False, "meta"            # (P14e-1) 설명·고쳐 쓰기가 섞인 문장('… — no, must avoid …', '혹은 더 정확히는', '낱말은 …입니다')
+    if _META_RE.search(s) or is_self_talk(s):
+        # (P14e-1) 설명·고쳐 쓰기가 섞인 문장('… — no, must avoid …', '혹은 더 정확히는', '낱말은 …입니다')
+        # (P14f-5) 공통 혼잣말 표지('…꼴로 맺어 한 문장으로 말합니다') · 60자를 넘으면서 쉼표 3개 이상
+        return False, "meta"
     if is_question(s):
         return False, "question"
     if kind in ("smalltalk", "role"):
@@ -166,8 +184,6 @@ def check_receive(sentence: str | None, answer: str | None, *, kind: str = "prob
     ans_ns = re.sub(r"\s+", "", answer or "")
     if find_praise(s) or any(re.sub(r"\s+", "", m.group(0)) not in ans_ns for m in _EVAL_WORD_RE.finditer(s)):
         return False, "praise"
-    if _THIRD_HONORIFIC_RE.search(s):
-        return False, "third_honorific"
     if s.count("말씀") >= 2:
         return False, "dup"
     # (P14c-1 → P14e-3) '가장 많이 쓴 꼴은 쓰지 않는다'·'인용꼴 1/3 이하'는 지시문에만 둔다 — 어겨도 탈락시키지 않는다(p14d: 멀쩡한 문장 8건 탈락).
@@ -198,21 +214,26 @@ def _pre(leader_answer: str | None, prev_answer: str | None, kind: str, llm) -> 
 
 
 async def _attempt(llm, *, leader_answer: str, persona_name: str | None, kind: str, avoid_endings: list[str] | None, no_quote: bool,
-                   note: str | None, trace: list | None) -> tuple[str | None, str]:
-    """한 번 쓰고 확인한다. (통과한 문장 | None, 사유: ok | error | <확인 탈락 사유>)"""
+                   note: str | None, trace: list | None, prev: str | None = None) -> tuple[str | None, str, str | None]:
+    """한 번 쓰고 확인한다. (통과한 문장 | None, 사유: ok | error | <확인 탈락 사유>, 떨어진 문장 | None)"""
     from diag_project.services.persona_register import register_of
     from diag_project.services.turn_checks import fix_leader_address
     try:
         s = await _one(llm, build_receive_prompt(leader_answer=leader_answer, persona_name=persona_name, kind=kind, avoid_endings=avoid_endings,
-                                                 retry_note=note, no_quote=no_quote))
+                                                 retry_note=note, no_quote=no_quote, retry_prev=prev))
     except Exception as e:  # noqa: BLE001
         logger.warning("receive render failed: %s", e)
-        return None, "error"
+        return None, "error", None
     s = strip_lead_address(fix_leader_address(s or ""))
     ok, why = check_receive(s, leader_answer, kind=kind, formal=register_of(persona_name) == "formal", avoid_endings=avoid_endings, no_quote=no_quote)
     if not ok and trace is not None:
         trace.append([f"receive:{kind}", why, (s or "")[:200]])      # (P14d-4) 탈락한 문장과 사유를 턴 기록에 남긴다
-    return (s if ok else None), ("ok" if ok else why)
+    return (s if ok else None), ("ok" if ok else why), (None if ok else (s or None))
+
+
+def _retry_args(why: str, kind: str, failed: str | None) -> dict:
+    """다시 쓰기에 넘길 사유와(길이로 떨어졌을 때만) 앞 문장."""
+    return {"note": retry_note(why, kind), "prev": (failed if why == "long" else None)}
 
 
 def _no_quote(kind: str, session_keys: list[str] | None) -> bool:
@@ -229,41 +250,44 @@ async def render_receive(llm, *, leader_answer: str, persona_name: str | None, k
         return None, pre
     nq = _no_quote(kind, session_keys)
     why = "empty"
-    note = None
+    extra: dict = {"note": None, "prev": None}
     for attempt in (0, 1):
-        s, why = await _attempt(llm, leader_answer=leader_answer, persona_name=persona_name, kind=kind, avoid_endings=avoid_endings, no_quote=nq, note=note, trace=trace)
+        s, why, failed = await _attempt(llm, leader_answer=leader_answer, persona_name=persona_name, kind=kind, avoid_endings=avoid_endings, no_quote=nq,
+                                        trace=trace, **extra)
         if s:
             return s, ("llm_retry" if attempt else "llm")
         if why == "error":
             return None, "miss:error"
-        note = RETRY_NOTES.get(why, "쓸 수 없는 문장이었다")
+        extra = _retry_args(why, kind, failed)
     return None, f"miss:{why}"
 
 
 async def render_receive_gated(llm, *, leader_answer: str, persona_name: str | None, gate=None, avoid_endings: list[str] | None = None,
-                               prev_answer: str | None = None, session_keys: list[str] | None = None, trace: list | None = None) -> tuple[str | None, str, str | None]:
-    """(P14e-2) 본론 받는 말 — 슬롯 판정과 함께 돈다. 반환 (받는 말 | None, 모드, 미룬 다시 쓰기의 사유 | None).
+                               prev_answer: str | None = None, session_keys: list[str] | None = None,
+                               trace: list | None = None) -> tuple[str | None, str, str | None, str | None]:
+    """(P14e-2) 본론 받는 말 — 슬롯 판정과 함께 돈다. 반환 (받는 말 | None, 모드, 미룬 다시 쓰기의 사유 | None, 그때 떨어진 문장 | None).
     한 번 떨어졌을 때 판정(gate)이 아직 끝나지 않았으면 그 자리에서 한 번 더 쓴다(지연이 늘지 않는다).
     판정이 이미 끝났으면 다시 쓰지 않고 사유를 돌려준다 — 호출자가 전환 턴일 때만 render_receive_retry 로 한 번 더 쓴다."""
     pre = _pre(leader_answer, prev_answer, "probe", llm)
     if pre:
-        return None, pre, None
+        return None, pre, None, None
     nq = _no_quote("probe", session_keys)
-    s, why = await _attempt(llm, leader_answer=leader_answer, persona_name=persona_name, kind="probe", avoid_endings=avoid_endings, no_quote=nq, note=None, trace=trace)
+    s, why, failed = await _attempt(llm, leader_answer=leader_answer, persona_name=persona_name, kind="probe", avoid_endings=avoid_endings, no_quote=nq,
+                                    note=None, trace=trace)
     if s:
-        return s, "llm", None
+        return s, "llm", None, None
     if why == "error":
-        return None, "miss:error", None
+        return None, "miss:error", None, None
     if gate is not None and gate.done():
-        return None, f"miss:{why}", why
-    s, why2 = await _attempt(llm, leader_answer=leader_answer, persona_name=persona_name, kind="probe", avoid_endings=avoid_endings, no_quote=nq,
-                             note=RETRY_NOTES.get(why, "쓸 수 없는 문장이었다"), trace=trace)
-    return (s, "llm_retry", None) if s else (None, f"miss:{why2}", None)
+        return None, f"miss:{why}", why, failed
+    s, why2, _f = await _attempt(llm, leader_answer=leader_answer, persona_name=persona_name, kind="probe", avoid_endings=avoid_endings, no_quote=nq,
+                                 trace=trace, **_retry_args(why, "probe", failed))
+    return (s, "llm_retry", None, None) if s else (None, f"miss:{why2}", None, None)
 
 
 async def render_receive_retry(llm, *, leader_answer: str, persona_name: str | None, why: str, avoid_endings: list[str] | None = None,
-                               session_keys: list[str] | None = None, trace: list | None = None) -> tuple[str | None, str]:
-    """(P14e-2) 미뤄 둔 다시 쓰기 한 번 — 전환 턴에서만 부른다."""
-    s, why2 = await _attempt(llm, leader_answer=leader_answer, persona_name=persona_name, kind="probe", avoid_endings=avoid_endings,
-                             no_quote=_no_quote("probe", session_keys), note=RETRY_NOTES.get(why, "쓸 수 없는 문장이었다"), trace=trace)
+                               session_keys: list[str] | None = None, trace: list | None = None, failed: str | None = None) -> tuple[str | None, str]:
+    """(P14e-2) 미뤄 둔 다시 쓰기 한 번 — 전환 턴에서만 부른다. failed = 처음에 떨어진 문장(길이로 떨어졌을 때 앞 문장으로 보여 준다)."""
+    s, why2, _f = await _attempt(llm, leader_answer=leader_answer, persona_name=persona_name, kind="probe", avoid_endings=avoid_endings,
+                                 no_quote=_no_quote("probe", session_keys), trace=trace, **_retry_args(why, "probe", failed))
     return (s, "llm_retry") if s else (None, f"miss:{why2}")

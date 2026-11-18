@@ -387,6 +387,17 @@ def first_probe_addressee_fix(question: str | None, leader_answer: str | None) -
 
 # (2026-11-15 P13g-2·3) 혼잣말·지시문 낱말이 섞인 질문, 코치 자신이 주어인 동사에 묻는 어미가 붙은 꼴
 _FP_META_RE = re.compile(r"규칙|지시|한\s*문장이어야|—|아니,")
+# (2026-11-18 P14f-5) 전용 호출(첫 꼬리·받는 말·구체화) 공통 혼잣말 표지 — p14e Lucas: 첫 꼬리 질문에 '…되겠느냐는 뜻이 아니라, …'가 섞인 채 나갔고,
+#   받는 말 자리에 '…꼴로 맺어 한 문장으로 말합니다.'가 나왔다(끝맺음 확인에서 떨어져 밖으로 나가지는 않았다).
+SELF_TALK_RE = re.compile(r"뜻이\s*아니라|되겠느냐는|맺어\s*한\s*문장으로|로\s*말합니다|꼴로")
+RAMBLE_CHARS = 60
+RAMBLE_COMMAS = 3
+
+
+def is_self_talk(text: str | None) -> bool:
+    """전용 호출 출력에 혼잣말이 섞였는가 — 표지가 있거나, 60자를 넘으면서 쉼표가 3개 이상이다(다시 쓴다)."""
+    t = (text or "").strip()
+    return bool(SELF_TALK_RE.search(t)) or (len(t) > RAMBLE_CHARS and len(re.findall(r"[,，]", t)) >= RAMBLE_COMMAS)
 _FP_SELF_VERB_RE = re.compile(r"(여쭙고|여쭤보고|묻고|듣고|알고)\s*싶습니까|여쭙겠습니까|묻겠습니까|궁금합니까|궁금하십니까")
 # (P14d-6) '…궁금해요/궁금합니다.'는 자연스러운 말이라 뺐다 — '…궁금하네요.', '…여쭤봐도 될까요?'만 남긴다
 _FP_WONDER_END_RE = re.compile(r"(궁금하네요|궁금하군요)[.?!]*\s*$|여쭤(봐)?도\s*될까요\??\s*$|여쭙고\s*싶습니다[.?!]*\s*$")
@@ -418,7 +429,7 @@ def first_probe_question_ok(question: str | None, leader_answer: str | None = No
     if not q:
         return False, "no_question"
     from diag_project.services.output_guard import split_sentences as _ss_fp
-    if _FP_META_RE.search(q) or len([x for x in _ss_fp(q) if x.strip()]) >= 2:
+    if _FP_META_RE.search(q) or is_self_talk(q) or len([x for x in _ss_fp(q) if x.strip()]) >= 2:
         return False, "meta"
     if _FP_SELF_VERB_RE.search(q):
         return False, "self_verb"
@@ -510,13 +521,48 @@ _OVERLAP_GENERIC = frozenset(("리더", "어떻", "어떤", "무엇", "무슨", 
                               "들려", "떠올", "알려", "짚어", "궁금", "여쭙", "여쭤", "주시", "주실", "주세", "어땠", "되었", "보셨", "느끼", "드셨"))
 
 
+# (2026-11-18 P14f-4) 낱말 겹침은 앞 두 음절을 어간 꼴로 펴서 견준다 — 활용형이 서로 어긋났다('나눴고' 대 '나누셨을', '미뤄야' 대 '미루기로', '전한' 대 '전하실').
+#   둘째 음절: 받침 ㅆ·ㄴ·ㄹ을 떼고(과거·관형형), 받침이 없거나 ㅆ이면 줄어든 모음을 편다(ㅝ→ㅜ, ㅘ→ㅗ, ㅕ→ㅣ, ㅙ→ㅚ, '해/했'→'하').
+#   '랐/렀' 앞 음절에 ㄹ 받침이 있으면 '르' 꼴로('골랐'→'고르'). 첫 음절은 받침 ㅆ만 편다('했습니다'→'하습'). '있'·'겠'은 그대로 둔다.
+#   낱말을 가르는 것이 아니라 겹침을 견주는 열쇠다 — 명사도 같은 규칙을 양쪽에 똑같이 적용하므로 서로는 그대로 맞는다('확인'↔'확인').
+_UNCONTRACT_VOWEL = {14: 13, 9: 8, 6: 20, 10: 11}
+_STEM_DROP_FINAL = (20, 4, 8)      # ㅆ · ㄴ · ㄹ
+
+
+def _stem_syllable(ch: str, *, past_only: bool = False) -> str:
+    code = ord(ch) - 0xAC00
+    if not 0 <= code < 11172 or ch in "있겠":
+        return ch
+    cho, jung, jong = code // 588, (code % 588) // 28, code % 28
+    if jong not in ((20,) if past_only else (0,) + _STEM_DROP_FINAL):
+        return ch
+    if jong in (0, 20):
+        if cho == 18 and jung == 1:      # '해/했' → '하'
+            jung = 0
+        elif jong == 20 or not past_only:
+            jung = _UNCONTRACT_VOWEL.get(jung, jung)
+    return chr(0xAC00 + cho * 588 + jung * 28)
+
+
+def overlap_stem(chunk: str) -> str:
+    """내용 낱말의 앞 두 음절(어간 꼴) — 겹침을 견주는 열쇠."""
+    k = (chunk or "")[:2]
+    if len(k) < 2:
+        return k
+    c0 = ord(k[0]) - 0xAC00
+    if k[1] in "랐렀" and 0 <= c0 < 11172 and c0 % 28 == 8:      # 르 불규칙 — '골랐'→'고르', '불렀'→'부르'
+        return chr(0xAC00 + c0 - 8) + "르"
+    return _stem_syllable(k[0], past_only=True) + _stem_syllable(k[1])
+
+
 def question_overlap(question: str | None, answer: str | None) -> list[str]:
-    """질문 문장에 리더의 답과 겹치는 내용 낱말(앞 두 글자 기준) — 지시어·의문사·흔한 낱말은 세지 않는다. 겹친 낱말(질문 쪽 표기) 목록.
+    """질문 문장에 리더의 답과 겹치는 내용 낱말(앞 두 음절의 어간 꼴 기준) — 지시어·의문사·흔한 낱말은 세지 않는다. 겹친 낱말(질문 쪽 표기) 목록.
     지시어('그때'·'그 결정')를 보는 검사가 아니다 — 겹치는 낱말이 하나라도 있는지만 본다."""
-    a = {c[:2] for c in _content_chunks(answer or "") if len(c) >= 2} - _OVERLAP_GENERIC
+    generic = _OVERLAP_GENERIC | {overlap_stem(g) for g in _OVERLAP_GENERIC}
+    a = {overlap_stem(c) for c in _content_chunks(answer or "") if len(c) >= 2 and c[:2] not in generic} - generic
     out: list[str] = []
     for c in _content_chunks(question or ""):
-        if len(c) >= 2 and c[:2] in a and c[:2] not in _OVERLAP_GENERIC and c not in out:
+        if len(c) >= 2 and overlap_stem(c) in a and c[:2] not in generic and c not in out:
             out.append(c)
     return out
 
@@ -637,12 +683,12 @@ RECEIVE_MIN_SHARED = 2             # 리더 직전 답과 겹치는 내용 낱�
 
 
 def receive_shared_words(receive: str | None, user_text: str | None) -> list[str]:
-    """받는 말의 내용 낱말 가운데 리더 직전 답에도 있는 것(앞 두 글자 기준, 흔한 낱말 제외)."""
+    """받는 말의 내용 낱말 가운데 리더 직전 답에도 있는 것(앞 두 음절의 어간 꼴 기준, 흔한 낱말 제외)."""
     return question_overlap(receive, user_text)
 
 
 # (2026-11-16 P14-1) 받는 말 전용 호출의 지시문에 넣는 끝맺음 꼴(어미만 — 따옴표로 묶은 완성 문장 꼴은 넣지 않는다)
-RECEIVE_ENDING_HINT = "-셨군요, -셨네요, -셨지요, -다는 말씀이군요, -다는 말씀이네요, -신 거군요, -신 거네요(리더가 아닌 사람이 한 일은 -했군요, -했네요, -했다는 말씀이네요)"
+RECEIVE_ENDING_HINT = "-셨군요, -셨네요, -셨지요, -다는 말씀이군요, -다는 말씀이네요, -신 거군요, -신 거네요(높임 없이 맺을 때는 -했군요, -했네요, -했다는 말씀이네요)"
 # (2026-11-17 P14c-1) 끝맺음 갈래 → 지시문에 적는 꼴
 RECEIVE_KEY_HINT: dict[str, str] = {"셨군요": "-셨군요", "셨네요": "-셨네요", "셨지요": "-셨지요", "말씀이군요": "-다는 말씀이군요", "말씀이네요": "-다는 말씀이네요",
                                     "말씀이지요": "-다는 말씀이지요", "거군요": "-신 거군요", "거네요": "-신 거네요", "거죠": "-신 거죠", "셨습니다": "-셨습니다",
@@ -751,7 +797,7 @@ def specify_question_ok(question: str | None) -> tuple[bool, str]:
     if not q:
         return False, "no_question"
     from diag_project.services.output_guard import split_sentences as _ss_sp
-    if _FP_META_RE.search(q) or len([x for x in _ss_sp(q) if x.strip()]) >= 2:
+    if _FP_META_RE.search(q) or is_self_talk(q) or len([x for x in _ss_sp(q) if x.strip()]) >= 2:
         return False, "meta"
     if _FP_UNFINISHED_RE.search(q):
         return False, "unfinished"
