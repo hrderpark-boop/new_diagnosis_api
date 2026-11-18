@@ -20,7 +20,9 @@
 
 조건(코치마다, 하나라도 넘으면 종료 코드 1):
     p50 ≤ 3.8초 · p95 ≤ 8.0초(점검표 값 — 올림 순위) · 재생성 걸린 턴 ≤ 8 · 형식미해결 0 · 깨진 문장 0 · 첫 꼬리 질문 fallback ≤ 1
-    (P14b) 받는 말 있는 본론 턴 40~75% · 받는 말 평균 9어절 이하 · 12어절 초과 0 · 받는 말과 질문 앞 절이 겹친 턴 0(낱말 겹침 60% 이상)
+    (P14e) (A) 맥락 없는 본론 턴 ≤ 20% — 받는 말도 없고 질문 앞 절이 리더 직전 답의 내용도 담지 않은 턴(받을 내용 없는 답 뒤의 턴은 뺀다)
+           (B) 전환 턴(사례를 닫고 다음을 여는 턴)에 받는 말 ≥ 80% · (C) 받는 말 있는 본론 턴 ≤ 75%, 받는 말 연속 4턴 이상 0
+    (P14b) 받는 말 평균 9어절 이하 · 12어절 초과 0 · 받는 말과 질문 앞 절이 겹친 턴 0(낱말 겹침 60% 이상)
            받는 말 끝맺음 한 가지 ≤ 40% · 8어절 미만 질문 중 받는 말 없이 나간 것 ≤ 1 · 구체화 질문이 2회 이상인 사례 0
     '구체화 질문이 구체화를 물었는가'도 사람이 읽어 판정한다.
   '첫 꼬리 질문이 리더 본인의 말·조치를 물었는가'(사례의 78% 이상)는 사람이 읽어 판정한다 — 이 스크립트는 문장만 뽑아 준다.
@@ -55,7 +57,10 @@ LIMITS: tuple[tuple[str, str, float | None, float], ...] = (
     ("p50 ≤ 3.8초", "p50", None, 3.8), ("p95 ≤ 8.0초", "p95", None, 8.0), ("재생성 턴 ≤ 8", "regen_turns", None, 8), ("형식미해결 0", "format_miss", None, 0),
     ("깨진 문장 0", "broken_total", None, 0), ("첫 꼬리 fallback ≤ 1", "fp_fallback", None, 1),
     # (2026-11-16 P14 → P14b) 받는 말: 한 턴에 리더 말을 되짚는 것은 한 번 — 있는 턴 40~75%, 평균 9어절 이하, 12어절 초과 0, 질문 앞 절과 겹친 턴 0, 끝맺음 최다 40% 이하
-    ("받는 말 있는 본론 턴 40~75%", "recv_have_pct", 40, 75), ("받는 말 평균 ≤ 9어절", "recv_avg_eojeol", None, 9), ("받는 말 12어절 초과 0", "recv_over12", None, 0),
+    # (2026-11-18 P14e) '받는 말 있는 턴 40~75%'는 폐기 — (A) 맥락 없는 본론 턴 ≤ 20% · (B) 전환 턴에 받는 말 ≥ 80% · (C) 받는 말 있는 턴 ≤ 75%·연속 4턴 이상 0
+    ("(A) 맥락 없는 본론 턴 ≤ 20%", "bare_pct", None, 20), ("(B) 전환 턴에 받는 말 ≥ 80%", "trans_recv_pct", 80, 100),
+    ("(C) 받는 말 있는 본론 턴 ≤ 75%", "recv_have_pct", None, 75), ("(C) 받는 말 연속 4턴 이상 0", "recv_streak4", None, 0),
+    ("받는 말 평균 ≤ 9어절", "recv_avg_eojeol", None, 9), ("받는 말 12어절 초과 0", "recv_over12", None, 0),
     ("받는 말·질문 앞 절 겹침 0", "recv_echo_n", None, 0), ("받는 말 끝맺음 최다 ≤ 40%", "recv_top_end_pct", None, 40),
     ("8어절 미만 질문 중 받는 말 없는 것 ≤ 1", "short_bare", None, 1), ("구체화 질문 2회 이상인 사례 0", "specify_multi", None, 0),
 )
@@ -71,24 +76,44 @@ def receive_stats(rows: list[dict]) -> dict:
     from collections import Counter
     import regression_table as rt
     from diag_project.services.output_guard import _content_chunks, is_question
-    from diag_project.services.turn_checks import question_front_clause
+    from diag_project.services.receive_render import receivable
+    from diag_project.services.turn_checks import question_front_clause, question_overlap
     by_instr: dict[str, list[int]] = {}
+    bare: list[str] = []          # (A) 받는 말도 없고 질문 앞 절이 리더 직전 답의 내용도 담지 않은 턴(질문 문장)
+    main_n = 0
+    trans: list[tuple[bool, str]] = []      # (B) 전환 턴 (받는 말 있음, 원문) — 리더 직전 답이 받을 내용 없는 답이면 뺀다
+    streak = 0
+    streak4 = 0
     ends: Counter = Counter()
     rules: Counter = Counter()
     lens: list[int] = []
     echo: list[str] = []
     short_bare: list[str] = []
-    for r in rows:
+    for i, r in enumerate(rows):
         if r.get("role") != "model" or r.get("instr") not in MAIN_INSTR:
             continue
         g = r.get("guard") or {}
         out = g.get("recv_out")
         if g.get("recv_rule"):
             rules[str(g.get("recv_rule"))] += 1
-        if out == "slot":
-            continue
+        prev_ans = rows[i - 1].get("content") or "" if i > 0 and rows[i - 1].get("role") == "user" else ""
+        can_recv = receivable(prev_ans)
         sents = [x.strip() for x in rt.sentences(r.get("content") or "") if x.strip()]
         qs = [x for x in sents if is_question(x)]
+        has = bool(out) and out != "slot"
+        streak = streak + 1 if has else 0
+        if streak == 4:
+            streak4 += 1
+        if r["instr"] in ("EPISODE_OPEN", "SWEEP_ANCHOR") and can_recv:
+            trans.append((has, (r.get("content") or "").strip()))
+        if can_recv:                       # (A) 받을 내용이 없는 답 뒤의 턴은 따지지 않는다
+            main_n += 1
+            front = question_front_clause(qs[0]) if qs else ""
+            carries = bool(front) and len(question_overlap(front, prev_ans)) >= 2
+            if not has and out != "slot" and not carries and qs:
+                bare.append(qs[0])
+        if out == "slot":
+            continue
         a = by_instr.setdefault(r["instr"], [0, 0])
         a[1] += 1
         if out:
@@ -105,7 +130,9 @@ def receive_stats(rows: list[dict]) -> dict:
             short_bare.append(qs[-1])
     have = sum(v[0] for v in by_instr.values()); total = sum(v[1] for v in by_instr.values())
     top = ends.most_common(1)[0][1] if ends else 0
-    return {"recv_have_pct": round(100 * have / total, 1) if total else None, "recv_top_end_pct": round(100 * top / have, 1) if have else None,
+    return {"bare_pct": round(100 * len(bare) / main_n, 1) if main_n else None, "bare_list": bare, "main_n": main_n,
+            "trans_recv_pct": round(100 * sum(1 for h, _t in trans if h) / len(trans), 1) if trans else None, "trans_list": trans, "recv_streak4": streak4,
+            "recv_have_pct": round(100 * have / total, 1) if total else None, "recv_top_end_pct": round(100 * top / have, 1) if have else None,
             "recv_avg_eojeol": round(sum(lens) / len(lens), 1) if lens else None, "recv_over12": sum(1 for n in lens if n > 12),
             "recv_echo_n": len(echo), "recv_echo": echo, "short_bare": len(short_bare), "short_bare_list": short_bare,
             "recv_by_instr": {k: f"{v[0]}/{v[1]}" for k, v in by_instr.items()}, "recv_ends": dict(ends.most_common()), "recv_rules": dict(rules.most_common())}
@@ -266,6 +293,10 @@ def main(argv: list[str] | None = None) -> int:
             L.append("그중 받는 말 없이 나간 것: " + " / ".join(ms[c]["short_bare_list"]))
         for k, v in sorted(ms[c]["call_drops"].items(), key=lambda kv: -len(kv[1])):
             L.append(f"탈락 [{k}] {len(v)}건: " + " / ".join(v[:3]))
+        L.append(f"(A) 맥락 없는 본론 턴 {len(ms[c]['bare_list'])}/{ms[c]['main_n']}:")
+        L += [f"   - {q}" for q in ms[c]["bare_list"]]
+        L.append(f"(B) 전환 턴 {len(ms[c]['trans_list'])}개(받는 말 있음 {sum(1 for h, _t in ms[c]['trans_list'] if h)}):")
+        L += [f"   - [{'받는 말' if h else '없음'}] {t}" for h, t in ms[c]["trans_list"]]
         if ms[c]["recv_echo"]:
             L.append("받는 말과 질문 앞 절이 겹친 턴: " + " / ".join(ms[c]["recv_echo"]))
         L.append("")

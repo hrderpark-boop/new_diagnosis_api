@@ -983,6 +983,9 @@ async def _submit_message_phase3a(
     _fp_final = None    # (2026-11-15 P13d-2) 사례의 첫 꼬리 질문 턴의 완성 문장(질문 한 문장) — 전용 호출(또는 대체 문장)이 만들고, 뒤 단계가 바꾸지 못하게 끝에서 다시 놓는다
     _pre_recv_text = None   # (2026-11-15 P13f-4) 사례를 닫으며 매핑과 함께 받아 둔 받는 말(이 턴에만 쓴다 — 세션 상태에 남기지 않는다)
     _specify_q_text = None  # (2026-11-18 P14d-5) 구체화 전용 호출이 쓴 질문 — 방향을 정하는 자리에서 받아 두고, 합격했을 때만 그 턴을 구체화 턴으로 삼는다
+    _recv_retry_why = None  # (2026-11-18 P14e-2) 받는 말이 한 번 떨어졌고 다시 쓰기를 미뤘을 때의 사유 — 전환 턴이면 여는 턴 분기에서 한 번 더 쓴다
+    _recv_args_r = None
+    _recv_leaks = None
     _call_drops: list = []  # (2026-11-18 P14d-4) 전용 호출(받는 말·첫 꼬리·구체화)에서 탈락한 문장 [[호출, 사유, 문장], …] — 턴 기록에 남긴다
     _reask_kind = None  # (2026-11-12 P11-A3·H) 'clarify'(되묻기) | 'contentless'(받을 내용 없는 답) — 사례 턴에서 원장·슬롯 판정 없이 직전 질문만 다시 쓴다
     _align_ctx = None   # (2026-10-28 P0-1) ALIGN 조립 재료 — 후처리 끝에 render_align 으로 조립
@@ -1352,21 +1355,27 @@ async def _submit_message_phase3a(
                 _top_key_r = _mure_r(_all_keys_r)      # (2026-11-17 P14c-1) 이번 세션에서 가장 많이 쓴 끝맺음은 이번 턴에 쓰지 않는다(동률이면 가장 최근 것)
                 _recv_keys_r = [_top_key_r] if _top_key_r else []
                 _t0_r = _time.perf_counter()
-                _res_r = await _aio_r.gather(
-                    _judge_slots(llm, transcript=_tr, prev_slots=_ep.get("slots"), closed_cases=(_cands_r or None)),
-                    _rr_r(llm, leader_answer=_bei_user_text, persona_name=(state.get("coach_persona") or {}).get("name"), kind="probe",
-                          avoid_endings=_recv_keys_r, prev_answer=_prev_user_r, session_keys=_all_keys_r, trace=_call_drops),
-                    return_exceptions=True)
+                # (2026-11-18 P14e-2) 받는 말이 확인에서 떨어지면 사유를 넘겨 한 번 더 쓴다 — 슬롯 판정이 아직 끝나지 않았을 때만 그 자리에서(지연이 늘지 않는다).
+                #   판정이 먼저 끝났으면 사유만 받아 두고(_recv_retry_why), 이 턴이 사례를 닫는 전환 턴이면 아래 여는 턴 분기에서 한 번 더 쓴다.
+                from diag_project.services.receive_render import render_receive_gated as _rrg_r
+                _recv_args_r = dict(leader_answer=_bei_user_text, persona_name=(state.get("coach_persona") or {}).get("name"),
+                                    avoid_endings=_recv_keys_r, session_keys=_all_keys_r, trace=_call_drops)
+                _jt_r = _aio_r.ensure_future(_judge_slots(llm, transcript=_tr, prev_slots=_ep.get("slots"), closed_cases=(_cands_r or None)))
+                _res_r = await _aio_r.gather(_jt_r, _rrg_r(llm, gate=_jt_r, prev_answer=_prev_user_r, **_recv_args_r), return_exceptions=True)
                 if isinstance(_res_r[0], BaseException):
                     raise _res_r[0]
                 _jd = _res_r[0]
-                _pre_recv_text, _pr_mode_r = (None, "miss:error") if isinstance(_res_r[1], BaseException) else _res_r[1]
-                if _pre_recv_text:
+                _pre_recv_text, _pr_mode_r, _recv_retry_why = (None, "miss:error", None) if isinstance(_res_r[1], BaseException) else _res_r[1]
+
+                def _recv_leaks(_t_rl: str) -> bool:
                     # (2026-11-17 P14c-4) 받는 말도 엄격 누설 검사를 거친다(호출 없음) — 걸리면 그 받는 말만 버린다. 끝에서 붙는 문장이라 8-y 를 지나지 않는다.
                     from diag_project.services.leak_lexicon import find_leaks as _fl_r, find_state_report as _fsr_r
                     from diag_project.services.output_guard import find_state_leak as _fsl_r
-                    if _fl_r(_pre_recv_text, [_bei_user_text], strict=True) or _fsr_r(_pre_recv_text) or _fsl_r(_pre_recv_text):
-                        _pre_recv_text, _pr_mode_r = None, "miss:leak"
+                    return bool(_fl_r(_t_rl, [_bei_user_text], strict=True) or _fsr_r(_t_rl) or _fsl_r(_t_rl))
+
+                if _pre_recv_text and _recv_leaks(_pre_recv_text):
+                    _call_drops.append(["receive:probe", "leak", _pre_recv_text[:200]])
+                    _pre_recv_text, _pr_mode_r = None, "miss:leak"
                 _tm["pre_recv"] = _pr_mode_r
                 _tm["judge_par_s"] = round(_time.perf_counter() - _t0_r, 2)
                 _tm["specific"] = _jd.get("specific")
@@ -1958,6 +1967,14 @@ async def _submit_message_phase3a(
             llm_output = {"reply": _fp_final}
             _tm["no_regen"] = 1
         elif _tm.get("pre_recv") not in (None, "stub") and instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and chapter:
+            if not _pre_recv_text and _recv_retry_why and _recv_args_r:
+                # (2026-11-18 P14e-2) 전환 턴은 반드시 한 번 더 쓴다 — 판정이 먼저 끝나 미뤄 둔 다시 쓰기
+                from diag_project.services.receive_render import render_receive_retry as _rrr_o
+                _pre_recv_text, _mode_o = await _rrr_o(llm, why=_recv_retry_why, **_recv_args_r)
+                if _pre_recv_text and _recv_leaks and _recv_leaks(_pre_recv_text):
+                    _call_drops.append(["receive:probe", "leak", _pre_recv_text[:200]])
+                    _pre_recv_text, _mode_o = None, "miss:leak"
+                _tm["pre_recv"] = _mode_o
             # (2026-11-15 P13f-4 → 2026-11-16 P14-1) 사례를 닫는 턴 — 받아 둔 받는 말만 쓴다(본 호출을 부르지 않는다). 다음 질문은 시스템이 붙인다.
             #   받는 말을 받지 못했으면(확인 탈락·받을 내용 없음) 받는 말 없이 나간다.
             llm_output = {"reply": str(_pre_recv_text or "")}
@@ -3759,6 +3776,12 @@ async def _submit_message_phase3a(
                 _tm["recv_rule"] = "none"
     elif instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and _tm.get("pre_recv") == "used":
         _tm["recv_rule"] = "C"              # 사례를 닫고 다음으로 넘어가는 턴 — 받는 말을 붙인다
+        if (_pre_recv_text and chapter and system_override_text is None and not _llm_error and not needs_user_decision and (clean_reply or "").strip()
+                and all(is_question_sentence(x) for x in split_sentences(clean_reply) if x.strip())):
+            # (2026-11-18 P14e-5) 전환 턴은 받는 말이 통과했으면 항상 붙인다 — 뒤 단계(받기 내용 검사·입버릇 가드)가 지웠으면 끝에서 다시 놓는다
+            #   (p14·p14b: 통과한 받는 말이 지워진 전환 턴 2~3건씩). 질문은 사전 문안이라 앞 절 규칙(A)을 보지 않는다.
+            clean_reply = f"{_pre_recv_text} {clean_reply}".strip()
+            _tm["recv_rule"] = "C+"
     if (instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and chapter and system_override_text is None and not _llm_error and not needs_user_decision
             and _bei_anchor_text and not (clean_reply or "").strip()):
         # (2026-11-17 P14c-5) 받는 말이 없는 여는 턴 — 본문이 비어 있으면 앞 단계(8-i 안의 시스템 질문 붙이기)를 지나지 못해 코치 턴이 통째로 비었다

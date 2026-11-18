@@ -1539,13 +1539,15 @@ def test_regression_check_judge_limits():
     spec = importlib.util.spec_from_file_location("regression_check", pathlib.Path(__file__).resolve().parent.parent / "tools" / "regression_check.py")
     rc = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rc)
-    good = {"p50": 3.8, "p95": 8.0, "regen_turns": 8, "format_miss": 0, "broken_total": 0, "fp_fallback": 1, "recv_have_pct": 60.0, "recv_avg_eojeol": 9.0,
-            "recv_over12": 0, "recv_echo_n": 0, "recv_top_end_pct": 40.0, "short_bare": 1, "specify_multi": 0}      # (P14b) 조건표
-    assert all(ok for _n, _v, ok in rc.judge(good)) and len(rc.judge(good)) == 13
+    good = {"p50": 3.8, "p95": 8.0, "regen_turns": 8, "format_miss": 0, "broken_total": 0, "fp_fallback": 1, "bare_pct": 20.0, "trans_recv_pct": 80.0,
+            "recv_have_pct": 75.0, "recv_streak4": 0, "recv_avg_eojeol": 9.0, "recv_over12": 0, "recv_echo_n": 0, "recv_top_end_pct": 40.0, "short_bare": 1,
+            "specify_multi": 0}      # (P14e) 조건표 — (A) 맥락 없는 턴 · (B) 전환 턴 받는 말 · (C) 상한·연속
+    assert all(ok for _n, _v, ok in rc.judge(good)) and len(rc.judge(good)) == 16
     for key, bad in (("p50", 3.9), ("p95", 8.2), ("regen_turns", 9), ("format_miss", 1), ("broken_total", 1), ("fp_fallback", 2), ("p95", None),
-                     ("recv_have_pct", 39.0), ("recv_have_pct", 76.0), ("recv_avg_eojeol", 9.1), ("recv_over12", 1), ("recv_echo_n", 1), ("recv_top_end_pct", 41.0),
-                     ("short_bare", 2), ("specify_multi", 1)):
+                     ("bare_pct", 20.5), ("trans_recv_pct", 79.0), ("recv_have_pct", 76.0), ("recv_streak4", 1), ("recv_avg_eojeol", 9.1), ("recv_over12", 1),
+                     ("recv_echo_n", 1), ("recv_top_end_pct", 41.0), ("short_bare", 2), ("specify_multi", 1)):
         assert not all(ok for _n, _v, ok in rc.judge(dict(good, **{key: bad}))), key
+    assert all(ok for _n, _v, ok in rc.judge(dict(good, recv_have_pct=10.0)))      # 하한은 없다
     rows = [{"role": "model", "instr": "EPISODE_PROBE", "content": "야간조에 물량을 넘기셨군요. 그 뒤에 무엇을 하셨습니까?", "guard": {"recv_out": "셨군요", "recv_rule": "B"}},
             {"role": "model", "instr": "EPISODE_PROBE", "content": "그 뒤에 무엇이 달라졌습니까?", "guard": {"recv_out": None, "recv_rule": "D-"}},
             {"role": "model", "instr": "SWEEP_ANCHOR", "content": "반장과 물량을 나누셨네요. 요즘 새로 시도하신 일이 있습니까?", "guard": {"recv_out": "셨네요", "recv_rule": "C"}},
@@ -1553,6 +1555,15 @@ def test_regression_check_judge_limits():
     st = rc.receive_stats(rows)
     assert st["recv_have_pct"] == 66.7 and st["recv_top_end_pct"] == 50.0 and st["recv_by_instr"] == {"EPISODE_PROBE": "1/2", "SWEEP_ANCHOR": "1/1"}
     assert st["short_bare"] == 1 and st["recv_over12"] == 0 and st["recv_rules"] == {"B": 1, "D-": 1, "C": 1}
+    # (P14e) (A)(B) — 리더 직전 답을 함께 준 행으로 따로 본다
+    ua = "야간조에 물량 삼백 상자를 넘기자고 반장에게 제안했습니다."
+    rows2 = [{"role": "user", "content": ua}, {"role": "model", "instr": "EPISODE_PROBE", "content": "그 뒤에 무엇이 달라졌습니까?", "guard": {"recv_out": None}},
+             {"role": "user", "content": ua}, {"role": "model", "instr": "EPISODE_PROBE", "content": "야간조에 물량을 넘기자고 제안하셨을 때, 반장에게 어떤 말로 꺼내셨습니까?", "guard": {"recv_out": None}},
+             {"role": "user", "content": ua}, {"role": "model", "instr": "SWEEP_ANCHOR", "content": "물량을 넘기셨군요. 요즘 새로 시도하신 일이 있습니까?", "guard": {"recv_out": "셨군요"}},
+             {"role": "user", "content": "네."}, {"role": "model", "instr": "SWEEP_ANCHOR", "content": "요즘 새로 시도하신 일이 있습니까?", "guard": {"recv_out": None}}]
+    st2 = rc.receive_stats(rows2)
+    assert st2["bare_list"] == ["그 뒤에 무엇이 달라졌습니까?"] and st2["main_n"] == 3 and st2["bare_pct"] == 33.3      # '네.' 뒤의 턴은 따지지 않는다
+    assert st2["trans_recv_pct"] == 100.0 and len(st2["trans_list"]) == 1 and st2["recv_streak4"] == 0
 
 
 def test_p14_receive_call_everywhere_specificity_and_rapport():
@@ -1571,12 +1582,12 @@ def test_p14_receive_call_everywhere_specificity_and_rapport():
     assert RR.check_receive("쉽지 않은 결정이었을 것으로 보입니다.", ans)[1] == "ending"
     assert RR.check_receive("그 일을 어떻게 하셨습니까?", ans)[1] == "question"
     # (P14c-1) '직전 두 번과 다른 꼴'에서 '이번 세션에서 가장 많이 쓴 꼴은 쓰지 않는다'로 — 넘긴 꼴과 같으면 탈락
-    assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans, avoid_endings=["셨군요"])[1] == "same_ending"
-    assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans, avoid_endings=["셨네요"]) == (True, "ok")
+    # (P14e-3) 끝맺음 제한은 지시문에만 둔다 — 넘긴 꼴과 같아도 탈락시키지 않는다
+    assert RR.check_receive("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", ans, avoid_endings=["셨군요"]) == (True, "ok")
     assert not RR.receivable("네") and not RR.receivable("없어요") and not RR.receivable(ans, prev_answer=ans) and RR.receivable(ans)
     pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Lucas", kind="probe", avoid_endings=["셨군요", "셨네요"])
-    assert "가장 구체적인 낱말 하나만" in pr and "9어절을 넘기지 않는다" in pr and "평가·짐작·감상·칭찬" in pr and "리더님" in pr and "이번에는 끝을 -셨군요, -셨네요 꼴로 맺지 않는다" in pr
-    assert "출력: 평서문 한 문장만." in pr and "'" + "출고" not in pr      # 완성 문장 예시는 넣지 않는다
+    assert "가운데 하나만 골라 짧은 한 문장으로" in pr and "9어절을 넘기지 않는다" in pr and "평가·짐작·감상·칭찬" in pr and "리더님" in pr and "이번에는 끝을 -셨군요, -셨네요 꼴로 맺지 않는다" in pr
+    assert "출력: 다시 말하는 한 문장만." in pr and "'" + "출고" not in pr      # 완성 문장 예시는 넣지 않는다
     # 라포 — 내용 낱말이 모두 리더 답에 있어야 한다(숫자·직함을 다른 뜻으로 풀면 불합격)
     assert RR.check_receive("나른하시군요.", "나른하네", kind="smalltalk") == (True, "ok")
     assert RR.check_receive("오늘 많이 피곤하시군요.", "나른하네", kind="smalltalk")[1] == "words"
@@ -1596,7 +1607,8 @@ def test_p14_receive_call_everywhere_specificity_and_rapport():
             _Twice.n += 1
             return "쉽지 않은 결정이었을 것으로 보입니다." if _Twice.n == 1 else "야간조에 물량 삼백 상자를 넘기자고 제안하셨군요."
     # (P14b-2) 본론 받는 말은 다시 쓰지 않는다 — 한 번 떨어지면 받는 말 없이. 영역 정의·라포는 종전대로 한 번 더 쓴다
-    assert asyncio.run(RR.render_receive(_Twice(), leader_answer=ans, persona_name="Ella")) == (None, "miss:ending") and _Twice.n == 1
+    # (P14b-2 → P14e-2) 본론 받는 말의 다시 쓰기를 되살렸다 — 떨어지면 사유를 넘겨 한 번 더 쓴다
+    assert asyncio.run(RR.render_receive(_Twice(), leader_answer=ans, persona_name="Ella")) == ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "llm_retry")
     _Twice.n = 0
     assert asyncio.run(RR.render_receive(_Twice(), leader_answer=ans, persona_name="Ella", kind="align"))[1] == "llm_retry"
     src = inspect.getsource(D._submit_message_phase3a)
@@ -1640,10 +1652,11 @@ def test_p14b_one_receive_per_turn_specify_call_and_role_echo():
     # 2. 받는 말 — 리더가 아닌 사람에게 높임, '말씀' 두 번, 인용꼴 상한, 머리의 호칭
     assert RR.check_receive("담당자가 인력이 모자란다고 하셨다는 말씀이네요.", ans)[1] == "third_honorific"
     assert RR.check_receive("리더님이 말씀하신 것은 물량을 넘기자는 말씀이네요.", ans)[1] == "dup"
-    assert RR.check_receive("물량 삼백 상자를 넘기자고 하셨다는 말씀이네요.", ans, no_quote=True)[1] == "quote_cap"
+    assert RR.check_receive("물량 삼백 상자를 넘기자고 하셨다는 말씀이네요.", ans, no_quote=True) == (True, "ok")      # (P14e-3) 인용꼴 상한도 지시만
     assert RR.strip_lead_address("리더님이 물량을 넘기자고 하셨다는 말씀이네요.") == "물량을 넘기자고 하셨다는 말씀이네요."
     assert RR.strip_lead_address("리더님께서 물량을 넘기자고 제안하셨군요.") == "물량을 넘기자고 제안하셨군요."      # (P14c-3) 모든 끝맺음에서 뗀다
-    assert not RR.receivable("그 부분은 따로 기억나는 게 없습니다. 다만 그 뒤에 반장과 물량을 다시 나눴습니다.")
+    # (P14e-4) 모른다는 말이 답의 일부로 섞였으면 부른다 — 답 전체가 모른다·없다일 때만 부르지 않는다
+    assert RR.receivable("그 부분은 따로 기억나는 게 없습니다. 다만 그 뒤에 반장과 물량을 다시 나눴습니다.") and not RR.receivable("그 부분은 따로 기억나는 게 없습니다.")
     pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Ella", kind="probe", no_quote=True)
     assert "이번에는 '-다는 말씀이네요'" in pr and "문장을 '리더님'으로 시작하지 않는다" in pr
     # 3. 구체화 질문 — 전용 호출, 확인(구체화 표지가 있고 반응·이유 표지가 묻는 자리에 없다), 한 번 더 쓰기
@@ -1742,7 +1755,7 @@ def test_p14d_plain_past_endings_drop_trace_and_specify_at_decision():
             return "물량을 넘기기가 쉽지 않았겠군요."
     tr = []
     assert asyncio.run(RR.render_receive(_Bad(), leader_answer=ans, persona_name="Ella", trace=tr)) == (None, "miss:ending")
-    assert tr == [["receive:probe", "ending", "물량을 넘기기가 쉽지 않았겠군요."]]
+    assert tr == [["receive:probe", "ending", "물량을 넘기기가 쉽지 않았겠군요."]] * 2      # (P14e-2) 한 번 더 쓰므로 두 건
     class _BadQ:
         async def _generate_with_retry(self, **kw):
             return "그때 담당자는 어떤 반응을 보였습니까?"
@@ -1765,3 +1778,44 @@ def test_p14d_plain_past_endings_drop_trace_and_specify_at_decision():
     st = rc.call_stats([{"role": "model", "guard": {"pre_recv": "miss:ending", "call_drops": [["receive:probe", "ending", "쉽지 않았겠군요."]]}},
                         {"role": "model", "guard": {"pre_recv": "used", "pre_recv_mode": "llm"}}])
     assert st["recv_calls"] == {"miss:ending": 1, "통과": 1} and st["call_drops"] == {"receive:probe·ending": ["쉽지 않았겠군요."]}
+
+
+def test_p14e_receive_prompt_meta_retry_gate_and_transition_receive():
+    """(2026-11-18 P14e) 받는 말 지시문(말투와 무관한 끝맺음·혼잣말 탈락) · 다시 쓰기(판정이 끝나기 전에만, 전환 턴은 미뤄서) · 전환 턴 받는 말 보장."""
+    import asyncio
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import receive_render as RR
+    ans = "출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 제안했습니다. 담당자는 인력이 모자란다고 걱정했지만 동의했습니다."
+    # 1. 지시문 — 합쇼체 코치도 받는 말만은 '-군요/-네요/-지요', 말투 지시 줄은 본론 받는 말에 넣지 않는다
+    pj = RR.build_receive_prompt(leader_answer=ans, persona_name="Jessica", kind="probe")
+    assert "평소 말투와 무관하게 -군요, -네요, -지요 꼴로 맺는다" in pj and "평소 말투가 합쇼체여도 이 문장만은 예외" in pj and "'~요'로 끝내지 않는다" not in pj
+    pe = RR.build_receive_prompt(leader_answer=ans, persona_name="Ella", kind="probe")
+    assert "평소 말투가 합쇼체여도" not in pe and "가운데 하나만 골라 짧은 한 문장으로" in pe and "낱말 하나만 집어" not in pe
+    assert "설명, 고쳐 쓰기, 따옴표 풀이를 덧붙이지 않는다" in pe and "지난 일은 지난 일로 쓴다" in pe
+    assert "말투:" in RR.build_receive_prompt(leader_answer="나른하네", persona_name="Jessica", kind="smalltalk")      # 라포는 종전대로
+    # 혼잣말·설명이 섞인 문장은 탈락
+    for bad in ("담당자가 걱정했다는 말씀이군요 — no, must avoid -셨군요 ending", "가장 구체적인 낱말은 '물량'입니다.",
+                "물량을 넘기자고 하셨다는 말씀이군요, 혹은 더 정확히는: 물량을 넘기기로 하신 거군요."):
+        assert RR.check_receive(bad, ans)[1] == "meta", bad
+    # 2. 다시 쓰기 — 판정이 아직 안 끝났으면 그 자리에서, 끝났으면 사유만 돌려주고 미룬다
+    class _T:
+        n = 0
+        async def _generate_with_retry(self, **kw):
+            _T.n += 1
+            return "물량을 넘기기가 쉽지 않았겠군요." if _T.n == 1 else "야간조에 물량 삼백 상자를 넘기자고 제안하셨군요."
+    async def run():
+        f = asyncio.get_event_loop().create_future()
+        r1 = await RR.render_receive_gated(_T(), leader_answer=ans, persona_name="Ella", gate=f)
+        _T.n = 0
+        f.set_result(1)
+        r2 = await RR.render_receive_gated(_T(), leader_answer=ans, persona_name="Ella", gate=f)
+        r3 = await RR.render_receive_retry(_T(), leader_answer=ans, persona_name="Ella", why=r2[2])
+        return r1, r2, r3
+    r1, r2, r3 = asyncio.run(run())
+    assert r1 == ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "llm_retry", None) and r2 == (None, "miss:ending", "ending") and r3[1] == "llm_retry"
+    assert asyncio.run(RR.render_receive_gated(None, leader_answer="네.", persona_name="Ella")) == (None, "skip:empty", None)
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "_rrg_r(llm, gate=_jt_r" in src and "_rrr_o(llm, why=_recv_retry_why, **_recv_args_r)" in src
+    # 5. 전환 턴 — 통과한 받는 말은 끝에서 다시 놓는다
+    assert '_tm["recv_rule"] = "C+"' in src
