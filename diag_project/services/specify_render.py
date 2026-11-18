@@ -48,7 +48,8 @@ def build_specify_prompt(*, leader_answer: str, target: str, persona_name: str |
     )
 
 
-async def render_specify(llm, *, leader_answer: str, target: str, persona_name: str | None, used_endings: list[str] | None = None) -> tuple[str | None, str]:
+async def render_specify(llm, *, leader_answer: str, target: str, persona_name: str | None, used_endings: list[str] | None = None,
+                         trace: list | None = None) -> tuple[str | None, str]:
     """(질문 한 문장 | None, 모드). 모드 'llm' | 'llm_retry' | 'stub' | 'miss:<사유>'."""
     from diag_project.services.persona_register import apply_register
     from diag_project.services.turn_checks import finish_sentence_marks, fix_leader_address, specify_question_ok
@@ -74,5 +75,7 @@ async def render_specify(llm, *, leader_answer: str, target: str, persona_name: 
         ok, why = specify_question_ok(q)
         if ok:
             return q, ("llm_retry" if attempt else "llm")
+        if trace is not None:
+            trace.append(["specify", why, (q or full or "")[:200]])      # (P14d-4) 탈락한 문장과 사유
         note = RETRY_NOTES.get(why.split(":")[0], "질문으로 쓸 수 없는 문장이었다")
     return None, f"miss:{why}"

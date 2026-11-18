@@ -982,6 +982,8 @@ async def _submit_message_phase3a(
     _reask_final = None  # (2026-11-12 P11d-1) 다시 묻기 턴의 완성 문장(사과 + 질문 / 질문) — 전용 호출이 만들고, 뒤 단계가 바꾸지 못하게 끝에서 다시 놓는다
     _fp_final = None    # (2026-11-15 P13d-2) 사례의 첫 꼬리 질문 턴의 완성 문장(질문 한 문장) — 전용 호출(또는 대체 문장)이 만들고, 뒤 단계가 바꾸지 못하게 끝에서 다시 놓는다
     _pre_recv_text = None   # (2026-11-15 P13f-4) 사례를 닫으며 매핑과 함께 받아 둔 받는 말(이 턴에만 쓴다 — 세션 상태에 남기지 않는다)
+    _specify_q_text = None  # (2026-11-18 P14d-5) 구체화 전용 호출이 쓴 질문 — 방향을 정하는 자리에서 받아 두고, 합격했을 때만 그 턴을 구체화 턴으로 삼는다
+    _call_drops: list = []  # (2026-11-18 P14d-4) 전용 호출(받는 말·첫 꼬리·구체화)에서 탈락한 문장 [[호출, 사유, 문장], …] — 턴 기록에 남긴다
     _reask_kind = None  # (2026-11-12 P11-A3·H) 'clarify'(되묻기) | 'contentless'(받을 내용 없는 답) — 사례 턴에서 원장·슬롯 판정 없이 직전 질문만 다시 쓴다
     _align_ctx = None   # (2026-10-28 P0-1) ALIGN 조립 재료 — 후처리 끝에 render_align 으로 조립
     try:
@@ -1353,7 +1355,7 @@ async def _submit_message_phase3a(
                 _res_r = await _aio_r.gather(
                     _judge_slots(llm, transcript=_tr, prev_slots=_ep.get("slots"), closed_cases=(_cands_r or None)),
                     _rr_r(llm, leader_answer=_bei_user_text, persona_name=(state.get("coach_persona") or {}).get("name"), kind="probe",
-                          avoid_endings=_recv_keys_r, prev_answer=_prev_user_r, session_keys=_all_keys_r),
+                          avoid_endings=_recv_keys_r, prev_answer=_prev_user_r, session_keys=_all_keys_r, trace=_call_drops),
                     return_exceptions=True)
                 if isinstance(_res_r[0], BaseException):
                     raise _res_r[0]
@@ -1514,9 +1516,16 @@ async def _submit_message_phase3a(
             _specify_slot = None
             if (_prev_slot_nr in ("action", "result") and _tm.get("specific") is False and not _bei.is_no_recall_text(_bei_user_text)
                     and not _bei_ep.get("specificity_probe") and _sp_n_ch < 3 and not _bei.first_probe_pending(_bei_ep)):
-                _specify_slot = _prev_slot_nr
-                _bei_ep["specificity_probe"] = {"turn": int(_bei_ep.get("leader_turns") or 0), "slot": _prev_slot_nr, "after_specific": None}
-                _tm["specify"] = _prev_slot_nr
+                # (2026-11-18 P14d-5) 구체화 질문은 여기서 전용 호출로 받는다 — 합격했을 때만 이 턴을 구체화 턴으로 삼고 기록한다.
+                #   두 번 다 떨어지면 평소 방향으로 간다(p14c Olivia: 본 호출에 맡겼더니 구체화 턴에 기준을 물었다).
+                from diag_project.services.specify_render import render_specify as _rsp_s
+                _specify_q_text, _mode_s = await _rsp_s(llm, leader_answer=_bei_user_text, target=str(_prev_slot_nr),
+                                                        persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops)
+                _tm["specify_q"] = _mode_s
+                if _specify_q_text:
+                    _specify_slot = _prev_slot_nr
+                    _bei_ep["specificity_probe"] = {"turn": int(_bei_ep.get("leader_turns") or 0), "slot": _prev_slot_nr, "after_specific": None}
+                    _tm["specify"] = _prev_slot_nr
             _bei_ep["specify_now"] = _specify_slot
             # (2026-11-13 P12-2) 같은 것을 채우려는 질문은 사례당 2회까지 — 이번 턴이 향하는 것을 사례에 적는다(다시 묻기 턴은 세지 않는다)
             _bei_ep = _bei.bump_slot_ask(_bei_ep, _specify_slot or _bei.next_slot(_bei_ep))
@@ -1751,7 +1760,7 @@ async def _submit_message_phase3a(
         if kind == "smalltalk" and _icq_p(request.content):
             _tm["rapport_recv"] = "counter"
             return _rcr_p(_pn_p)
-        _txt_p, _mode_p = await _rr_p(llm, leader_answer=request.content or "", persona_name=_pn_p, kind=kind)
+        _txt_p, _mode_p = await _rr_p(llm, leader_answer=request.content or "", persona_name=_pn_p, kind=kind, trace=_call_drops)
         _tm["rapport_recv"] = f"{kind}:{_mode_p}"
         return _txt_p
 
@@ -1908,8 +1917,11 @@ async def _submit_message_phase3a(
                 if _rm:
                     _tm["first_probe_who"] = list(_tm.get("first_probe_who") or []) + [[" / ".join(_rm), _q[:200]]]
                 if not _clean:
+                    _call_drops.append(["first_probe", "who", _q[:200]])
                     return _q, False, "who", _mode
                 _ok, _why = _fpok_fp(_q2, _llm_user_text)
+                if not _ok:
+                    _call_drops.append(["first_probe", _why, _q2[:200]])
                 return _q2, _ok, _why, _mode
 
             _q_fp, _ok_fp, _why_fp, _mode_fp = await _one_fp()
@@ -1940,23 +1952,11 @@ async def _submit_message_phase3a(
             _fm_fp(session, "self_assessment_data")
             llm_output = {"reply": _fp_final}
             _tm["no_regen"] = 1
-        elif instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("specify_now") and chapter:
-            # (2026-11-16 P14b-3) 구체화 질문은 전용 호출이 쓴다(첫 꼬리 전용 호출과 같은 구조) — 넘기는 것은 리더의 직전 답·대상(행동/결과)·말투·쓴 끝맺음뿐.
-            #   확인에서 두 번 떨어지면 본 호출이 사례 카드의 구체화 지시로 쓴다(P14 방식).
-            from diag_project.services.specify_render import render_specify as _rsp_s
-            from diag_project.services.turn_checks import ending_counts as _ec_s, ending_label as _el_s
-            _ends_s = [_el_s(k) for k, _v in sorted(_ec_s(_chapter_questions()).items(), key=lambda kv: -kv[1])]
-            _q_s, _mode_s = await _rsp_s(llm, leader_answer=_llm_user_text, target=str(_bei_ep.get("specify_now")),
-                                         persona_name=(state.get("coach_persona") or {}).get("name"), used_endings=_ends_s)
-            _tm["specify_q"] = _mode_s
-            if _q_s:
-                _fp_final = _q_s
-                llm_output = {"reply": _fp_final}
-                _tm["no_regen"] = 1
-            else:
-                llm_output = await llm.generate_phase3a_interaction(
-                    system_prompt=system_prompt, chapter_context=chapter_context, turn_state_text=turn_state_text, compressed_history=compressed_history,
-                    user_message=_llm_user_text, light_mode=(instruction_used in _LIGHT_MODE_INSTRUCTIONS), tail_block=_style_tail)
+        elif _specify_q_text and instruction_used == "EPISODE_PROBE" and chapter:
+            # (2026-11-16 P14b-3 → 2026-11-18 P14d-5) 구체화 질문 — 방향을 정하는 자리에서 전용 호출이 써 둔 질문 한 문장을 쓴다(본 호출 없음).
+            _fp_final = _specify_q_text
+            llm_output = {"reply": _fp_final}
+            _tm["no_regen"] = 1
         elif _tm.get("pre_recv") not in (None, "stub") and instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and chapter:
             # (2026-11-15 P13f-4 → 2026-11-16 P14-1) 사례를 닫는 턴 — 받아 둔 받는 말만 쓴다(본 호출을 부르지 않는다). 다음 질문은 시스템이 붙인다.
             #   받는 말을 받지 못했으면(확인 탈락·받을 내용 없음) 받는 말 없이 나간다.
@@ -2411,7 +2411,7 @@ async def _submit_message_phase3a(
             # (2026-11-16 P14-3) 영역 정의 답의 받는 말 — 전용 호출 1회로 리더 정의의 구절 하나를 되짚는다. 확인(겹치는 내용 낱말 3개 이상·16어절 이하·
             #   허용 끝맺음)에서 떨어지면 종전의 고정 받기.
             from diag_project.services.receive_render import render_receive as _rr_al
-            _al_txt, _al_mode = await _rr_al(llm, leader_answer=request.content or "", persona_name=_align_ctx["persona_name"], kind="align")
+            _al_txt, _al_mode = await _rr_al(llm, leader_answer=request.content or "", persona_name=_align_ctx["persona_name"], kind="align", trace=_call_drops)
             _tm["align_recv"] = _al_mode
             if _al_txt:
                 _align_ctx["fixed_receive"] = _al_txt
@@ -4085,6 +4085,7 @@ async def _submit_message_phase3a(
             "pre_recv_mode": _tm.get("pre_recv_mode"), "judge_par_s": _tm.get("judge_par_s"), "recv_out": _tm.get("recv_out"),
             # (P14b) recv_rule 받는 말을 붙인 규칙(A·B·C·D+·D-·none) · main_stmt_cut 본 호출이 쓴 평서문을 지운 수 · specify_q 구체화 전용 호출 결과 · two_q_regen 두 물음 다시 쓰기
             "recv_rule": _tm.get("recv_rule"), "main_stmt_cut": _tm.get("main_stmt_cut"), "specify_q": _tm.get("specify_q"), "two_q_regen": _tm.get("two_q_regen"),
+            "call_drops": (_call_drops or None),      # (P14d-4) 전용 호출에서 탈락한 문장 [[호출, 사유, 문장], …]
             "specific": _tm.get("specific"), "specify": _tm.get("specify"), "rapport_recv": _tm.get("rapport_recv"), "align_recv": _tm.get("align_recv"),
             # (P13g) first_probe_who 첫 꼬리 질문에서 지운 상대 어절 [[지운 것, 지우기 전 질문], …] · recv_keep_long 짧은 질문 앞에 남긴 긴 받는 말 수
             "first_probe_who": _tm.get("first_probe_who"), "recv_keep_long": _tm.get("recv_keep_long"),

@@ -33,7 +33,9 @@ QUOTE_SHARE_MAX = 1 / 3            # (P14b-2) '…다는 말씀이네요/이군�
 _THIRD_HONORIFIC_RE = re.compile(r"(팀원|강사|교육생|직원|담당자|구성원|그분|그\s?사람|동료|상사|후배)[가-힣]{0,3}(이|가|은|는|도|께서)\s[^.,]{0,40}?"
                                  r"([가-힣]셨|[가-힣]시(는|고|며|면|던|지)|하신|으신)")
 _LEAD_ADDRESS_RE = re.compile(r"^리더님(께서는|께서|이|은|,)?\s*")
-PROBE_CHECK_EOJEOL = 10            # (P14c-6) 본론 받는 말 확인의 길이 상한 12 → 10어절
+PROBE_CHECK_EOJEOL = 12            # (P14c-6 → P14d-3) 10어절로 낮췄다가 12어절로 되돌렸다(p14c: 길이 탈락 25건). 지시문은 9어절 이내 그대로
+# (P14d-1) 받는 말 안의 평가·칭찬 낱말 — 리더가 쓴 낱말이면 그대로 옮긴 것이라 보지 않는다(p14c Daniel: '…제안이 핵심이라고 짚으셨습니다')
+_EVAL_WORD_RE = re.compile(r"핵심|인상|훌륭|대단|좋은|멋진|탁월|뛰어난|의미\s*있|돋보")
 ALIGN_MIN_SHARED = 3
 SMALL_MAX_EOJEOL = 12
 _KIND_WHAT: dict[str, str] = {
@@ -51,6 +53,7 @@ RETRY_NOTES: dict[str, str] = {
     "question": "묻는 문장이었다",
     "words": "리더가 쓰지 않은 낱말이 들어갔다",
     "same_ending": "이번에 쓰지 않기로 한 끝맺음을 썼다",
+    "praise": "평가하거나 칭찬하는 낱말이 들어갔다",
     "third_honorific": "리더가 아닌 사람이 한 일에 높임을 붙였다",
     "dup": "'말씀'을 두 번 썼다",
     "quote_cap": "'-다는 말씀이네요' 꼴을 너무 자주 썼다",
@@ -87,9 +90,9 @@ def build_receive_prompt(*, leader_answer: str, persona_name: str | None, kind: 
         + (f"- 끝은 리더의 말을 다시 말하는 꼴로 맺는다 — {RECEIVE_ENDING_HINT} 가운데 하나.\n" if kind in ("probe", "align") else "")
         + ("- 이번에는 끝을 " + ", ".join(avoid) + " 꼴로 맺지 않는다 — 다른 꼴로 맺는다.\n" if avoid and kind in ("probe", "align") else "")
         + ("- 이번에는 '-다는 말씀이네요', '-다는 말씀이군요' 꼴을 쓰지 않는다.\n" if no_quote and kind == "probe" else "")
-        + "- 높임은 리더에게만 쓴다. 팀원·강사·교육생처럼 리더가 아닌 사람이 한 말·걱정·반응을 다시 말할 때는 높임 어미를 붙이지 않고, "
-        "그것을 리더가 한 일인 것처럼 쓰지 않는다.\n"
-        "- 주어 없이 쓴다 — 문장을 '리더님'으로 시작하지 않는다. '말씀'이라는 낱말은 한 번만 쓴다.\n"
+        + "- 높임은 리더에게만 쓴다. 팀원·강사·교육생처럼 리더가 아닌 사람이 한 말·걱정·반응을 다시 말할 때는 그 사람을 주어로 밝혀 쓰고 "
+        "높임 어미를 붙이지 않는다. 주어를 빼서 리더가 한 일처럼 읽히게 쓰지 않는다.\n"
+        "- 문장을 '리더님'으로 시작하지 않는다. '말씀'이라는 낱말은 한 번만 쓴다.\n"
         "- 리더를 부를 때는 '리더님'이라고만 한다.\n"
         f"- 말투: {register_hint(persona_name)}\n"
         + (f"- 앞서 쓴 문장은 쓸 수 없었다 — {retry_note}. 그 점을 고쳐 새로 쓴다.\n" if retry_note else "")
@@ -147,6 +150,10 @@ def check_receive(sentence: str | None, answer: str | None, *, kind: str = "prob
         return False, "overlap"
     if receive_ban_reason(s):
         return False, "ban"
+    from diag_project.services.output_guard import find_praise
+    ans_ns = re.sub(r"\s+", "", answer or "")
+    if find_praise(s) or any(re.sub(r"\s+", "", m.group(0)) not in ans_ns for m in _EVAL_WORD_RE.finditer(s)):
+        return False, "praise"
     if _THIRD_HONORIFIC_RE.search(s):
         return False, "third_honorific"
     if s.count("말씀") >= 2:
@@ -169,7 +176,7 @@ async def _one(llm, prompt: str) -> str | None:
 
 
 async def render_receive(llm, *, leader_answer: str, persona_name: str | None, kind: str = "probe", avoid_endings: list[str] | None = None,
-                         prev_answer: str | None = None, session_keys: list[str] | None = None) -> tuple[str | None, str]:
+                         prev_answer: str | None = None, session_keys: list[str] | None = None, trace: list | None = None) -> tuple[str | None, str]:
     """(받는 말 한 문장 | None, 모드). 모드 'llm' | 'llm_retry' | 'stub' | 'skip:empty' | 'miss:<사유>'.
     'miss:<사유>' 의 사유는 마지막 확인에서 떨어진 까닭 또는 no_llm·error.
     (P14b-2) 본론 받는 말(kind probe)은 다시 쓰지 않는다 — 확인에서 떨어지면 그 턴은 받는 말 없이. 라포·영역 정의는 종전대로 한 번 더 쓴다.
@@ -200,5 +207,7 @@ async def render_receive(llm, *, leader_answer: str, persona_name: str | None, k
         ok, why = check_receive(s, leader_answer, kind=kind, formal=formal, avoid_endings=avoid_endings, no_quote=no_quote)
         if ok or (attempt == 1 and why == "same_ending"):      # 끝맺음만 겹친 것은 두 번째에는 그대로 쓴다(라포·영역 정의)
             return s, ("llm_retry" if attempt else "llm")
+        if trace is not None:
+            trace.append([f"receive:{kind}", why, (s or "")[:200]])      # (P14d-4) 탈락한 문장과 사유를 턴 기록에 남긴다
         note = RETRY_NOTES.get(why, "쓸 수 없는 문장이었다")
     return None, f"miss:{why}"

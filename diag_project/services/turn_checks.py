@@ -388,7 +388,8 @@ def first_probe_addressee_fix(question: str | None, leader_answer: str | None) -
 # (2026-11-15 P13g-2·3) 혼잣말·지시문 낱말이 섞인 질문, 코치 자신이 주어인 동사에 묻는 어미가 붙은 꼴
 _FP_META_RE = re.compile(r"규칙|지시|한\s*문장이어야|—|아니,")
 _FP_SELF_VERB_RE = re.compile(r"(여쭙고|여쭤보고|묻고|듣고|알고)\s*싶습니까|여쭙겠습니까|묻겠습니까|궁금합니까|궁금하십니까")
-_FP_WONDER_END_RE = re.compile(r"(궁금하네요|궁금합니다|궁금해요|궁금하군요)[.?!]*\s*$|여쭤(봐)?도\s*될까요\??\s*$|여쭙고\s*싶습니다[.?!]*\s*$")
+# (P14d-6) '…궁금해요/궁금합니다.'는 자연스러운 말이라 뺐다 — '…궁금하네요.', '…여쭤봐도 될까요?'만 남긴다
+_FP_WONDER_END_RE = re.compile(r"(궁금하네요|궁금하군요)[.?!]*\s*$|여쭤(봐)?도\s*될까요\??\s*$|여쭙고\s*싶습니다[.?!]*\s*$")
 _FP_HONORIFIC_RE = re.compile(r"셨|세요|십시오|시(겠|는|고|며|면|어|나|지|던|ㄹ)|하신|으신|[가-힣]신\s|실\s|실까|실래|리더님")
 FIRST_PROBE_RETRY_NOTES: dict[str, str] = {
     "closed": "그렇다·아니다로 답하게 되는 꼴이었다",
@@ -641,11 +642,11 @@ def receive_shared_words(receive: str | None, user_text: str | None) -> list[str
 
 
 # (2026-11-16 P14-1) 받는 말 전용 호출의 지시문에 넣는 끝맺음 꼴(어미만 — 따옴표로 묶은 완성 문장 꼴은 넣지 않는다)
-RECEIVE_ENDING_HINT = "-셨군요, -셨네요, -셨지요, -다는 말씀이군요, -다는 말씀이네요, -신 거군요, -신 거네요"
+RECEIVE_ENDING_HINT = "-셨군요, -셨네요, -셨지요, -다는 말씀이군요, -다는 말씀이네요, -신 거군요, -신 거네요(리더가 아닌 사람이 한 일은 -했군요, -했네요, -했다는 말씀이네요)"
 # (2026-11-17 P14c-1) 끝맺음 갈래 → 지시문에 적는 꼴
 RECEIVE_KEY_HINT: dict[str, str] = {"셨군요": "-셨군요", "셨네요": "-셨네요", "셨지요": "-셨지요", "말씀이군요": "-다는 말씀이군요", "말씀이네요": "-다는 말씀이네요",
                                     "말씀이지요": "-다는 말씀이지요", "거군요": "-신 거군요", "거네요": "-신 거네요", "거죠": "-신 거죠", "셨습니다": "-셨습니다",
-                                    "말씀이십니다": "-말씀이십니다"}
+                                    "말씀이십니다": "-말씀이십니다", "했군요": "-했군요", "했네요": "-했네요", "했지요": "-했지요"}
 
 
 def most_used_receive_ending(keys: list[str] | None) -> str | None:
@@ -682,10 +683,32 @@ _RECV_KEY_RES: tuple[tuple[str, re.Pattern], ...] = (
 )
 
 
+# (2026-11-18 P14d-1) 되짚는 끝맺음을 어미 기준으로 — 과거·완료 뒤의 '-군요/-네요/-지요/-죠'는 높임('-시-')이 없어도 통과한다
+#   ('…했군요', '…였네요', '…됐군요', '…있었네요'). p14c: '제3자에는 높임 금지'와 '허용 끝맺음은 높임 꼴만'이 부딪쳐 바른 문장이 떨어졌다(탈락 158건 중 끝맺음 97).
+#   추측('…겠군요')과 지금 상태('…있군요')는 과거·완료가 아니라 통과하지 않는다.
+_PAST_TAIL_RE = re.compile(r"([가-힣])(군요|네요|지요|죠)[.!…]*$")
+
+
+def past_retell_ending(sentence: str | None) -> str | None:
+    """과거·완료 음절(받침 ㅆ — '겠'·'있'·'없' 제외) 뒤의 '-군요/-네요/-지요/-죠'면 그 어미(군요·네요·지요)를, 아니면 None."""
+    m = _PAST_TAIL_RE.search((sentence or "").strip())
+    if not m:
+        return None
+    ch = m.group(1)
+    if ch in "겠있없" or (ord(ch) - 0xAC00) % 28 != 20:
+        return None
+    return "지요" if m.group(2) in ("지요", "죠") else m.group(2)
+
+
 def receive_ending_key(sentence: str | None) -> str | None:
-    """받는 말의 끝맺음 갈래(셨군요·셨네요·셨지요·말씀이군요·말씀이네요·말씀이지요·거군요·거네요·거죠·셨습니다·말씀이십니다). 목록 밖이면 None."""
+    """받는 말의 끝맺음 갈래(셨군요·셨네요·셨지요·말씀이군요·말씀이네요·말씀이지요·거군요·거네요·거죠·셨습니다·말씀이십니다,
+    높임 없는 과거 꼴은 했군요·했네요·했지요). 목록 밖이면 None."""
     t = (sentence or "").strip()
-    return next((k for k, rx in _RECV_KEY_RES if rx.search(t)), None)
+    k = next((k for k, rx in _RECV_KEY_RES if rx.search(t)), None)
+    if k:
+        return k
+    e = past_retell_ending(t)
+    return f"했{e}" if e else None
 
 
 # ── (2026-11-16 P14b-1) 한 턴에 리더 말을 되짚는 것은 한 번 — 받아 둔 받는 말을 붙일지는 질문이 나온 뒤 정한다 ──────────
@@ -766,7 +789,7 @@ SHORT_QUESTION_EOJEOL = 8
 def receive_allowed(sentence: str | None, user_text: str | None, *, formal: bool = False, max_eojeol: int | None = None) -> tuple[bool, str]:
     """받는 말을 남겨도 되는가. (남김 여부, 사유: ok | ending | overlap | long). max_eojeol 을 주면 길이 상한만 그 값으로 본다."""
     s = (sentence or "").strip()
-    if not (_RECV_END_COMMON_RE.search(s) or (formal and _RECV_END_FORMAL_RE.search(s))):
+    if not (_RECV_END_COMMON_RE.search(s) or past_retell_ending(s) or (formal and _RECV_END_FORMAL_RE.search(s))):
         return False, "ending"
     if len(s.split()) > (max_eojeol or RECEIVE_MAX_EOJEOL):
         return False, "long"

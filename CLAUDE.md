@@ -27,6 +27,7 @@
 push 는 반드시 `tools/push_approved.sh [-C <repo>] <승인 해시>...` 로 한다 — origin/main..HEAD 의 커밋 목록이 보고서에 적은 승인 해시와 순서·개수까지 같을 때만 push 된다(2026-11-06 디렉터리 이동 실패로 미승인 커밋이 올라간 것을 교정하는 규칙). 프론트도 `-C /Users/daniel/python_new/diagnosis-frontend` 로 같은 스크립트를 쓴다.
 
 ## 대화 쪽 회귀 점검 규칙
-대화 쪽(프롬프트·후처리·사례 진행)을 고친 커밋은 push 전에 `tools/regression_check.py TAG --coaches <둘 이상>` 을 돌려 조건을 통과시킨다
+대화 쪽(프롬프트·후처리·사례 진행)을 고친 커밋은 push 전에 `tools/regression_check.py TAG --pair`(또는 `--coaches <둘 이상>`)를 돌려 조건을 통과시킨다 —
+해요체 코치(Ella·Olivia·Michael)와 합쇼체 코치(Jessica·Daniel)를 각각 1명 이상 포함한다(2026-11-18: 합쇼체가 빠진 2코치 점검이 받는 말 탈락을 놓쳤다)
 (코치 × 요약형 팀장 × 조직관리 + 사람관리, 코치당 약 $0.055 — 실행 전 지시문에 횟수·예산이 있어야 한다). 조건 판정표와 전문 경로를 보고에 넣는다.
 (2026-11-15 P13 묶음: 수정마다 시뮬 명령·집계를 손으로 조립하던 것을 한 명령으로 묶으며 정한 규칙.)

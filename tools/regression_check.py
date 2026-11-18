@@ -5,11 +5,13 @@
 
 사용(워크트리 루트에서):
     FM_PREWARM=0 .venv/bin/python tools/regression_check.py TAG                  # 6코치(기본)
-    FM_PREWARM=0 .venv/bin/python tools/regression_check.py TAG --coaches 1,4    # 2코치(push 전 최소)
+    FM_PREWARM=0 .venv/bin/python tools/regression_check.py TAG --pair           # 2코치(push 전 최소) — 해요체 Ella + 합쇼체 Daniel
+    FM_PREWARM=0 .venv/bin/python tools/regression_check.py TAG --coaches 2,6    # 코치를 직접 고를 때(해요체·합쇼체를 각각 1명 이상 넣는다)
     .venv/bin/python tools/regression_check.py TAG --coaches 1,4 --no-run        # 시뮬은 돌리지 않고 있는 결과만 다시 판정(LLM 호출 없음)
 
   TAG       결과 파일 이름에 들어가는 표지(예: p14a). 같은 TAG·코치의 결과가 있으면 덮어쓴다.
-  --coaches 1 Ella · 2 Jessica · 3 Olivia · 4 Daniel · 5 Michael · 6 Lucas
+  --coaches 1 Ella · 2 Jessica · 3 Olivia · 4 Daniel · 5 Michael · 6 Lucas(해요체 1·3·5, 합쇼체 2·4, Lucas 는 섞어 쓴다)
+  --pair    --coaches 1,4 와 같다(2026-11-18 P14d: 합쇼체 코치가 빠진 2코치 점검이 받는 말 탈락을 놓쳤다 — 두 말투를 모두 넣는다)
   --out     결과 폴더(기본: 환경 변수 SIM_OUT, 없으면 워크트리 옆의 sim 폴더)
   --port    시뮬 서버 포트(기본 8180)
 
@@ -109,6 +111,21 @@ def receive_stats(rows: list[dict]) -> dict:
             "recv_by_instr": {k: f"{v[0]}/{v[1]}" for k, v in by_instr.items()}, "recv_ends": dict(ends.most_common()), "recv_rules": dict(rules.most_common())}
 
 
+def call_stats(rows: list[dict]) -> dict:
+    """(2026-11-18 P14d-4) 받는 말 전용 호출의 통과/탈락(사유별)과, 전용 호출(받는 말·첫 꼬리·구체화)에서 탈락한 문장."""
+    from collections import Counter
+    modes: Counter = Counter()
+    drops: dict[str, list[str]] = {}
+    for r in rows:
+        g = (r.get("guard") or {}) if r.get("role") == "model" else {}
+        m = g.get("pre_recv_mode") or g.get("pre_recv")
+        if m:
+            modes["통과" if str(m).startswith("llm") or m == "used" else str(m)] += 1
+        for kind, why, text in (g.get("call_drops") or []):
+            drops.setdefault(f"{kind}·{why}", []).append(str(text))
+    return {"recv_calls": dict(modes.most_common()), "call_drops": drops}
+
+
 def specify_stats(data: dict) -> dict:
     """구체화 질문 — 턴 기록(guard.specify)과 원장(사례의 specificity_probe)."""
     from collections import Counter
@@ -119,6 +136,8 @@ def specify_stats(data: dict) -> dict:
             per[(r.get("chapter"), g.get("ep_kind"), g.get("episode"))] += 1
     return {"specify_n": sum(per.values()), "specify_multi": sum(1 for v in per.values() if v >= 2)}
 SHORT_Q_EOJEOL = 8
+POLITE_COACHES = frozenset({"1", "3", "5"})      # 해요체
+FORMAL_COACHES = frozenset({"2", "4"})           # 합쇼체
 
 
 def judge(metrics: dict) -> list[tuple[str, object, bool]]:
@@ -162,7 +181,7 @@ def collect(path: Path) -> dict:
     sq = short_questions(rows)
     return {"p50": res.get("p50"), "p95": res.get("p95"), "max": res.get("max"), "regen_turns": res.get("regen_turns"), "format_miss": res.get("format_miss"),
             "broken_total": res.get("broken_total"), "fp_fallback": int((res.get("fp_mode") or {}).get("fallback", 0)), "fp_mode": res.get("fp_mode") or {},
-            **receive_stats(rows), **specify_stats(data),
+            **receive_stats(rows), **specify_stats(data), **call_stats(rows),
             "short_q": len(sq), "short_list": sq, "first_probes": first_probes(rows), "status": data.get("status"), "cost_usd": float(data.get("cost_usd") or 0.0),
             "turns": data.get("turns")}
 
@@ -182,11 +201,14 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="대화 쪽 회귀 점검(코치 × 요약형 팀장 × 조직관리 + 사람관리)")
     ap.add_argument("tag")
     ap.add_argument("--coaches", default="1,2,3,4,5,6")
+    ap.add_argument("--pair", action="store_true", help="push 전 최소 조합: 해요체 Ella(1) + 합쇼체 Daniel(4)")
     ap.add_argument("--out", default=os.environ.get("SIM_OUT") or str(ROOT.parent / "sim"))
     ap.add_argument("--port", type=int, default=8180)
     ap.add_argument("--no-run", action="store_true", help="시뮬을 돌리지 않고 있는 결과만 판정한다(LLM 호출 없음)")
     args = ap.parse_args(argv)
-    coaches = [c for c in args.coaches.split(",") if c in COACH_NAMES]
+    coaches = ["1", "4"] if args.pair else [c for c in args.coaches.split(",") if c in COACH_NAMES]
+    if not (set(coaches) & POLITE_COACHES and set(coaches) & FORMAL_COACHES):
+        print("주의: 해요체 코치(1·3·5)와 합쇼체 코치(2·4)가 각각 1명 이상 들어가야 한다 — 지금 조합은 한쪽 말투가 빠졌다.", flush=True)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     leader_cost = 0.0
@@ -229,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     L.append("| 받는 말(턴 종류별 있음/전체) | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["recv_by_instr"].items()) or "-" for c in coaches) + " |")
     L.append("| 받는 말 끝맺음 분포 | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["recv_ends"].items()) or "-" for c in coaches) + " |")
     L.append("| 받는 말 붙인 규칙 | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["recv_rules"].items()) or "-" for c in coaches) + " |")
+    L.append("| 받는 말 전용 호출(통과/탈락 사유) | " + " | ".join(" · ".join(f"{k} {v}" for k, v in ms[c]["recv_calls"].items()) or "-" for c in coaches) + " |")
     L.append("| 구체화 질문 수 | " + " | ".join(str(ms[c]["specify_n"]) for c in coaches) + " |")
     L.append("| 첫 꼬리 질문 기록 | " + " | ".join(" · ".join(f"{k} {v}" for k, v in sorted(ms[c]["fp_mode"].items())) or "-" for c in coaches) + " |")
     coach_cost = sum(ms[c]["cost_usd"] for c in coaches)
@@ -241,6 +264,8 @@ def main(argv: list[str] | None = None) -> int:
             L.append("8어절 미만 질문: " + " / ".join(ms[c]["short_list"]))
         if ms[c]["short_bare_list"]:
             L.append("그중 받는 말 없이 나간 것: " + " / ".join(ms[c]["short_bare_list"]))
+        for k, v in sorted(ms[c]["call_drops"].items(), key=lambda kv: -len(kv[1])):
+            L.append(f"탈락 [{k}] {len(v)}건: " + " / ".join(v[:3]))
         if ms[c]["recv_echo"]:
             L.append("받는 말과 질문 앞 절이 겹친 턴: " + " / ".join(ms[c]["recv_echo"]))
         L.append("")

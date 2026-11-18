@@ -1665,7 +1665,8 @@ def test_p14b_one_receive_per_turn_specify_call_and_role_echo():
             return "그때 반장은 어떤 반응을 보였습니까?"
     assert asyncio.run(SP.render_specify(_Bad(), leader_answer=ans, target="action", persona_name="Daniel")) == (None, "miss:off:어떤 반응") or \
         asyncio.run(SP.render_specify(_Bad(), leader_answer=ans, target="action", persona_name="Daniel"))[0] is None
-    assert '(_bei_ep or {}).get("specify_now") and chapter:' in src and "_rsp_s(llm, leader_answer=_llm_user_text" in src
+    # (P14d-5) 구체화 전용 호출은 방향을 정하는 자리로 옮겼다 — 합격했을 때만 구체화 턴으로 삼고, 떨어지면 평소 방향
+    assert "_specify_q_text and instruction_used == \"EPISODE_PROBE\" and chapter:" in src and "_rsp_s(llm, leader_answer=_bei_user_text" in src
     assert "_ep = dict(_ep, specificity_probe=dict(_sp_j, after_specific=_jd.get(\"specific\")))" in src      # 닫히는 턴에도 원장에 남는다
     # 4. 낱말 나열 답 — 리더가 쓴 말을 그대로 넣는다
     assert IM.role_echo_receive("Ella", "교육팀장 4명 팀원 교육기획") == "교육팀장 4명 팀원 교육기획, 알겠어요."
@@ -1688,7 +1689,7 @@ def test_p14c_ending_ban_streak_cap_third_honorific_and_empty_open_turn():
     assert TC.most_used_receive_ending(["셨군요", "셨네요", "셨군요", "말씀이네요"]) == "셨군요" and TC.most_used_receive_ending(["셨군요", "셨네요"]) == "셨네요"
     assert TC.most_used_receive_ending([]) is None
     pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Ella", kind="probe", avoid_endings=["셨군요"])
-    assert "이번에는 끝을 -셨군요 꼴로 맺지 않는다" in pr and "주어 없이 쓴다" in pr and "리더가 한 일인 것처럼 쓰지 않는다" in pr
+    assert "이번에는 끝을 -셨군요 꼴로 맺지 않는다" in pr and "그 사람을 주어로 밝혀 쓰고" in pr and "리더가 한 일처럼 읽히게 쓰지 않는다" in pr
     # 2. 연속 상한 — 받는 말이 3턴 이어졌으면 4턴째는 붙이지 않는다(사례를 닫는 턴은 예외)
     assert TC.receive_streak(["물량을 넘기셨군요. 그 뒤는요?", "그렇게 정하셨네요. 무엇을 하셨습니까?", "무엇을 하셨습니까?"]) == 2 and TC.RECEIVE_STREAK_MAX == 3
     src = inspect.getsource(D._submit_message_phase3a)
@@ -1706,6 +1707,61 @@ def test_p14c_ending_ban_streak_cap_third_honorific_and_empty_open_turn():
     rt = importlib.util.module_from_spec(spec); spec.loader.exec_module(rt)
     assert rt.classify_broken("어떤 기준으로 강점을 가늠하셨는지, 그 들려주시겠어요?") == "d" and rt.classify_broken("그 뒤에 무엇을 하셨습니까?") is None
     assert '_tm["recv_rule"] = "C-none"' in src and "clean_reply = str(_bei_anchor_text).strip()" in src
-    # 6. 길이 상한 10어절
-    long10 = "어제 야간조에 물량 삼백 상자를 넘기자고 반장에게 먼저 꺼내 직접 제안하셨군요."      # 11어절
-    assert RR.PROBE_CHECK_EOJEOL == 10 and RR.check_receive(long10, ans + " 반장에게 먼저 꺼내 직접 말했습니다.")[1] == "long"
+    # 6. 길이 상한 — P14c 에서 10어절로 낮췄다가 P14d 에서 12어절로 되돌렸다(test_p14d 에서 확인)
+    assert RR.PROBE_CHECK_EOJEOL == 12
+
+
+def test_p14d_plain_past_endings_drop_trace_and_specify_at_decision():
+    """(2026-11-18 P14d) 높임 없는 과거 끝맺음 허용 · 평가 낱말 확인 · 길이 12어절 · 탈락 문장 기록 · 구체화 호출은 방향을 정하는 자리에서."""
+    import asyncio
+    import inspect
+    import importlib.util
+    import pathlib
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import receive_render as RR, specify_render as SP, turn_checks as TC
+    ans = "출고가 밀려서 야간조에 물량 삼백 상자를 넘기자고 제안했습니다. 담당자는 인력이 모자란다고 걱정했지만 동의했습니다. 창고 재고표가 새로 나왔습니다."
+    # 1. 과거·완료 뒤의 '-군요/-네요/-지요/-죠'는 높임 없이도 통과 — 추측·지금 상태·상태 보고는 그대로 탈락
+    for s_ok, key in (("담당자는 인력이 모자란다고 걱정했지만 동의했군요.", "했군요"), ("창고 재고표가 새로 나왔네요.", "했네요"),
+                      ("담당자가 인력이 모자란다고 걱정했다는 말씀이네요.", "말씀이네요"), ("야간조에 물량 삼백 상자를 넘기자고 제안하셨군요.", "셨군요")):
+        assert RR.check_receive(s_ok, ans) == (True, "ok") and TC.receive_ending_key(s_ok) == key, s_ok
+    for s_bad in ("물량을 넘기기가 쉽지 않았겠군요.", "야간조 인력 걱정이 있군요.", "담당자가 동의했다는 점을 확인했습니다.", "물량을 넘기신 판단이 좋아 보입니다."):
+        assert RR.check_receive(s_bad, ans)[1] == "ending", s_bad
+    assert TC.past_retell_ending("그렇게 됐군요.") == "군요" and TC.past_retell_ending("그렇겠네요.") is None and TC.past_retell_ending("그 일이 있죠.") is None
+    # 평가 낱말은 문장 안에 있어도 탈락(리더가 쓴 낱말이면 그대로 옮긴 것이라 통과)
+    assert RR.check_receive("물량을 넘기자는 제안이 핵심이라고 짚으셨군요.", ans)[1] == "praise"
+    assert RR.check_receive("물량을 넘기자는 제안이 핵심이라고 하셨군요.", ans + " 그 제안이 핵심이었습니다.") == (True, "ok")
+    # 2. 지시문 — 제3자는 주어로 밝혀 쓰고 높임 없이
+    pr = RR.build_receive_prompt(leader_answer=ans, persona_name="Jessica", kind="probe")
+    assert "그 사람을 주어로 밝혀 쓰고" in pr and "-했군요" in pr and "주어 없이 쓴다" not in pr
+    assert RR.check_receive("담당자가 물량을 넘기는 데 동의하셨군요.", ans)[1] == "third_honorific"      # P14c 확인은 그대로
+    # 3. 길이 상한 12어절
+    assert RR.PROBE_CHECK_EOJEOL == 12
+    # 4. 탈락 문장 기록
+    class _Bad:
+        async def _generate_with_retry(self, **kw):
+            return "물량을 넘기기가 쉽지 않았겠군요."
+    tr = []
+    assert asyncio.run(RR.render_receive(_Bad(), leader_answer=ans, persona_name="Ella", trace=tr)) == (None, "miss:ending")
+    assert tr == [["receive:probe", "ending", "물량을 넘기기가 쉽지 않았겠군요."]]
+    class _BadQ:
+        async def _generate_with_retry(self, **kw):
+            return "그때 담당자는 어떤 반응을 보였습니까?"
+    tr2 = []
+    assert asyncio.run(SP.render_specify(_BadQ(), leader_answer=ans, target="result", persona_name="Daniel", trace=tr2))[0] is None and len(tr2) == 2 and tr2[0][0] == "specify"
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert '"call_drops": (_call_drops or None)' in src and '_call_drops.append(["first_probe", _why, _q2[:200]])' in src
+    # 5. 구체화 — 방향을 정하는 자리에서 호출하고 합격했을 때만 구체화 턴. 본 호출에 맡기는 길은 없다
+    i = src.index("_specify_q_text, _mode_s = await _rsp_s(")
+    assert src.index("if _specify_q_text:", i) < src.index('_bei_ep["specify_now"] = _specify_slot', i)
+    j = src.index('elif _specify_q_text and instruction_used == "EPISODE_PROBE" and chapter:')
+    assert "generate_phase3a_interaction" not in src[j: src.index("elif _tm.get(\"pre_recv\") not in (None, \"stub\")", j)]
+    # 6. 첫 꼬리 — '…궁금합니다.'는 불합격이 아니다. '…여쭤봐도 될까요?'는 그대로
+    ok = TC.first_probe_question_ok
+    assert ok("야간조에 직접 어떤 말을 건네셨는지 궁금합니다.", ans) == (True, "ok") and ok("직접 어떤 말을 건네셨는지 여쭤봐도 될까요?", ans) == (False, "wonder")
+    # 7. 회귀 점검 — 최소 조합은 해요체 + 합쇼체
+    spec = importlib.util.spec_from_file_location("regression_check", pathlib.Path(__file__).resolve().parent.parent / "tools" / "regression_check.py")
+    rc = importlib.util.module_from_spec(spec); spec.loader.exec_module(rc)
+    assert rc.POLITE_COACHES == {"1", "3", "5"} and rc.FORMAL_COACHES == {"2", "4"}
+    st = rc.call_stats([{"role": "model", "guard": {"pre_recv": "miss:ending", "call_drops": [["receive:probe", "ending", "쉽지 않았겠군요."]]}},
+                        {"role": "model", "guard": {"pre_recv": "used", "pre_recv_mode": "llm"}}])
+    assert st["recv_calls"] == {"miss:ending": 1, "통과": 1} and st["call_drops"] == {"receive:probe·ending": ["쉽지 않았겠군요."]}
