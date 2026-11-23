@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""(2026-11-23 P16-0) 질문 생성 방식 비교 실험 — 제품 코드는 읽기만 한다(대화 엔진을 고치지 않는다).
+
+11/23 운영(55415bc) Lucas 일관리·자기관리 실세션: 메아리는 사라졌지만 답에 대한 반응이 없고, 사실 하나만 묻는 좁은 질문이 많고,
+수준을 가르는 것(결과의 크기, 팀의 방식으로 남았는지)을 묻지 않았다. 규칙을 더 얹지 않고 질문을 만드는 방식 자체를 바꿀지
+사용자가 직접 읽고 고르게 하려고, 같은 지점에서 세 후보를 나란히 만든다.
+
+  A  실제로 나온 코치 턴(전문에서 그대로 — 호출 없음). 사례를 닫고 다음 질문으로 넘어간 지점은 그렇게 표시한다.
+  B  새 방식, 지금 대화 모델(Haiku) 호출 1회.
+  C  새 방식, Sonnet 호출 1회(지시문은 B 와 같다).
+
+새 방식의 입력: 영역 정의 · 지금 다루는 하위역량 · 그 하위역량의 수준 기준(Lv.1~4)과 Lv.3/Lv.4 를 가르는 조건 ·
+이 사례의 대화 전체 · 이 영역에서 코치가 이미 한 말 · 코치 말투. 지시는 원칙만 적는다(예시 문장 없음).
+겉모양 검사(어절 수·낱말 겹침)는 걸지 않고 말투 검사만 기록한다.
+
+사용(워크트리 루트에서):
+    .venv/bin/python tools/p16_compare.py --transcript ../sim/real_20261123_lucas.md --dry-run        # 지점을 찾고 지시문만 출력(호출 없음)
+    .venv/bin/python tools/p16_compare.py --transcript ../sim/real_20261123_lucas.md --only 1         # 1개 지점만(턴당 비용·지연 확인)
+    .venv/bin/python tools/p16_compare.py --transcript ../sim/real_20261123_lucas.md                  # 12개 지점 전부(이미 돌린 지점은 다시 부르지 않는다)
+
+출력(--out, 기본 전문과 같은 폴더):
+    p16_compare_blind.md   지점마다 리더 답(앞 60자)과 후보 셋을 가/나/다로 — 지점마다 순서를 섞는다. 어느 것이 A/B/C 인지는 적지 않는다.
+    p16_compare_key.md     정답표와 B·C 의 턴당 비용·지연.
+    p16_compare_raw.json   지점별 원자료(지시문·출력·토큰·시간) — 다시 돌릴 때 이미 있는 지점은 건너뛴다.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import random
+import re
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+COACH = "Lucas"
+# 지점 12곳 — (영역 키, 리더 답의 끝부분). 이 답 바로 뒤의 코치 턴이 비교 대상이다.
+POINTS: tuple[tuple[str, str], ...] = (
+    ("work_management", "업무 순서를 다시 조정했습니다"),
+    ("work_management", "저는 강사 섭외와 전체 교육 일정 조율을 맡았습니다"),
+    ("work_management", "하루 이틀 정도 여유를 확보할 수 있었습니다"),
+    ("work_management", "세부 자료 제작을 재개했습니다"),
+    ("work_management", "응답 결과가 자동 집계되도록 절차를 개선했습니다"),
+    ("work_management", "명확하게 표시해 응답하기 쉽게 수정했습니다"),
+    ("work_management", "구체적인 개선 의견을 자발적으로 남겨주었습니다"),
+    ("self_management", "라고 시작했습니다"),
+    ("self_management", "회의 방식이 자리 잡고 있다고 느꼈습니다"),
+    ("self_management", "학습 분량을 조정해 다음 교육과정에서 다시 시도했습니다"),
+    ("self_management", "개선 효과가 있었다고 판단했습니다"),
+    ("self_management", "대체 강사를 알아보는 것이 현실적이겠다고 판단했습니다"),
+)
+# 8번 지점은 끝부분이 짧아 앞의 인용까지 함께 본다
+POINT_EXTRA: dict[int, str] = {8: "다른 대안이 있으면 함께 이야기해 봅시다"}
+
+COACH_LABELS = ("코치", "coach", "lucas", "루카스", "ai", "assistant", "model", "c")
+LEADER_LABELS = ("리더", "leader", "user", "사용자", "나", "참여자", "박기진", "l")
+_SPEAKER_RE = re.compile(r"^\s*(?:[-*>#]+\s*)?(?:\*\*|\[)?\s*([A-Za-z가-힣]+)\s*(?:\([^)]*\))?\s*(?:\*\*|\])?\s*(?:\d+\s*)?[:：]\s*(.*)$")
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[\s\"“”'‘’…·.,!?~*_`>-]+", "", s or "")
+
+
+def parse_transcript(text: str) -> list[tuple[str, str]]:
+    """전문을 [(역할, 글)] 로 — 줄 머리의 말하는 이 표지('코치:', '**리더**:', 'Lucas:', '[사용자]:')로 가른다. 표지 없는 줄은 앞 턴에 잇는다."""
+    turns: list[list[str]] = []
+    for raw in text.splitlines():
+        m = _SPEAKER_RE.match(raw)
+        role = None
+        if m:
+            tag = m.group(1).strip().lower()
+            role = "model" if tag in COACH_LABELS else ("user" if tag in LEADER_LABELS else None)
+        if role:
+            turns.append([role, m.group(2).strip()])
+        elif turns and raw.strip() and not raw.lstrip().startswith(("#", "---")):
+            turns[-1][1] = (turns[-1][1] + " " + raw.strip()).strip()
+    return [(r, t) for r, t in turns if t]
+
+
+def find_point(turns: list[tuple[str, str]], tail: str, extra: str | None, start: int = 0) -> int | None:
+    """리더 답의 끝부분(tail)이 들어 있는 리더 턴의 자리. 끝에 가까운 턴을 먼저 본다(같은 말이 답 가운데에도 나올 수 있다)."""
+    key, ex = _norm(tail), _norm(extra or "")
+    hits = [i for i, (r, t) in enumerate(turns) if i >= start and r == "user" and key in _norm(t) and (not ex or ex in _norm(t))]
+    ends = [i for i in hits if _norm(turns[i][1]).endswith(key)]
+    return (ends or hits or [None])[0]
+
+
+def anchor_subs(chapter: str) -> dict[str, list[str]]:
+    """그 영역 하위역량의 여는 질문 사전 문안 — {하위역량 키: [문안, …]}."""
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK, SUBCOMPETENCY_ANCHOR_QUESTIONS
+    return {k: list(SUBCOMPETENCY_ANCHOR_QUESTIONS.get(k, [])) for k in (COMPETENCY_FRAMEWORK[chapter]["indicators"] or {})}
+
+
+def _keys(s: str) -> set[str]:
+    return {w[:2] for w in re.split(r"[\s,.!?'\"“”‘’…]+", s or "") if len(w) >= 2}
+
+
+def opener_sub(coach_text: str, chapter: str) -> str | None:
+    """코치 턴이 그 영역 하위역량의 여는 질문이면 그 하위역량 키 — 사전 문안과 낱말이 60% 이상 겹칠 때(코치마다 끝맺음만 다르다)."""
+    best, best_sub = 0.0, None
+    sents = [x for x in re.split(r"(?<=[.?!])\s+", coach_text or "") if x.strip()]
+    for sub, qs in anchor_subs(chapter).items():
+        for q in qs:
+            a = _keys(q)
+            for s in sents[-2:]:
+                b = _keys(s)
+                if a and len(a & b) / len(a) > best:
+                    best, best_sub = len(a & b) / len(a), sub
+    return best_sub if best >= 0.6 else None
+
+
+def chapter_start(turns: list[tuple[str, str]], chapter: str) -> int:
+    """그 영역이 시작되는 코치 턴의 자리 — 영역 이름을 따옴표로 묻는 턴('일관리'를 … 어떻게 …)."""
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK
+    name = COMPETENCY_FRAMEWORK[chapter]["name"]
+    for i, (r, t) in enumerate(turns):
+        if r == "model" and re.search(rf"['‘\"“]{name}['’\"”]", t):
+            return i
+    return 0
+
+
+def level_block(chapter: str, sub: str | None) -> str:
+    """수준 기준 — 그 하위역량의 Lv.1~4 서술과 행동 예시(data/competencies.py), Lv.3/Lv.4 를 가르는 판정 규칙(services/level_gate.py 규칙 3·6·9)."""
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK
+    inds = COMPETENCY_FRAMEWORK[chapter]["indicators"]
+    subs = [sub] if sub in inds else list(inds)
+    out = []
+    for k in subs:
+        ind = inds[k]
+        out.append(f"[{ind['name']}]")
+        for lv in (1, 2, 3, 4):
+            ex = " / ".join(x.strip("・ ").strip() for x in str((ind.get("examples") or {}).get(lv, "")).split("\n") if x.strip())
+            out.append(f"  Lv.{lv}: {ind['levels'][lv]}" + (f" (예: {ex})" if ex else ""))
+    out.append("[수준을 가르는 조건]")
+    out.append("  - 리더가 실제로 한 구체 행동(때·상황·한 일)이어야 근거가 된다. 태도·일반론·'그런 일 없다'는 근거가 아니다.")
+    out.append("  - Lv.2 와 Lv.3: 기존 기준을 따라 점검·공유만 했으면 Lv.2. 리더가 기준·틀·지표·절차를 직접 제안했고 그것이 팀의 합의·운영 방식이 됐으면 Lv.3.")
+    out.append("  - Lv.3 과 Lv.4: Lv.4 는 행동의 범위가 팀 밖(타 부서·다른 팀·전사·외부 기관)일 때만. 팀 안에서 만든 장치는 아무리 정착했어도 Lv.3 이 상한.")
+    out.append("  - 어느 수준이든 그 수준의 핵심 행동이 발화에 실제로 있어야 한다. 하나라도 빠지면 한 단계 아래로 본다.")
+    return "\n".join(out)
+
+
+def build_system() -> str:
+    """새 방식의 지시 — 원칙만 적는다(예시 문장 없음)."""
+    from diag_project.services.persona_register import register_hint
+    return (
+        "당신은 경험 많은 역량 면접관입니다. 목적은 이 사례에서 리더가 실제로 한 행동·판단·결과를 수준을 가릴 수 있을 만큼 듣는 것입니다.\n\n"
+        "[출력]\n"
+        "- (선택) 반응 한 문장 + 질문 하나. 또는 더 물을 것이 없으면 '[닫음]'이라고 쓰고 이유를 한 줄로 적는다.\n"
+        "- 그 밖의 설명·머리말·번호는 쓰지 않는다.\n\n"
+        "[반응]\n"
+        "- 리더의 답을 되풀이하지 않는다. 답의 뜻을 한마디로 짚거나 상황의 어려움을 알아준다.\n"
+        "- 칭찬과 평가는 하지 않는다.\n"
+        "- 자연스러울 때만 붙인다. 앞 턴들과 같은 꼴을 피한다.\n\n"
+        "[질문 고르기]\n"
+        "- 지금까지 들은 것 가운데 가장 덜 드러난 것 하나를 묻는다 — 리더 본인의 구체 행동, 그렇게 판단한 까닭, 결과의 크기, 팀원에게 어떻게 했는지, "
+        "그 방식이 이후 팀에 남았는지, 사례가 어떻게 끝났는지.\n"
+        # (2026-11-23 검토자 추가) 수준 판정 규칙 6·9 에 맞춘 한 줄 — Lv.3 은 팀의 운영 방식이 됐는가, Lv.4 는 팀 밖으로 이어졌는가
+        "- 그 방식이 팀의 운영 방식이 됐는지, 팀 밖(다른 부서·전사·외부)으로 이어졌는지.\n\n"
+        "[질문 꼴]\n"
+        "- 이야기를 청하는 열린 질문을 먼저 쓴다. 사실 하나만 묻는 질문은 꼭 필요할 때만 쓴다.\n"
+        "- 예·아니오로 답할 수 있는 질문은 쓰지 않는다. 한 번에 하나만 묻는다.\n\n"
+        "[금지]\n"
+        "- 이미 답한 것을 다시 묻기, 리더가 하지 않은 말을 전제로 삼기, 일어나지 않은 일을 가정해 묻기, 다른 사람의 속마음을 묻기.\n\n"
+        f"[말투] 코치 {COACH} — {register_hint(COACH)} 리더를 부를 때는 '리더님'이라고만 한다."
+    )
+
+
+def build_user(*, chapter: str, sub: str | None, case: list[tuple[str, str]], coach_said: list[str]) -> str:
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK
+    comp = COMPETENCY_FRAMEWORK[chapter]
+    sub_name = comp["indicators"][sub]["name"] if sub in comp["indicators"] else "(여는 질문에서 가려내지 못함 — 이 영역의 하위역량 전체를 참고)"
+    convo = "\n".join(f"{'코치' if r == 'model' else '리더'}: {t}" for r, t in case)
+    said = "\n".join(f"- {t}" for t in coach_said) or "- (없음)"
+    return (
+        f"[영역] {comp['name']} — {comp['description']}\n"
+        f"[지금 다루는 하위역량] {sub_name}\n\n"
+        f"[수준 기준]\n{level_block(chapter, sub)}\n\n"
+        f"[이 영역에서 코치가 이미 한 말]\n{said}\n\n"
+        f"[이 사례의 대화 — 마지막 줄이 리더가 방금 한 답]\n{convo}\n\n"
+        "이제 코치가 할 말을 씁니다."
+    )
+
+
+def locate(turns: list[tuple[str, str]]) -> list[dict]:
+    """지점 12곳의 자리와 재료 — 리더 답, 실제 코치 턴(A), 이 사례의 대화, 이 영역에서 코치가 이미 한 말, 하위역량."""
+    out = []
+    starts = {ch: chapter_start(turns, ch) for ch in {c for c, _t in POINTS}}
+    for n, (chapter, tail) in enumerate(POINTS, 1):
+        i = find_point(turns, tail, POINT_EXTRA.get(n), start=starts[chapter])
+        if i is None:
+            out.append({"n": n, "chapter": chapter, "tail": tail, "found": False})
+            continue
+        ch0 = starts[chapter]
+        # 이 사례를 연 코치 턴 — 지점 앞에서 가장 가까운 여는 질문
+        open_i, sub = ch0, None
+        for j in range(i - 1, ch0 - 1, -1):
+            if turns[j][0] == "model":
+                s = opener_sub(turns[j][1], chapter)
+                if s:
+                    open_i, sub = j, s
+                    break
+        actual = next((t for r, t in turns[i + 1:i + 2] if r == "model"), "")
+        nxt_sub = opener_sub(actual, chapter) if actual else None
+        # 사례를 닫은 꼴 — 다음 사례의 여는 질문으로 넘어갔거나(next), 질문 없이 영역을 마무리하는 요약으로 넘어갔다(end)
+        closed = "next" if nxt_sub else ("end" if (not actual or "?" not in actual) else "")
+        out.append({"n": n, "chapter": chapter, "tail": tail, "found": True, "leader": turns[i][1], "actual": actual,
+                    "actual_closed": closed, "sub": sub, "case": turns[open_i:i + 1],
+                    "coach_said": [t for r, t in turns[ch0:i] if r == "model"], "turn_index": i})
+    return out
+
+
+async def call(llm, *, system: str, user: str, sonnet: bool) -> dict:
+    from diag_project.llm_service import ANALYSIS_MODEL, USAGE_METER, _PRICE
+    ct = "p16_compare_sonnet" if sonnet else "p16_compare_haiku"
+    before = {k: dict(v) for k, v in USAGE_METER.by_type.items() if k[0] == ct}
+    t0 = time.perf_counter()
+    text = await llm._generate_with_retry(prompt=user, system_instruction=system, max_tokens=400, thinking_budget=0, call_type=ct,
+                                          model=(ANALYSIS_MODEL if sonnet else None), temperature=0.4)
+    sec = round(time.perf_counter() - t0, 2)
+    tok_in = tok_out = 0
+    model = ""
+    for (c, m), d in USAGE_METER.by_type.items():
+        if c != ct:
+            continue
+        b = before.get((c, m), {})
+        tok_in += int(d["input"]) - int(b.get("input", 0))
+        tok_out += int(d["output"]) + int(d["thoughts"]) - int(b.get("output", 0)) - int(b.get("thoughts", 0))
+        model = m
+    pr = _PRICE.get(model, {"in": 0.0, "out": 0.0})
+    return {"text": (text or "").strip(), "sec": sec, "in": tok_in, "out": tok_out, "model": model,
+            "usd": round((tok_in * pr["in"] + tok_out * pr["out"]) / 1e6, 6)}
+
+
+def register_note(text: str) -> list[str]:
+    from diag_project.services.persona_register import register_violations
+    return register_violations(COACH, text, scope="all")
+
+
+def write_outputs(points: list[dict], raw: dict, out_dir: Path, seed: int) -> None:
+    rng = random.Random(seed)
+    L = ["# P16-0 질문 생성 방식 비교 — 가림 판", "",
+         "지점마다 리더가 방금 한 답(앞 60자)과 코치 턴 후보 셋입니다. 순서는 지점마다 섞었고, 어느 방식인지는 적지 않았습니다.", ""]
+    K = ["# P16-0 질문 생성 방식 비교 — 정답표", "", "A = 실제로 나온 코치 턴 · B = 새 방식(Haiku) · C = 새 방식(Sonnet)", "",
+         "| 지점 | 가 | 나 | 다 | B 비용(USD) | B 지연(초) | C 비용(USD) | C 지연(초) |", "|---|---|---|---|---|---|---|---|"]
+    names = {"work_management": "일관리", "self_management": "자기관리"}
+    for p in points:
+        r = raw.get(str(p["n"]))
+        if not p.get("found") or not r:
+            continue
+        a_text = p["actual"] or "(코치 턴 없음)"
+        if p.get("actual_closed") == "next":
+            a_text += "  ← (이 사례를 닫고 다음 질문으로 넘어감)"
+        elif p.get("actual_closed") == "end":
+            # 영역 종료 요약은 길다 — 첫 문장만 싣는다
+            first = re.split(r"(?<=[.?!])\s+", a_text)[0]
+            a_text = f"{first} …(이하 영역 종료 요약)  ← (이 사례를 닫고 영역을 마무리함)"
+        cands = [("A", a_text), ("B", r["B"]["text"]), ("C", r["C"]["text"])]
+        rng.shuffle(cands)
+        L.append(f"## 지점 {p['n']} — {names[p['chapter']]}")
+        L.append(f"리더: {p['leader'][:60]}…" if len(p["leader"]) > 60 else f"리더: {p['leader']}")
+        L.append("")
+        for lab, (_k, t) in zip("가나다", cands):
+            L.append(f"- **{lab}**: {t}")
+        L.append("")
+        K.append(f"| {p['n']} | " + " | ".join(k for k, _t in cands)
+                 + f" | {r['B']['usd']:.5f} | {r['B']['sec']} | {r['C']['usd']:.5f} | {r['C']['sec']} |")
+    done = [raw[str(p["n"])] for p in points if raw.get(str(p["n"]))]
+    if done:
+        for tag, name in (("B", "Haiku"), ("C", "Sonnet")):
+            usd = [d[tag]["usd"] for d in done]
+            sec = sorted(d[tag]["sec"] for d in done)
+            K += ["", f"{tag}({name}) — 턴당 비용 평균 ${sum(usd) / len(usd):.5f} · 지연 중앙 {sec[len(sec) // 2]}초 · 최대 {sec[-1]}초 · "
+                      f"입력 토큰 평균 {sum(d[tag]['in'] for d in done) // len(done)} · 출력 토큰 평균 {sum(d[tag]['out'] for d in done) // len(done)} · "
+                      f"세션 150턴 환산 ${150 * sum(usd) / len(usd):.2f}"]
+        K += ["", f"실제 비용 합계: ${sum(d['B']['usd'] + d['C']['usd'] for d in done):.4f} ({len(done)}개 지점)"]
+        notes = [f"지점 {p['n']} {tag}: {v}" for p in points if raw.get(str(p["n"])) for tag in ("B", "C") for v in raw[str(p["n"])][tag].get("register", [])]
+        K += ["", "말투 검사에 걸린 문장: " + (" / ".join(notes) if notes else "없음")]
+    (out_dir / "p16_compare_blind.md").write_text("\n".join(L) + "\n", encoding="utf-8")
+    (out_dir / "p16_compare_key.md").write_text("\n".join(K) + "\n", encoding="utf-8")
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="P16-0 질문 생성 방식 비교(제품 코드 수정 없음)")
+    ap.add_argument("--transcript", required=True)
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--only", type=int, default=0, help="앞에서 이만큼의 지점만 돌린다(0 = 전부)")
+    ap.add_argument("--dry-run", action="store_true", help="지점을 찾고 지시문만 출력한다(LLM 호출 없음)")
+    ap.add_argument("--seed", type=int, default=20261123)
+    args = ap.parse_args(argv)
+    path = Path(args.transcript)
+    out_dir = Path(args.out) if args.out else path.parent
+    turns = parse_transcript(path.read_text(encoding="utf-8"))
+    points = locate(turns)
+    print(f"전문 {len(turns)}턴(코치 {sum(1 for r, _t in turns if r == 'model')} · 리더 {sum(1 for r, _t in turns if r == 'user')})")
+    for p in points:
+        if not p.get("found"):
+            print(f"지점 {p['n']}: 못 찾음 — '{p['tail']}'")
+        else:
+            print(f"지점 {p['n']}: 턴 {p['turn_index']} · 하위역량 {p['sub']} · 사례 {len(p['case'])}턴 · 실제 코치 턴{'(사례 닫음: ' + p['actual_closed'] + ')' if p['actual_closed'] else ''}: {p['actual'][:60]}")
+    if any(not p.get("found") for p in points):
+        print("찾지 못한 지점이 있습니다 — 전문의 형식이나 끝부분 문구를 확인하세요.")
+        return 2
+    system = build_system()
+    if args.dry_run:
+        p = points[0]
+        print("\n===== 지시문(system) =====\n" + system)
+        print("\n===== 입력(지점 1) =====\n" + build_user(chapter=p["chapter"], sub=p["sub"], case=p["case"], coach_said=p["coach_said"]))
+        return 0
+    raw_path = out_dir / "p16_compare_raw.json"
+    raw = json.loads(raw_path.read_text(encoding="utf-8")) if raw_path.exists() else {}
+    from diag_project.llm_service import GeminiService
+    llm = GeminiService().bind_provider("claude")
+
+    async def run() -> None:
+        for p in (points[:args.only] if args.only else points):
+            if raw.get(str(p["n"])):
+                continue
+            user = build_user(chapter=p["chapter"], sub=p["sub"], case=p["case"], coach_said=p["coach_said"])
+            b = await call(llm, system=system, user=user, sonnet=False)
+            c = await call(llm, system=system, user=user, sonnet=True)
+            for d in (b, c):
+                d["register"] = register_note(d["text"])
+            raw[str(p["n"])] = {"B": b, "C": c, "user_prompt": user}
+            raw_path.write_text(json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8")
+            print(f"지점 {p['n']}: B ${b['usd']:.5f} {b['sec']}초 · C ${c['usd']:.5f} {c['sec']}초")
+    asyncio.run(run())
+    write_outputs(points, raw, out_dir, args.seed)
+    print(f"저장: {out_dir / 'p16_compare_blind.md'} · {out_dir / 'p16_compare_key.md'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
