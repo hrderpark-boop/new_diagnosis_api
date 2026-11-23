@@ -985,6 +985,10 @@ async def _submit_message_phase3a(
     _pre_recv_text = None   # (2026-11-15 P13f-4) 사례를 닫으며 매핑과 함께 받아 둔 받는 말(이 턴에만 쓴다 — 세션 상태에 남기지 않는다)
     _specify_q_text = None  # (2026-11-18 P14d-5) 구체화 전용 호출이 쓴 질문 — 방향을 정하는 자리에서 받아 두고, 합격했을 때만 그 턴을 구체화 턴으로 삼는다
     _tr = None              # (2026-11-18 P15) 이 사례의 전문 [(역할, 글)] — 꼬리 질문의 리더 낱말·청하는 꼴 횟수를 볼 때 쓴다
+    # (2026-11-23 P16-1) 코치 턴 새 방식 — FM_COACH_V2=1 일 때만. 사례 안 코치 턴을 호출 하나로 만든다(services/coach_v2). 기본값은 종전 경로.
+    from diag_project.services import coach_v2 as _cv2
+    _v2_on = _cv2.enabled()
+    _v2_text = None         # 새 방식이 쓴 이 턴의 코치 말(사례 중간 턴·마무리 턴) — 있으면 끝에서 그대로 놓는다
     _call_drops: list = []  # (2026-11-18 P14d-4) 전용 호출(받는 말·첫 꼬리·구체화)에서 탈락한 문장 [[호출, 사유, 문장], …] — 턴 기록에 남긴다
     _reask_kind = None  # (2026-11-12 P11-A3·H) 'clarify'(되묻기) | 'contentless'(받을 내용 없는 답) — 사례 턴에서 원장·슬롯 판정 없이 직전 질문만 다시 쓴다
     _align_ctx = None   # (2026-10-28 P0-1) ALIGN 조립 재료 — 후처리 끝에 render_align 으로 조립
@@ -1241,6 +1245,14 @@ async def _submit_message_phase3a(
         """이 사례에서 리더가 한 말 전부(없으면 직전 답)."""
         return " ".join(t for r, t in (tr or []) if r == "user") or (fallback or "")
 
+    async def _v2_render(mode_v2: str, ep_v2: dict) -> tuple[str | None, str]:
+        """(P16-1) 새 방식 호출 — mode_v2 'mid'(사례 중간 턴) | 'wrap'(사례 마무리 턴). (코치 말 | None, 기록)."""
+        return await _cv2.render(
+            llm, mode=mode_v2, chapter=chapter, sub_name=ep_v2.get("opener_sub"), case=_ep_transcript(ep_v2),
+            coach_said=[(m.content or "") for m in _ch_msgs_b if (m.role == MessageRole.MODEL or m.role == "model")],
+            missing=[_bei.SLOT_LABELS[k] for k in _bei.unfilled_slots(ep_v2)],
+            persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops)
+
     if chapter and instruction_used in ("COMPETENCY_ALIGN", "EPISODE_PROBE"):
         _store = dict(session.self_assessment_data or {})
         _ledger_snapshot = _bei.snapshot(_store)
@@ -1270,6 +1282,8 @@ async def _submit_message_phase3a(
             _prev_user_c = next((m.content or "" for m in reversed(history_messages[:-1]) if not (m.role == MessageRole.MODEL or m.role == "model")), "")
             _asked_c = ep.get("ask_slot")
             _own_c = _asked_c in ("action", "reflection") or (ep.get("kind") == "sweep" and not _asked_c and int(ep.get("leader_turns") or 0) >= 2)
+            if ep.get("wrap_asked"):
+                _own_c = False      # (P16-1) 마무리 턴을 거친 사례는 넘김말로 넘어간다 — 이해한 바는 마무리 턴에서 이미 확인했다
             _echo_n_c = int((_store.get("trans_echo") or {}).get(chapter) or 0)
             _can_c = _rcv_c(_bei_user_text, _prev_user_c)
             _echo_c = (status not in ("no_case", "repeat") and _can_c and _own_c and _echo_n_c < TRANS_ECHO_MAX and not os.getenv("FM_LLM_STUB"))
@@ -1367,6 +1381,27 @@ async def _submit_message_phase3a(
                 state["bei_close_episodes"] = _uniq_m
                 state["bei_close_no_case"] = bool(state.get("bei_last_no_case"))
             _tm["bei"] = plan
+
+        async def _v2_try_wrap(ep: dict, close_status: str, follow_instr: str = "EPISODE_PROBE") -> str | None:
+            """(2026-11-23 P16-1) 사례 마무리 턴 — 상태 기계가 사례를 닫으려 할 때(또는 이번 질문이 그 사례의 마지막 질문일 때) 닫기 전에 한 번.
+            이해한 바를 확인하고 아직 듣지 못한 것을 물으면 'asked'(이 턴이 마무리 턴), 덜 들은 것이 없어 확인만 했으면 'confirmed'(바로 닫고
+            그 확인 문장을 넘김말 자리에 놓는다), 호출이 실패하면 None(종전 경로 그대로)."""
+            nonlocal _bei_ep, instruction_used, _store, _v2_text, _pre_recv_text
+            _t0_w = _time.perf_counter()
+            _txt_w, _how_w = await _v2_render("wrap", ep)
+            _tm["v2_wrap_s"] = round(_time.perf_counter() - _t0_w, 2)
+            if not _txt_w:
+                _tm["v2"] = f"wrap_fallback:{_how_w}"
+                return None
+            ep["wrap_asked"] = 1
+            if _cv2.has_question(_txt_w):
+                _store = _bei.update_episode(_store, chapter, ep)
+                _bei_ep = ep; instruction_used = follow_instr; _tm["bei"] = "wrap"; _v2_text = _txt_w; _tm["v2"] = "wrap"
+                return "asked"
+            await _close_and_map(ep, close_status)
+            _next_after_close()
+            _pre_recv_text = _txt_w; _tm["pre_recv"] = "v2_confirm"; _tm["v2"] = "wrap_confirm"
+            return "confirmed"
 
         if instruction_used == "COMPETENCY_ALIGN":
             # 사례 1 여는 앵커 = ALIGN 꼬리(앵커 문장은 8-b/8-z 가 붙인다). 리더 턴은 다음 답부터 센다.
@@ -1487,6 +1522,16 @@ async def _submit_message_phase3a(
                     _tm["dup_close"] = 1
                     await _close_and_map(_ep, "no_case" if not _bei.filled_slots(_ep) else ("sweep_done" if _ep.get("kind") == "sweep" else "stalled"))
                     _next_after_close()
+                elif _v2_on and _ep.get("wrap_asked"):
+                    # (2026-11-23 P16-1) 마무리 턴의 답을 받았다 — 더 묻지 않고 닫는다(다음 턴은 넘김말 + 다음 질문)
+                    if _ep.get("kind") == "sweep":
+                        _ep["promote_end"] = _ep.get("promote_end") or "wrap"
+                        await _close_and_map(_ep, "sweep_done" if _bei.filled_slots(_ep) else "no_case")
+                    else:
+                        _r_w = _bei.episode_done_reason(_ep, _store, chapter, _all_subs_b)
+                        await _close_and_map(_ep, "no_case" if not _bei.filled_slots(_ep) else
+                                             ("done" if _r_w == "slots" else (_r_w if _r_w in ("turns", "budget", "reserve", "stalled") else "turns")))
+                    _next_after_close()
                 elif _ep.get("kind") == "sweep":
                     # SWEEP 항목: 앵커 답 1턴 → (허용되면) 후속 1턴 → 매핑 → 다음
                     if _no_case and int(_ep.get("leader_turns") or 0) <= 1:
@@ -1502,15 +1547,27 @@ async def _submit_message_phase3a(
                             _tm["sweep_promote"] = _pd_b
                         if _ep.get("promote") == "promoted":
                             _reason_p = _bei.promoted_done_reason(_ep, _store, chapter, _all_subs_b)
+                            _w_v2 = None
                             if _reason_p:
-                                _ep["promote_end"] = _reason_p
-                                _tm["sweep_promote"] = f"promoted:{_reason_p}"
-                                await _close_and_map(_ep, "no_case" if _reason_p == "stalled_empty" else "sweep_done")
-                                _next_after_close()
+                                # (P16-1) 여섯 가지가 다 나왔거나 진전이 없어 닫으려는 자리 — 턴이 남아 있으면 닫기 전에 마무리 턴 한 번
+                                if _v2_on and _reason_p in ("slots", "stalled") and _cv2.can_extend(_ep, _store, chapter, _all_subs_b):
+                                    _w_v2 = await _v2_try_wrap(_ep, "sweep_done")
+                                if _w_v2 is None:
+                                    _ep["promote_end"] = _reason_p
+                                    _tm["sweep_promote"] = f"promoted:{_reason_p}"
+                                    await _close_and_map(_ep, "no_case" if _reason_p == "stalled_empty" else "sweep_done")
+                                    _next_after_close()
                             else:
-                                _bei_ep = _ep; instruction_used = "EPISODE_PROBE"; _tm["bei"] = "sweep_promoted"
+                                # (P16-1) 이번 질문이 이 사례의 마지막 질문이면 그 질문을 마무리 턴으로 쓴다
+                                if _v2_on and _cv2.last_question_next(_ep, _store, chapter, _all_subs_b):
+                                    _w_v2 = await _v2_try_wrap(_ep, "sweep_done")
+                                if _w_v2 is None:
+                                    _bei_ep = _ep; instruction_used = "EPISODE_PROBE"; _tm["bei"] = "sweep_promoted"
                         elif int(_ep.get("leader_turns") or 0) == 1 and _bei.sweep_followup_allowed(_store, chapter, _all_subs_b, _ep):
-                            _bei_ep = _ep; instruction_used = "SWEEP_FOLLOWUP"; _tm["bei"] = "sweep_followup"
+                            # (P16-1) 예산이 모자라 꼬리 질문이 하나뿐인 훑는 사례 — 그 하나를 마무리 턴 꼴로 쓴다
+                            _w_v2 = await _v2_try_wrap(_ep, "sweep_done", follow_instr="SWEEP_FOLLOWUP") if _v2_on else None
+                            if _w_v2 is None:
+                                _bei_ep = _ep; instruction_used = "SWEEP_FOLLOWUP"; _tm["bei"] = "sweep_followup"
                         else:
                             await _close_and_map(_ep, "sweep_done")
                             _next_after_close()
@@ -1531,12 +1588,22 @@ async def _submit_message_phase3a(
                             _next_after_close()
                     elif _reason:
                         # (2026-11-12 P11c-4) 'stalled_empty' = 채운 칸 없이 2턴 연속 진전 없음 → 사례 없음으로 닫고 다음 칸으로
-                        await _close_and_map(_ep, "done" if _reason == "slots" else ("no_case" if _reason == "stalled_empty" else _reason))   # (P7-1) 'stalled' 포함 — 들은 슬롯만으로 매핑
-                        _next_after_close()
+                        _w_v2 = None
+                        if _v2_on and _reason in ("slots", "stalled") and _cv2.can_extend(_ep, _store, chapter, _all_subs_b):
+                            # (P16-1) 닫으려는 자리 — 턴이 남아 있으면 닫기 전에 마무리 턴 한 번
+                            _w_v2 = await _v2_try_wrap(_ep, "done" if _reason == "slots" else "stalled")
+                        if _w_v2 is None:
+                            await _close_and_map(_ep, "done" if _reason == "slots" else ("no_case" if _reason == "stalled_empty" else _reason))   # (P7-1) 'stalled' 포함 — 들은 슬롯만으로 매핑
+                            _next_after_close()
                     else:
-                        _bei_ep = _ep; instruction_used = "EPISODE_PROBE"; _tm["bei"] = "probe"
-                        if _jd.get("switched_case"):
-                            state["bei_switched"] = True
+                        _w_v2 = None
+                        if _v2_on and _cv2.last_question_next(_ep, _store, chapter, _all_subs_b):
+                            # (P16-1) 이번 질문이 이 사례의 마지막 질문이면 그 질문을 마무리 턴으로 쓴다(턴을 더 쓰지 않는다)
+                            _w_v2 = await _v2_try_wrap(_ep, "turns")
+                        if _w_v2 is None:
+                            _bei_ep = _ep; instruction_used = "EPISODE_PROBE"; _tm["bei"] = "probe"
+                            if _jd.get("switched_case"):
+                                state["bei_switched"] = True
         if instruction_used == "EPISODE_PROBE" and _bei_ep is not None and not state.get("bei_reask_only"):
             # (2026-11-15 P13b-1) 리더가 떠오르지 않는다·옮기기 어렵다고 답한 것은 다시 캐묻지 않는다 — 방금 물은 것을 다 물은 것으로 치고 다음 것으로
             _prev_slot_nr = _bei_ep.get("ask_slot")
@@ -1558,7 +1625,7 @@ async def _submit_message_phase3a(
             _sp_n_ch = sum(1 for _e_sp in _bei.episodes(_store, chapter) if isinstance(_e_sp.get("specificity_probe"), dict))
             _specify_slot = None
             if (_prev_slot_nr in ("action", "result") and _tm.get("specific") is False and not _bei.is_no_recall_text(_bei_user_text)
-                    and not _bei_ep.get("specificity_probe") and _sp_n_ch < 3 and not _bei.first_probe_pending(_bei_ep)):
+                    and not _bei_ep.get("specificity_probe") and _sp_n_ch < 3 and not _bei.first_probe_pending(_bei_ep) and not _v2_on):
                 # (2026-11-18 P14d-5) 구체화 질문은 여기서 전용 호출로 받는다 — 합격했을 때만 이 턴을 구체화 턴으로 삼고 기록한다.
                 #   두 번 다 떨어지면 평소 방향으로 간다(p14c Olivia: 본 호출에 맡겼더니 구체화 턴에 기준을 물었다).
                 from diag_project.services.specify_render import render_specify as _rsp_s
@@ -1898,6 +1965,11 @@ async def _submit_message_phase3a(
         }
         _l0 = _time.perf_counter()
         _tp.set_stage(str(session.id), "thinking")
+        if (_v2_on and _v2_text is None and not _tm.get("v2") and chapter and _bei_ep is not None and not _reask_kind
+                and instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP")):
+            # (2026-11-23 P16-1) 사례 중간 턴 — 호출 하나로 (선택) 짧은 반응 + 열린 질문. 실패하면 아래 종전 경로(첫 꼬리 전용 호출·본 호출)가 쓴다.
+            _v2_text, _v2_how = await _v2_render("mid", _bei_ep)
+            _tm["v2"] = "mid" if _v2_text else f"mid_fallback:{_v2_how}"
         if instruction_used == "CHAPTER_READY_TO_END":
             # (2026-11-11 호출 순서) 챕터 종료 턴은 코치 본 호출을 하지 않는다 — 본 호출 출력은 쓰이지 않았다(요약은 재료만 주는 집중 호출이 쓰고,
             #   마지막 챕터는 받기 1문장 + 고정 종료 문구, 사례 0 챕터는 고정 문장). 종전에는 본 호출 1회 + 요약 재생성 2회가 먼저 돌았다(p10a·p10b·lb1 전부 집중 호출로 끝남).
@@ -1931,6 +2003,12 @@ async def _submit_message_phase3a(
             _last_coach_rq = next((m.content or "" for m in reversed(history_messages) if (m.role == MessageRole.MODEL or m.role == "model")), "")
             _tm["reask_prev"] = {"q": _orig_rq[:160], "is_last": bool(_orig_rq) and _same_rq(_orig_rq, _lqo_rq(_last_coach_rq) or "")}
             logger.info("🔁 다시 묻기(%s): %r ← %r", _tm["reask"], _reask_final[:80], _orig_rq[:60])
+        elif _v2_text and instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP") and chapter and not _reask_kind:
+            # (2026-11-23 P16-1) 새 방식이 쓴 코치 말을 그대로 쓴다 — 첫 꼬리 전용 호출·본 호출·구체화 질문·대체 문장과 꼬리 질문의 겉모양 검사를 거치지 않는다.
+            #   누설·말투 확인은 호출 쪽(coach_v2.check)에서 했다. 다른 재생성은 끼어들지 않는다.
+            _fp_final = _v2_text
+            llm_output = {"reply": _fp_final}
+            _tm["no_regen"] = 1
         elif ((instruction_used == "SWEEP_FOLLOWUP" or (instruction_used == "EPISODE_PROBE" and (_bei_ep or {}).get("ask_first"))) and chapter):
             # (2026-11-15 P13d-2) 사례의 첫 꼬리 질문 턴(훑는 질문의 꼬리 질문 포함)은 코치 본 호출 대신 전용 호출 1회로 질문 한 문장을 만든다
             #   (다시 묻기 전용 호출과 같은 구조). 넘기는 것은 리더의 직전 답·코치 말투·이번 영역에서 쓴 끝맺음뿐 — 칸 상태·방향 힌트·코치 프로필·
@@ -3808,8 +3886,9 @@ async def _submit_message_phase3a(
             _tm["mark_fix"] = _n_fsm
     if _fp_final and system_override_text is None and not _llm_error and not needs_user_decision:
         clean_reply = _fp_final             # (P13d-2) 첫 꼬리 질문 턴은 질문 한 문장으로 고정
+    _v2_turn = bool(_v2_text) and _fp_final == _v2_text      # (P16-1) 새 방식이 쓴 턴 — 아래 꼬리 질문의 겉모양 처리(평서문 삭제·호칭·머리말·청하는 꼴 변환)를 걸지 않는다
     if (instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP") and chapter and system_override_text is None and not _llm_error
-            and not needs_user_decision and not _reask_kind and (clean_reply or "").strip()):
+            and not needs_user_decision and not _reask_kind and (clean_reply or "").strip() and not _v2_turn):
         # (2026-11-16 P14-1 → P14b-1 → 2026-11-18 P15-1) 사례 안 꼬리 질문 턴은 질문만 나간다 — 받는 말을 붙이지 않는다.
         #   본 호출이 쓴 평서문은 지운다(슬롯 문장·고정 문장은 둔다). 받는 말을 붙이던 규칙(A·B·D)과 연속 상한은 지웠다.
         from diag_project.services.intro_messages import all_fixed_sentences as _afs_b
@@ -3828,6 +3907,11 @@ async def _submit_message_phase3a(
             # (2026-11-18 P14e-5) 전환 턴은 받는 말이 통과했으면 항상 붙인다 — 뒤 단계(받기 내용 검사·입버릇 가드)가 지웠으면 끝에서 다시 놓는다
             clean_reply = f"{_pre_recv_text} {clean_reply}".strip()
             _tm["recv_rule"] = "C+"
+        if _tm.get("pre_recv_mode") == "v2_confirm" and _pre_recv_text and (clean_reply or "").strip():
+            # (P16-1) 덜 들은 것이 없어 확인만 하고 닫은 사례 — 확인 문장(새 방식이 쓴 것)을 넘김말 자리에 그대로 놓고 다음 질문만 잇는다
+            _qs_v2 = [x.strip() for x in split_sentences(clean_reply) if x.strip() and is_question_sentence(x)]
+            clean_reply = f"{_pre_recv_text} {' '.join(_qs_v2)}".strip()
+            _tm["recv_rule"] = "v2_confirm"
     if (instruction_used in ("EPISODE_OPEN", "SWEEP_ANCHOR") and chapter and system_override_text is None and not _llm_error and not needs_user_decision
             and _bei_anchor_text and not (clean_reply or "").strip()):
         # (2026-11-17 P14c-5) 받는 말이 없는 여는 턴 — 본문이 비어 있으면 앞 단계(8-i 안의 시스템 질문 붙이기)를 지나지 못해 코치 턴이 통째로 비었다.
@@ -3852,14 +3936,14 @@ async def _submit_message_phase3a(
         from sqlalchemy.orm.attributes import flag_modified as _fm_te
         _fm_te(session, "self_assessment_data")
         _tm["trans_echo_n"] = _te[chapter]
-    if chapter and instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP", "EPISODE_OPEN", "SWEEP_ANCHOR") and (clean_reply or "").strip():
+    if chapter and instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP", "EPISODE_OPEN", "SWEEP_ANCHOR") and (clean_reply or "").strip() and not _v2_turn:
         # (2026-11-17 P14c-3 → 2026-11-18 P15-3) 문장 머리의 호칭은 뗀다 — '리더님, ', '리더님께서(는) ', '리더님은/이 '(받는 말·질문 모두)
         from diag_project.services.turn_checks import strip_head_filler as _shf_e, strip_lead_address_q as _slq_e
         clean_reply = _slq_e(re.sub(r"(^|(?<=[.?!…]\s))리더님,\s*", "", clean_reply.lstrip()))
         if instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP"):
             clean_reply = _slq_e(_shf_e(clean_reply))      # (P15 판정 5) 질문 머리의 '그럼', '다음은'을 뗀다
     if (instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP") and chapter and system_override_text is None and not _llm_error
-            and not needs_user_decision and not _reask_kind and (clean_reply or "").strip()):
+            and not needs_user_decision and not _reask_kind and (clean_reply or "").strip() and not _v2_turn):
         # (2026-11-18 P15-4) 청하는 꼴('…말씀해 주시겠-', '…주실 수 있-', '…궁금합니다')은 사례당 한 번까지 — 이미 썼으면 직접 묻는 꼴로 바꾼다
         #   ('-는지/-인지' 바로 뒤에 청하는 말이 온 꼴만 바꾼다. 그 꼴이 아니면 그대로 두고 기록만 한다: req_over).
         from diag_project.services.turn_checks import is_request_ending as _ire_e, leader_nouns as _ln_e, request_to_direct as _rtd_e
@@ -4200,6 +4284,8 @@ async def _submit_message_phase3a(
             "q_noun": _tm.get("q_noun"), "q_eojeol": _tm.get("q_eojeol"), "tail_issue": _tm.get("tail_issue"), "tail_regen": _tm.get("tail_regen"),
             "direct_fix": _tm.get("direct_fix"), "req_over": _tm.get("req_over"), "trans_echo_n": _tm.get("trans_echo_n"),
             "first_probe_pick": _tm.get("first_probe_pick"), "q_borrow": _tm.get("q_borrow"),
+            # (P16-1) v2 새 방식이 쓴 턴: mid(사례 중간) | wrap(마무리 턴) | wrap_confirm(확인만 하고 닫음) | mid_fallback:·wrap_fallback:<사유>(종전 경로로 떨어짐)
+            "v2": _tm.get("v2"), "v2_wrap_s": _tm.get("v2_wrap_s"),
             # (P14b → P15) recv_rule 전환 턴에 붙인 것: C·C+ 받는 말 | pass 넘김말 · main_stmt_cut 본 호출이 쓴 평서문을 지운 수 · specify_q 구체화 전용 호출 결과 · two_q_regen 두 물음 다시 쓰기
             "recv_rule": _tm.get("recv_rule"), "main_stmt_cut": _tm.get("main_stmt_cut"), "specify_q": _tm.get("specify_q"), "two_q_regen": _tm.get("two_q_regen"),
             "call_drops": (_call_drops or None),      # (P14d-4) 전용 호출에서 탈락한 문장 [[호출, 사유, 문장], …]

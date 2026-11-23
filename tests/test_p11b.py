@@ -2075,3 +2075,87 @@ def test_p15b_reason_slot_direct_form_and_no_repeated_frame():
     assert ok("reason", "야간조에 물량을 넘기기로 정하신 이유는 무엇입니까?", lead, persona_name="Lucas", used=used)[1] == "same_frame"
     assert ok("reason", "야간조에 물량을 넘기기로 하신 까닭이 어디에 있었습니까?", lead, persona_name="Lucas", used=used) == (True, "")
     assert ok("criterion", "야간조에 물량을 넘기기로 정하실 때 무엇을 기준으로 삼으셨는지 말씀해 주시겠습니까?", lead, persona_name="Jessica")[1] == "request_ending"
+
+
+def test_p16_coach_v2_switch_prompts_checks_and_wrap_timing(monkeypatch):
+    """(2026-11-23 P16-1) 코치 턴 새 방식 — 스위치(FM_COACH_V2) · 지시문(원칙만) · 출력 확인(말투·누설·질문 유무) · 마무리 턴을 쓰는 때."""
+    import asyncio
+    import inspect
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import bei_engine as B, coach_v2 as V
+    # 1. 스위치 — 기본은 꺼져 있다(운영 영향 없음). '1' 일 때만 켠다
+    monkeypatch.delenv("FM_COACH_V2", raising=False)
+    assert V.enabled() is False
+    monkeypatch.setenv("FM_COACH_V2", "0")
+    assert V.enabled() is False
+    monkeypatch.setenv("FM_COACH_V2", "1")
+    assert V.enabled() is True
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "_v2_on = _cv2.enabled()" in src and "and not _v2_on):" in src                      # 새 경로에서는 구체화 전용 호출을 부르지 않는다
+    assert src.index('_v2_text, _v2_how = await _v2_render("mid", _bei_ep)') < src.index("render_first_probe as _rfp_fp")      # 종전 경로보다 먼저, 실패하면 종전 경로
+    assert "_fp_final = _v2_text" in src and "and not _v2_turn):" in src                        # 겉모양 처리(평서문 삭제·청하는 꼴 변환)를 걸지 않는다
+    assert 'elif _v2_on and _ep.get("wrap_asked"):' in src and "_own_c = False" in src           # 마무리 턴의 답 뒤에는 닫고 넘김말로
+    # 2. 지시문 — 원칙만. 따옴표로 묶은 예시 문장 없음, 닫음 표지를 고르게 하지 않음(닫는 것은 상태 기계)
+    for mode in ("mid", "wrap"):
+        sysm = V.build_system(mode, "Lucas")
+        assert "경험 많은 역량 면접관" in sysm and "[닫음]" not in sysm
+        assert not [q for q in __import__("re").findall(r"[\"“]([^\"”]{6,})[\"”]", sysm)], mode
+        assert "인상 깊" not in sysm and "분명히" not in sysm and "의미 있는" not in sysm       # 지시에 적힌 따옴표 문구를 그대로 넣지 않는다
+        assert "예·아니오로 답할 수 있는 질문은 쓰지 않는다" in sysm and "안쪽 낱말은 리더에게 말하지 않는다" in sysm
+    mid, wrap = V.build_system("mid", "Lucas"), V.build_system("wrap", "Lucas")
+    assert "값을 매기는 말을 쓰지 않는다" in mid and "말로 풀어 설명하지 않는다" in mid and "팀 밖(다른 부서·전사·외부)으로 이어졌는지" in mid
+    assert "마무리하는 턴" in wrap and "이해한 바를 확인하는 말투" in wrap and "덜 들은 것이 없으면 간추림만 쓰고 질문은 쓰지 않는다" in wrap
+    assert "결과의 크기" in wrap and "팀의 운영 방식이 됐는지" in wrap and "사례가 어떻게 끝났는지" in wrap
+    case = [("model", "최근에 창고 일정을 다시 짜신 적이 있습니까?"), ("user", "지난달 출고가 밀려서 야간조에 물량 삼백 상자를 넘기기로 정했습니다.")]
+    user = V.build_user(chapter="work_management", sub_name="자원 및 시간관리", case=case, coach_said=["앞에서 한 말"], missing=["결과", "판단 기준"])
+    assert "[자원 및 시간관리]" in user and "Lv.4: 조직 전체 자원 운영 방식" in user and "팀 밖(타 부서·다른 팀·전사·외부 기관)" in user
+    assert "결과, 판단 기준" in user and "리더: 지난달 출고가 밀려서" in user and "- 앞에서 한 말" in user and "[업무분장]" not in user
+    assert "[업무분장]" in V.build_user(chapter="work_management", sub_name=None, case=case, coach_said=[], missing=[])      # 하위역량을 모르면 영역 전체
+    # 3. 출력 확인 — 말투·누설·(중간 턴은) 질문 유무만. 어절 수나 낱말 겹침은 보지 않는다
+    lead = [case[1][1]]
+    ok = lambda t, m="mid", p="Lucas": V.check(t, mode=m, persona_name=p, leader_texts=lead)      # noqa: E731
+    long_q = "일정이 빠듯했겠습니다. " + "야간조에 물량을 넘기기로 정하신 뒤 " * 6 + "반장과는 그 일을 어떻게 풀어 가셨는지 들려주시겠습니까?"
+    assert ok(long_q) == (True, "ok")
+    assert ok("")[1] == "empty" and ok("[닫음] 더 물을 것이 없습니다.")[1] == "closed_tag"
+    assert ok("야간조에 물량을 넘기신 것으로 이해했습니다.")[1] == "no_question"
+    assert ok("야간조에 물량을 넘기신 것으로 이해했습니다.", "wrap") == (True, "ok")              # 마무리 턴은 확인만 해도 된다
+    assert ok("야간조에 물량을 어떻게 넘기셨어요?", "mid", "Daniel")[1] == "register"              # 합쇼체 코치의 해요체 끝맺음
+    assert ok("행동 쪽은 들었고 결과 쪽이 남았습니다. 그 뒤 무엇이 달라졌습니까?")[1] == "leak"
+    assert V.clean('1. "야간조 물량은 그 뒤에 어떻게 나누셨습니까?"') == "야간조 물량은 그 뒤에 어떻게 나누셨습니까?"
+    assert V.has_question("그렇게 이해했습니다. 그 뒤 창고에서는 무엇이 달라졌습니까?") and not V.has_question("그렇게 이해했습니다.")
+
+    class _LLM:
+        def __init__(self, outs):
+            self.outs, self.calls = list(outs), []
+
+        async def _generate_with_retry(self, **kw):
+            self.calls.append(kw)
+            return self.outs.pop(0)
+    monkeypatch.delenv("FM_LLM_STUB", raising=False)
+    kw = dict(mode="mid", chapter="work_management", sub_name="자원 및 시간관리", case=case, coach_said=[], missing=["결과"], persona_name="Lucas")
+    good = "일정이 빠듯했겠습니다. 야간조에 물량을 넘긴 뒤 창고 일은 어떻게 풀려 갔는지 들려주시겠습니까?"
+    llm = _LLM([good])
+    assert asyncio.run(V.render(llm, **kw)) == (good, "llm")
+    assert llm.calls[0]["call_type"] == "coach_v2_mid" and "model" not in llm.calls[0] and len(llm.calls) == 1      # 지금 대화 모델(Haiku) 한 번
+    tr: list = []
+    llm2 = _LLM(["야간조에 물량을 넘기신 것으로 이해했습니다.", good])
+    assert asyncio.run(V.render(llm2, trace=tr, **kw)) == (good, "llm_retry") and tr[0][:2] == ["coach_v2:mid", "no_question"]      # 확인에서 떨어지면 한 번 다시
+    assert asyncio.run(V.render(_LLM(["", ""]), **kw)) == (None, "miss:empty")                   # 두 번 다 떨어지면 None — 호출자가 종전 경로를 쓴다
+    monkeypatch.setenv("FM_LLM_STUB", "1")
+    assert asyncio.run(V.render(_LLM([good]), **kw)) == (None, "stub")
+    # 4. 마무리 턴을 쓰는 때 — 이번 질문이 그 사례의 마지막 질문일 때(턴을 더 쓰지 않는다) · 닫으려는 사례에 턴이 남아 있을 때
+    store = {"bei_turns": {"work_management": 4}}
+    subs = ["업무계획 및 조직력", "자원 및 시간관리", "업무분장", "업무 개선 관리(표준화)", "디지털 활용 능력"]
+    filled = {k: {"status": "filled", "quote": "x"} for k in ("context", "action")}
+    ep = {"kind": "episode", "leader_turns": 3, "slots": filled}
+    assert V.last_question_next(dict(ep, leader_turns=B.episode_turn_max() - 1), store, "work_management", []) is True      # 다음 답에서 턴 상한
+    assert V.last_question_next(ep, store, "work_management", []) is False
+    assert V.last_question_next(dict(ep, wrap_asked=1, leader_turns=5), store, "work_management", []) is False               # 이미 마무리 턴을 썼다
+    near = {"bei_turns": {"work_management": B.chapter_budget("work_management") - 1}}
+    assert V.last_question_next(ep, near, "work_management", []) is True                                                     # 다음 답에서 예산 소진
+    assert V.last_question_next({"kind": "sweep", "leader_turns": B.SWEEP_PROMOTE_MAX_TURNS - 1, "slots": filled}, store, "work_management", []) is True
+    assert V.can_extend(ep, store, "work_management", []) is True
+    assert V.can_extend(dict(ep, leader_turns=B.episode_turn_max()), store, "work_management", []) is False                  # 사례 턴 상한
+    assert V.can_extend(dict(ep, slots={}), store, "work_management", []) is False                                           # 찬 칸이 없으면 확인할 것이 없다
+    assert V.can_extend(ep, {"bei_turns": {"work_management": B.chapter_budget("work_management")}}, "work_management", []) is False
+    assert V.can_extend(ep, {"bei_turns": {"work_management": B.chapter_budget("work_management") - 2}}, "work_management", subs) is False      # 미질문 예약을 침범하지 않는다
