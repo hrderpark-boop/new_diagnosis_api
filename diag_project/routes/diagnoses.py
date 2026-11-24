@@ -1255,8 +1255,9 @@ async def _submit_message_phase3a(
             missing=[_bei.SLOT_LABELS[k] for k in _bei.unfilled_slots(ep_v2)],
             persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops, meta=_meta_v2, mid_n=int(ep_v2.get("v2_mid_n") or 0),
             prior_reacts=list(((session.self_assessment_data or {}).get("v2_reacts") or {}).get(chapter) or []),
-            # (P16-1d) 팀 밖으로 이어졌는지를 묻는 마무리 질문은 영역당 두 번까지 — 이 영역의 사례 원장에 적힌 횟수로 센다
-            beyond_ok=sum(1 for _e_v2 in _bei.episodes(session.self_assessment_data or {}, chapter) if _e_v2.get("wrap_beyond")) < _cv2.BEYOND_MAX)
+            # (P16-1d → P16-1e) 마무리 질문의 대상은 코드가 정한다 — 이 사례의 결과 칸이 찼는가 · 이 영역에서 팀 밖을 물은 마무리 질문 수(사례 원장)
+            result_filled="result" in _bei.filled_slots(ep_v2),
+            beyond_n=sum(1 for _e_v2 in _bei.episodes(session.self_assessment_data or {}, chapter) if _e_v2.get("wrap_beyond")))
         _tm["v2_meta"] = {**_meta_v2, "how": _out_v2[1]}
         return _out_v2
 

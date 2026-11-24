@@ -372,7 +372,8 @@ def collect(path: Path) -> dict:
 
 
 # ── (2026-11-24 P16-1c) 코치 턴 새 방식(FM_COACH_V2=1) 집계 — 합격·불합격을 판정하지 않는다. 0이어야 하는 것만 맨 위에 적는다 ──────────
-V2_ZERO = (("빈 코치 턴", "empty_n"), ("서버 오류", "server_err"), ("형식미해결", "format_miss"), ("깨진 문장", "broken_total"), ("누설(가드)", "leak_n"), ("누설(린트)", "lint_n"))
+V2_ZERO = (("빈 코치 턴", "empty_n"), ("서버 오류", "server_err"), ("형식미해결", "format_miss"), ("깨진 문장", "broken_total"), ("누설(가드)", "leak_n"), ("누설(린트)", "lint_n"),
+           ("기존 경로로 떨어진 턴", "fallback_n"), ("물음표가 잘못 붙은 문장", "qmark_n"))
 # (P16-1d) 묻는 꼴이 아닌 끝에 붙은 물음표
 _WRONG_QMARK_RE = re.compile(r"(궁금(해요|합니다|하네요)|여쭤볼게요|여쭤보겠습니다|여쭙겠습니다|물어볼게요|주세요|주십시오)\?")
 
@@ -416,6 +417,8 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
         ans = rows[i + 1].get("content") if i + 1 < len(rows) and rows[i + 1].get("role") == "user" else ""
         wraps.append({"t": r.get("t"), "chapter": r.get("chapter"), "kind": g(r)["v2"], "parts": meta(r).get("parts"), "q_eojeol": len(q.split()), "cut": meta(r).get("wrap_cut") or 0,
                       "notice": next((x for x in notices if x in r["content"]), None), "beyond": bool(q) and V.asks_beyond(r["content"]), "beyond_dropped": bool(meta(r).get("beyond_dropped")),
+                      "target": meta(r).get("target"), "first_cut": meta(r).get("first_cut") or 0, "direct_fix": bool(meta(r).get("direct_fix")),
+                      "not_ask": bool(q) and (not q.rstrip().endswith("?") or V.question_issue(r["content"], [], mode="wrap") in ("request", "permit")),
                       "rewrite": meta(r).get("rewrite"), "left": meta(r).get("left") or V.question_issue(r["content"], [], mode="wrap") if q else meta(r).get("left"),
                       "text": r["content"], "answer": ans})
     used = {e["id"] for e in (data.get("truth") or {}).get("episodes") or [] if e.get("used")}
@@ -440,7 +443,9 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
             "react_cut": dict(collections.Counter(c for r in mid for c in (meta(r).get("react_cut") or []))), "react_list": [meta(r)["react_text"] for r in mid if meta(r).get("react_text")],
             "two_n": len(two), "two_list": two, "wraps": wraps, "wrap_full": sum(1 for w in wraps if w["kind"] == "wrap" and w["parts"] == "123"),
             "qmark_n": len(qmark), "qmark_list": qmark, "notice_dup": notice_dup, "beyond_by_ch": {k: v["beyond"] for k, v in by_ch.items()},
-            "beyond_dropped": sum(1 for w in wraps if w["beyond_dropped"]),
+            "beyond_dropped": sum(1 for w in wraps if w["beyond_dropped"]), "first_cut_n": sum(1 for w in wraps if w["first_cut"]),
+            "not_ask_n": sum(1 for w in wraps if w["not_ask"]), "direct_fix_n": sum(1 for w in wraps if w["direct_fix"]),
+            "targets": dict(collections.Counter(str(w["target"]) for w in wraps)),
             "beyond": beyond, "beyond_heard": sum(1 for b in beyond if b["heard"]),
             "first_top": firsts.most_common(5), "end_top": ends.most_common(6), "v2_n": len(v2),
             "rewrite": dict(collections.Counter(str(meta(r).get("rewrite")) for r in v2 + confirm if meta(r).get("rewrite"))),
@@ -471,14 +476,15 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
     row("말투 어긋남", lambda v: v["register_n"])
     row("리더 턴 / 세션 상태", lambda v: f"{v['turns']} / {v['status']}")
     row("새 방식 턴(중간 / 마무리 / 확인만 하고 닫음)", lambda v: f"{v['mid_n']} / {v['wrap_n']} / {v['confirm_n']}")
-    row("기존 경로로 떨어진 턴", lambda v: v["fallback_n"])
     row("반응 허용 / 붙음 / 지움", lambda v: f"{v['react_slot']} / {v['react_kept']} / {sum(v['react_cut'].values())}")
     row("지운 반응(까닭별)", lambda v: " · ".join(f"{k} {n}" for k, n in v["react_cut"].items()) or "0")
     row("한 턴 두 물음", lambda v: v["two_n"])
     row("마무리 턴 / 세 토막 갖춤", lambda v: f"{v['wrap_n']} / {v['wrap_full']}")
     row("영역 안에서 겹친 둘째 토막 문구", lambda v: v["notice_dup"])
     row("팀 밖을 물은 마무리 질문(영역별) / 지운 것", lambda v: " · ".join(f"{k.split('_')[0]} {n}" for k, n in v["beyond_by_ch"].items()) + f" / {v['beyond_dropped']}")
-    row("물음표가 잘못 붙은 문장", lambda v: v["qmark_n"])
+    row("마무리 질문의 대상(코드가 정함)", lambda v: " · ".join(f"{k} {n}" for k, n in v["targets"].items()))
+    row("이해 확인에서 문장을 지운 마무리 턴", lambda v: v["first_cut_n"])
+    row("확인 질문이 묻는 꼴이 아닌 마무리 턴 / 직접 묻는 꼴로 바꾼 것", lambda v: f"{v['not_ask_n']} / {v['direct_fix_n']}")
     row("팀 밖 재료가 있는 사례 / 그 답을 들음", lambda v: f"{len(v['beyond'])} / {v['beyond_heard']}")
     row("다시 쓰기(까닭별)", lambda v: " · ".join(f"{k} {n}" for k, n in v["rewrite"].items()) or "0")
     row("다시 쓰고도 남은 꼴", lambda v: " · ".join(f"{k} {n}" for k, n in v["left"].items()) or "0")
@@ -502,7 +508,8 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
         L.append(f"마무리 턴 {len(v['wraps'])}개:")
         for w in v["wraps"]:
             tag_w = ("확인만 하고 닫음" if w["kind"] == "wrap_confirm" else
-                     f"토막 {w['parts']} · 질문 {w['q_eojeol']}어절" + (" · 팀 밖" if w["beyond"] else "") + (" · 팀 밖 질문 지움" if w["beyond_dropped"] else "")
+                     f"대상 {w['target']} · 토막 {w['parts']} · 질문 {w['q_eojeol']}어절" + (" · 팀 밖" if w["beyond"] else "") + (" · 팀 밖 질문 지움" if w["beyond_dropped"] else "")
+                     + (f" · 이해 확인 문장 {w['first_cut']}개 지움" if w["first_cut"] else "") + (" · 직접 묻는 꼴로 바꿈" if w["direct_fix"] else "") + (" · 묻는 꼴 아님" if w["not_ask"] else "")
                      + (f" · 지운 문장 {w['cut']}" if w["cut"] else "") + (f" · 다시 씀({w['rewrite']})" if w["rewrite"] else "")
                      + (f" · 남은 꼴({w['left']})" if w["left"] else ""))
             L.append(f"   - [{w['chapter']} t{w['t']} · {tag_w}] {w['text']}")
