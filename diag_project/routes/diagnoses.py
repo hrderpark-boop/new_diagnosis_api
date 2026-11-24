@@ -1246,12 +1246,16 @@ async def _submit_message_phase3a(
         return " ".join(t for r, t in (tr or []) if r == "user") or (fallback or "")
 
     async def _v2_render(mode_v2: str, ep_v2: dict) -> tuple[str | None, str]:
-        """(P16-1) 새 방식 호출 — mode_v2 'mid'(사례 중간 턴) | 'wrap'(사례 마무리 턴). (코치 말 | None, 기록)."""
-        return await _cv2.render(
+        """(P16-1) 새 방식 호출 — mode_v2 'mid'(사례 중간 턴) | 'wrap'(사례 마무리 턴). (코치 말 | None, 기록).
+        다듬은 기록(반응을 붙였는지·지운 반응·다시 쓴 까닭)은 guard 기록 v2_meta 에 남긴다."""
+        _meta_v2: dict = {}
+        _out_v2 = await _cv2.render(
             llm, mode=mode_v2, chapter=chapter, sub_name=ep_v2.get("opener_sub"), case=_ep_transcript(ep_v2),
             coach_said=[(m.content or "") for m in _ch_msgs_b if (m.role == MessageRole.MODEL or m.role == "model")],
             missing=[_bei.SLOT_LABELS[k] for k in _bei.unfilled_slots(ep_v2)],
-            persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops)
+            persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops, meta=_meta_v2)
+        _tm["v2_meta"] = {**_meta_v2, "how": _out_v2[1]}
+        return _out_v2
 
     if chapter and instruction_used in ("COMPETENCY_ALIGN", "EPISODE_PROBE"):
         _store = dict(session.self_assessment_data or {})
@@ -4285,7 +4289,7 @@ async def _submit_message_phase3a(
             "direct_fix": _tm.get("direct_fix"), "req_over": _tm.get("req_over"), "trans_echo_n": _tm.get("trans_echo_n"),
             "first_probe_pick": _tm.get("first_probe_pick"), "q_borrow": _tm.get("q_borrow"),
             # (P16-1) v2 새 방식이 쓴 턴: mid(사례 중간) | wrap(마무리 턴) | wrap_confirm(확인만 하고 닫음) | mid_fallback:·wrap_fallback:<사유>(종전 경로로 떨어짐)
-            "v2": _tm.get("v2"), "v2_wrap_s": _tm.get("v2_wrap_s"),
+            "v2": _tm.get("v2"), "v2_wrap_s": _tm.get("v2_wrap_s"), "v2_meta": _tm.get("v2_meta"),
             # (P14b → P15) recv_rule 전환 턴에 붙인 것: C·C+ 받는 말 | pass 넘김말 · main_stmt_cut 본 호출이 쓴 평서문을 지운 수 · specify_q 구체화 전용 호출 결과 · two_q_regen 두 물음 다시 쓰기
             "recv_rule": _tm.get("recv_rule"), "main_stmt_cut": _tm.get("main_stmt_cut"), "specify_q": _tm.get("specify_q"), "two_q_regen": _tm.get("two_q_regen"),
             "call_drops": (_call_drops or None),      # (P14d-4) 전용 호출에서 탈락한 문장 [[호출, 사유, 문장], …]

@@ -161,7 +161,9 @@ class Leader:
 
     NO_MATERIAL = "그 부분은 따로 기억나는 게 없습니다."
     _MATERIAL_LABELS = (("context", "때·자리"), ("action", "내가 직접 한 말·조치"), ("reaction", "다른 사람들이 보인 반응"), ("result", "그 뒤 달라진 것"),
-                        ("criterion", "그렇게 정한 까닭·기준"), ("reflection", "다시 한다면·배운 점"))
+                        ("criterion", "그렇게 정한 까닭·기준"), ("reflection", "다시 한다면·배운 점"),
+                        # (2026-11-24 P16-1 판정) 마무리 턴이 새 근거를 끌어내는지 보려고 넣은 재료 — 프로필에 있을 때만 준다
+                        ("team_use", "그 방식이 지금 팀에서 쓰이는 모습"), ("beyond_team", "팀 밖(다른 부서·전사)으로 이어졌는지"))
 
     async def _answer_matched(self, coach_text: str) -> str:
         from diag_project.llm_service import GeminiService
