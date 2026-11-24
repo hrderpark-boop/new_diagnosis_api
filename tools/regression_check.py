@@ -371,6 +371,121 @@ def collect(path: Path) -> dict:
             "turns": data.get("turns")}
 
 
+# ── (2026-11-24 P16-1c) 코치 턴 새 방식(FM_COACH_V2=1) 집계 — 합격·불합격을 판정하지 않는다. 0이어야 하는 것만 맨 위에 적는다 ──────────
+V2_ZERO = (("빈 코치 턴", "empty_n"), ("서버 오류", "server_err"), ("형식미해결", "format_miss"), ("깨진 문장", "broken_total"), ("누설", "leak_n"), ("말투 어긋남", "register_n"))
+
+
+def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
+    """새 방식 턴의 집계 — 기존 경로로 떨어진 턴 · 반응(허용/붙음/지움) · 한 턴 두 물음 · 마무리 턴(세 토막) · 팀 밖 재료를 들었는가 · 첫/끝 어절 · 다시 쓰기."""
+    import collections
+    from diag_project.services import coach_v2 as V
+    from diag_project.services.leak_lexicon import find_leaks
+    from diag_project.services.output_guard import is_question, split_sentences
+    from diag_project.services.persona_register import register_violations
+    rows = data.get("rows") or []
+    g = lambda r: r.get("guard") or {}          # noqa: E731
+    meta = lambda r: g(r).get("v2_meta") or {}  # noqa: E731
+    model = [r for r in rows if r.get("role") == "model"]
+    leader = [r.get("content") or "" for r in rows if r.get("role") == "user"]
+    v2 = [r for r in model if g(r).get("v2") in ("mid", "wrap")]
+    mid = [r for r in v2 if g(r)["v2"] == "mid"]
+    wrap = [r for r in v2 if g(r)["v2"] == "wrap"]
+    confirm = [r for r in model if g(r).get("v2") == "wrap_confirm"]
+    last_q = lambda t: next((x.strip() for x in reversed(split_sentences(t or "")) if x.strip() and is_question(x)), "")  # noqa: E731
+    leaks, regs = [], []
+    for r in model:
+        t = r.get("content") or ""
+        hits = [h for h in find_leaks(t, leader, strict=True) if not (str(g(r).get("v2") or "").startswith("wrap") and V._WRAP_PASS_RE.search(h))]
+        if hits:
+            leaks.append(f"t{r.get('t')} {hits}: {t[:90]}")
+        rv = register_violations(persona, t, scope="all")
+        if rv:
+            regs.append(f"t{r.get('t')} {rv}: {t[:90]}")
+    fallback = [f"t{r.get('t')} {g(r).get('v2')}" for r in model if "_fallback" in str(g(r).get("v2") or "") and not str(g(r).get("v2")).endswith(":stub")]
+    two = [f"t{r.get('t')} {g(r)['v2']}: {r['content']}" for r in v2
+           if V.two_asks(last_q(r["content"])) or sum(1 for x in split_sentences(r["content"]) if x.strip() and is_question(x)) > 1]
+    wraps = []
+    for r in [x for x in model if g(x).get("v2") in ("wrap", "wrap_confirm")]:
+        q = last_q(r["content"]) if g(r)["v2"] == "wrap" else ""
+        i = rows.index(r)
+        ans = rows[i + 1].get("content") if i + 1 < len(rows) and rows[i + 1].get("role") == "user" else ""
+        wraps.append({"t": r.get("t"), "chapter": r.get("chapter"), "kind": g(r)["v2"], "parts": meta(r).get("parts"), "q_eojeol": len(q.split()), "cut": meta(r).get("wrap_cut") or 0,
+                      "rewrite": meta(r).get("rewrite"), "left": meta(r).get("left") or V.question_issue(r["content"], [], mode="wrap") if q else meta(r).get("left"),
+                      "text": r["content"], "answer": ans})
+    used = {e["id"] for e in (data.get("truth") or {}).get("episodes") or [] if e.get("used")}
+    beyond = []
+    for e in profile.get("episodes") or []:
+        if e["id"] in used and e.get("beyond_kw"):
+            heard = next((t for t in leader if any(k in t for k in e["beyond_kw"])), None)
+            beyond.append({"id": e["id"], "title": e.get("title"), "heard": bool(heard), "answer": heard or ""})
+    ends = collections.Counter(V.end_key(r["content"]).split()[-1] for r in v2 if r["content"].split())
+    firsts = collections.Counter(r["content"].split()[0] for r in v2 if r["content"].split())
+    return {"empty_n": sum(1 for r in model if not (r.get("content") or "").strip()), "server_err": server_log.count("Traceback"), "leak_n": len(leaks), "leak_list": leaks,
+            "register_n": len(regs), "register_list": regs, "mid_n": len(mid), "wrap_n": len(wrap), "confirm_n": len(confirm), "fallback_n": len(fallback), "fallback_list": fallback,
+            "react_slot": sum(int(meta(r).get("react_slot") or 0) for r in mid), "react_kept": sum(int(meta(r).get("react") or 0) for r in mid),
+            "react_cut": dict(collections.Counter(c for r in mid for c in (meta(r).get("react_cut") or []))), "react_list": [meta(r)["react_text"] for r in mid if meta(r).get("react_text")],
+            "two_n": len(two), "two_list": two, "wraps": wraps, "wrap_full": sum(1 for w in wraps if w["kind"] == "wrap" and w["parts"] == "123"),
+            "beyond": beyond, "beyond_heard": sum(1 for b in beyond if b["heard"]),
+            "first_top": firsts.most_common(5), "end_top": ends.most_common(6), "v2_n": len(v2),
+            "rewrite": dict(collections.Counter(str(meta(r).get("rewrite")) for r in v2 + confirm if meta(r).get("rewrite"))),
+            "left": dict(collections.Counter(str(meta(r).get("left")) for r in v2 if meta(r).get("left")))}
+
+
+def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir: Path, leader_cost: float, ran: bool) -> str:
+    """새 방식 보고 — 판정 없이 수치와 목록만. 0이어야 하는 것 가운데 0이 아닌 것은 맨 위에 적는다."""
+    profile = json.loads((ROOT / PROFILE).read_text(encoding="utf-8"))
+    vs = {}
+    for c, p in zip(coaches, files):
+        log = out_dir / f"sim_server_{tag}_{c}.log"
+        vs[c] = v2_stats(json.loads(p.read_text(encoding="utf-8")), profile, log.read_text(encoding="utf-8", errors="replace") if log.exists() else "", COACH_NAMES[c].capitalize())
+        vs[c].update({k: ms[c].get(k) for k in ("format_miss", "broken_total", "p50", "p95", "max", "cost_usd", "turns", "status")})
+    name = lambda c: COACH_NAMES[c].capitalize()      # noqa: E731
+    L = [f"# 새 방식(FM_COACH_V2=1) 회귀 {tag} — 코치 × 요약형 팀장 × {TOPICS}", ""]
+    bad = [f"{label} — {name(c)} {vs[c][key]}" for label, key in V2_ZERO for c in coaches if vs[c].get(key)]
+    bad += [f"세션 미완료 — {name(c)} {vs[c]['status']}" for c in coaches if str(vs[c]["status"]) != "completed"]
+    L += ["**0이어야 하는데 0이 아닌 것**: " + (" / ".join(bad) if bad else "없음"), ""]
+    L.append("| 항목 | " + " | ".join(name(c) for c in coaches) + " |")
+    L.append("|---|" + "---|" * len(coaches))
+    row = lambda label, fn: L.append(f"| {label} | " + " | ".join(str(fn(vs[c])) for c in coaches) + " |")      # noqa: E731
+    for label, key in V2_ZERO:
+        row(label, lambda v, key=key: v.get(key))
+    row("리더 턴 / 세션 상태", lambda v: f"{v['turns']} / {v['status']}")
+    row("새 방식 턴(중간 / 마무리 / 확인만 하고 닫음)", lambda v: f"{v['mid_n']} / {v['wrap_n']} / {v['confirm_n']}")
+    row("기존 경로로 떨어진 턴", lambda v: v["fallback_n"])
+    row("반응 허용 / 붙음 / 지움", lambda v: f"{v['react_slot']} / {v['react_kept']} / {sum(v['react_cut'].values())}")
+    row("지운 반응(까닭별)", lambda v: " · ".join(f"{k} {n}" for k, n in v["react_cut"].items()) or "0")
+    row("한 턴 두 물음", lambda v: v["two_n"])
+    row("마무리 턴 / 세 토막 갖춤", lambda v: f"{v['wrap_n']} / {v['wrap_full']}")
+    row("팀 밖 재료가 있는 사례 / 그 답을 들음", lambda v: f"{len(v['beyond'])} / {v['beyond_heard']}")
+    row("다시 쓰기(까닭별)", lambda v: " · ".join(f"{k} {n}" for k, n in v["rewrite"].items()) or "0")
+    row("다시 쓰고도 남은 꼴", lambda v: " · ".join(f"{k} {n}" for k, n in v["left"].items()) or "0")
+    row("첫 어절(많은 순)", lambda v: " · ".join(f"{k} {n}" for k, n in v["first_top"]))
+    row("끝 어절(많은 순)", lambda v: " · ".join(f"{k} {n}" for k, n in v["end_top"]))
+    row("p50 / p95 / 최대(초)", lambda v: f"{v['p50']} / {v['p95']} / {v['max']}")
+    row("코치 쪽 비용(USD)", lambda v: f"{v['cost_usd']:.4f}")
+    coach_cost = sum(vs[c]["cost_usd"] for c in coaches)
+    L += ["", f"실제 USD: 코치 쪽 ${coach_cost:.4f}" + (f" + 시뮬 리더 쪽 ${leader_cost:.4f} = ${coach_cost + leader_cost:.4f}" if ran else ""), ""]
+    for c in coaches:
+        v = vs[c]
+        L.append(f"## {name(c)}")
+        for label, key in (("누설", "leak_list"), ("말투 어긋남", "register_list"), ("기존 경로로 떨어진 턴", "fallback_list"), ("한 턴 두 물음", "two_list")):
+            if v[key]:
+                L.append(f"{label} {len(v[key])}건:")
+                L += [f"   - {x}" for x in v[key]]
+        L.append(f"붙은 반응 {len(v['react_list'])}개: " + " / ".join(v["react_list"]))
+        L.append(f"팀 밖 재료가 있는 사례 {len(v['beyond'])}개:")
+        L += [f"   - {b['id']} {b['title']} — {'들음: ' + b['answer'] if b['heard'] else '못 들음'}" for b in v["beyond"]]
+        L.append(f"마무리 턴 {len(v['wraps'])}개:")
+        for w in v["wraps"]:
+            tag_w = ("확인만 하고 닫음" if w["kind"] == "wrap_confirm" else
+                     f"토막 {w['parts']} · 질문 {w['q_eojeol']}어절" + (f" · 지운 문장 {w['cut']}" if w["cut"] else "") + (f" · 다시 씀({w['rewrite']})" if w["rewrite"] else "")
+                     + (f" · 남은 꼴({w['left']})" if w["left"] else ""))
+            L.append(f"   - [{w['chapter']} t{w['t']} · {tag_w}] {w['text']}")
+            L.append(f"     리더: {w['answer']}")
+        L.append("")
+    return "\n".join(L)
+
+
 def run_sim(tag: str, coach: str, out_dir: Path, port: int) -> tuple[int, float]:
     """시뮬 한 명. (종료 코드, 시뮬 리더 쪽 비용)."""
     env = dict(os.environ, SIM_OUT=str(out_dir), RP_PORT_BASE=str(port), FM_PREWARM="0")
@@ -390,7 +505,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default=os.environ.get("SIM_OUT") or str(ROOT.parent / "sim"))
     ap.add_argument("--port", type=int, default=8180)
     ap.add_argument("--no-run", action="store_true", help="시뮬을 돌리지 않고 있는 결과만 판정한다(LLM 호출 없음)")
+    ap.add_argument("--v2", action="store_true", help="코치 턴 새 방식(FM_COACH_V2=1)으로 돌리고 새 방식 집계를 낸다 — 조건 판정 없음")
     args = ap.parse_args(argv)
+    if args.v2:
+        os.environ["FM_COACH_V2"] = "1"
     coaches = ["1", "4"] if args.pair else [c for c in args.coaches.split(",") if c in COACH_NAMES]
     if not (set(coaches) & POLITE_COACHES and set(coaches) & FORMAL_COACHES):
         print("주의: 해요체 코치(1·3·5)와 합쇼체 코치(2·4)가 각각 1명 이상 들어가야 한다 — 지금 조합은 한쪽 말투가 빠졌다.", flush=True)
@@ -483,6 +601,12 @@ def main(argv: list[str] | None = None) -> int:
         L.append("")
     text = "\n".join(L)
     (out_dir / f"regression_{args.tag}_summary.md").write_text(text, encoding="utf-8")
+    if args.v2:
+        # 새 방식은 종전 조건표(첫 꼬리 질문·받는 말 기준)로 판정하지 않는다 — 종전 표는 파일로만 남기고 새 방식 집계를 낸다
+        text_v2 = v2_report(args.tag, coaches, files, ms, out_dir, leader_cost, not args.no_run)
+        (out_dir / f"regression_{args.tag}_v2.md").write_text(text_v2, encoding="utf-8")
+        print(text_v2)
+        return 0
     print(text)
     return 0 if all_ok else 1
 

@@ -2198,17 +2198,17 @@ def test_p16b_reaction_slot_tidy_question_form_and_wrap_leak(monkeypatch):
     assert td("리더님, 그 뒤 창고에서는 무엇이 달라졌습니까?") == ("그 뒤 창고에서는 무엇이 달라졌습니까?", {"addr": 1, "react": 0})
     assert td("리더님이 그렇게 정하신 까닭은 무엇입니까?")[0] == "그렇게 정하신 까닭은 무엇입니까?"
     assert td("일정이 빠듯했겠습니다. 그 뒤 창고에서는 무엇이 달라졌습니까?") == ("그 뒤 창고에서는 무엇이 달라졌습니까?", {"react_cut": ["not_allowed"], "react": 0})
-    assert td("일정이 빠듯했겠습니다. 그 뒤 창고에서는 무엇이 달라졌습니까?", react=True) == ("일정이 빠듯했겠습니다. 그 뒤 창고에서는 무엇이 달라졌습니까?", {"react": 1})
+    assert td("일정이 빠듯했겠습니다. 그 뒤 창고에서는 무엇이 달라졌습니까?", react=True) == ("일정이 빠듯했겠습니다. 그 뒤 창고에서는 무엇이 달라졌습니까?", {"react": 1, "react_text": "일정이 빠듯했겠습니다."})
     part = "야간조에 물량을 넘기기로 하셨군요. 그 뒤 창고에서는 무엇이 달라졌습니까?"                                    # (P16-1b) 리더의 낱말을 일부 쓴 반응은 둔다(넷까지)
-    assert td(part, react=True) == (part, {"react": 1})
+    assert td(part, react=True) == (part, {"react": 1, "react_text": "야간조에 물량을 넘기기로 하셨군요."})
     out, info = td("지난달 출고가 밀려 야간조에 물량 삼백 상자를 넘기셨군요. 그 뒤 창고에서는 무엇이 달라졌습니까?", react=True)      # 직전 답과 내용 낱말 다섯 이상 — 그 문장만 지운다
     assert out == "그 뒤 창고에서는 무엇이 달라졌습니까?" and info == {"react_cut": ["overlap"], "react": 0}
     long_r = "갑자기 일이 몰려서 사람도 시간도 모자란 가운데 혼자서 순서를 다시 잡아야 했던 빠듯한 한 주였겠습니다."            # 열두 어절을 넘는 반응
     assert len(long_r.split()) > V.REACT_MAX_EOJEOL and td(long_r + " 그 뒤 창고에서는 무엇이 달라졌습니까?", react=True)[1] == {"react_cut": ["long"], "react": 0}
-    assert td("일정이 빠듯했겠습니다. 그 판단은 쉽지 않았겠습니다. 그 뒤 창고에서는 무엇이 달라졌습니까?", react=True)[1] == {"react_cut": ["extra"], "react": 1}
+    assert td("일정이 빠듯했겠습니다. 그 판단은 쉽지 않았겠습니다. 그 뒤 창고에서는 무엇이 달라졌습니까?", react=True)[1] == {"react_cut": ["extra"], "react": 1, "react_text": "일정이 빠듯했겠습니다."}
     # 안쪽 표지·토막 번호가 문장 머리에 나오면 뗀다
     lab = V.tidy("간추림: 야간조에 물량을 넘기기로 정하신 일로 이해했습니다. 확인 질문: 그 방식이 다른 창고로도 이어졌습니까?", mode="wrap", react=False, last_answer=ans)
-    assert lab == ("야간조에 물량을 넘기기로 정하신 일로 이해했습니다. 그 방식이 다른 창고로도 이어졌습니까?", {"label": 1})
+    assert lab == ("야간조에 물량을 넘기기로 정하신 일로 이해했습니다. 그 방식이 다른 창고로도 이어졌습니까?", {"label": 1, "parts": "13"})
     assert V.tidy("① 야간조에 물량을 넘기기로 정하신 일로 이해했습니다.", mode="wrap", react=False, last_answer=ans)[0] == "야간조에 물량을 넘기기로 정하신 일로 이해했습니다."
     out, info = td("그 판단은 인상적입니다. 그 뒤 창고에서는 무엇이 달라졌습니까?", react=True)                          # 값 매기는 말이 든 문장
     assert out == "그 뒤 창고에서는 무엇이 달라졌습니까?" and info == {"eval_cut": 1, "react": 0}
@@ -2216,7 +2216,7 @@ def test_p16b_reaction_slot_tidy_question_form_and_wrap_leak(monkeypatch):
     assert out == "반장과는 그 일을 어떻게 풀어 가셨습니까?" and info == {"q_cut": 1, "react": 0}
     assert td("의미 있는 결정이었는데 그 뒤 무엇이 달라졌습니까?")[1].get("q_lost") == 1                                 # 질문이 통째로 지워지면 다시 쓴다
     w = "야간조에 물량을 넘기기로 정하신 일로 저는 이해했습니다. 다만 그 뒤 창고가 어떻게 됐는지는 아직 듣지 못했습니다. 그 뒤 창고에서는 무엇이 달라졌습니까?"
-    assert td(w, mode="wrap") == (w, {})                                                                               # 마무리 턴의 평서문은 그대로 둔다
+    assert td(w, mode="wrap") == (w.replace(" 다만 그 뒤 창고가 어떻게 됐는지는 아직 듣지 못했습니다.", ""), {"wrap_cut": 1, "parts": "13"})      # (P16-1c) 세 토막 밖의 문장은 지운다
     # 4. 질문 꼴 — 한 번 다시 쓰게 할 것
     qi = V.question_issue
     assert qi("그 뒤 창고가 어떻게 됐는지 들려주실 수 있을까요?", "") == "permit" and qi("그 뒤 일을 여쭤봐도 될까요?", "") == "permit"
@@ -2263,6 +2263,7 @@ def test_p16b_reaction_slot_tidy_question_form_and_wrap_leak(monkeypatch):
     llm, meta, tr = _LLM([permit, good]), {}, []
     assert asyncio.run(V.render(llm, meta=meta, trace=tr, **kw)) == (good, "llm_retry")
     assert meta == {"react_slot": 0, "rewrite": "permit", "react": 0} and tr[0][:2] == ["coach_v2:mid", "rewrite:permit"]
+    assert "팀에 자리 잡았는지, 팀 밖으로 이어졌는지는 이 턴에서 묻지 않는다" in llm.calls[0]["system_instruction"]      # (P16-1c) 이 사례의 두 번째 중간 턴 — 아직 팀 쪽 물음을 고르지 않는다
     assert "[다시 쓰기]" not in llm.calls[0]["prompt"] and "[다시 쓰기] 앞서 쓴 질문은 허락을 구하는 말로 끝났다" in llm.calls[1]["prompt"]
     assert "질문 한 문장만 쓴다" in llm.calls[0]["system_instruction"]                          # 이 사례의 두 번째 중간 턴 — 반응을 붙이지 않는 턴
     llm, meta = _LLM([permit, permit, good]), {}
@@ -2291,4 +2292,105 @@ def test_p16b_reaction_slot_tidy_question_form_and_wrap_leak(monkeypatch):
     assert all(e.get("team_use") and e.get("beyond_team") for e in eps)
     stayed = [e["id"] for e in eps if _re.search(r"가지 않았|이어진 건 없", e["beyond_team"])]
     assert abs(len(stayed) * 2 - len(eps)) <= 1                                                # 절반은 팀 밖으로 가지 않았다
+
+
+def test_p16c_one_ask_reaction_repeat_wrap_three_parts_and_team_question_timing(monkeypatch):
+    """(2026-11-24 P16-1c 판정) 한 턴 한 물음(문장 하나에 물음 둘이면 다시 쓰기) · 이 영역에서 이미 나간 반응과 겹치는 반응 지우기 ·
+    마무리 턴 세 토막을 코드로도 확인 · 팀의 방식/팀 밖 물음은 그 사례의 세 번째 중간 턴부터."""
+    import asyncio
+    import inspect
+    import json
+    import re as _re
+    from pathlib import Path
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import coach_v2 as V
+    root = Path(__file__).resolve().parents[1]
+    # 1. 한 문장 안의 두 물음
+    two = V.two_asks
+    assert two("그 상자는 어떤 순서로 나누셨고, 반장의 일은 어떻게 다시 맡기셨습니까?")                 # 의문사 절 둘을 이음 어미로 이음
+    assert two("그 순서는 누가 정하고 어떻게 굳히셨습니까?")                                          # 쉼표 없이 이은 꼴
+    assert two("그 교대표가 창고의 정해진 방식이 됐는지, 그리고 다른 창고로도 이어졌는지 말씀해 주시겠습니까?")
+    assert two("반장은 그 교대표를 어떻게 받아들였고, 지금도 그대로 쓰고 있습니까?")                      # 앞쪽은 의문사, 뒤쪽은 예아니오
+    assert not two("그 교대표를 어떤 근거로 짜셨는지, 그 과정을 직접 말씀해 주시겠습니까?")              # 물음 하나 + 청하는 말
+    assert not two("그 뒤 무엇을 어떻게 바꾸셨는지 들려주시겠습니까?") and not two("물량을 따져 보셨고 그다음에는 무엇을 하셨습니까?")
+    assert not two("그 교대표가 다른 창고에도 쓰이게 됐습니까?") and not two("")
+    qi = V.question_issue
+    assert qi("그 상자는 어떤 순서로 나누셨고, 반장의 일은 어떻게 다시 맡기셨습니까?", []) == "two"
+    assert qi("이해했습니다. 그 교대표가 창고의 방식이 됐는지, 그리고 다른 창고로도 이어졌는지 확인하고 싶습니다만 어떻습니까?", [], mode="wrap") == "two"
+    # 2. 마무리 턴의 확인 질문 — 열다섯 어절 초과 · 청하는 말/궁금하다는 말로 끝남은 다시 쓰기. 예아니오 꼴의 짧은 질문은 그대로
+    long_q = "그 교대표는 반장이 처음에는 꺼렸는데도 지금까지 창고의 주간 회의에서 달마다 빠짐없이 그대로 함께 보고 있다는 것이 맞습니까?"
+    assert len(long_q.split()) > V.WRAP_Q_MAX_EOJEOL and qi(long_q, [], mode="wrap") == "long" and qi(long_q, []) != "long"
+    assert qi("그 교대표가 다른 창고로도 이어졌는지 궁금합니다.", [], mode="wrap") == "request"
+    assert qi("그 교대표가 다른 창고로도 이어졌는지 말씀해 주시겠습니까?", [], mode="wrap") == "request"
+    assert qi("그 교대표가 다른 창고로도 이어졌습니까?", [], mode="wrap") is None and qi("그 교대표가 다른 창고에도 쓰이게 됐나요?", [], mode="wrap") is None
+    assert qi("그 뒤 창고 일이 어떻게 풀렸는지 들려주시겠습니까?", []) is None                         # 사례 중간 턴은 청하는 끝맺음을 다시 쓰지 않는다(종전대로)
+    assert set(V.RETRY_NOTES) >= {"two", "long", "request"}
+    # 3. 마무리 턴 다듬기 — 세 토막(이해 확인 · 하나만 더 확인한다는 말 · 질문)만 남긴다
+    ans = "지난달 출고가 밀려서 야간조에 물량 삼백 상자를 넘기기로 정했습니다."
+    tw = lambda t: V.tidy(t, mode="wrap", react=False, last_answer=ans)      # noqa: E731
+    one, note, q = "야간조에 물량을 넘기기로 정하신 일로 이해했습니다.", "한 가지만 더 확인하겠습니다.", "그 교대표가 다른 창고로도 이어졌습니까?"
+    assert tw(f"{one} {note} {q}") == (f"{one} {note} {q}", {"parts": "123"})
+    assert tw(f"{one} 그 방식이 자리 잡았는지와 다른 창고로 이어졌는지는 아직 듣지 못했습니다. 그중 하나만 확인하겠습니다. {q}") == (f"{one} 그중 하나만 확인하겠습니다. {q}", {"wrap_cut": 1, "parts": "123"})
+    assert tw(f"{one} 그 뒤 무엇을 바꾸셨는지는 잘 들었습니다. {note} {q}") == (f"{one} {note} {q}", {"wrap_cut": 1, "parts": "123"})
+    assert tw(f"지난달 출고가 밀렸습니다. {one} {note} {q}") == (f"{one} {note} {q}", {"wrap_cut": 1, "parts": "123"})      # 첫째 토막은 이해했다는 말로 맺은 문장
+    assert tw(f"{one} {q}") == (f"{one} {q}", {"parts": "13"})
+    assert tw(f"{one} 마지막으로 하나만 확인하면, 그 교대표가 다른 창고로도 이어졌습니까?")[1] == {"parts": "123"}      # 둘째 토막이 질문 문장에 붙은 꼴
+    assert tw(f"{one} 덧붙일 말은 없습니다.") == (one, {"wrap_cut": 1, "parts": "1"})                                  # 물을 것이 없으면 첫째 토막만
+    # 4. 반응 되풀이 — 이 영역에서 이미 나간 반응과 내용 낱말 둘 이상 겹치면 지운다
+    good = "그 뒤 창고에서는 무엇이 달라졌습니까?"
+    tm = lambda t, prior: V.tidy(t, mode="mid", react=True, last_answer=ans, prior_reacts=prior)      # noqa: E731
+    assert tm(f"그 무게가 느껴집니다. {good}", ["한 사람에게 쏠린 그 무게가 짐작됩니다."])[1] == {"react": 1, "react_text": "그 무게가 느껴집니다."}      # 겹치는 낱말 하나 — 둔다
+    out, info = tm(f"한 사람에게 쏠린 무게가 느껴집니다. {good}", ["한 사람에게 쏠린 그 무게가 짐작됩니다."])
+    assert out == good and info == {"react_cut": ["repeat"], "react": 0}
+    assert tm(f"일정이 빠듯했겠습니다. {good}", ["한 사람에게 쏠린 그 무게가 짐작됩니다."])[1]["react"] == 1
+    # 5. 지시문 — 물음은 하나 · 팀 쪽 물음은 세 번째 중간 턴부터 · 마무리 턴은 묻는 말로 끝냄
+    assert [V.team_question_allowed(n) for n in range(4)] == [False, False, True, True]
+    early, late = V.build_system("mid", "Lucas", react=True, team_q=False), V.build_system("mid", "Lucas", react=False, team_q=True)
+    assert "팀에 자리 잡았는지, 팀 밖으로 이어졌는지는 이 턴에서 묻지 않는다" in early and "팀의 운영 방식이 됐는지, 팀 밖(다른 부서·전사·외부)으로 이어졌는지." not in early
+    assert "그 방식이 이후 팀에 남았는지" not in early and "리더 본인의 행동·판단·결과 쪽에서 고른다" in early
+    assert "팀의 운영 방식이 됐는지, 팀 밖(다른 부서·전사·외부)으로 이어졌는지." in late and "이 턴에서 묻지 않는다" not in late
+    wrap = V.build_system("wrap", "Lucas")
+    for sysm in (early, late, wrap):
+        assert "물음은 하나다. 한 문장에 두 가지를 이어 묻지 않는다" in sysm
+        assert not _re.findall(r"[\"“]([^\"”]{6,})[\"”]", sysm) and "궁금합니다" not in sysm and "잘 들었습니다" not in sysm
+    assert "묻는 말로 끝낸다" in wrap and "궁금하다는 말" in wrap and "세 토막 밖의 문장은 쓰지 않는다" in wrap
+    assert "이미 들은 것을 다시 확인하지 않는다" in wrap and "팀 안에서 지금 어떻게 쓰이는지를 이미 들었으면 팀 밖으로 이어졌는지를 묻는다" in wrap
+
+    # 6. 호출 — 두 물음은 한 번 다시 쓴다(턴당 합쳐 한 번). 붙은 반응은 돌려준다. 순번에 따라 지시문이 달라진다
+    class _LLM:
+        def __init__(self, outs):
+            self.outs, self.calls = list(outs), []
+
+        async def _generate_with_retry(self, **kw):
+            self.calls.append(kw)
+            return self.outs.pop(0)
+    monkeypatch.delenv("FM_LLM_STUB", raising=False)
+    case = [("model", "최근에 창고 일정을 다시 짜신 적이 있습니까?"), ("user", ans)]
+    kw = dict(mode="mid", chapter="work_management", sub_name="자원 및 시간관리", case=case, coach_said=[], missing=["결과"], persona_name="Lucas")
+    double = "그 상자는 어떤 순서로 나누셨고, 반장의 일은 어떻게 다시 맡기셨습니까?"
+    llm, meta = _LLM([double, "일정이 빠듯했겠습니다. " + good]), {}
+    assert asyncio.run(V.render(llm, meta=meta, mid_n=0, **kw)) == ("일정이 빠듯했겠습니다. " + good, "llm_retry")
+    assert meta["rewrite"] == "two" and meta["react_text"] == "일정이 빠듯했겠습니다." and "한 문장에 두 가지를 물었다" in llm.calls[1]["prompt"]
+    assert "이 턴에서 묻지 않는다" in llm.calls[0]["system_instruction"]
+    llm, meta = _LLM([double, double, good]), {}
+    assert asyncio.run(V.render(llm, meta=meta, mid_n=0, **kw))[1] == "llm_retry" and meta["left"] == "two" and len(llm.calls) == 2
+    llm, meta = _LLM(["한 사람에게 쏠린 무게가 느껴집니다. " + good]), {}
+    assert asyncio.run(V.render(llm, meta=meta, mid_n=2, prior_reacts=["한 사람에게 쏠린 그 무게가 짐작됩니다."], **kw)) == (good, "llm")
+    assert meta["react_cut"] == ["repeat"] and "이 턴에서 묻지 않는다" not in llm.calls[0]["system_instruction"]      # 세 번째 중간 턴 — 팀 쪽 물음을 고를 수 있다
+    wkw = dict(kw, mode="wrap")
+    wreq = f"{one} {note} 그 교대표가 다른 창고로도 이어졌는지 궁금합니다."
+    llm, meta = _LLM([wreq, f"{one} 잘 들었습니다. {note} {q}"]), {}
+    assert asyncio.run(V.render(llm, meta=meta, **wkw)) == (f"{one} {note} {q}", "llm_retry") and meta["rewrite"] == "request" and meta["parts"] == "123"
+    # 7. 턴 핸들러 — 이 영역에서 나간 반응을 원장에 적고 다음 호출에 넘긴다
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert 'prior_reacts=list(((session.self_assessment_data or {}).get("v2_reacts") or {}).get(chapter) or [])' in src
+    assert '_sd_v2["v2_reacts"] = _rs_v2' in src and '(_tm.get("v2_meta") or {}).get("react_text")' in src
+    # 8. 시뮬 준비 — 회귀 점검이 새 방식으로 돌고, 요약형 팀장 프로필에도 재료 두 줄(절반은 팀 밖으로 가지 않음)
+    reg = (root / "tools/regression_check.py").read_text(encoding="utf-8")
+    assert 'ap.add_argument("--v2"' in reg and 'os.environ["FM_COACH_V2"] = "1"' in reg and "def v2_report(" in reg
+    for name in ("summary_team_lead.json", "edu_team_lead.json"):
+        eps = json.loads((root / "tools/sim_profiles" / name).read_text(encoding="utf-8"))["episodes"]
+        assert all(e.get("team_use") and e.get("beyond_team") and isinstance(e.get("beyond_kw"), list) for e in eps), name
+        assert all(all(k in e["beyond_team"] for k in e["beyond_kw"]) for e in eps), name
+        assert abs(sum(1 for e in eps if not e["beyond_kw"]) * 2 - len(eps)) <= 1, name
 

@@ -1253,7 +1253,8 @@ async def _submit_message_phase3a(
             llm, mode=mode_v2, chapter=chapter, sub_name=ep_v2.get("opener_sub"), case=_ep_transcript(ep_v2),
             coach_said=[(m.content or "") for m in _ch_msgs_b if (m.role == MessageRole.MODEL or m.role == "model")],
             missing=[_bei.SLOT_LABELS[k] for k in _bei.unfilled_slots(ep_v2)],
-            persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops, meta=_meta_v2, mid_n=int(ep_v2.get("v2_mid_n") or 0))
+            persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops, meta=_meta_v2, mid_n=int(ep_v2.get("v2_mid_n") or 0),
+            prior_reacts=list(((session.self_assessment_data or {}).get("v2_reacts") or {}).get(chapter) or []))
         _tm["v2_meta"] = {**_meta_v2, "how": _out_v2[1]}
         return _out_v2
 
@@ -1978,7 +1979,14 @@ async def _submit_message_phase3a(
                 # (P16-1b) 이 사례에서 나간 중간 턴 수 — 다음 중간 턴에 반응을 붙일지 정하는 순번(다시 묻기 턴·종전 경로로 나간 턴은 세지 않는다)
                 from sqlalchemy.orm.attributes import flag_modified as _fm_v2
                 _bei_ep["v2_mid_n"] = int(_bei_ep.get("v2_mid_n") or 0) + 1
-                session.self_assessment_data = _bei.update_episode(dict(session.self_assessment_data or {}), chapter, _bei_ep)
+                _sd_v2 = _bei.update_episode(dict(session.self_assessment_data or {}), chapter, _bei_ep)
+                _react_v2 = str((_tm.get("v2_meta") or {}).get("react_text") or "").strip()
+                if _react_v2:
+                    # (P16-1c) 이 영역에서 나간 반응 문장 — 다음 반응이 같은 말을 되풀이하면 지운다
+                    _rs_v2 = dict(_sd_v2.get("v2_reacts") or {})
+                    _rs_v2[chapter] = (list(_rs_v2.get(chapter) or []) + [_react_v2])[-12:]
+                    _sd_v2["v2_reacts"] = _rs_v2
+                session.self_assessment_data = _sd_v2
                 _fm_v2(session, "self_assessment_data")
         if instruction_used == "CHAPTER_READY_TO_END":
             # (2026-11-11 호출 순서) 챕터 종료 턴은 코치 본 호출을 하지 않는다 — 본 호출 출력은 쓰이지 않았다(요약은 재료만 주는 집중 호출이 쓰고,
