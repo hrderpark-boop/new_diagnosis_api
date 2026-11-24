@@ -372,7 +372,9 @@ def collect(path: Path) -> dict:
 
 
 # ── (2026-11-24 P16-1c) 코치 턴 새 방식(FM_COACH_V2=1) 집계 — 합격·불합격을 판정하지 않는다. 0이어야 하는 것만 맨 위에 적는다 ──────────
-V2_ZERO = (("빈 코치 턴", "empty_n"), ("서버 오류", "server_err"), ("형식미해결", "format_miss"), ("깨진 문장", "broken_total"), ("누설", "leak_n"), ("말투 어긋남", "register_n"))
+V2_ZERO = (("빈 코치 턴", "empty_n"), ("서버 오류", "server_err"), ("형식미해결", "format_miss"), ("깨진 문장", "broken_total"), ("누설(가드)", "leak_n"), ("누설(린트)", "lint_n"))
+# (P16-1d) 묻는 꼴이 아닌 끝에 붙은 물음표
+_WRONG_QMARK_RE = re.compile(r"(궁금(해요|합니다|하네요)|여쭤볼게요|여쭤보겠습니다|여쭙겠습니다|물어볼게요|주세요|주십시오)\?")
 
 
 def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
@@ -392,6 +394,7 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
     wrap = [r for r in v2 if g(r)["v2"] == "wrap"]
     confirm = [r for r in model if g(r).get("v2") == "wrap_confirm"]
     last_q = lambda t: next((x.strip() for x in reversed(split_sentences(t or "")) if x.strip() and is_question(x)), "")  # noqa: E731
+    notices = sum(V.WRAP_NOTICES.values(), ())
     leaks, regs = [], []
     for r in model:
         t = r.get("content") or ""
@@ -403,13 +406,16 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
             regs.append(f"t{r.get('t')} {rv}: {t[:90]}")
     fallback = [f"t{r.get('t')} {g(r).get('v2')}" for r in model if "_fallback" in str(g(r).get("v2") or "") and not str(g(r).get("v2")).endswith(":stub")]
     two = [f"t{r.get('t')} {g(r)['v2']}: {r['content']}" for r in v2
-           if V.two_asks(last_q(r["content"])) or sum(1 for x in split_sentences(r["content"]) if x.strip() and is_question(x)) > 1]
+           if (V.two_asks(last_q(r["content"])) and not V._ALT_RE.search(last_q(r["content"])))
+           or sum(1 for x in split_sentences(r["content"]) if x.strip() and is_question(x)) > 1]
+    qmark = [f"t{r.get('t')}: {m.group(0)} ← {r.get('content')[:80]}" for r in model for m in [_WRONG_QMARK_RE.search(r.get("content") or "")] if m]
     wraps = []
     for r in [x for x in model if g(x).get("v2") in ("wrap", "wrap_confirm")]:
         q = last_q(r["content"]) if g(r)["v2"] == "wrap" else ""
         i = rows.index(r)
         ans = rows[i + 1].get("content") if i + 1 < len(rows) and rows[i + 1].get("role") == "user" else ""
         wraps.append({"t": r.get("t"), "chapter": r.get("chapter"), "kind": g(r)["v2"], "parts": meta(r).get("parts"), "q_eojeol": len(q.split()), "cut": meta(r).get("wrap_cut") or 0,
+                      "notice": next((x for x in notices if x in r["content"]), None), "beyond": bool(q) and V.asks_beyond(r["content"]), "beyond_dropped": bool(meta(r).get("beyond_dropped")),
                       "rewrite": meta(r).get("rewrite"), "left": meta(r).get("left") or V.question_issue(r["content"], [], mode="wrap") if q else meta(r).get("left"),
                       "text": r["content"], "answer": ans})
     used = {e["id"] for e in (data.get("truth") or {}).get("episodes") or [] if e.get("used")}
@@ -418,6 +424,14 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
         if e["id"] in used and e.get("beyond_kw"):
             heard = next((t for t in leader if any(k in t for k in e["beyond_kw"])), None)
             beyond.append({"id": e["id"], "title": e.get("title"), "heard": bool(heard), "answer": heard or ""})
+    by_ch: dict = {}
+    for w in wraps:
+        d_ch = by_ch.setdefault(w["chapter"], {"notices": [], "beyond": 0})
+        if w["notice"]:
+            d_ch["notices"].append(w["notice"])
+        d_ch["beyond"] += int(w["beyond"])
+    # 영역 안에서 고정 문구가 겹친 횟수(여섯 개를 다 쓰기 전에 같은 문구가 다시 나온 것)
+    notice_dup = sum(1 for d_ch in by_ch.values() for i, x in enumerate(d_ch["notices"]) if x in d_ch["notices"][max(0, i - len(V.WRAP_NOTICES["formal"]) + 1):i])
     ends = collections.Counter(V.end_key(r["content"]).split()[-1] for r in v2 if r["content"].split())
     firsts = collections.Counter(r["content"].split()[0] for r in v2 if r["content"].split())
     return {"empty_n": sum(1 for r in model if not (r.get("content") or "").strip()), "server_err": server_log.count("Traceback"), "leak_n": len(leaks), "leak_list": leaks,
@@ -425,6 +439,8 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
             "react_slot": sum(int(meta(r).get("react_slot") or 0) for r in mid), "react_kept": sum(int(meta(r).get("react") or 0) for r in mid),
             "react_cut": dict(collections.Counter(c for r in mid for c in (meta(r).get("react_cut") or []))), "react_list": [meta(r)["react_text"] for r in mid if meta(r).get("react_text")],
             "two_n": len(two), "two_list": two, "wraps": wraps, "wrap_full": sum(1 for w in wraps if w["kind"] == "wrap" and w["parts"] == "123"),
+            "qmark_n": len(qmark), "qmark_list": qmark, "notice_dup": notice_dup, "beyond_by_ch": {k: v["beyond"] for k, v in by_ch.items()},
+            "beyond_dropped": sum(1 for w in wraps if w["beyond_dropped"]),
             "beyond": beyond, "beyond_heard": sum(1 for b in beyond if b["heard"]),
             "first_top": firsts.most_common(5), "end_top": ends.most_common(6), "v2_n": len(v2),
             "rewrite": dict(collections.Counter(str(meta(r).get("rewrite")) for r in v2 + confirm if meta(r).get("rewrite"))),
@@ -439,6 +455,9 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
         log = out_dir / f"sim_server_{tag}_{c}.log"
         vs[c] = v2_stats(json.loads(p.read_text(encoding="utf-8")), profile, log.read_text(encoding="utf-8", errors="replace") if log.exists() else "", COACH_NAMES[c].capitalize())
         vs[c].update({k: ms[c].get(k) for k in ("format_miss", "broken_total", "p50", "p95", "max", "cost_usd", "turns", "status")})
+        import regression_table as rt
+        lint = rt.analyze(json.loads(p.read_text(encoding="utf-8")), None).get("inner") or []
+        vs[c].update({"lint_n": len(lint), "lint_list": [f"{sent} ← {pat}" for sent, pat in lint]})
     name = lambda c: COACH_NAMES[c].capitalize()      # noqa: E731
     L = [f"# 새 방식(FM_COACH_V2=1) 회귀 {tag} — 코치 × 요약형 팀장 × {TOPICS}", ""]
     bad = [f"{label} — {name(c)} {vs[c][key]}" for label, key in V2_ZERO for c in coaches if vs[c].get(key)]
@@ -449,6 +468,7 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
     row = lambda label, fn: L.append(f"| {label} | " + " | ".join(str(fn(vs[c])) for c in coaches) + " |")      # noqa: E731
     for label, key in V2_ZERO:
         row(label, lambda v, key=key: v.get(key))
+    row("말투 어긋남", lambda v: v["register_n"])
     row("리더 턴 / 세션 상태", lambda v: f"{v['turns']} / {v['status']}")
     row("새 방식 턴(중간 / 마무리 / 확인만 하고 닫음)", lambda v: f"{v['mid_n']} / {v['wrap_n']} / {v['confirm_n']}")
     row("기존 경로로 떨어진 턴", lambda v: v["fallback_n"])
@@ -456,6 +476,9 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
     row("지운 반응(까닭별)", lambda v: " · ".join(f"{k} {n}" for k, n in v["react_cut"].items()) or "0")
     row("한 턴 두 물음", lambda v: v["two_n"])
     row("마무리 턴 / 세 토막 갖춤", lambda v: f"{v['wrap_n']} / {v['wrap_full']}")
+    row("영역 안에서 겹친 둘째 토막 문구", lambda v: v["notice_dup"])
+    row("팀 밖을 물은 마무리 질문(영역별) / 지운 것", lambda v: " · ".join(f"{k.split('_')[0]} {n}" for k, n in v["beyond_by_ch"].items()) + f" / {v['beyond_dropped']}")
+    row("물음표가 잘못 붙은 문장", lambda v: v["qmark_n"])
     row("팀 밖 재료가 있는 사례 / 그 답을 들음", lambda v: f"{len(v['beyond'])} / {v['beyond_heard']}")
     row("다시 쓰기(까닭별)", lambda v: " · ".join(f"{k} {n}" for k, n in v["rewrite"].items()) or "0")
     row("다시 쓰고도 남은 꼴", lambda v: " · ".join(f"{k} {n}" for k, n in v["left"].items()) or "0")
@@ -468,7 +491,8 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
     for c in coaches:
         v = vs[c]
         L.append(f"## {name(c)}")
-        for label, key in (("누설", "leak_list"), ("말투 어긋남", "register_list"), ("기존 경로로 떨어진 턴", "fallback_list"), ("한 턴 두 물음", "two_list")):
+        for label, key in (("누설(가드)", "leak_list"), ("누설(린트)", "lint_list"), ("말투 어긋남", "register_list"), ("기존 경로로 떨어진 턴", "fallback_list"),
+                           ("한 턴 두 물음", "two_list"), ("물음표가 잘못 붙은 문장", "qmark_list")):
             if v[key]:
                 L.append(f"{label} {len(v[key])}건:")
                 L += [f"   - {x}" for x in v[key]]
@@ -478,7 +502,8 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
         L.append(f"마무리 턴 {len(v['wraps'])}개:")
         for w in v["wraps"]:
             tag_w = ("확인만 하고 닫음" if w["kind"] == "wrap_confirm" else
-                     f"토막 {w['parts']} · 질문 {w['q_eojeol']}어절" + (f" · 지운 문장 {w['cut']}" if w["cut"] else "") + (f" · 다시 씀({w['rewrite']})" if w["rewrite"] else "")
+                     f"토막 {w['parts']} · 질문 {w['q_eojeol']}어절" + (" · 팀 밖" if w["beyond"] else "") + (" · 팀 밖 질문 지움" if w["beyond_dropped"] else "")
+                     + (f" · 지운 문장 {w['cut']}" if w["cut"] else "") + (f" · 다시 씀({w['rewrite']})" if w["rewrite"] else "")
                      + (f" · 남은 꼴({w['left']})" if w["left"] else ""))
             L.append(f"   - [{w['chapter']} t{w['t']} · {tag_w}] {w['text']}")
             L.append(f"     리더: {w['answer']}")

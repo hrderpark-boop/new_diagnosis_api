@@ -25,6 +25,12 @@
   ② 이 영역에서 이미 나간 반응과 내용 낱말 둘 이상 겹치는 반응은 지운다 ③ 마무리 턴을 코드로도 확인한다 — 세 토막 밖의 문장은 지우고, 확인 질문이 열다섯 어절을 넘거나
   물음이 둘이거나 청하는 말·궁금하다는 말로 끝나면 한 번 다시 쓴다 ④ 팀의 방식이 됐는지·팀 밖으로 이어졌는지는 그 사례의 세 번째 중간 턴부터만 고를 수 있다.
 
+(2026-11-24 P16-1d 판정) 6코치 회귀 p16v2d: 흐름은 양호, 마무리 턴의 반복만 고친다 — ① 마무리 턴의 둘째 토막(하나만 더 확인한다는 말)은 모델이 쓰지 않고
+  코드가 고정 문구(WRAP_NOTICES)에서 고른다(영역 안에서 안 쓴 것부터). 모델은 첫째 토막(이해 확인)과 확인 질문만 쓴다. 질문이 없으면 둘째 토막도 붙이지 않는다
+  ② 팀 밖으로 이어졌는지를 묻는 마무리 질문은 리더가 남에게 옮길 수 있는 것(기준·절차·양식·도구)을 만들었다고 말한 때에만, 영역당 두 번까지(BEYOND_MAX — 코드가 센다)
+  ③ 묻는 꼴이 아닌 끝('궁금해요', '여쭤볼게요')에 붙은 물음표는 마침표로, 마무리 턴의 확인 질문이 그런 말로 끝나면 다시 쓴다
+  ④ 사례 중간 턴의 반응 문장이 누설 검사에 걸리면 턴 전체가 아니라 그 문장만 지운다 ⑤ 값 매기는 말에 '눈에 띄' 추가.
+
 입력: 영역 정의 · 하위역량 · 수준 서술과 수준을 가르는 조건(게이트 규칙 6·9) · 이 사례의 대화 전체 · 이 영역에서 코치가 이미 한 말 · 코치 말투 · 아직 덜 찬 칸.
 지시는 원칙만 적는다(예시 문장 없음). 출력 확인은 말투·누설·(mid 는) 질문 유무 — 걸리면 한 번 다시 부르고, 그래도 안 되면 None(호출자는 종전 경로의 턴을 쓴다).
 """
@@ -104,35 +110,38 @@ _BAN_INNER = "- 수준 이름, 하위역량 이름, 무엇을 채웠고 무엇�
 _COMMON_BAN = _BAN_BASE + "- 예·아니오로 답할 수 있는 질문은 쓰지 않는다.\n" + _BAN_INNER
 
 
-def build_system(mode: str, persona_name: str | None, *, react: bool = False, team_q: bool = True) -> str:
+def build_system(mode: str, persona_name: str | None, *, react: bool = False, team_q: bool = True, beyond_ok: bool = True) -> str:
     """react — 사례 중간 턴에서 이번 턴에 반응 한 문장을 붙이는가(코드가 정해 넘긴다). 마무리 턴에서는 쓰지 않는다.
-    team_q — 사례 중간 턴에서 팀의 방식이 됐는지·팀 밖으로 이어졌는지를 고를 수 있는 턴인가(그 사례의 세 번째 중간 턴부터 — team_question_allowed)."""
+    team_q — 사례 중간 턴에서 팀의 방식이 됐는지·팀 밖으로 이어졌는지를 고를 수 있는 턴인가(그 사례의 세 번째 중간 턴부터 — team_question_allowed).
+    beyond_ok — 마무리 턴에서 팀 밖으로 이어졌는지를 고를 수 있는가(이 영역에서 그 물음이 BEYOND_MAX 번에 못 미쳤을 때)."""
     from diag_project.services.persona_register import register_hint
     head = ("당신은 경험 많은 역량 면접관입니다. 목적은 이 사례에서 리더가 실제로 한 행동·판단·결과를 수준을 가릴 수 있을 만큼 듣는 것입니다.\n\n")
     voice = f"[말투] {register_hint(persona_name)} 리더를 부를 때는 '리더님'이라고만 한다."
     if mode == "wrap":
+        beyond = ("- 팀 밖(다른 부서·전사·외부)으로 이어졌는지 — 리더가 이 일에서 기준·절차·양식·도구처럼 남에게 옮길 수 있는 것을 만들었다고 말한 때에만 고른다.\n"
+                  if beyond_ok else "- 팀 밖으로 이어졌는지는 이 턴에서 묻지 않는다.\n")
         return (
-            head
-            + "이 턴은 지금 듣고 있는 사례에서 코치가 하는 마지막 말입니다. 세 토막을 이 순서로 씁니다.\n\n"
+            head.replace("이 사례에서", "이 일에서")      # 마무리 턴 지시문에는 '사례'라는 낱말을 쓰지 않는다(모델이 '이 사례에서 …'로 옮겨 써 린트에 걸렸다 — p16v2d)
+            + "이 턴은 지금 듣고 있는 일에 대해 코치가 하는 마지막 말입니다. 두 토막을 이 순서로 씁니다.\n\n"
             "[첫째 토막]\n"
-            "- 이 사례에서 리더가 한 일을 한 문장(스물다섯 어절 안팎)으로 줄여 적고, 코치가 그렇게 이해했다는 말로 맺는다. 확실히 들었다고 단정하지 않는다.\n"
+            "- 리더가 이 일에서 한 것을 한 문장(스물다섯 어절 안팎)으로 줄여 적고, 코치가 그렇게 이해했다는 말로 맺는다. 확실히 들었다고 단정하지 않는다.\n"
             "- 리더가 한 말로만 쓴다. 평가·칭찬·짐작을 보태지 않는다.\n\n"
             "[둘째 토막]\n"
-            "- 이 사례에 대해 보충해서 확인할 것이 하나 남았고 그것이 마지막이라는 뜻을 짧게 알린다. 듣지 못한 것을 여러 가지 늘어놓지 않는다.\n\n"
-            "[셋째 토막]\n"
             "- 아직 확인되지 않은 것 하나를 짧게 묻는 질문 한 문장(열다섯 어절 이하). 이야기를 넓게 청하는 질문이 아니라 빠진 것을 확인하는 질문이다. "
             "예·아니오로 답할 수 있는 꼴이어도 된다.\n"
             "- 물음은 하나다. 한 문장에 두 가지를 이어 묻지 않는다.\n"
-            "- 묻는 말로 끝낸다. 말해 달라고 청하는 말이나 궁금하다는 말, 해 줄 수 있는지 허락을 구하는 말로 끝내지 않는다. 앞의 두 코치 턴과 같은 말로 끝내지 않는다.\n\n"
+            "- 묻는 말로 끝낸다. 말해 달라고 청하는 말이나 궁금하다는 말, 묻겠다고 알리는 말, 해 줄 수 있는지 허락을 구하는 말로 끝내지 않는다. "
+            "앞의 두 코치 턴과 같은 말로 끝내지 않는다.\n\n"
             "[무엇을 묻는가 — 이 순서로 처음 걸리는 것 하나]\n"
-            "- 사례의 결과나 끝이 아직 나오지 않았으면 그것.\n"
+            "- 일의 결과나 끝이 아직 나오지 않았으면 그것.\n"
             "- 그 방식이 팀의 운영 방식이 됐는지.\n"
-            "- 팀 밖(다른 부서·전사·외부)으로 이어졌는지.\n"
-            "- 리더가 이미 답한 것, 모른다거나 기억나지 않는다고 답한 것은 건너뛴다. 이미 들은 것을 다시 확인하지 않는다 — "
-            "그 방식이 팀 안에서 지금 어떻게 쓰이는지를 이미 들었으면 팀 밖으로 이어졌는지를 묻는다.\n"
-            "- 셋을 다 들었으면 첫째 토막만 쓰고 끝낸다. 사례를 닫는다거나 다음으로 넘어간다는 말은 쓰지 않는다.\n\n"
+            + beyond
+            + "- 리더가 이미 답한 것, 모른다거나 기억나지 않는다고 답한 것은 건너뛴다. 이미 들은 것을 다시 확인하지 않는다.\n"
+            "- 물을 것이 없으면 첫째 토막만 쓰고 끝낸다. 닫는다거나 다음으로 넘어간다는 말은 쓰지 않는다.\n\n"
             "[그 밖]\n"
-            "- 세 토막 밖의 문장은 쓰지 않는다. 토막의 이름·번호·머리말·따옴표는 쓰지 않는다.\n"
+            "- 두 토막 밖의 문장은 쓰지 않는다. 하나만 더 확인하겠다고 알리는 말은 두 토막 사이에 따로 들어가므로 쓰지 않는다. "
+            "무엇을 듣지 못했는지 늘어놓지 않는다.\n"
+            "- 토막의 이름·번호·머리말·따옴표는 쓰지 않는다.\n"
             + _BAN_BASE + _BAN_INNER + "\n" + voice
         )
     shape = (
@@ -219,7 +228,7 @@ _NOTICE_RE = re.compile(r"(하나|한\s*가지|마지막|끝으로).{0,24}(확�
 # (P16-1c) 한 문장 안에서 물음을 잇는 말 — '…는지, 그리고 …' · '…셨고 …'
 _ASK_JOIN_RE = re.compile(r"(는지|은지|인지|을지)(?:를|도)?[,，]?\s*(그리고|또한|또|아울러)\s")
 _ASK_JI_SPLIT_RE = re.compile(r"(?<=[가-힣])(?:는지|은지|인지)(?:를|도)?[,，]?\s+")
-_EVAL_RE = re.compile(r"인상적|인상\s*깊|분명히\s*들렸|분명히\s*보입|의미\s*있는")
+_EVAL_RE = re.compile(r"인상적|인상\s*깊|분명히\s*들렸|분명히\s*보입|의미\s*있는|눈에\s*[띄띕띈띌]")
 _PERMIT_END_RE = re.compile(r"(수\s*있(을까요|으실까요|겠습니까|으시겠습니까|나요|으신가요|습니까|으십니까)|될까요|되겠습니까|괜찮을까요|괜찮겠습니까)[?.!…\s]*$")
 _ALT_RE = re.compile(r"(아니면|혹은|또는)\s")
 _UNHEARD_RE = re.compile(r"아직\s*(여쭙지|여쭤보지|묻지|듣지|확인하지|다루지)\s*(않은|못한)")
@@ -229,6 +238,17 @@ _WRAP_PASS_RE = re.compile(_UNHEARD_RE.pattern + r"|(첫|다음|마지막)\s*질
 # 문장 머리에 나온 안쪽 표지('간추림:', '확인 질문:') · 토막 번호
 _LABEL_RE = re.compile(r"(^|(?<=[.?!…]\s))(?:[①②③④]\s*|[가-힣]{2,6}(?:\s[가-힣]{2,6})?\s*[:：]\s*)")
 _END_PUNCT_RE = re.compile(r"[?.!…\s]+$")
+# (P16-1d) 마무리 턴의 둘째 토막 — 하나만 더 확인한다는 말. 모델이 쓰지 않고 여기서 고른다(pick_notice). 누설 검사·린트·말투 검사에 걸리지 않는 문구다.
+WRAP_NOTICES = {
+    "formal": ("한 가지만 더 확인하겠습니다.", "하나만 더 여쭙겠습니다.", "마지막으로 하나만 확인하겠습니다.", "끝으로 한 가지만 여쭙겠습니다.",
+               "확인할 것이 하나 남았습니다.", "덧붙여 하나만 여쭙겠습니다."),
+    "polite": ("한 가지만 더 확인할게요.", "하나만 더 여쭤볼게요.", "마지막으로 하나만 확인할게요.", "끝으로 한 가지만 여쭤볼게요.",
+               "확인할 게 하나 남았어요.", "덧붙여 하나만 여쭤볼게요."),
+}
+BEYOND_MAX = 2                     # (P16-1d) 팀 밖으로 이어졌는지를 묻는 마무리 질문은 영역당 이 수까지
+_BEYOND_RE = re.compile(r"팀\s*(밖|바깥)|다른\s*부서|다른\s*팀|전사|외부")
+# (P16-1d) 묻겠다고 알리는 말에 붙은 물음표 — 마침표로 고친다('…궁금해요?'는 turn_checks.finish_sentence_marks 가 고친다)
+_ANNOUNCE_Q_RE = re.compile(r"(여쭤볼게요|여쭤보겠습니다|여쭙겠습니다|물어볼게요|묻겠습니다)\?")
 RETRY_NOTES = {
     "permit": "앞서 쓴 질문은 허락을 구하는 말로 끝났다. 무엇을·어떻게·왜를 직접 묻는 말로 끝낸다.",
     "alt": "앞서 쓴 질문은 둘 가운데 고르게 했다. 고르게 하지 말고 열어서 묻는다.",
@@ -236,8 +256,23 @@ RETRY_NOTES = {
     "same_end": "앞서 쓴 문장은 앞의 코치 턴과 같은 말로 끝났다. 끝맺는 말을 바꾼다.",
     "two": "앞서 쓴 질문은 한 문장에 두 가지를 물었다. 하나만 묻는다.",
     "long": "앞서 쓴 확인 질문은 길었다. 열다섯 어절 이하로 하나만 묻는다.",
-    "request": "앞서 쓴 확인 질문은 청하는 말이나 궁금하다는 말로 끝났다. 묻는 말로 끝낸다.",
+    "request": "앞서 쓴 확인 질문은 청하는 말이나 궁금하다는 말, 묻겠다고 알리는 말로 끝났다. 묻는 말로 끝낸다.",
+    "beyond": "앞서 쓴 확인 질문은 팀 밖으로 이어졌는지를 물었다. 그 물음은 이 턴에서 쓰지 않는다. 결과나 팀의 방식 쪽에서 아직 듣지 못한 것을 묻고, 없으면 첫째 토막만 쓴다.",
 }
+
+
+def pick_notice(persona_name: str | None, coach_said: list[str] | None) -> str:
+    """(P16-1d) 마무리 턴의 둘째 토막으로 넣을 고정 문구 — 이 영역에서 아직 쓰지 않은 것부터, 다 썼으면 가장 오래전에 쓴 것."""
+    from diag_project.services.intro_messages import line_register
+    pool = WRAP_NOTICES["formal" if line_register(persona_name) == "formal" else "polite"]
+    said = " ".join(coach_said or [])
+    unused = [x for x in pool if x not in said]
+    return unused[0] if unused else min(pool, key=lambda x: said.rfind(x))
+
+
+def asks_beyond(text: str | None) -> bool:
+    """(P16-1d) 이 코치 말의 질문이 팀 밖(다른 부서·다른 팀·전사·외부)으로 이어졌는지를 묻는가."""
+    return any(_BEYOND_RE.search(x) for x in split_sentences(text or "") if x.strip() and is_question(x))
 
 
 def reaction_allowed(mid_n: int | None) -> bool:
@@ -280,15 +315,22 @@ def end_key(text: str | None) -> str:
     return " ".join(_END_PUNCT_RE.sub("", (text or "").strip()).split()[-2:])
 
 
-def tidy(text: str | None, *, mode: str, react: bool, last_answer: str | None, prior_reacts: list[str] | None = None) -> tuple[str, dict]:
+def tidy(text: str | None, *, mode: str, react: bool, last_answer: str | None, prior_reacts: list[str] | None = None,
+         notice: str | None = None) -> tuple[str, dict]:
     """모델이 쓴 코치 말을 다듬는다 — (결과, 기록).
     문장 머리의 호칭과 안쪽 표지를 떼고 · 값 매기는 말이 든 문장을 지우고 · 질문은 첫 질문 하나만 남기고(그 뒤는 버린다) ·
     사례 중간 턴의 평서문은 반응을 붙이는 턴에만 한 문장 남긴다(직전 답과 내용 낱말이 다섯 이상 겹치거나 열두 어절을 넘거나,
     이 영역에서 이미 나간 반응(prior_reacts)과 내용 낱말이 둘 이상 겹치면 그 문장도 지운다) ·
-    마무리 턴은 세 토막(이해 확인 한 문장 · 마지막 보충 확인임을 알리는 말 · 확인 질문)만 남기고 그 밖의 문장은 지운다(기록 parts: 갖춘 토막)."""
-    from diag_project.services.turn_checks import receive_shared_words, strip_lead_address_q
+    마무리 턴은 모델이 쓴 것 가운데 이해 확인 한 문장과 확인 질문만 남기고, 그 사이에 고정 문구(notice — 하나만 더 확인한다는 말)를 넣는다.
+    질문이 없으면 고정 문구도 넣지 않는다(기록 parts: 갖춘 토막 — '123' = 이해 확인·고정 문구·질문).
+    (P16-1d) 묻는 꼴이 아닌 끝('…궁금해요?', '…여쭤볼게요?')에 붙은 물음표는 마침표로 고친다."""
+    from diag_project.services.turn_checks import finish_sentence_marks, receive_shared_words, strip_lead_address_q
     info: dict = {}
-    raw = (text or "").strip()
+    raw0 = (text or "").strip()
+    raw, n_mark = finish_sentence_marks(raw0)
+    raw, n_ann = _ANNOUNCE_Q_RE.subn(r"\1.", raw)
+    if n_mark + n_ann:
+        info["mark_fix"] = n_mark + n_ann
     unlabeled = _LABEL_RE.sub(r"\1", raw)
     if unlabeled != raw:
         info["label"] = 1
@@ -331,28 +373,31 @@ def tidy(text: str | None, *, mode: str, react: bool, last_answer: str | None, p
         if stmts:
             info["react_text"] = stmts[0]
     elif mode == "wrap":
-        # 첫째 토막 = 이해했다는 말로 맺은 문장(없으면 첫 평서문) · 둘째 토막 = 하나만 더 확인한다는 말(질문이 있을 때만) · 셋째 토막 = 질문
+        # 모델이 쓴 것에서 남기는 것 = 이해했다는 말로 맺은 문장(없으면 첫 평서문) + 질문. 그 사이에 고정 문구를 넣는다(질문이 있을 때만).
         first = next((x for x in stmts if "이해" in x), stmts[0] if stmts else None)
-        notice = next((x for x in reversed(stmts) if x is not first and _NOTICE_RE.search(x)), None) if q else None
-        keep_w = [x for x in stmts if x is first or x is notice]
-        if len(keep_w) != len(stmts):
-            info["wrap_cut"] = len(stmts) - len(keep_w)
-        stmts = keep_w
-        info["parts"] = ("1" if first else "") + ("2" if notice or (q and _NOTICE_RE.search(q[0])) else "") + ("3" if q else "")
+        if len(stmts) > (1 if first else 0):
+            info["wrap_cut"] = len(stmts) - (1 if first else 0)
+        put = notice if (q and notice) else None
+        stmts = [x for x in (first, put) if x]
+        info["parts"] = ("1" if first else "") + ("2" if put else "") + ("3" if q else "")
     if had_q and not q:
         info["q_lost"] = 1
     return " ".join(stmts + q).strip(), info
 
 
-def question_issue(text: str | None, prev_coach: list[str] | str | None, *, mode: str = "mid") -> str | None:
+def question_issue(text: str | None, prev_coach: list[str] | str | None, *, mode: str = "mid", beyond_ok: bool = True) -> str | None:
     """질문 꼴에서 한 번 다시 쓰게 할 것 — permit(허락을 구하는 끝맺음) | two(한 문장에 물음 둘) | alt(둘 중 고르기) | yesno(예·아니오) |
     long(마무리 턴의 확인 질문이 열다섯 어절 초과) | request(마무리 턴의 확인 질문이 청하는 말·궁금하다는 말로 끝남) |
     same_end(앞의 두 코치 턴 가운데 하나와 끝 두 어절이 같다). 없으면 None.
-    마무리 턴은 확인 질문이라 alt·yesno 를 보지 않는다(P16-1b). long·request 는 마무리 턴에서만 본다(P16-1c)."""
-    from diag_project.services.turn_checks import _FP_ASK_FOR_RE, _FP_WH_RE, is_request_ending
+    마무리 턴은 확인 질문이라 alt·yesno 를 보지 않는다(P16-1b). long·request 는 마무리 턴에서만 본다(P16-1c).
+    (P16-1d) beyond — 마무리 턴에서 팀 밖으로 이어졌는지를 물었는데 그 물음을 쓸 수 없는 턴이다(beyond_ok=False).
+    request 에는 묻겠다고 알리는 끝('…여쭤볼게요', '…여쭙겠습니다')도 든다."""
+    from diag_project.services.turn_checks import _FP_ASK_FOR_RE, _FP_WH_RE, is_announce_ask, is_request_ending
     q = next((x.strip() for x in reversed(split_sentences(text or "")) if x.strip() and is_question(x)), "")
     if not q:
         return None
+    if mode == "wrap" and not beyond_ok and _BEYOND_RE.search(q):
+        return "beyond"
     if _PERMIT_END_RE.search(q):
         return "permit"
     alt = bool(_ALT_RE.search(q))      # 둘 중 고르기는 물음 하나로 본다 — 사례 중간 턴에서는 alt 로 다시 쓰고, 마무리 턴에서는 그대로 둔다
@@ -363,7 +408,7 @@ def question_issue(text: str | None, prev_coach: list[str] | str | None, *, mode
     if mode == "wrap":
         if len(q.split()) > WRAP_Q_MAX_EOJEOL:
             return "long"
-        if is_request_ending(q):
+        if is_request_ending(q) or is_announce_ask(q):
             return "request"
     elif not _FP_WH_RE.search(q) and not _FP_ASK_FOR_RE.search(q):
         return "yesno"
@@ -398,12 +443,14 @@ def check(text: str | None, *, mode: str, persona_name: str | None, leader_texts
 
 async def render(llm, *, mode: str, chapter: str, sub_name: str | None, case: list[tuple[str, str]], coach_said: list[str], missing: list[str],
                  persona_name: str | None, trace: list | None = None, meta: dict | None = None, mid_n: int = 0,
-                 prior_reacts: list[str] | None = None) -> tuple[str | None, str]:
+                 prior_reacts: list[str] | None = None, beyond_ok: bool = True) -> tuple[str | None, str]:
     """(코치 턴 | None, 기록). 기록 'llm' | 'llm_retry' | 'llm_first'(다시 쓴 것이 떨어져 처음 것을 씀) | 'stub' | 'miss:<사유>'.
     호출 오류·확인 탈락·질문 꼴(question_issue) 가운데 무엇이든 걸리면 한 번만 다시 부른다(턴당 합쳐 한 번).
     다시 쓴 것에 질문 꼴이 남아 있으면 그대로 쓴다(meta['left']). meta 에는 다듬은 기록(tidy)과 다시 쓴 까닭(rewrite)을 남긴다.
     mid_n — 이 사례에서 이미 나간 중간 턴 수(반응을 붙일지·팀 쪽 물음을 고를 수 있는지 정하는 순번, 호출자가 원장에서 읽어 넘긴다).
-    prior_reacts — 이 영역에서 이미 나간 반응 문장들(같은 말을 되풀이한 반응을 지우는 데 쓴다). 붙은 반응은 meta['react_text'] 로 돌려준다."""
+    prior_reacts — 이 영역에서 이미 나간 반응 문장들(같은 말을 되풀이한 반응을 지우는 데 쓴다). 붙은 반응은 meta['react_text'] 로 돌려준다.
+    beyond_ok — 마무리 턴에서 팀 밖으로 이어졌는지를 물어도 되는가(영역당 BEYOND_MAX 번 — 호출자가 원장에서 세어 넘긴다).
+    안 되는데 다시 쓴 뒤에도 그 물음이 남으면 질문을 지우고 이해 확인만 돌려준다(호출자가 바로 닫는다). 나간 질문이 팀 밖을 물었으면 meta['beyond']=1."""
     meta = meta if meta is not None else {}
     if os.getenv("FM_LLM_STUB"):
         return None, "stub"
@@ -411,7 +458,8 @@ async def render(llm, *, mode: str, chapter: str, sub_name: str | None, case: li
         return None, "miss:no_llm" if llm is None else "miss:no_material"
     react = mode == "mid" and reaction_allowed(mid_n)
     meta["react_slot"] = int(react)
-    system = build_system(mode, persona_name, react=react, team_q=team_question_allowed(mid_n))
+    system = build_system(mode, persona_name, react=react, team_q=team_question_allowed(mid_n), beyond_ok=beyond_ok)
+    notice = pick_notice(persona_name, coach_said) if mode == "wrap" else None
     leader_texts = [t for r, t in case if r == "user"]
     last_answer = leader_texts[-1] if leader_texts else ""
     prev_coach = list(coach_said or [])[-PREV_END_TURNS:]
@@ -425,29 +473,50 @@ async def render(llm, *, mode: str, chapter: str, sub_name: str | None, case: li
             logger.warning("coach v2 render failed: %s", e)
             why = "error"
             continue
-        text, info = tidy(clean(out), mode=mode, react=react, last_answer=last_answer, prior_reacts=prior_reacts)
+        text, info = tidy(clean(out), mode=mode, react=react, last_answer=last_answer, prior_reacts=prior_reacts, notice=notice)
         ok, why = check(text, mode=mode, persona_name=persona_name, leader_texts=leader_texts)
+        if not ok and why == "leak" and info.get("react_text"):
+            # (P16-1d) 반응 문장이 누설 검사에 걸렸으면 턴 전체가 아니라 그 문장만 지운다(p16v2d Ella: 반응의 한마디 때문에 턴이 종전 경로로 넘어갔다)
+            bare = text[len(info["react_text"]):].strip()
+            ok2, why2 = check(bare, mode=mode, persona_name=persona_name, leader_texts=leader_texts)
+            if ok2:
+                text, ok, why = bare, True, "ok"
+                info = {k: v for k, v in info.items() if k != "react_text"}
+                info["react"] = 0
+                info["react_cut"] = list(info.get("react_cut") or []) + ["leak"]
         if ok and info.get("q_lost"):
             ok, why = False, "no_question"
         if not ok:
             if trace is not None:
                 trace.append([f"coach_v2:{mode}", why, text[:200]])
             continue
-        issue = question_issue(text, prev_coach, mode=mode)
+        issue = question_issue(text, prev_coach, mode=mode, beyond_ok=beyond_ok)
         if issue and attempt == 0:
-            first = (text, info)
+            first = (text, info, issue)
             note = RETRY_NOTES[issue]
             meta["rewrite"] = issue
             if trace is not None:
                 trace.append([f"coach_v2:{mode}", f"rewrite:{issue}", text[:200]])
             continue
-        meta.update(info)
-        if issue:
-            meta["left"] = issue
-        return text, ("llm_retry" if attempt else "llm")
+        return _finish(text, info, issue, "llm_retry" if attempt else "llm", meta, mode)
     if first:
         # 다시 쓴 것이 확인에서 떨어졌다 — 처음 쓴 것(질문 꼴만 걸린 것)을 쓴다. 종전 경로로 넘기지 않는다.
-        meta.update(first[1])
-        meta["left"] = meta.get("rewrite")
-        return first[0], "llm_first"
+        return _finish(first[0], first[1], first[2], "llm_first", meta, mode)
     return None, f"miss:{why}"
+
+
+def _finish(text: str, info: dict, issue: str | None, how: str, meta: dict, mode: str) -> tuple[str | None, str]:
+    """render 의 마지막 정리 — 기록을 채우고, 마무리 턴에서 쓸 수 없는 팀 밖 물음이 남았으면 질문을 지운다(이해 확인만 남는다)."""
+    meta.update(info)
+    if issue == "beyond":
+        kept = [x.strip() for x in split_sentences(text) if x.strip() and not is_question(x) and x.strip() not in sum(WRAP_NOTICES.values(), ())]
+        meta["beyond_dropped"] = 1
+        meta["parts"] = "1" if kept else ""
+        if not kept:
+            return None, "miss:beyond"
+        return kept[0], how
+    if issue:
+        meta["left"] = issue
+    if mode == "wrap" and asks_beyond(text):
+        meta["beyond"] = 1
+    return text, how

@@ -1254,7 +1254,9 @@ async def _submit_message_phase3a(
             coach_said=[(m.content or "") for m in _ch_msgs_b if (m.role == MessageRole.MODEL or m.role == "model")],
             missing=[_bei.SLOT_LABELS[k] for k in _bei.unfilled_slots(ep_v2)],
             persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops, meta=_meta_v2, mid_n=int(ep_v2.get("v2_mid_n") or 0),
-            prior_reacts=list(((session.self_assessment_data or {}).get("v2_reacts") or {}).get(chapter) or []))
+            prior_reacts=list(((session.self_assessment_data or {}).get("v2_reacts") or {}).get(chapter) or []),
+            # (P16-1d) 팀 밖으로 이어졌는지를 묻는 마무리 질문은 영역당 두 번까지 — 이 영역의 사례 원장에 적힌 횟수로 센다
+            beyond_ok=sum(1 for _e_v2 in _bei.episodes(session.self_assessment_data or {}, chapter) if _e_v2.get("wrap_beyond")) < _cv2.BEYOND_MAX)
         _tm["v2_meta"] = {**_meta_v2, "how": _out_v2[1]}
         return _out_v2
 
@@ -1399,6 +1401,8 @@ async def _submit_message_phase3a(
                 _tm["v2"] = f"wrap_fallback:{_how_w}"
                 return None
             ep["wrap_asked"] = 1
+            if (_tm.get("v2_meta") or {}).get("beyond"):
+                ep["wrap_beyond"] = 1          # (P16-1d) 이 사례의 마무리 질문이 팀 밖을 물었다 — 영역당 두 번까지
             if _cv2.has_question(_txt_w):
                 _store = _bei.update_episode(_store, chapter, ep)
                 _bei_ep = ep; instruction_used = follow_instr; _tm["bei"] = "wrap"; _v2_text = _txt_w; _tm["v2"] = "wrap"
