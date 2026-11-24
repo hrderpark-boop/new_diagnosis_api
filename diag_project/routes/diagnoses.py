@@ -1253,7 +1253,7 @@ async def _submit_message_phase3a(
             llm, mode=mode_v2, chapter=chapter, sub_name=ep_v2.get("opener_sub"), case=_ep_transcript(ep_v2),
             coach_said=[(m.content or "") for m in _ch_msgs_b if (m.role == MessageRole.MODEL or m.role == "model")],
             missing=[_bei.SLOT_LABELS[k] for k in _bei.unfilled_slots(ep_v2)],
-            persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops, meta=_meta_v2)
+            persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops, meta=_meta_v2, mid_n=int(ep_v2.get("v2_mid_n") or 0))
         _tm["v2_meta"] = {**_meta_v2, "how": _out_v2[1]}
         return _out_v2
 
@@ -1974,6 +1974,12 @@ async def _submit_message_phase3a(
             # (2026-11-23 P16-1) 사례 중간 턴 — 호출 하나로 (선택) 짧은 반응 + 열린 질문. 실패하면 아래 종전 경로(첫 꼬리 전용 호출·본 호출)가 쓴다.
             _v2_text, _v2_how = await _v2_render("mid", _bei_ep)
             _tm["v2"] = "mid" if _v2_text else f"mid_fallback:{_v2_how}"
+            if _v2_text:
+                # (P16-1b) 이 사례에서 나간 중간 턴 수 — 다음 중간 턴에 반응을 붙일지 정하는 순번(다시 묻기 턴·종전 경로로 나간 턴은 세지 않는다)
+                from sqlalchemy.orm.attributes import flag_modified as _fm_v2
+                _bei_ep["v2_mid_n"] = int(_bei_ep.get("v2_mid_n") or 0) + 1
+                session.self_assessment_data = _bei.update_episode(dict(session.self_assessment_data or {}), chapter, _bei_ep)
+                _fm_v2(session, "self_assessment_data")
         if instruction_used == "CHAPTER_READY_TO_END":
             # (2026-11-11 호출 순서) 챕터 종료 턴은 코치 본 호출을 하지 않는다 — 본 호출 출력은 쓰이지 않았다(요약은 재료만 주는 집중 호출이 쓰고,
             #   마지막 챕터는 받기 1문장 + 고정 종료 문구, 사례 0 챕터는 고정 문장). 종전에는 본 호출 1회 + 요약 재생성 2회가 먼저 돌았다(p10a·p10b·lb1 전부 집중 호출로 끝남).
