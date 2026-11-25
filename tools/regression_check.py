@@ -435,6 +435,42 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
         d_ch["beyond"] += int(w["beyond"])
     # 영역 안에서 고정 문구가 겹친 횟수(여섯 개를 다 쓰기 전에 같은 문구가 다시 나온 것)
     notice_dup = sum(1 for d_ch in by_ch.values() for i, x in enumerate(d_ch["notices"]) if x in d_ch["notices"][max(0, i - len(V.WRAP_NOTICES["formal"]) + 1):i])
+    # ── (2026-11-25 P16-2) 되받으며 시작한 턴 · 같은 것을 다시 물은 횟수 · 이해 확인 길이 · 건너뛴 마무리 턴 · 라포·영역 정의 턴 ──
+    from diag_project.services.turn_checks import borrowed_run, question_first_clause, receive_shared_words
+    prev_user = lambda r: next((x.get("content") or "" for x in reversed(rows[:rows.index(r)]) if x.get("role") == "user"), "")  # noqa: E731
+    echo_list, lead_n = [], 0
+    for r in mid:
+        ss = [x.strip() for x in split_sentences(r["content"]) if x.strip()]
+        head, kind = (ss[0], "반응") if (len(ss) >= 2 and not is_question(ss[0])) else (question_first_clause(ss[0]) if ss else "", "앞 절")
+        if not head:
+            continue
+        lead_n += 1
+        shared = receive_shared_words(head, prev_user(r))
+        if len(shared) >= 2:
+            echo_list.append(f"t{r.get('t')} [{kind} · 겹친 내용 낱말 {len(shared)} · 옮긴 구간 {borrowed_run(r['content'], prev_user(r))}어절] {r['content']}")
+    cases: list[dict] = []      # 사례마다 팀 쪽·팀 밖 물음 수(중간 턴 + 마무리 턴, 낱말 기준)
+    for r in model:
+        if r.get("instr") in ("COMPETENCY_ALIGN", "EPISODE_OPEN", "SWEEP_ANCHOR") or not cases:
+            cases.append({"t": r.get("t"), "chapter": r.get("chapter"), "team": [], "beyond": []})
+        if g(r).get("v2") in ("mid", "wrap"):
+            for k in V.asked_kinds(r["content"]):
+                cases[-1][k].append(f"t{r.get('t')} {g(r)['v2']}: {r['content']}")
+    again_list = [f"[{c['chapter']} t{c['t']} 사례 · {'팀 밖' if k == 'beyond' else '팀의 방식'} {len(c[k])}번] " + " // ".join(c[k]) for c in cases for k in ("team", "beyond") if len(c[k]) > 1]
+    again_n = sum(len(c[k]) - 1 for c in cases for k in ("team", "beyond") if len(c[k]) > 1)
+    for w in wraps:
+        body = V.wrap_summary(w["text"])
+        w["sum_eojeol"] = sum(len(x.split()) for x in body)
+        w["sum_parts"] = max([V.summary_parts(x) for x in body] or [0])
+        w["sum_n"] = len(body)
+    skips = [f"t{r.get('t')} {g(r).get('v2_skip')}" for r in model if g(r).get("v2_skip")]
+    early = []
+    for r in model:
+        if r.get("instr") in ("RAPPORT_BUILDING", "DIAGNOSIS_INTRO", "DIAGNOSIS_CONFIRM", "COMPETENCY_ASK", "COMPETENCY_ALIGN"):
+            t = r.get("content") or ""
+            first = next((x.strip() for x in split_sentences(t) if x.strip()), "")
+            early.append({"t": r.get("t"), "instr": r.get("instr"), "leader": prev_user(r), "text": (t if r.get("instr") == "RAPPORT_BUILDING" else first),
+                          "recv": g(r).get("rapport_recv") or g(r).get("align_recv"), "first_eojeol": len(first.split()),
+                          "shared": len(receive_shared_words(first, prev_user(r))) if not is_question(first) else 0})
     ends = collections.Counter(V.end_key(r["content"]).split()[-1] for r in v2 if r["content"].split())
     firsts = collections.Counter(r["content"].split()[0] for r in v2 if r["content"].split())
     return {"empty_n": sum(1 for r in model if not (r.get("content") or "").strip()), "server_err": server_log.count("Traceback"), "leak_n": len(leaks), "leak_list": leaks,
@@ -446,6 +482,9 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
             "beyond_dropped": sum(1 for w in wraps if w["beyond_dropped"]), "first_cut_n": sum(1 for w in wraps if w["first_cut"]),
             "not_ask_n": sum(1 for w in wraps if w["not_ask"]), "direct_fix_n": sum(1 for w in wraps if w["direct_fix"]),
             "targets": dict(collections.Counter(str(w["target"]) for w in wraps)),
+            "echo_n": len(echo_list), "echo_list": echo_list, "lead_n": lead_n, "again_n": again_n, "again_list": again_list,
+            "skip_n": len(skips), "skip_list": skips, "early": early, "sum_drop_n": sum(1 for r in wrap if meta(r).get("sum_drop")),
+            "front_cut_n": sum(1 for r in mid if meta(r).get("front_cut")),
             "beyond": beyond, "beyond_heard": sum(1 for b in beyond if b["heard"]),
             "first_top": firsts.most_common(5), "end_top": ends.most_common(6), "v2_n": len(v2),
             "rewrite": dict(collections.Counter(str(meta(r).get("rewrite")) for r in v2 + confirm if meta(r).get("rewrite"))),
@@ -464,7 +503,7 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
         lint = rt.analyze(json.loads(p.read_text(encoding="utf-8")), None).get("inner") or []
         vs[c].update({"lint_n": len(lint), "lint_list": [f"{sent} ← {pat}" for sent, pat in lint]})
     name = lambda c: COACH_NAMES[c].capitalize()      # noqa: E731
-    L = [f"# 새 방식(FM_COACH_V2=1) 회귀 {tag} — 코치 × 요약형 팀장 × {TOPICS}", ""]
+    L = [f"# 새 방식(FM_COACH_V2=1) 회귀 {tag} — 코치 × {profile.get('name') or PROFILE} × {TOPICS}", ""]
     bad = [f"{label} — {name(c)} {vs[c][key]}" for label, key in V2_ZERO for c in coaches if vs[c].get(key)]
     bad += [f"세션 미완료 — {name(c)} {vs[c]['status']}" for c in coaches if str(vs[c]["status"]) != "completed"]
     L += ["**0이어야 하는데 0이 아닌 것**: " + (" / ".join(bad) if bad else "없음"), ""]
@@ -479,6 +518,12 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
     row("반응 허용 / 붙음 / 지움", lambda v: f"{v['react_slot']} / {v['react_kept']} / {sum(v['react_cut'].values())}")
     row("지운 반응(까닭별)", lambda v: " · ".join(f"{k} {n}" for k, n in v["react_cut"].items()) or "0")
     row("한 턴 두 물음", lambda v: v["two_n"])
+    # (P16-2)
+    row("중간 턴 가운데 질문 아닌 말(반응·앞 절)로 시작 / 그중 직전 답을 되받음(내용 낱말 2개 이상)", lambda v: f"{v['lead_n']} / {v['echo_n']} (중간 턴 {v['mid_n']})")
+    row("앞 절을 떼어 낸 중간 턴", lambda v: v["front_cut_n"])
+    row("같은 것(팀의 방식·팀 밖)을 한 사례에서 다시 물은 횟수", lambda v: v["again_n"])
+    row("마무리 턴을 내지 않고 넘어간 사례(물을 것 없음)", lambda v: v["skip_n"])
+    row("이해 확인 어절 수(마무리 턴별) / 뺀 것", lambda v: " · ".join(str(w["sum_eojeol"]) for w in v["wraps"]) + f" / {v['sum_drop_n']}")
     row("마무리 턴 / 세 토막 갖춤", lambda v: f"{v['wrap_n']} / {v['wrap_full']}")
     row("영역 안에서 겹친 둘째 토막 문구", lambda v: v["notice_dup"])
     row("팀 밖을 물은 마무리 질문(영역별) / 지운 것", lambda v: " · ".join(f"{k.split('_')[0]} {n}" for k, n in v["beyond_by_ch"].items()) + f" / {v['beyond_dropped']}")
@@ -502,13 +547,20 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
             if v[key]:
                 L.append(f"{label} {len(v[key])}건:")
                 L += [f"   - {x}" for x in v[key]]
+        for label, key in (("직전 답을 되받으며 시작한 중간 턴", "echo_list"), ("한 사례에서 같은 것을 다시 물음", "again_list"), ("마무리 턴을 내지 않고 넘어감", "skip_list")):
+            if v[key]:
+                L.append(f"{label} {len(v[key])}건:")
+                L += [f"   - {x}" for x in v[key]]
+        L.append(f"라포·영역 정의 턴 {len(v['early'])}개(영역 정의 쪽은 받는 말 한 문장만 싣는다):")
+        for e in v["early"]:
+            L.append(f"   - [t{e['t']} {e['instr']}" + (f" · {e['recv']}" if e["recv"] else "") + f" · 첫 문장 {e['first_eojeol']}어절 · 겹친 내용 낱말 {e['shared']}] 리더: {e['leader'][:120]} → 코치: {e['text']}")
         L.append(f"붙은 반응 {len(v['react_list'])}개: " + " / ".join(v["react_list"]))
         L.append(f"팀 밖 재료가 있는 사례 {len(v['beyond'])}개:")
         L += [f"   - {b['id']} {b['title']} — {'들음: ' + b['answer'] if b['heard'] else '못 들음'}" for b in v["beyond"]]
         L.append(f"마무리 턴 {len(v['wraps'])}개:")
         for w in v["wraps"]:
             tag_w = ("확인만 하고 닫음" if w["kind"] == "wrap_confirm" else
-                     f"대상 {w['target']} · 토막 {w['parts']} · 질문 {w['q_eojeol']}어절" + (" · 팀 밖" if w["beyond"] else "") + (" · 팀 밖 질문 지움" if w["beyond_dropped"] else "")
+                     f"대상 {w['target']} · 토막 {w['parts']} · 이해 확인 {w['sum_eojeol']}어절({w['sum_n']}문장·{w['sum_parts']}토막) · 질문 {w['q_eojeol']}어절" + (" · 팀 밖" if w["beyond"] else "") + (" · 팀 밖 질문 지움" if w["beyond_dropped"] else "")
                      + (f" · 이해 확인 문장 {w['first_cut']}개 지움" if w["first_cut"] else "") + (" · 직접 묻는 꼴로 바꿈" if w["direct_fix"] else "") + (" · 묻는 꼴 아님" if w["not_ask"] else "")
                      + (f" · 지운 문장 {w['cut']}" if w["cut"] else "") + (f" · 다시 씀({w['rewrite']})" if w["rewrite"] else "")
                      + (f" · 남은 꼴({w['left']})" if w["left"] else ""))
@@ -538,7 +590,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=8180)
     ap.add_argument("--no-run", action="store_true", help="시뮬을 돌리지 않고 있는 결과만 판정한다(LLM 호출 없음)")
     ap.add_argument("--v2", action="store_true", help="코치 턴 새 방식(FM_COACH_V2=1)으로 돌리고 새 방식 집계를 낸다 — 조건 판정 없음")
+    ap.add_argument("--profile", default=None, help="(P16-2) 시뮬 리더 프로필(기본: 요약형 팀장) — 예: tools/sim_profiles/detail_team_lead.json")
     args = ap.parse_args(argv)
+    if args.profile:
+        global PROFILE
+        PROFILE = args.profile
     if args.v2:
         os.environ["FM_COACH_V2"] = "1"
     coaches = ["1", "4"] if args.pair else [c for c in args.coaches.split(",") if c in COACH_NAMES]

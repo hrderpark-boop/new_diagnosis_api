@@ -18,6 +18,12 @@
     .venv/bin/python tools/p16_compare.py --transcript ../sim/real_20261123_lucas.md --only 1         # 1개 지점만(턴당 비용·지연 확인)
     .venv/bin/python tools/p16_compare.py --transcript ../sim/real_20261123_lucas.md                  # 12개 지점 전부(이미 돌린 지점은 다시 부르지 않는다)
 
+(2026-11-25 P16-2 0단계) 다른 실세션 전문에서도 돌릴 수 있게 했다 — 지점을 손으로 적지 않고 전문에서 찾는다(--auto 영역 키).
+  사례 안에서 리더가 답한 자리 가운데 실제 코치 턴이 사례 중간 턴이거나 마무리 턴이었던 곳 전부. Sonnet(C)은 부르지 않는다(--no-sonnet).
+    .venv/bin/python tools/p16_compare.py --transcript ../sim/real_20261125_lucas_org.md --auto organization_management --no-sonnet --tag p16_2 --dry-run
+    .venv/bin/python tools/p16_compare.py --transcript ../sim/real_20261125_lucas_org.md --auto organization_management --no-sonnet --tag p16_2
+  출력: <tag>_side_by_side.md(지점마다 리더 답 · 실제 코치 턴 · B) · <tag>_raw.json
+
 출력(--out, 기본 전문과 같은 폴더):
     p16_compare_blind.md   지점마다 리더 답(앞 60자)과 후보 셋을 가/나/다로 — 지점마다 순서를 섞는다. 어느 것이 A/B/C 인지는 적지 않는다.
     p16_compare_key.md     정답표와 B·C 의 턴당 비용·지연.
@@ -213,6 +219,57 @@ def locate(turns: list[tuple[str, str]]) -> list[dict]:
     return out
 
 
+_WRAP_MARK_RE = re.compile(r"이해했습니다|이해했어요|(하나|한\s*가지)만\s*(더\s*)?(확인|여쭙|여쭤)")
+
+
+def locate_auto(turns: list[tuple[str, str]], chapter: str) -> list[dict]:
+    """(P16-2) 그 영역의 사례 안에서 리더가 답한 자리 전부 — 바로 뒤의 실제 코치 턴이 사례 중간 턴(mid)이거나 마무리 턴(wrap)인 곳.
+    뒤의 코치 턴이 다음 사례의 여는 질문이거나 영역 요약이면 뺀다(그 답은 마무리 질문의 답이다). 앞 답과 글자가 같은 답(같은 답 반복 처리 턴)도 뺀다."""
+    ch0 = chapter_start(turns, chapter)
+    out: list[dict] = []
+    open_i, sub, prev_leader = None, None, ""
+    for i in range(ch0, len(turns)):
+        r, t = turns[i]
+        if r == "model":
+            s_ = opener_sub(t, chapter)
+            if s_:
+                open_i, sub = i, s_
+            continue
+        if open_i is None:
+            continue
+        actual = next((x for rr, x in turns[i + 1:i + 2] if rr == "model"), "")
+        same = _norm(t) == _norm(prev_leader)
+        prev_leader = t
+        # 영역 요약(전문의 마지막 코치 턴 — 물음 없이 다음 영역을 알린다)과 다음 사례의 여는 질문은 뺀다. 물음표 없는 꼬리 질문('…궁금합니다.')은 넣는다
+        is_end = (i + 2 >= len(turns)) and "?" not in actual
+        if not actual or is_end or opener_sub(actual, chapter) or same:
+            continue
+        out.append({"n": len(out) + 1, "chapter": chapter, "tail": t[-20:], "found": True, "leader": t, "actual": actual,
+                    "actual_closed": "", "kind": "wrap" if _WRAP_MARK_RE.search(actual) else "mid", "sub": sub,
+                    "case": turns[open_i:i + 1], "coach_said": [x for rr, x in turns[ch0:i] if rr == "model"], "turn_index": i})
+    return out
+
+
+def write_side_by_side(points: list[dict], raw: dict, out_dir: Path, tag: str, title: str) -> Path:
+    """(P16-2) 가리지 않고 나란히 — 지점마다 리더 답 전체 · 실제로 나간 코치 턴 · B(새 방식, Haiku)."""
+    L = [f"# {title}", "", "지점마다 리더가 방금 한 답, 실제로 나간 코치 턴, 같은 자리에서 P16-0 비교 도구의 새 방식(B, Haiku)이 쓴 턴입니다.",
+         "B 의 입력은 P16-0 그대로입니다(영역 정의·하위역량·수준 기준·이 영역에서 코치가 한 말 전부·이 사례의 대화). 겉모양 검사·다시 쓰기는 없습니다.", ""]
+    for p in points:
+        r = raw.get(str(p["n"]))
+        if not r:
+            continue
+        L += [f"## 지점 {p['n']} — 실제 턴: {'사례 마무리 턴' if p.get('kind') == 'wrap' else '사례 중간 턴'}", "",
+              f"- 리더: {p['leader']}", f"- **실제**: {p['actual']}", f"- **B**: {r['B']['text']}", ""]
+    done = [raw[str(p["n"])] for p in points if raw.get(str(p["n"]))]
+    if done:
+        usd = [d["B"]["usd"] for d in done]
+        sec = sorted(d["B"]["sec"] for d in done)
+        L += [f"B(Haiku) {len(done)}개 지점 — 비용 합계 ${sum(usd):.4f} · 지연 중앙 {sec[len(sec) // 2]}초 · 최대 {sec[-1]}초"]
+    path = out_dir / f"{tag}_side_by_side.md"
+    path.write_text("\n".join(L) + "\n", encoding="utf-8")
+    return path
+
+
 async def call(llm, *, system: str, user: str, sonnet: bool) -> dict:
     from diag_project.llm_service import ANALYSIS_MODEL, USAGE_METER, _PRICE
     ct = "p16_compare_sonnet" if sonnet else "p16_compare_haiku"
@@ -290,17 +347,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", type=int, default=0, help="앞에서 이만큼의 지점만 돌린다(0 = 전부)")
     ap.add_argument("--dry-run", action="store_true", help="지점을 찾고 지시문만 출력한다(LLM 호출 없음)")
     ap.add_argument("--seed", type=int, default=20261123)
+    ap.add_argument("--auto", default=None, help="(P16-2) 영역 키 — 지점을 전문에서 찾는다(사례 안에서 리더가 답한 자리 전부)")
+    ap.add_argument("--no-sonnet", action="store_true", help="(P16-2) Sonnet(C)은 부르지 않는다 — B(Haiku)만")
+    ap.add_argument("--tag", default="p16_compare", help="(P16-2) --auto 출력 파일 이름의 머리")
     args = ap.parse_args(argv)
     path = Path(args.transcript)
     out_dir = Path(args.out) if args.out else path.parent
     turns = parse_transcript(path.read_text(encoding="utf-8"))
-    points = locate(turns)
+    points = locate_auto(turns, args.auto) if args.auto else locate(turns)
     print(f"전문 {len(turns)}턴(코치 {sum(1 for r, _t in turns if r == 'model')} · 리더 {sum(1 for r, _t in turns if r == 'user')})")
     for p in points:
         if not p.get("found"):
             print(f"지점 {p['n']}: 못 찾음 — '{p['tail']}'")
         else:
-            print(f"지점 {p['n']}: 턴 {p['turn_index']} · 하위역량 {p['sub']} · 사례 {len(p['case'])}턴 · 실제 코치 턴{'(사례 닫음: ' + p['actual_closed'] + ')' if p['actual_closed'] else ''}: {p['actual'][:60]}")
+            print(f"지점 {p['n']}: 턴 {p['turn_index']} · 하위역량 {p['sub']} · 사례 {len(p['case'])}턴 · 실제 코치 턴{'(사례 닫음: ' + p['actual_closed'] + ')' if p['actual_closed'] else ''}"
+                  f"{'[' + p['kind'] + ']' if p.get('kind') else ''}: {p['actual'][:60]}")
     if any(not p.get("found") for p in points):
         print("찾지 못한 지점이 있습니다 — 전문의 형식이나 끝부분 문구를 확인하세요.")
         return 2
@@ -310,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\n===== 지시문(system) =====\n" + system)
         print("\n===== 입력(지점 1) =====\n" + build_user(chapter=p["chapter"], sub=p["sub"], case=p["case"], coach_said=p["coach_said"]))
         return 0
-    raw_path = out_dir / "p16_compare_raw.json"
+    raw_path = out_dir / (f"{args.tag}_raw.json" if args.auto else "p16_compare_raw.json")
     raw = json.loads(raw_path.read_text(encoding="utf-8")) if raw_path.exists() else {}
     from diag_project.llm_service import GeminiService
     llm = GeminiService().bind_provider("claude")
@@ -321,13 +382,21 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             user = build_user(chapter=p["chapter"], sub=p["sub"], case=p["case"], coach_said=p["coach_said"])
             b = await call(llm, system=system, user=user, sonnet=False)
+            b["register"] = register_note(b["text"])
+            if args.no_sonnet:
+                raw[str(p["n"])] = {"B": b, "user_prompt": user}
+                raw_path.write_text(json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8")
+                print(f"지점 {p['n']}: B ${b['usd']:.5f} {b['sec']}초")
+                continue
             c = await call(llm, system=system, user=user, sonnet=True)
-            for d in (b, c):
-                d["register"] = register_note(d["text"])
+            c["register"] = register_note(c["text"])
             raw[str(p["n"])] = {"B": b, "C": c, "user_prompt": user}
             raw_path.write_text(json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8")
             print(f"지점 {p['n']}: B ${b['usd']:.5f} {b['sec']}초 · C ${c['usd']:.5f} {c['sec']}초")
     asyncio.run(run())
+    if args.auto:
+        print(f"저장: {write_side_by_side(points, raw, out_dir, args.tag, 'P16-2 0단계 b) 실제 코치 턴과 P16-0 새 방식(B) 나란히 보기')}")
+        return 0
     write_outputs(points, raw, out_dir, args.seed)
     print(f"저장: {out_dir / 'p16_compare_blind.md'} · {out_dir / 'p16_compare_key.md'}")
     return 0
