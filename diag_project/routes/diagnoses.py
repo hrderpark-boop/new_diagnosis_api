@@ -989,6 +989,7 @@ async def _submit_message_phase3a(
     from diag_project.services import coach_v2 as _cv2
     _v2_on = _cv2.enabled()
     _v2_text = None         # 새 방식이 쓴 이 턴의 코치 말(사례 중간 턴·마무리 턴) — 있으면 끝에서 그대로 놓는다
+    _v2_spec: dict = {"task": None, "used": False}      # (P16-4) 슬롯 판정과 동시에 시작한 사례 중간 턴 호출(Sonnet) — 판정 결과 중간 턴이 아니면 버린다
     _call_drops: list = []  # (2026-11-18 P14d-4) 전용 호출(받는 말·첫 꼬리·구체화)에서 탈락한 문장 [[호출, 사유, 문장], …] — 턴 기록에 남긴다
     _reask_kind = None  # (2026-11-12 P11-A3·H) 'clarify'(되묻기) | 'contentless'(받을 내용 없는 답) — 사례 턴에서 원장·슬롯 판정 없이 직전 질문만 다시 쓴다
     _align_ctx = None   # (2026-10-28 P0-1) ALIGN 조립 재료 — 후처리 끝에 render_align 으로 조립
@@ -1250,6 +1251,15 @@ async def _submit_message_phase3a(
         다듬은 기록(지운 평서문·다시 쓴 까닭·뗀 앞 절)은 guard 기록 v2_meta 에 남긴다.
         can_close — (P16-2 판정) 사례 중간 턴에서 모델이 닫기를 제안할 수 있는 턴인가. 제안하면 기록이 'close'."""
         _meta_v2: dict = {}
+        if _cv2.sonnet():
+            # (2026-11-25 P16-4) 코치의 말을 Sonnet 이 쓴다 — 지시문은 P16-3 실험의 것, 입력은 이 사례의 대화. 뒤처리는 최소(coach_v2.render_s)
+            _out_s = await _cv2.render_s(
+                llm, mode=mode_v2, chapter=chapter, sub_name=ep_v2.get("opener_sub"), case=_ep_transcript(ep_v2),
+                coach_said=[(m.content or "") for m in _ch_msgs_b if (m.role == MessageRole.MODEL or m.role == "model")],
+                persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops, meta=_meta_v2,
+                asked=list(ep_v2.get("v2_asked") or []), can_close=can_close)
+            _tm["v2_meta"] = {**_meta_v2, "how": _out_s[1]}
+            return _out_s
         _out_v2 = await _cv2.render(
             llm, mode=mode_v2, chapter=chapter, sub_name=ep_v2.get("opener_sub"), case=_ep_transcript(ep_v2),
             coach_said=[(m.content or "") for m in _ch_msgs_b if (m.role == MessageRole.MODEL or m.role == "model")],
@@ -1263,6 +1273,17 @@ async def _submit_message_phase3a(
             asked=list(ep_v2.get("v2_asked") or []))
         _tm["v2_meta"] = {**_meta_v2, "how": _out_v2[1]}
         return _out_v2
+
+    async def _v2_spec_mid(ep_s: dict, tr_s: list) -> tuple:
+        """(P16-4) 슬롯 판정과 동시에 도는 사례 중간 턴 호출 — 판정 전 상태(이 답까지의 대화, 이 사례에서 이미 물은 것, 판정 전의 칸)로 부른다.
+        (코치 말 | None, 기록, 다듬은 기록, 탈락 기록, 걸린 시간). 턴 기록에는 쓰일 때에만 옮긴다(_v2_try_mid)."""
+        _m_s: dict = {}
+        _d_s: list = []
+        _t0_s = _time.perf_counter()
+        _o_s = await _cv2.render_s(llm, mode="mid", chapter=chapter, sub_name=ep_s.get("opener_sub"), case=tr_s,
+                                   persona_name=(state.get("coach_persona") or {}).get("name"), trace=_d_s, meta=_m_s,
+                                   asked=list(ep_s.get("v2_asked") or []), can_close=_cv2.can_close(ep_s))
+        return _o_s[0], _o_s[1], _m_s, _d_s, round(_time.perf_counter() - _t0_s, 2)
 
     if chapter and instruction_used in ("COMPETENCY_ALIGN", "EPISODE_PROBE"):
         _store = dict(session.self_assessment_data or {})
@@ -1409,7 +1430,7 @@ async def _submit_message_phase3a(
                 #   호출자가 사례를 닫고 넘김말로 다음 주제로 간다(이해 확인 문장만 따로 내보내지 않는다 — 종전 'wrap_confirm').
                 #   호출이 실패한 것(오류·누설·말투)은 종전대로 wrap_fallback.
                 #   건너뛴 것은 기록 v2_skip 에만 적는다(v2 는 비워 둔다 — 이번 질문이 마지막 질문인 자리였다면 이어서 사례 중간 턴이 새 방식으로 나간다).
-                _skip_w = bool(_txt_w) or _how_w in ("skip:none_left", "miss:again", "miss:beyond")
+                _skip_w = bool(_txt_w) or _how_w in ("skip:none_left", "miss:again", "miss:beyond", "close")      # (P16-4) close = 모델이 물을 것이 없다고 냄
                 if _skip_w:
                     _tm["v2_skip"] = "no_question" if _txt_w else _how_w.split(":", 1)[-1]
                     ep["wrap_skip"] = 1
@@ -1431,7 +1452,16 @@ async def _submit_message_phase3a(
             길을 열어 준다(_cv2.can_close) — 조건이 안 되면 지시문에 그 길이 없어 모델은 한 번 더 묻는다. 영역 예산·사례 최대 턴은 그대로다."""
             nonlocal _store, _v2_text
             _t0_m = _time.perf_counter()
-            _txt_m, _how_m = await _v2_render("mid", ep, can_close=_cv2.can_close(ep))
+            if _v2_spec["task"] is not None and not _v2_spec["used"]:
+                # (P16-4) 판정과 동시에 시작해 둔 호출의 결과를 쓴다 — 기다린 시간(v2_wait_s)은 판정이 끝난 뒤부터 잰다
+                _v2_spec["used"] = True
+                _txt_m, _how_m, _meta_sp, _drops_sp, _sec_sp = await _v2_spec["task"]
+                _tm["v2_meta"] = {**_meta_sp, "how": _how_m}
+                _call_drops.extend(_drops_sp)
+                _tm["v2_spec"] = "used"; _tm["v2_spec_s"] = _sec_sp
+                _tm["v2_wait_s"] = round(_time.perf_counter() - _t0_m, 2)
+            else:
+                _txt_m, _how_m = await _v2_render("mid", ep, can_close=_cv2.can_close(ep))
             _tm["v2_mid_s"] = round(_time.perf_counter() - _t0_m, 2)
             if _how_m == "close":
                 ep["close_by"] = "model"
@@ -1487,6 +1517,13 @@ async def _submit_message_phase3a(
                     _cands_r = {str(t): _closed_r[t] for t in _inc_cands(_bei_user_text, _closed_r)[:3]}
                 # (2026-11-16 P14-1 → 2026-11-18 P15-1) 받는 말은 이 자리에서 부르지 않는다 — 사례 안 꼬리 질문 턴에는 받는 말이 없다.
                 #   사례를 닫는 전환 턴의 받는 말은 _close_and_map 이 매핑과 함께(조건이 맞을 때만) 부른다.
+                if _v2_on and _cv2.sonnet() and _cv2.spec_ok(_ep, _store, chapter, _all_subs_b):
+                    # (2026-11-25 P16-4) 사례 중간 턴의 Sonnet 호출을 슬롯 판정과 동시에 시작한다(이 부분에 한해 '판정 뒤 순차 호출'을 풀었다).
+                    #   턴 상한·예산으로 닫힐 것이 미리 확실한 턴은 부르지 않는다(spec_ok). 판정 결과 중간 턴이 아니면 결과를 버린다.
+                    #   버리는 호출도 끝까지 돌게 둔다 — 중간에 끊으면 쓴 토큰이 사용량 기록에 남지 않아 비용이 실제보다 적게 잡힌다.
+                    import asyncio as _aio_sp
+                    _v2_spec["task"] = _aio_sp.create_task(_v2_spec_mid(dict(_ep), list(_tr)))
+                    _v2_spec["task"].add_done_callback(lambda _t_sp: _t_sp.cancelled() or _t_sp.exception())
                 _t0_r = _time.perf_counter()
                 _jd = await _judge_slots(llm, transcript=_tr, prev_slots=_ep.get("slots"), closed_cases=(_cands_r or None))
                 _tm["judge_par_s"] = round(_time.perf_counter() - _t0_r, 2)
@@ -1702,6 +1739,8 @@ async def _submit_message_phase3a(
             _bei_ep = _bei.bump_slot_ask(_bei_ep, _specify_slot or _bei.next_slot(_bei_ep))
             _store = _bei.update_episode(_store, chapter, _bei_ep)
             _tm["ask_slot"] = _bei_ep.get("ask_slot")
+        if _v2_spec["task"] is not None and not _v2_spec["used"]:
+            _tm["v2_spec"] = "discarded"      # (P16-4) 판정 결과 이 턴은 사례 중간 턴이 아니었다 — 미리 부른 호출은 버린다
         session.self_assessment_data = _store
         from sqlalchemy.orm.attributes import flag_modified as _fm_bei
         _fm_bei(session, "self_assessment_data")
@@ -1941,11 +1980,28 @@ async def _submit_message_phase3a(
         _tm["rapport_recv"] = f"{kind}:{_mode_p}"
         return _txt_p
 
+    async def _rapport_recv_s(next_q: str) -> str | None:
+        """(2026-11-25 P16-4) 라포의 받는 말을 Sonnet 이 쓴다 — [받는 말 + 정해진 다음 질문]. 리더가 동의만 했거나('네') 호출이 떨어지면 None(종전 길)."""
+        from diag_project.prompts.phase3a.layer3_state import is_consent_only as _co_rs
+        if not _cv2.sonnet() or _co_rs(request.content):
+            return None
+        _h_rs = [("model" if (m.role == MessageRole.MODEL or m.role == "model") else "user", m.content or "") for m in history_messages]
+        if not _h_rs or _h_rs[-1] != ("user", request.content or ""):
+            _h_rs.append(("user", request.content or ""))
+        _txt_rs, _how_rs = await _cv2.render_receive_s(llm, kind="rapport", history=_h_rs, persona_name=(state.get("coach_persona") or {}).get("name"),
+                                                       next_q=next_q, trace=_call_drops)
+        _tm["rapport_recv"] = f"sonnet:{_how_rs}"
+        return f"{_txt_rs} {next_q}" if _txt_rs else None
+
     if _smalltalk_turn and system_override_text is None:
         from diag_project.services.input_anomaly import is_contentless_smalltalk as _ics
         from diag_project.services.intro_messages import smalltalk_flat_receive as _sfr
         _tm["no_regen"] = 1
-        if _ics(request.content):
+        _rs_1 = await _rapport_recv_s(_smalltalk_reserve())
+        if _rs_1:
+            system_override_text = _rs_1
+            _tm["smalltalk"] = "sonnet"
+        elif _ics(request.content):
             from diag_project.services.intro_messages import rapport_fixed_receive as _rfr1      # (P12d-2) 3종 가운데 직전 턴에 쓴 것은 뺀다
             _recv_1 = await _rapport_recv("smalltalk") or _rfr1((state.get('coach_persona') or {}).get('name'), _prev_coach_text, start=0)
             system_override_text = f"{_recv_1} {_smalltalk_reserve()}"
@@ -1956,7 +2012,11 @@ async def _submit_message_phase3a(
             and state.get("rapport_turn_count", 0) == 2 and system_override_text is None):
         from diag_project.services.input_anomaly import is_contentless_smalltalk as _ics2
         from diag_project.services.intro_messages import persona_line as _pl_s2, smalltalk_flat_receive2 as _sfr2
-        if _ics2(request.content):
+        _rs_2 = await _rapport_recv_s(_pl_s2((state.get("coach_persona") or {}).get("name"), "role_q"))
+        if _rs_2:
+            system_override_text = _rs_2
+            _tm["smalltalk"] = "sonnet2"; _tm["no_regen"] = 1
+        elif _ics2(request.content):
             _pn_s2 = (state.get("coach_persona") or {}).get("name")
             from diag_project.services.intro_messages import rapport_fixed_receive as _rfr2
             _recv_2 = await _rapport_recv("smalltalk") or _rfr2(_pn_s2, _prev_coach_text, start=1)
@@ -1968,7 +2028,12 @@ async def _submit_message_phase3a(
     if (not _is_aborted and not _is_warning and not _is_name_reconfirm and instruction_used == "RAPPORT_BUILDING"
             and state.get("rapport_turn_count", 0) == 3 and system_override_text is None):
         from diag_project.services.input_anomaly import is_bare_noun_list as _ibnl
-        if _ibnl(request.content):
+        from diag_project.services.intro_messages import persona_line as _pline_s3
+        _rs_3 = await _rapport_recv_s(_pline_s3((state.get("coach_persona") or {}).get("name"), "expect_q"))
+        if _rs_3:
+            system_override_text = _rs_3
+            _tm["smalltalk"] = "sonnet3"; _tm["no_regen"] = 1
+        elif _ibnl(request.content):
             from diag_project.services.intro_messages import persona_line as _pl_s3, smalltalk_flat_receive2 as _sfr3
             _pn_s3 = (state.get("coach_persona") or {}).get("name")
             from diag_project.services.intro_messages import role_fixed_receive as _rfr3      # (P12d-2) 다음 질문(기대)으로 이어지는 짧은 말
@@ -2657,7 +2722,12 @@ async def _submit_message_phase3a(
             # (2026-11-16 P14-3) 영역 정의 답의 받는 말 — 전용 호출 1회로 리더 정의의 구절 하나를 되짚는다. 확인(겹치는 내용 낱말 3개 이상·16어절 이하·
             #   허용 끝맺음)에서 떨어지면 종전의 고정 받기.
             from diag_project.services.receive_render import render_receive as _rr_al
-            if _v2_on:
+            if _cv2.sonnet():
+                # (2026-11-25 P16-4) Sonnet 이 쓴다 — 입력은 영역 정의를 물은 코치 턴과 리더의 답. 질문을 덧붙였으면 받는 말만 남긴다. 떨어지면 고정 받기.
+                _al_txt, _al_mode = await _cv2.render_receive_s(llm, kind="align", history=[("model", _prev_coach_text or ""), ("user", request.content or "")],
+                                                                persona_name=_align_ctx["persona_name"], trace=_call_drops)
+                _al_mode = f"sonnet:{_al_mode}"
+            elif _v2_on:
                 # (2026-11-25 P16-2) 리더의 문장을 그대로 옮기지 않고 한마디 요지로(열다섯 어절 이하). 떨어지면 고정 받기.
                 _al_txt, _al_mode = await _cv2.render_align_gist(llm, leader_answer=request.content or "", persona_name=_align_ctx["persona_name"], trace=_call_drops)
                 _al_mode = f"gist:{_al_mode}"
@@ -4381,6 +4451,9 @@ async def _submit_message_phase3a(
             "v2": _tm.get("v2"), "v2_wrap_s": _tm.get("v2_wrap_s"), "v2_meta": _tm.get("v2_meta"), "v2_skip": _tm.get("v2_skip"),
             #   (P16-2 판정) v2_close 모델이 더 물을 것이 없다고 내 사례를 마무리 단계로 넘김('model') · v2_mid_s 상태 기계 안에서 만든 중간 턴 호출 시간
             "v2_close": _tm.get("v2_close"), "v2_mid_s": _tm.get("v2_mid_s"),
+            #   (P16-4) v2_spec 판정과 동시에 시작한 사례 중간 턴 호출: used(썼다) | discarded(버렸다) · v2_spec_s 그 호출에 걸린 시간 · v2_wait_s 판정 뒤 더 기다린 시간
+            "v2_spec": _tm.get("v2_spec"), "v2_spec_s": _tm.get("v2_spec_s"), "v2_wait_s": _tm.get("v2_wait_s"),
+            "coach_model": ("sonnet" if _cv2.sonnet() else None),
             # (P14b → P15) recv_rule 전환 턴에 붙인 것: C·C+ 받는 말 | pass 넘김말 · main_stmt_cut 본 호출이 쓴 평서문을 지운 수 · specify_q 구체화 전용 호출 결과 · two_q_regen 두 물음 다시 쓰기
             "recv_rule": _tm.get("recv_rule"), "main_stmt_cut": _tm.get("main_stmt_cut"), "specify_q": _tm.get("specify_q"), "two_q_regen": _tm.get("two_q_regen"),
             "call_drops": (_call_drops or None),      # (P14d-4) 전용 호출에서 탈락한 문장 [[호출, 사유, 문장], …]

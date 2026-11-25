@@ -484,6 +484,22 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
                         "mid_n": int(e.get("v2_mid_n") or 0), "status": e.get("status"), "reason": reason,
                         "wrap": "마무리 턴" if e.get("wrap_asked") else ("마무리 턴 없이 넘김말" if e.get("wrap_skip") else "-"), "asked": e.get("v2_asked") or []})
     closes = [f"t{r.get('t')}" for r in model if g(r).get("v2_close")]
+    # ── (2026-11-25 P16-4) 선행 호출(판정과 동시에 시작한 사례 중간 턴 호출) · 턴 종류별 지연 ──
+    spec = collections.Counter(str(g(r).get("v2_spec")) for r in model if g(r).get("v2_spec"))
+    def _kind(r):      # noqa: E306
+        v, ins = str(g(r).get("v2") or ""), str(r.get("instr") or "")
+        return ("사례 중간 턴" if v == "mid" else "마무리 턴" if v == "wrap" else "라포" if ins == "RAPPORT_BUILDING" else "영역 정의 받기" if ins == "COMPETENCY_ALIGN"
+                else "여는 질문(사례 전환)" if ins in ("EPISODE_OPEN", "SWEEP_ANCHOR") else "영역 요약" if ins == "CHAPTER_READY_TO_END" else "그 밖")
+    lat: dict = {}
+    for r in model:
+        if isinstance(g(r).get("total"), (int, float)) and g(r).get("total"):
+            lat.setdefault(_kind(r), []).append(float(g(r)["total"]))
+    def _pct(xs, q):      # noqa: E306
+        xs = sorted(xs)
+        return xs[min(len(xs) - 1, int(round(q * (len(xs) - 1))))]
+    lat_rows = [(k, len(v), _pct(v, 0.5), _pct(v, 0.95), max(v)) for k, v in lat.items()]
+    mid_spec = [r for r in mid if g(r).get("v2_spec") == "used"]
+    spec_wait = sorted(float(g(r).get("v2_wait_s") or 0) for r in mid_spec)
     ends = collections.Counter(V.end_key(r["content"]).split()[-1] for r in v2 if r["content"].split())
     firsts = collections.Counter(r["content"].split()[0] for r in v2 if r["content"].split())
     return {"empty_n": sum(1 for r in model if not (r.get("content") or "").strip()), "server_err": server_log.count("Traceback"), "leak_n": len(leaks), "leak_list": leaks,
@@ -497,6 +513,9 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
             "skip_n": len(skips), "skip_list": skips, "early": early, "sum_drop_n": sum(1 for r in wrap if meta(r).get("sum_drop")),
             "front_cut_n": sum(1 for r in mid if meta(r).get("front_cut")),
             "ledger": led, "close_n": len(closes), "close_list": closes, "stmt_cut_n": sum(int(meta(r).get("stmt_cut") or 0) for r in mid),
+            "spec_used": int(spec.get("used", 0)), "spec_discarded": int(spec.get("discarded", 0)), "lat_rows": lat_rows,
+            "spec_wait_med": (spec_wait[len(spec_wait) // 2] if spec_wait else None), "coach_model": next((g(r).get("coach_model") for r in model if g(r).get("coach_model")), None),
+            "chapters_n": len({r.get("chapter") for r in model if r.get("chapter")}),
             "rewrite_n": sum(1 for r in v2 if meta(r).get("rewrite")),
             "beyond": beyond, "beyond_heard": sum(1 for b in beyond if b["heard"]),
             "first_top": firsts.most_common(5), "end_top": ends.most_common(6), "v2_n": len(v2),
@@ -534,6 +553,12 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
     row("모델이 닫기를 제안한 턴", lambda v: v["close_n"])
     row("닫힌 사유(사례 수)", lambda v: " · ".join(f"{k} {n}" for k, n in collections.Counter(e["reason"] for e in v["ledger"] if e["status"] not in (None, "open")).items()))
     row("다시 쓴 턴 / 새 방식 턴", lambda v: f"{v['rewrite_n']} / {v['v2_n']}")
+    # (P16-4)
+    row("코치의 말을 쓰는 모델", lambda v: v["coach_model"] or "haiku")
+    row("선행 호출(판정과 동시에 시작) — 쓴 것 / 버린 것", lambda v: f"{v['spec_used']} / {v['spec_discarded']}")
+    row("선행 호출을 쓴 턴에서 판정 뒤 더 기다린 시간(중앙, 초)", lambda v: v["spec_wait_med"])
+    row("턴 종류별 지연 — 종류 n · p50 / p95 / 최대(초)", lambda v: " ; ".join(f"{k} {n} · {a} / {b} / {c}" for k, n, a, b, c in v["lat_rows"]))
+    row("코치 쪽 비용 5영역 세션 환산(USD) — 영역당 비용 × 5", lambda v: f"{v['cost_usd'] / max(1, v['chapters_n']) * 5:.2f}")
     row("한 턴 두 물음", lambda v: v["two_n"])
     # (P16-2)
     row("중간 턴 가운데 질문 아닌 말(반응·앞 절)로 시작 / 그중 직전 답을 되받음(내용 낱말 2개 이상)", lambda v: f"{v['lead_n']} / {v['echo_n']} (중간 턴 {v['mid_n']})")
@@ -611,12 +636,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-run", action="store_true", help="시뮬을 돌리지 않고 있는 결과만 판정한다(LLM 호출 없음)")
     ap.add_argument("--v2", action="store_true", help="코치 턴 새 방식(FM_COACH_V2=1)으로 돌리고 새 방식 집계를 낸다 — 조건 판정 없음")
     ap.add_argument("--profile", default=None, help="(P16-2) 시뮬 리더 프로필(기본: 요약형 팀장) — 예: tools/sim_profiles/detail_team_lead.json")
+    ap.add_argument("--coach-model", default="", help="(P16-4) sonnet — 코치의 말을 Sonnet 이 쓰게 한다(FM_COACH_MODEL=sonnet, --v2 와 함께)")
     args = ap.parse_args(argv)
     if args.profile:
         global PROFILE
         PROFILE = args.profile
     if args.v2:
         os.environ["FM_COACH_V2"] = "1"
+    if args.coach_model.strip():
+        os.environ["FM_COACH_MODEL"] = args.coach_model.strip().lower()
     coaches = ["1", "4"] if args.pair else [c for c in args.coaches.split(",") if c in COACH_NAMES]
     if not (set(coaches) & POLITE_COACHES and set(coaches) & FORMAL_COACHES):
         print("주의: 해요체 코치(1·3·5)와 합쇼체 코치(2·4)가 각각 1명 이상 들어가야 한다 — 지금 조합은 한쪽 말투가 빠졌다.", flush=True)

@@ -312,8 +312,27 @@ def replay_early(turns: list[tuple[str, str]], chapter: str) -> list[dict]:
     return out
 
 
-async def replay(llm, turns: list[tuple[str, str]], chapter: str, points: list[dict]) -> tuple[list[dict], dict]:
-    """(P16-2 판정) 영역 정의 받는 말 1턴 + 사례 안 13곳 — services/coach_v2 의 호출을 그대로 부른다. (결과 목록, 영역 정의 턴)."""
+async def replay_early_s(llm, turns: list[tuple[str, str]], chapter: str) -> list[dict]:
+    """(P16-4) 라포 3턴 — Sonnet 이 받는 말을 쓰고(coach_v2.render_receive_s) 정해진 다음 질문이 붙는다. 다음 질문은 실세션의 것을 그대로 둔다."""
+    from diag_project.services import coach_v2 as V
+    from diag_project.services.output_guard import is_question, split_sentences
+    ch0 = chapter_start(turns, chapter)
+    users = [i for i in range(ch0) if turns[i][0] == "user"]
+    out = []
+    for n, i in enumerate(users[1:4], 1):
+        actual = turns[i + 1][1]
+        ss = [x.strip() for x in split_sentences(actual) if x.strip()]
+        k = next((j for j, x in enumerate(ss) if is_question(x)), len(ss) - 1)
+        next_q, tr = " ".join(ss[k:]), []
+        txt, how = await V.render_receive_s(llm, kind="rapport", history=turns[:i + 1], persona_name=COACH, next_q=next_q, trace=tr)
+        out.append({"label": f"라포 {n}", "leader": turns[i][1], "actual": actual, "new": (f"{txt} {next_q}" if txt else ""),
+                    "how": f"Sonnet 받는 말({how}) + 정해진 다음 질문" + ("" if txt else " — 떨어져 종전 길로 감"), "drops": tr})
+    return out
+
+
+async def replay(llm, turns: list[tuple[str, str]], chapter: str, points: list[dict], sonnet: bool = False) -> tuple[list[dict], dict]:
+    """(P16-2 판정) 영역 정의 받는 말 1턴 + 사례 안 13곳 — services/coach_v2 의 호출을 그대로 부른다. (결과 목록, 영역 정의 턴).
+    sonnet — (P16-4) 코치의 말을 Sonnet 이 쓰는 경로(render_s · render_receive_s)로 돌린다."""
     from diag_project.data.competencies import COMPETENCY_FRAMEWORK
     from diag_project.services import coach_v2 as V
     from diag_project.services.intro_messages import align_fixed_receive
@@ -322,7 +341,12 @@ async def replay(llm, turns: list[tuple[str, str]], chapter: str, points: list[d
     d_ans = next((turns[i][1] for i in range(ch0 + 1, len(turns)) if turns[i][0] == "user"), "")
     d_actual = next((turns[i][1] for i in range(ch0 + 1, len(turns)) if turns[i][0] == "model"), "")
     tr_a: list = []
-    g_txt, g_how = await V.render_align_gist(llm, leader_answer=d_ans, persona_name=COACH, trace=tr_a)
+    if sonnet:
+        d_q = next((turns[i][1] for i in range(ch0, len(turns)) if turns[i][0] == "model"), "")
+        g_txt, g_how = await V.render_receive_s(llm, kind="align", history=[("model", d_q), ("user", d_ans)], persona_name=COACH, trace=tr_a)
+        g_how = f"Sonnet({g_how})"
+    else:
+        g_txt, g_how = await V.render_align_gist(llm, leader_answer=d_ans, persona_name=COACH, trace=tr_a)
     align = {"label": "영역 정의 받는 말", "leader": d_ans, "actual": next((x.strip() for x in split_sentences(d_actual) if x.strip()), ""),
              "new": g_txt or align_fixed_receive(COACH, 0), "how": g_how + ("" if g_txt else " → 고정 받기"), "drops": tr_a}
     inds = COMPETENCY_FRAMEWORK[chapter]["indicators"]
@@ -336,7 +360,10 @@ async def replay(llm, turns: list[tuple[str, str]], chapter: str, points: list[d
         kw = dict(chapter=chapter, sub_name=(inds[p["sub"]]["name"] if p["sub"] in inds else None), case=p["case"], coach_said=p["coach_said"],
                   persona_name=COACH, trace=tr, meta=meta, mid_n=mid_n, asked=sorted(asked))
         t0 = time.perf_counter()
-        if p["kind"] == "mid":
+        if sonnet:
+            kw_s = {k: v for k, v in kw.items() if k != "mid_n"}
+            text, how = await V.render_s(llm, mode=p["kind"], can_close=(p["kind"] == "mid" and tail >= V.CLOSE_MIN_TAIL_ANSWERS), **kw_s)
+        elif p["kind"] == "mid":
             text, how = await V.render(llm, mode="mid", can_close=tail >= V.CLOSE_MIN_TAIL_ANSWERS, **kw)
         else:
             text, how = await V.render(llm, mode="wrap", missing=[], result_filled=True, beyond_n=beyond_n, **kw)
@@ -361,12 +388,13 @@ def write_replay(early: list[dict], align: dict, rows: list[dict], out_dir: Path
     for e in early + [align]:
         L += [f"## {e['label']}", "", f"- 리더: {e['leader']}", f"- **11/25 실제**: {e['actual']}", f"- **이번**: {e['new'] or '(없음)'}", f"- 만든 방식: {e['how']}", ""]
     for r in rows:
-        note = how_ko.get(r["how"], "")
+        note = ("마무리 턴 없음 — 모델이 물을 것이 없다고 냄(넘김말로 바로 다음 주제)" if (r["how"] == "close" and r["kind"] == "wrap") else how_ko.get(r["how"], ""))
         m = r["meta"]
         tags = [x for x in (f"다시 씀({m['rewrite']})" if m.get("rewrite") else "", f"앞 절 뗌({m['front_cut']})" if m.get("front_cut") else "",
                             f"평서문 {m['stmt_cut']}개 지움" if m.get("stmt_cut") else "", f"이해 확인 뺌({m['sum_drop']})" if m.get("sum_drop") else "",
                             f"이해 확인 {m['sum_eojeol']}어절" if m.get("sum_eojeol") and not m.get("sum_drop") else "", f"남은 꼴({m['left']})" if m.get("left") else "",
-                            f"대상 {m['target']}" if m.get("target") else "", "닫기 길 열림" if r["can_close"] else "", f"{r['sec']}초") if x]
+                            f"대상 {m['target']}" if m.get("target") else "", "닫기 길 열림" if r["can_close"] else "",
+                            f"닫음 이유(기록에만): {m['close_reason']}" if m.get("close_reason") else "", f"{r['sec']}초") if x]
         L += [f"## 지점 {r['n']} — {'사례 마무리 턴 자리' if r['kind'] == 'wrap' else '사례 중간 턴'} (이 사례의 꼬리 답 {r['tail']}개째 뒤"
               + (f", 이미 물은 것: {'·'.join(r['asked_before'])}" if r["asked_before"] else "") + ")", "",
               f"- 리더: {r['leader']}", f"- **11/25 실제**: {r['actual']}", f"- **이번**: {r['new'] or '[' + (note or r['how']) + ']'}", f"- 기록: {' · '.join(tags)}", ""]
@@ -457,6 +485,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-sonnet", action="store_true", help="(P16-2) Sonnet(C)은 부르지 않는다 — B(Haiku)만")
     ap.add_argument("--tag", default="p16_compare", help="(P16-2) --auto 출력 파일 이름의 머리")
     ap.add_argument("--replay", action="store_true", help="(P16-2 판정) --auto 지점에서 수정한 운영 경로(coach_v2)의 코치 턴 생성을 그대로 돌린다")
+    ap.add_argument("--coach-model", default="", help="(P16-4) sonnet — 코치의 말을 Sonnet 이 쓰는 경로로 재실행한다")
     args = ap.parse_args(argv)
     path = Path(args.transcript)
     out_dir = Path(args.out) if args.out else path.parent
@@ -476,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.auto:
             print("--replay 는 --auto <영역 키>와 함께 쓴다.")
             return 2
+        use_s = args.coach_model.strip().lower() == "sonnet"
         early = replay_early(turns, args.auto)
         if args.dry_run:
             for e in early:
@@ -484,7 +514,9 @@ def main(argv: list[str] | None = None) -> int:
         from diag_project.llm_service import GeminiService
         llm_r = GeminiService().bind_provider("claude")
         usd0, n0 = _meter_total()
-        rows, align = asyncio.run(replay(llm_r, turns, args.auto, points))
+        if use_s:
+            early = asyncio.run(replay_early_s(llm_r, turns, args.auto))
+        rows, align = asyncio.run(replay(llm_r, turns, args.auto, points, sonnet=use_s))
         usd1, n1 = _meter_total()
         (out_dir / f"{args.tag}_replay_raw.json").write_text(json.dumps({"early": early, "align": align, "rows": rows}, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"저장: {write_replay(early, align, rows, out_dir, args.tag, usd1 - usd0, n1 - n0)} · 호출 {n1 - n0}회 · ${usd1 - usd0:.4f}")

@@ -862,3 +862,316 @@ async def render_align_gist(llm, *, leader_answer: str | None, persona_name: str
             trace.append(["align_gist", why, s[:200]])
         note = _GIST_NOTES.get(why, "쓸 수 없는 문장이었다.")
     return None, f"miss:{why}"
+
+
+# ── (2026-11-25 P16-4) 코치의 말을 Sonnet 으로 — FM_COACH_MODEL=sonnet (FM_COACH_V2=1 위에서만) ───────────────────────
+#   P16-3 비교(11/25 실세션 17곳, 같은 지시문·같은 입력, 다듬기 없음): Sonnet 은 되받으며 시작 3/13(Haiku 9/11) · 말하지 않은 전제 0(Haiku 2) ·
+#   라포·영역 정의에서 받는 말만 쓴 것 4/4(Haiku 0/4). 사용자가 대화 모델을 올리는 데 동의했다.
+#   Sonnet 이 쓰는 것: 라포의 받는 말 · 영역 정의 답의 받는 말 · 사례 중간 턴 · 마무리 턴. 슬롯 판정·사례 정리·영역 요약은 종전 모델 그대로.
+#   지시문은 P16-3 실험의 것(원칙만). 입력은 그 사례의 대화(실험의 대화 전체가 아니다) — 이 영역에서 코치가 한 말 목록과 '덜 들은 것' 줄은 주지 않는다.
+#   뒤처리는 최소로 — 남기는 것: 누설 검사 · 말투 검사 · 안쪽 표지 떼기 · 팀의 방식/팀 밖은 사례당 한 번 · 이해 확인 한 문장 스무 어절(한 번 다시 쓰고 그래도 길면 빼기) ·
+#   라포·영역 정의에서 질문을 덧붙였으면 받는 말만 남기기 · 닫음 표지(이유 줄은 리더에게 나가지 않는다).
+#   하지 않는 것: 앞 절을 코드로 떼기 · 반응 순번 · 청하는 끝/같은 끝맺음/고르기 다시 쓰기 · 평서문 지우기(반응은 모델이 어울릴 때만 붙인다).
+#   한 번 다시 쓰는 것: 리더 답을 옮긴 앞 절이 여섯 어절을 넘을 때(떼지 않는다) · 질문 문장이 둘 · 코치 말에 '저희' · 이미 물은 것을 다시 물음.
+S_COMMON = (
+    "당신은 경험 많은 역량 면접관입니다. 리더와 마주 앉아 말하듯 자연스럽게 말합니다. 조서를 받는 말투가 되지 않게 합니다.\n\n"
+    "[공통]\n"
+    "- 리더가 한 말을 되풀이하지 않는다. 문장으로도, 질문 앞에 붙는 절로도 옮기지 않는다. 가리켜야 하면 명사구 하나로 가리킨다.\n"
+    "- 리더가 말하지 않은 것을 전제로 삼지 않는다. 지금 다루는 일이 아닌 다른 일(앞서 끝난 이야기)의 내용을 끌어오지 않는다. 이미 답한 것을 다시 묻지 않는다.\n"
+    "- 코치가 할 말만 쓴다. 설명·머리말·번호·따옴표를 붙이지 않는다.\n\n"
+)
+S_CLOSE_LINE = "- 이 일에 대해 충분히 들었으면 질문 대신 [닫음] 이라고 쓰고 이유를 한 줄로 적는다.\n"
+S_KIND = {
+    "mid": (
+        "[이번 턴 — 지금 다루는 일의 중간]\n"
+        "- 질문은 하나다. 리더가 방금 한 답의 구체적인 대목 하나를 짚어 이야기를 청한다.\n"
+        "- 무엇을 물을지: 리더 본인의 행동·판단, 사람(팀원·상대)과의 과정, 결과의 크기, 그 방식이 팀에 남았는지와 팀 밖으로 이어졌는지 — "
+        "이 가운데 지금까지 가장 덜 드러난 것.\n"
+        "- 반응은 꼭 어울릴 때만 붙인다. 붙인다면 리더가 쓰지 않은 말로 짧게, 상황의 어려움을 알아주거나 뜻을 한마디로 짚는다. "
+        "바로 앞 코치 턴에 반응이 있었으면 이번에는 질문만 쓴다. 평가와 칭찬은 하지 않는다.\n"
+        "- 수준 기준은 코치만 보는 자료다. 수준 이름이나 하위역량 이름은 말하지 않는다.\n"
+    ),
+    "wrap": (
+        "[이번 턴 — 지금 다루는 일의 마무리]\n"
+        "- 이해한 요지를 한 문장(스무 어절 이하)으로 적고, 이어서 확인할 것 하나를 짧게 묻는 질문을 쓴다.\n"
+        "- 하나만 더 확인하겠다고 알리는 말은 두 문장 사이에 따로 들어가므로 쓰지 않는다.\n"
+        "- 수준 기준은 코치만 보는 자료다. 수준 이름이나 하위역량 이름은 말하지 않는다.\n"
+        "- 물을 것이 없으면 [닫음] 이라고만 쓴다.\n"
+    ),
+    "rapport": (
+        "[이번 턴 — 본론에 들어가기 전의 가벼운 대화]\n"
+        "- 리더가 방금 한 말을 옮기지 않고, 사람답게 가볍게 받는 말만 쓴다. 열 어절 이하.\n"
+        "- 짧고 퉁명스러운 답에도 자연스럽게 받는다.\n"
+        "- 받는 말 뒤에는 입력의 [이어질 질문]이 그대로 붙는다. 그 질문은 쓰지 않는다. 다른 질문도 하지 않는다.\n"
+    ),
+    "align": (
+        "[이번 턴 — 영역 정의 답을 받는 말]\n"
+        "- 리더가 이 영역을 어떤 일로 보는지 방금 답했다. 그 정의를 그대로 옮기지 않고 요지를 한마디로 받는 한 문장을 쓴다. 열다섯 어절 이하.\n"
+        "- 받는 말 뒤에는 정해진 안내와 첫 질문이 따로 붙는다. 질문이나 안내는 쓰지 않는다.\n"
+    ),
+}
+RETRY_NOTES.update({
+    "jeohui": "앞서 쓴 말에 '저희'라는 낱말이 있었다. 코치는 리더의 팀을 가리킬 때 그 낱말을 쓰지 않는다.",
+    "front_long": "앞서 쓴 질문은 리더의 답을 길게 옮긴 절로 시작했다. 그 절 없이 묻는 말로 시작하고, 가리켜야 하면 명사구 하나로 가리킨다.",
+    "register": "앞서 쓴 말은 코치의 말투와 어긋났다. 말투를 지켜 다시 쓴다.",
+    "leak": "앞서 쓴 말에는 리더에게 하지 않는 안쪽 낱말이 들어 있었다. 그 낱말 없이 다시 쓴다.",
+    "empty": "앞서 쓴 것에는 쓸 수 있는 문장이 없었다.",
+    "no_question": "앞서 쓴 것에는 질문이 없었다. 질문 하나를 쓴다.",
+    "closed_tag": "이 턴에는 닫음 표지를 쓸 수 없다. 질문 하나를 쓴다.",
+})
+
+
+def sonnet() -> bool:
+    """코치의 말을 Sonnet 이 쓰는가 — FM_COACH_MODEL=sonnet 이고 새 방식(FM_COACH_V2=1)이 켜져 있을 때만."""
+    return enabled() and (os.getenv("FM_COACH_MODEL") or "").strip().lower() == "sonnet"
+
+
+def _sonnet_model() -> str:
+    from diag_project.llm_service import ANALYSIS_MODEL
+    return ANALYSIS_MODEL      # 호출 계층이 분석용 표지를 보고 Sonnet 으로 바꾼다(llm_provider.resolve_model)
+
+
+def build_system_s(kind: str, persona_name: str | None, *, can_close: bool = False) -> str:
+    """P16-3 실험의 지시문 — kind 'mid' | 'wrap' | 'rapport' | 'align'. 닫음 표지를 쓰는 길은 사례 중간 턴에서 can_close 일 때만 열어 준다(P16-2 조건 그대로)."""
+    from diag_project.services.persona_register import register_hint
+    body = S_KIND[kind] + (S_CLOSE_LINE if (kind == "mid" and can_close) else "")
+    return S_COMMON + body + f"\n[말투] {register_hint(persona_name)} 리더를 부를 때는 '리더님'이라고만 한다."
+
+
+def build_user_s(kind: str, *, chapter: str | None = None, sub_name: str | None = None, case: list[tuple[str, str]] | None = None,
+                 next_q: str | None = None, note: str | None = None) -> str:
+    """입력 — 사례 중간·마무리 턴: 영역 정의 · 하위역량 · 수준 기준 · 지금 다루는 일의 대화. 라포·영역 정의: 지금까지의 대화(라포는 이어질 고정 질문도)."""
+    convo = "\n".join(f"{'코치' if r == 'model' else '리더'}: {re.sub(chr(10) + '+', ' ', t or '').strip()}" for r, t in (case or []))
+    tail = (f"[다시 쓰기] {note}\n\n" if note else "") + "이제 코치가 할 말을 씁니다."
+    if kind in ("mid", "wrap"):
+        from diag_project.data.competencies import COMPETENCY_FRAMEWORK
+        comp = COMPETENCY_FRAMEWORK.get(chapter or "") or {}
+        return (
+            f"[영역] {comp.get('name', chapter)} — {comp.get('description', '')}\n"
+            f"[지금 다루는 하위역량] {sub_name or '(정해지지 않음 — 이 영역의 하위역량 전체를 참고)'}\n\n"
+            f"[수준 기준 — 코치만 보는 자료]\n{level_block(chapter or '', sub_name)}\n\n"
+            f"[지금 다루는 일의 대화 — 마지막 줄이 리더가 방금 한 답]\n{convo}\n\n" + tail
+        )
+    return (f"[지금까지의 대화 — 마지막 줄이 리더가 방금 한 답]\n{convo}\n\n"
+            + (f"[이어질 질문]\n{next_q}\n\n" if (kind == "rapport" and next_q) else "") + tail)
+
+
+def split_close(raw: str | None) -> tuple[str, str | None]:
+    """(닫음 표지 앞의 글, 이유 줄 | None) — 표지가 없으면 (글, None). 이유 줄은 기록에만 남기고 리더에게 나가지 않는다."""
+    t = (raw or "").strip()
+    i = t.find(CLOSE_TAG)
+    if i >= 0:
+        return t[:i].strip(), t[i + len(CLOSE_TAG):].strip()
+    if is_close(t):
+        return "", re.sub(r"^[\s\[\]'\"‘’“”]*닫음[\s\[\]'\"‘’“”]*", "", t).strip()
+    return t, None
+
+
+def receive_only(text: str | None) -> str:
+    """받는 말만 — 첫 질문 문장부터 뒤는 버린다(라포·영역 정의에서 모델이 질문을 덧붙였을 때)."""
+    out: list[str] = []
+    for x in split_sentences(_LABEL_RE.sub(r"\1", clean(text))):
+        x = x.strip()
+        if not x:
+            continue
+        if is_question(x):
+            break
+        out.append(x)
+    return " ".join(out).strip()
+
+
+def front_long(text: str | None, last_answer: str | None) -> bool:
+    """질문의 앞 절이 리더 답을 옮긴 것이고(내용 낱말 둘 이상 겹침) 여섯 어절을 넘는가 — 한 번 다시 쓰게 한다(코드로 떼지 않는다)."""
+    from diag_project.services.turn_checks import BORROW_MAX_EOJEOL, question_first_clause, receive_shared_words
+    q = next((x.strip() for x in split_sentences(text or "") if x.strip() and is_question(x)), "")
+    front = question_first_clause(q) if q else ""
+    return bool(front) and len(front.split()) > BORROW_MAX_EOJEOL and len(receive_shared_words(front, last_answer or "")) >= FRONT_SHARED_MAX
+
+
+def tidy_s(text: str | None, *, mode: str, notice: str | None = None) -> tuple[str, dict]:
+    """Sonnet 이 쓴 사례 턴의 최소 정리 — 번호·따옴표·안쪽 표지를 떼고, 마무리 턴은 이해 확인과 질문 사이에 고정 문구를 넣는다(모델이 쓴 알림 문장은 지운다).
+    평서문·앞 절·끝맺음은 건드리지 않는다. (결과, 기록 — n_q 질문 문장 수 · parts 마무리 턴이 갖춘 토막)."""
+    info: dict = {}
+    raw = clean(text)
+    t = _LABEL_RE.sub(r"\1", raw)
+    if t != raw:
+        info["label"] = 1
+    sents = [x.strip() for x in split_sentences(t) if x.strip()]
+    qs = [x for x in sents if is_question(x)]
+    info["n_q"] = len(qs)
+    if mode != "wrap":
+        return " ".join(sents).strip(), info
+    body = [x for x in sents if not is_question(x) and not _NOTICE_RE.search(x)]
+    put = notice if (qs and notice) else None
+    info["parts"] = ("1" if body else "") + ("2" if put else "") + ("3" if qs else "")
+    return " ".join(body + ([put] if put else []) + qs).strip(), info
+
+
+def turn_issues_s(text: str | None, info: dict | None, *, mode: str, last_answer: str | None, asked: set[str] | None = None) -> list[str]:
+    """Sonnet 이 쓴 사례 턴에서 한 번 다시 쓰게 할 것 — again(이 사례에서 이미 물은 팀의 방식·팀 밖) · sum_long(마무리 턴의 이해 확인이 두 문장 이상이거나
+    스무 어절 초과) · front_long(사례 중간 턴의 앞 절) · two_q(질문 문장이 둘) · jeohui(코치 말의 '저희')."""
+    out: list[str] = []
+    if set(asked or ()) & asked_kinds(text):
+        out.append("again")
+    if mode == "wrap":
+        body = wrap_summary(text)
+        if len(body) > 1 or (body and len(body[0].split()) > SUMMARY_MAX_EOJEOL):
+            out.append("sum_long")
+    elif front_long(text, last_answer):
+        out.append("front_long")
+    if int((info or {}).get("n_q") or 0) >= 2:
+        out.append("two_q")
+    if "저희" in (text or ""):
+        out.append("jeohui")
+    return out
+
+
+async def render_s(llm, *, mode: str, chapter: str, sub_name: str | None, case: list[tuple[str, str]], persona_name: str | None = None,
+                   coach_said: list[str] | None = None, trace: list | None = None, meta: dict | None = None,
+                   asked: tuple[str, ...] | list[str] | set[str] = (), can_close: bool = False) -> tuple[str | None, str]:
+    """(P16-4) Sonnet 이 쓰는 사례 중간 턴·마무리 턴 — (코치 턴 | None, 기록 'llm' | 'llm_retry' | 'llm_first' | 'close' | 'stub' | 'miss:<사유>').
+    확인(빈 턴·질문 없음·말투·누설·쓸 수 없는 닫음 표지)에서 떨어지거나 다시 쓸 것(turn_issues_s)이 있으면 사유를 넘겨 한 번만 다시 부른다.
+    다시 쓴 뒤: 이미 물은 것을 다시 묻는 마무리 턴은 내지 않는다('miss:again') · 여전히 긴 이해 확인은 빼고 [고정 문구 + 질문]만 · 그 밖은 그대로 쓴다(meta['left']).
+    닫음 표지: 사례 중간 턴은 can_close 일 때만 받아 'close'(받아들이는 것은 호출자), 마무리 턴은 물을 것이 없다는 뜻으로 'close'(호출자가 마무리 턴 없이 넘긴다).
+    표지 뒤의 이유 줄은 meta['close_reason'] 에만 남긴다. coach_said 는 마무리 턴의 고정 문구를 고르는 데만 쓴다(입력에는 넣지 않는다)."""
+    meta = meta if meta is not None else {}
+    meta["model"] = "sonnet"
+    if os.getenv("FM_LLM_STUB"):
+        return None, "stub"
+    if llm is None or not case:
+        return None, "miss:no_llm" if llm is None else "miss:no_material"
+    asked = set(asked or ())
+    can_close = bool(can_close) and mode == "mid"
+    system = build_system_s(mode, persona_name, can_close=can_close)
+    notice = pick_notice(persona_name, coach_said) if mode == "wrap" else None
+    leader_texts = [t for r, t in case if r == "user"]
+    last_answer = leader_texts[-1] if leader_texts else ""
+    why, note, first = "empty", None, None
+    for attempt in (0, 1):
+        user = build_user_s(mode, chapter=chapter, sub_name=sub_name, case=case, note=note)
+        try:
+            out = await llm._generate_with_retry(prompt=user, system_instruction=system, max_tokens=MAX_TOKENS, thinking_budget=0,
+                                                 call_type=f"coach_v2_{mode}", model=_sonnet_model(), temperature=0.4)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("coach v2 (sonnet) render failed: %s", e)
+            why = "error"
+            continue
+        before, reason = split_close(out)
+        if reason is not None and not has_question(before):
+            if mode == "wrap" or can_close:
+                meta["close"] = 1
+                meta["close_reason"] = reason[:200]
+                return None, "close"
+            why = "closed_tag"      # 길을 열어 주지 않은 턴 — 한 번 더 묻게 한다
+            note = RETRY_NOTES[why]
+            if trace is not None:
+                trace.append([f"coach_v2:{mode}", why, clean(out)[:200]])
+            continue
+        text, info = tidy_s(before if reason is not None else out, mode=mode, notice=notice)
+        ok, why = check(text, mode=mode, persona_name=persona_name, leader_texts=leader_texts)
+        if not ok:
+            note = RETRY_NOTES.get(why)
+            if trace is not None:
+                trace.append([f"coach_v2:{mode}", why, text[:200]])
+            continue
+        issues = turn_issues_s(text, info, mode=mode, last_answer=last_answer, asked=asked)
+        if issues and attempt == 0:
+            first = (text, info, issues)
+            note = " ".join(RETRY_NOTES[i] for i in issues)
+            meta["rewrite"] = "+".join(issues)
+            if trace is not None:
+                trace.append([f"coach_v2:{mode}", f"rewrite:{meta['rewrite']}", text[:200]])
+            continue
+        return _finish_s(text, info, issues, "llm_retry" if attempt else "llm", meta, mode)
+    if first:
+        return _finish_s(first[0], first[1], first[2], "llm_first", meta, mode)      # 다시 쓴 것이 확인에서 떨어졌다 — 처음 쓴 것을 쓴다
+    return None, f"miss:{why}"
+
+
+def _finish_s(text: str, info: dict, issues: list[str], how: str, meta: dict, mode: str) -> tuple[str | None, str]:
+    meta.update(info)
+    left = list(issues or [])
+    body_s = wrap_summary(text) if mode == "wrap" else []
+    if body_s:
+        meta["sum_eojeol"] = sum(len(x.split()) for x in body_s)
+    if "again" in left and mode == "wrap":
+        meta["again_dropped"] = "again"
+        return None, "miss:again"
+    if "sum_long" in left and mode == "wrap":
+        body = " ".join(body_s)
+        if body and text.startswith(body):
+            text = text[len(body):].strip()
+            meta["sum_drop"] = "sum_long"
+            meta["parts"] = str(meta.get("parts") or "").replace("1", "")
+            left.remove("sum_long")
+    if left:
+        meta["left"] = "+".join(left)
+    kinds = asked_kinds(text)
+    if kinds:
+        meta["asks"] = sorted(kinds)
+    if mode == "wrap" and "beyond" in kinds:
+        meta["beyond"] = 1
+    return text, how
+
+
+def _receive_check_s(sentence: str, persona_name: str | None, leader_texts: list[str]) -> str:
+    """받는 말(라포·영역 정의)의 확인 — 'ok' | 'empty' | 'register' | 'leak' | 'jeohui'."""
+    from diag_project.services.leak_lexicon import find_leaks
+    from diag_project.services.output_guard import find_state_leak
+    from diag_project.services.persona_register import register_violations
+    if not sentence:
+        return "empty"
+    if register_violations(persona_name, sentence, scope="all"):
+        return "register"
+    if find_leaks(sentence, list(leader_texts or []), strict=True) or find_state_leak(sentence):
+        return "leak"
+    return "jeohui" if "저희" in sentence else "ok"
+
+
+async def render_receive_s(llm, *, kind: str, history: list[tuple[str, str]], persona_name: str | None, next_q: str | None = None,
+                           trace: list | None = None) -> tuple[str | None, str]:
+    """(P16-4) Sonnet 이 쓰는 받는 말 — kind 'rapport'(본론 전의 가벼운 대화, 뒤에 고정 질문 next_q 가 붙는다) | 'align'(영역 정의 답).
+    (받는 말 | None, 기록 'llm' | 'llm_retry' | 'stub' | 'skip:empty' | 'miss:<사유>'). 모델이 질문을 덧붙였으면 받는 말만 남긴다.
+    확인(빈 문장·말투·누설·'저희')에서 떨어지면 사유를 넘겨 한 번 다시 쓰고, 그래도 떨어지면 None(호출자가 종전의 받는 말을 쓴다)."""
+    leader_texts = [t for r, t in (history or []) if r == "user"]
+    if not leader_texts or not (leader_texts[-1] or "").strip():
+        return None, "skip:empty"
+    if os.getenv("FM_LLM_STUB"):
+        return None, "stub"
+    if llm is None:
+        return None, "miss:no_llm"
+    system = build_system_s(kind, persona_name)
+    why, note = "empty", None
+    for attempt in (0, 1):
+        try:
+            out = await llm._generate_with_retry(prompt=build_user_s(kind, case=history, next_q=next_q, note=note), system_instruction=system, max_tokens=120,
+                                                 thinking_budget=0, call_type=f"coach_s_{kind}", model=_sonnet_model(), temperature=0.4)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("coach receive (sonnet) failed: %s", e)
+            return None, "miss:error"
+        s = receive_only(split_close(out)[0])
+        if s and s[-1] not in ".!?…":
+            s += "."
+        why = _receive_check_s(s, persona_name, leader_texts)
+        if why == "ok":
+            return s, ("llm_retry" if attempt else "llm")
+        if trace is not None:
+            trace.append([f"coach_s:{kind}", why, s[:200]])
+        note = RETRY_NOTES.get(why)
+    return None, f"miss:{why}"
+
+
+def spec_ok(ep: dict | None, store: dict | None, chapter: str | None, all_subs: list[str] | None) -> bool:
+    """(P16-4) 사례 중간 턴 호출을 슬롯 판정과 동시에 시작해도 되는가 — 판정 결과와 상관없이 이 턴이 중간 턴이 아닐 것이 미리 확실하면 부르지 않는다:
+    마무리 질문의 답이 온 턴 · 턴 상한이나 영역 예산으로 닫힐 턴 · 여섯 가지가 이미 다 나온 사례 · 이번 질문이 마지막 질문이라 마무리 턴으로 갈 턴 ·
+    아직 사례로 올리지 않은 훑는 사례. 그 밖에는 부른다(판정 결과 중간 턴이 아니면 호출자가 버린다)."""
+    from diag_project.services import bei_engine as B
+    if not ep or ep.get("wrap_asked") or ep.get("wrap_skip"):
+        return False
+    promoted = ep.get("kind") == "sweep" and ep.get("promote") == "promoted"
+    if ep.get("kind") == "sweep" and not promoted:
+        return False
+    reason = (B.promoted_done_reason if promoted else B.episode_done_reason)(ep, store, chapter, list(all_subs or []))
+    if reason:
+        return False
+    return not last_question_next(ep, store, chapter, all_subs)

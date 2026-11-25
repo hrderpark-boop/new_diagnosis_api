@@ -2758,3 +2758,115 @@ def test_p16_2b_question_only_front_clause_model_close_and_fewer_rewrites(monkey
     assert 'if ep.get("wrap_skip"):\n                return None' in src
     ep = {"leader_turns": 3, "slots": slots("action"), "wrap_skip": 1}
     assert V.last_question_next(ep, {}, "work_management", []) is False and V.can_extend(ep, {}, "work_management", []) is False
+
+
+def test_p16_4_sonnet_switch_minimal_post_processing_and_speculative_mid(monkeypatch):
+    """(2026-11-25 P16-4) 코치의 말을 Sonnet 으로 — 스위치 FM_COACH_MODEL=sonnet(새 방식 위에서만) · P16-3 지시문 · 입력은 그 사례의 대화 ·
+    뒤처리는 최소(앞 절을 떼지 않는다) · 닫음 표지의 이유 줄은 나가지 않는다 · 사례 중간 턴 호출은 슬롯 판정과 동시에 시작할 수 있다."""
+    import asyncio
+    import inspect
+    import re as _re
+    from diag_project.llm_service import ANALYSIS_MODEL
+    from diag_project.routes import diagnoses as D
+    from diag_project.services import coach_v2 as V
+
+    class _LLM:
+        def __init__(self, outs):
+            self.outs, self.calls = list(outs), []
+
+        async def _generate_with_retry(self, **kw):
+            self.calls.append(kw)
+            return self.outs.pop(0)
+    # 1. 스위치 — 새 방식이 켜져 있을 때만
+    for v2, model, want in (("1", "sonnet", True), ("1", "Sonnet", True), ("1", "", False), ("1", "haiku", False), ("", "sonnet", False)):
+        monkeypatch.setenv("FM_COACH_V2", v2)
+        monkeypatch.setenv("FM_COACH_MODEL", model)
+        assert V.sonnet() is want, (v2, model)
+    monkeypatch.delenv("FM_LLM_STUB", raising=False)
+    # 2. 지시문 — P16-3 실험의 것(원칙만). 닫음 표지의 길은 사례 중간 턴에서 조건이 될 때만
+    mid, mid_c, wrap = V.build_system_s("mid", "Lucas"), V.build_system_s("mid", "Lucas", can_close=True), V.build_system_s("wrap", "Lucas")
+    assert "조서를 받는 말투가 되지 않게" in mid and "질문 앞에 붙는 절로도 옮기지 않는다" in mid and "반응은 꼭 어울릴 때만 붙인다" in mid
+    assert V.CLOSE_TAG in mid_c and "이유를 한 줄로" in mid_c and V.CLOSE_TAG not in mid and V.CLOSE_TAG in wrap
+    assert "열 어절 이하" in V.build_system_s("rapport", "Lucas") and "열다섯 어절 이하" in V.build_system_s("align", "Lucas")
+    for k in ("mid", "wrap", "rapport", "align"):
+        assert not _re.findall(r"[\"“]([^\"”]{6,})[\"”]", V.build_system_s(k, "Lucas", can_close=True))
+    ans = "지난달 출고가 밀려서 야간조에 물량 삼백 상자를 넘기기로 정했고 반장과 교대표를 새로 짰습니다."
+    case = [("model", "최근에 창고 일정을 다시 짜신 적이 있습니까?"), ("user", ans)]
+    user = V.build_user_s("mid", chapter="work_management", sub_name="자원 및 시간관리", case=case)
+    assert "지금 다루는 일의 대화" in user and "수준 기준" in user and "아직 덜 들은 것" not in user and "코치가 이미 한 말" not in user
+    assert "[이어질 질문]\n평소 무슨 일을 하십니까?" in V.build_user_s("rapport", case=[("user", "별일 없어")], next_q="평소 무슨 일을 하십니까?")
+    # 3. 사례 중간 턴 — Sonnet 으로 부르고, 반응 문장과 짧은 앞 절은 그대로 둔다
+    kw = dict(mode="mid", chapter="work_management", sub_name="자원 및 시간관리", case=case, persona_name="Lucas")
+    good = "그 뒤 창고에서는 무엇이 달라졌습니까?"
+    with_react = f"쉽지 않은 결정이었겠습니다. {good}"
+    llm, meta = _LLM([with_react]), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, **kw)) == (with_react, "llm") and llm.calls[0]["model"] == ANALYSIS_MODEL and llm.calls[0]["call_type"] == "coach_v2_mid"
+    assert meta["model"] == "sonnet" and "rewrite" not in meta and "아직 덜 들은 것" not in llm.calls[0]["prompt"]
+    short_front = "교대표를 새로 짜신 뒤, 반장에게는 그 표를 어떻게 알리셨습니까?"
+    llm, meta = _LLM([short_front]), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, **kw)) == (short_front, "llm") and len(llm.calls) == 1      # 앞 절을 떼지 않는다 — 다시 쓰지도 않는다
+    for q in ("그 표는 직접 만드신 것입니까, 아니면 전부터 쓰던 것입니까?", "그 뒤 창고가 어떻게 됐는지 들려주실 수 있을까요?", "그 방식이 다른 창고로도 이어졌습니까?"):
+        llm = _LLM([q])
+        assert asyncio.run(V.render_s(llm, **kw)) == (q, "llm"), q      # 고르기·청하는 끝·예아니오는 다시 쓰지 않는다
+    # 한 번 다시 쓰는 것 — 옮긴 앞 절이 여섯 어절 초과 · 질문 문장 둘 · '저희' · 이미 물은 것. 다시 쓴 뒤에도 남으면 그대로 쓴다(떼지 않는다)
+    long_front = "지난달 출고가 밀려서 야간조에 물량 삼백 상자를 넘기기로 정하셨을 때, 무엇부터 하셨습니까?"
+    assert V.front_long(long_front, ans) and not V.front_long(short_front, ans)
+    llm, meta = _LLM([long_front, good]), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, **kw)) == (good, "llm_retry") and meta["rewrite"] == "front_long" and "길게 옮긴 절로 시작했다" in llm.calls[1]["prompt"]
+    llm, meta = _LLM([long_front, long_front]), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, **kw)) == (long_front, "llm_retry") and meta["left"] == "front_long"
+    two_q = "반장과는 그 일을 어떻게 풀어 가셨습니까? 그 뒤 창고에서는 무엇이 달라졌습니까?"
+    llm, meta = _LLM([two_q, good]), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, **kw))[1] == "llm_retry" and meta["rewrite"] == "two_q"
+    llm, meta = _LLM(["저희 창고에서는 그 뒤 무엇이 달라졌습니까?", good]), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, **kw)) == (good, "llm_retry") and meta["rewrite"] == "jeohui" and "'저희'" in llm.calls[1]["prompt"]
+    llm, meta = _LLM(["그 교대표가 팀 밖으로는 어떻게 이어졌습니까?", good]), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, asked=["beyond"], **kw)) == (good, "llm_retry") and meta["rewrite"] == "again"
+    # 4. 닫음 표지 — 이유 줄은 나가지 않는다. 길을 열어 준 턴에서만 받는다
+    llm, meta = _LLM(["[닫음] 한 일과 결과, 팀에 남은 방식까지 모두 들었음"]), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, can_close=True, **kw)) == (None, "close") and meta["close_reason"].startswith("한 일과 결과")
+    llm, meta, tr = _LLM(["[닫음] 다 들었음", good]), {}, []
+    assert asyncio.run(V.render_s(llm, meta=meta, trace=tr, **kw)) == (good, "llm_retry") and tr[0][1] == "closed_tag" and "close" not in meta
+    llm = _LLM([f"{good} [닫음] 더 물을 것이 없음"])
+    assert asyncio.run(V.render_s(llm, can_close=True, **kw)) == (good, "llm")                                   # 질문 뒤에 붙은 표지와 이유 줄은 떼고 질문만 쓴다
+    assert V.split_close("[닫음] 이유") == ("", "이유") and V.split_close(good) == (good, None)
+    # 5. 마무리 턴 — 이해 확인 + 고정 문구 + 질문. 이해 확인이 길면 한 번 다시 쓰고, 그래도 길면 뺀다. 물을 것이 없다는 표지면 턴을 내지 않는다
+    wkw = dict(kw, mode="wrap", coach_said=[])
+    note = V.WRAP_NOTICES["formal"][0]
+    one, tq = "야간조에 물량을 넘기기로 정하신 일로 이해했습니다.", "그 교대표는 지금도 쓰고 계십니까?"
+    llm, meta = _LLM([f"{one} {tq}"]), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, **wkw)) == (f"{one} {note} {tq}", "llm") and meta["parts"] == "123" and llm.calls[0]["model"] == ANALYSIS_MODEL
+    long_sum = "지난달 출고가 한꺼번에 밀려서 주간조만으로는 감당하기 어렵다고 보시고 야간조에 물량 삼백 상자를 넘기기로 정하신 뒤 교대표까지 새로 짜서 창고 전체에 알리신 일로 이해했습니다."
+    llm, meta = _LLM([f"{long_sum} {tq}", f"{one} {tq}"]), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, **wkw)) == (f"{one} {note} {tq}", "llm_retry") and meta["rewrite"] == "sum_long"
+    llm, meta = _LLM([f"{long_sum} {tq}"] * 2), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, **wkw)) == (f"{note} {tq}", "llm_retry") and meta["sum_drop"] == "sum_long" and meta["parts"] == "23"
+    assert asyncio.run(V.render_s(_LLM(["[닫음]"]), **wkw)) == (None, "close")
+    llm, meta = _LLM([f"{one} 그 교대표가 창고에 자리 잡았습니까?"] * 2), {}
+    assert asyncio.run(V.render_s(llm, meta=meta, asked=["team"], **wkw)) == (None, "miss:again")                 # 이미 물은 것을 다시 물으면 그 턴을 내지 않는다
+    # 6. 받는 말(라포·영역 정의) — 질문을 덧붙였으면 받는 말만 남긴다
+    hist = [("model", "오전은 어떠십니까?"), ("user", "별일 없어")]
+    llm = _LLM(["그런 날도 있지요. 평소 무슨 일을 하십니까?"])
+    assert asyncio.run(V.render_receive_s(llm, kind="rapport", history=hist, persona_name="Lucas", next_q="평소 무슨 일을 하십니까?")) == ("그런 날도 있지요.", "llm")
+    assert llm.calls[0]["model"] == ANALYSIS_MODEL and llm.calls[0]["call_type"] == "coach_s_rapport"
+    llm = _LLM(["저희도 그런 날이 있지요.", "그런 날도 있지요."])
+    assert asyncio.run(V.render_receive_s(llm, kind="rapport", history=hist, persona_name="Lucas")) == ("그런 날도 있지요.", "llm_retry")
+    assert asyncio.run(V.render_receive_s(_LLM(["평소 무슨 일을 하십니까?"] * 2), kind="rapport", history=hist, persona_name="Lucas")) == (None, "miss:empty")
+    llm = _LLM(["순서와 기한을 무겁게 보시는군요. 그렇다면 최근에 순서를 다시 잡으신 일이 있습니까?"])
+    assert asyncio.run(V.render_receive_s(llm, kind="align", history=[("model", "일관리를 어떤 일로 보십니까?"), ("user", ans)], persona_name="Lucas")) == ("순서와 기한을 무겁게 보시는군요.", "llm")
+    monkeypatch.setenv("FM_LLM_STUB", "1")
+    assert asyncio.run(V.render_s(None, **kw)) == (None, "stub") and asyncio.run(V.render_receive_s(None, kind="rapport", history=hist, persona_name="Lucas")) == (None, "stub")
+    # 7. 선행 호출 — 이 턴이 중간 턴이 아닐 것이 미리 확실하면 부르지 않는다
+    from diag_project.services import bei_engine as B
+    ep = {"kind": "episode", "leader_turns": 2, "slots": B.empty_slots() if hasattr(B, "empty_slots") else {}}
+    assert V.spec_ok({**ep, "wrap_asked": 1}, {}, "work_management", []) is False                                   # 마무리 질문의 답이 온 턴
+    assert V.spec_ok({"kind": "sweep", "leader_turns": 1, "slots": ep["slots"]}, {}, "work_management", []) is False      # 아직 사례로 올리지 않은 훑는 사례
+    assert V.spec_ok({**ep, "leader_turns": B.episode_turn_max()}, {}, "work_management", []) is False               # 턴 상한
+    assert V.spec_ok(None, {}, "work_management", []) is False
+    # 8. 턴 핸들러 — 스위치 뒤에서만: Sonnet 호출 · 판정과 동시에 시작 · 결과가 중간 턴이 아니면 버림 · 라포와 영역 정의의 받는 말
+    src = inspect.getsource(D._submit_message_phase3a)
+    assert "if _cv2.sonnet():" in src and "await _cv2.render_s(" in src and "_cv2.spec_ok(_ep, _store, chapter, _all_subs_b)" in src
+    assert src.index('_v2_spec["task"] = _aio_sp.create_task(') < src.index("_jd = await _judge_slots(")
+    assert '_tm["v2_spec"] = "used"' in src and '_tm["v2_spec"] = "discarded"' in src and "await _v2_spec[\"task\"]" in src
+    assert src.count("await _rapport_recv_s(") == 3 and '_cv2.render_receive_s(llm, kind="align"' in src and '"close")' in src
+    assert "if not _cv2.sonnet() or _co_rs(request.content):" in src
