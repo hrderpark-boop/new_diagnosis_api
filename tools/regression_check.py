@@ -471,12 +471,23 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
             early.append({"t": r.get("t"), "instr": r.get("instr"), "leader": prev_user(r), "text": (t if r.get("instr") == "RAPPORT_BUILDING" else first),
                           "recv": g(r).get("rapport_recv") or g(r).get("align_recv"), "first_eojeol": len(first.split()),
                           "shared": len(receive_shared_words(first, prev_user(r))) if not is_question(first) else 0})
+    # ── (2026-11-25 P16-2 판정) 사례별 턴 수와 닫힌 사유(모델 제안 / 턴 상한 / 진전 없음 …) · 모델의 닫기 제안 · 지운 평서문 ──
+    why_ko = {"done": "여섯 가지가 다 나옴", "turns": "턴 상한", "stalled": "진전 없음", "budget": "영역 예산", "reserve": "영역 예산(미질문 예약)",
+              "no_case": "사례 없음", "repeat": "같은 사건", "sweep_done": "훑는 사례"}
+    led = []
+    for ch, eps in ((data.get("ledger") or {}).get("episodes") or {}).items():
+        for e in eps or []:
+            reason = "모델 제안" if e.get("close_by") == "model" else why_ko.get(str(e.get("status")), str(e.get("status")))
+            if e.get("kind") == "sweep" and e.get("close_by") != "model" and e.get("promote_end"):
+                reason += f"({e.get('promote_end')})"
+            led.append({"chapter": ch, "idx": e.get("idx"), "kind": e.get("kind"), "sub": e.get("opener_sub"), "leader_turns": int(e.get("leader_turns") or 0),
+                        "mid_n": int(e.get("v2_mid_n") or 0), "status": e.get("status"), "reason": reason,
+                        "wrap": "마무리 턴" if e.get("wrap_asked") else ("마무리 턴 없이 넘김말" if e.get("wrap_skip") else "-"), "asked": e.get("v2_asked") or []})
+    closes = [f"t{r.get('t')}" for r in model if g(r).get("v2_close")]
     ends = collections.Counter(V.end_key(r["content"]).split()[-1] for r in v2 if r["content"].split())
     firsts = collections.Counter(r["content"].split()[0] for r in v2 if r["content"].split())
     return {"empty_n": sum(1 for r in model if not (r.get("content") or "").strip()), "server_err": server_log.count("Traceback"), "leak_n": len(leaks), "leak_list": leaks,
             "register_n": len(regs), "register_list": regs, "mid_n": len(mid), "wrap_n": len(wrap), "confirm_n": len(confirm), "fallback_n": len(fallback), "fallback_list": fallback,
-            "react_slot": sum(int(meta(r).get("react_slot") or 0) for r in mid), "react_kept": sum(int(meta(r).get("react") or 0) for r in mid),
-            "react_cut": dict(collections.Counter(c for r in mid for c in (meta(r).get("react_cut") or []))), "react_list": [meta(r)["react_text"] for r in mid if meta(r).get("react_text")],
             "two_n": len(two), "two_list": two, "wraps": wraps, "wrap_full": sum(1 for w in wraps if w["kind"] == "wrap" and w["parts"] == "123"),
             "qmark_n": len(qmark), "qmark_list": qmark, "notice_dup": notice_dup, "beyond_by_ch": {k: v["beyond"] for k, v in by_ch.items()},
             "beyond_dropped": sum(1 for w in wraps if w["beyond_dropped"]), "first_cut_n": sum(1 for w in wraps if w["first_cut"]),
@@ -485,6 +496,8 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
             "echo_n": len(echo_list), "echo_list": echo_list, "lead_n": lead_n, "again_n": again_n, "again_list": again_list,
             "skip_n": len(skips), "skip_list": skips, "early": early, "sum_drop_n": sum(1 for r in wrap if meta(r).get("sum_drop")),
             "front_cut_n": sum(1 for r in mid if meta(r).get("front_cut")),
+            "ledger": led, "close_n": len(closes), "close_list": closes, "stmt_cut_n": sum(int(meta(r).get("stmt_cut") or 0) for r in mid),
+            "rewrite_n": sum(1 for r in v2 if meta(r).get("rewrite")),
             "beyond": beyond, "beyond_heard": sum(1 for b in beyond if b["heard"]),
             "first_top": firsts.most_common(5), "end_top": ends.most_common(6), "v2_n": len(v2),
             "rewrite": dict(collections.Counter(str(meta(r).get("rewrite")) for r in v2 + confirm if meta(r).get("rewrite"))),
@@ -493,6 +506,7 @@ def v2_stats(data: dict, profile: dict, server_log: str, persona: str) -> dict:
 
 def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir: Path, leader_cost: float, ran: bool) -> str:
     """새 방식 보고 — 판정 없이 수치와 목록만. 0이어야 하는 것 가운데 0이 아닌 것은 맨 위에 적는다."""
+    import collections
     profile = json.loads((ROOT / PROFILE).read_text(encoding="utf-8"))
     vs = {}
     for c, p in zip(coaches, files):
@@ -515,8 +529,11 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
     row("말투 어긋남", lambda v: v["register_n"])
     row("리더 턴 / 세션 상태", lambda v: f"{v['turns']} / {v['status']}")
     row("새 방식 턴(중간 / 마무리 / 확인만 하고 닫음)", lambda v: f"{v['mid_n']} / {v['wrap_n']} / {v['confirm_n']}")
-    row("반응 허용 / 붙음 / 지움", lambda v: f"{v['react_slot']} / {v['react_kept']} / {sum(v['react_cut'].values())}")
-    row("지운 반응(까닭별)", lambda v: " · ".join(f"{k} {n}" for k, n in v["react_cut"].items()) or "0")
+    # (P16-2 판정) 사례 중간 턴은 질문만 — 반응 집계는 없앴다
+    row("중간 턴에서 지운 평서문 수", lambda v: v["stmt_cut_n"])
+    row("모델이 닫기를 제안한 턴", lambda v: v["close_n"])
+    row("닫힌 사유(사례 수)", lambda v: " · ".join(f"{k} {n}" for k, n in collections.Counter(e["reason"] for e in v["ledger"] if e["status"] not in (None, "open")).items()))
+    row("다시 쓴 턴 / 새 방식 턴", lambda v: f"{v['rewrite_n']} / {v['v2_n']}")
     row("한 턴 두 물음", lambda v: v["two_n"])
     # (P16-2)
     row("중간 턴 가운데 질문 아닌 말(반응·앞 절)로 시작 / 그중 직전 답을 되받음(내용 낱말 2개 이상)", lambda v: f"{v['lead_n']} / {v['echo_n']} (중간 턴 {v['mid_n']})")
@@ -554,7 +571,10 @@ def v2_report(tag: str, coaches: list[str], files: list[Path], ms: dict, out_dir
         L.append(f"라포·영역 정의 턴 {len(v['early'])}개(영역 정의 쪽은 받는 말 한 문장만 싣는다):")
         for e in v["early"]:
             L.append(f"   - [t{e['t']} {e['instr']}" + (f" · {e['recv']}" if e["recv"] else "") + f" · 첫 문장 {e['first_eojeol']}어절 · 겹친 내용 낱말 {e['shared']}] 리더: {e['leader'][:120]} → 코치: {e['text']}")
-        L.append(f"붙은 반응 {len(v['react_list'])}개: " + " / ".join(v["react_list"]))
+        L.append(f"사례 {len(v['ledger'])}개 — 턴 수와 닫힌 사유:")
+        for e in v["ledger"]:
+            L.append(f"   - [{e['chapter']} #{e['idx']} {e['kind']} · {e['sub']}] 리더 턴 {e['leader_turns']} · 중간 턴 {e['mid_n']} · {e['wrap']} · 닫힌 사유: {e['reason']}"
+                     + (f" · 물은 것: {'·'.join(e['asked'])}" if e["asked"] else ""))
         L.append(f"팀 밖 재료가 있는 사례 {len(v['beyond'])}개:")
         L += [f"   - {b['id']} {b['title']} — {'들음: ' + b['answer'] if b['heard'] else '못 들음'}" for b in v["beyond"]]
         L.append(f"마무리 턴 {len(v['wraps'])}개:")

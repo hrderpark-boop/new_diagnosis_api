@@ -1245,16 +1245,17 @@ async def _submit_message_phase3a(
         """이 사례에서 리더가 한 말 전부(없으면 직전 답)."""
         return " ".join(t for r, t in (tr or []) if r == "user") or (fallback or "")
 
-    async def _v2_render(mode_v2: str, ep_v2: dict) -> tuple[str | None, str]:
+    async def _v2_render(mode_v2: str, ep_v2: dict, can_close: bool = False) -> tuple[str | None, str]:
         """(P16-1) 새 방식 호출 — mode_v2 'mid'(사례 중간 턴) | 'wrap'(사례 마무리 턴). (코치 말 | None, 기록).
-        다듬은 기록(반응을 붙였는지·지운 반응·다시 쓴 까닭)은 guard 기록 v2_meta 에 남긴다."""
+        다듬은 기록(지운 평서문·다시 쓴 까닭·뗀 앞 절)은 guard 기록 v2_meta 에 남긴다.
+        can_close — (P16-2 판정) 사례 중간 턴에서 모델이 닫기를 제안할 수 있는 턴인가. 제안하면 기록이 'close'."""
         _meta_v2: dict = {}
         _out_v2 = await _cv2.render(
             llm, mode=mode_v2, chapter=chapter, sub_name=ep_v2.get("opener_sub"), case=_ep_transcript(ep_v2),
             coach_said=[(m.content or "") for m in _ch_msgs_b if (m.role == MessageRole.MODEL or m.role == "model")],
             missing=[_bei.SLOT_LABELS[k] for k in _bei.unfilled_slots(ep_v2)],
             persona_name=(state.get("coach_persona") or {}).get("name"), trace=_call_drops, meta=_meta_v2, mid_n=int(ep_v2.get("v2_mid_n") or 0),
-            prior_reacts=list(((session.self_assessment_data or {}).get("v2_reacts") or {}).get(chapter) or []),
+            can_close=can_close,
             # (P16-1d → P16-1e) 마무리 질문의 대상은 코드가 정한다 — 이 사례의 결과 칸이 찼는가 · 이 영역에서 팀 밖을 물은 마무리 질문 수(사례 원장)
             result_filled="result" in _bei.filled_slots(ep_v2),
             beyond_n=sum(1 for _e_v2 in _bei.episodes(session.self_assessment_data or {}, chapter) if _e_v2.get("wrap_beyond")),
@@ -1398,6 +1399,8 @@ async def _submit_message_phase3a(
             이해한 바를 확인하고 아직 듣지 못한 것을 물으면 'asked'(이 턴이 마무리 턴), 덜 들은 것이 없어 확인만 했으면 'confirmed'(바로 닫고
             그 확인 문장을 넘김말 자리에 놓는다), 호출이 실패하면 None(종전 경로 그대로)."""
             nonlocal _bei_ep, instruction_used, _store, _v2_text, _pre_recv_text
+            if ep.get("wrap_skip"):
+                return None          # (P16-2) 물을 것이 남지 않아 이미 건너뛴 사례 — 다시 부르지 않는다
             _t0_w = _time.perf_counter()
             _txt_w, _how_w = await _v2_render("wrap", ep)
             _tm["v2_wrap_s"] = round(_time.perf_counter() - _t0_w, 2)
@@ -1420,6 +1423,27 @@ async def _submit_message_phase3a(
             ep["v2_asked"] = sorted(set(ep.get("v2_asked") or []) | _cv2.asked_kinds(_txt_w))      # (P16-2) 사례당 한 번씩
             _store = _bei.update_episode(_store, chapter, ep)
             _bei_ep = ep; instruction_used = follow_instr; _tm["bei"] = "wrap"; _v2_text = _txt_w; _tm["v2"] = "wrap"
+            return "asked"
+
+        async def _v2_try_mid(ep: dict) -> str | None:
+            """(2026-11-25 P16-2 판정) 사례 중간 턴을 상태 기계 안에서 먼저 만든다 — 모델이 더 물을 것이 없다고 내면 'close'(호출자가 마무리 단계로 넘긴다).
+            질문이 정해졌으면 'asked', 호출이 실패했으면 None(뒤에서 종전 경로가 쓴다). 닫기 제안은 그 사례의 꼬리 답이 둘 이상이고 행동 칸이 찼을 때만
+            길을 열어 준다(_cv2.can_close) — 조건이 안 되면 지시문에 그 길이 없어 모델은 한 번 더 묻는다. 영역 예산·사례 최대 턴은 그대로다."""
+            nonlocal _store, _v2_text
+            _t0_m = _time.perf_counter()
+            _txt_m, _how_m = await _v2_render("mid", ep, can_close=_cv2.can_close(ep))
+            _tm["v2_mid_s"] = round(_time.perf_counter() - _t0_m, 2)
+            if _how_m == "close":
+                ep["close_by"] = "model"
+                _tm["v2_close"] = "model"
+                return "close"
+            if not _txt_m:
+                _tm["v2"] = f"mid_fallback:{_how_m}"
+                return None
+            ep["v2_mid_n"] = int(ep.get("v2_mid_n") or 0) + 1
+            ep["v2_asked"] = sorted(set(ep.get("v2_asked") or []) | _cv2.asked_kinds(_txt_m))      # 사례당 한 번씩 — 마무리 턴의 대상에서도 빠진다
+            _store = _bei.update_episode(_store, chapter, ep)
+            _v2_text = _txt_m; _tm["v2"] = "mid"
             return "asked"
 
         if instruction_used == "COMPETENCY_ALIGN":
@@ -1580,6 +1604,15 @@ async def _submit_message_phase3a(
                                 # (P16-1) 이번 질문이 이 사례의 마지막 질문이면 그 질문을 마무리 턴으로 쓴다
                                 if _v2_on and _cv2.last_question_next(_ep, _store, chapter, _all_subs_b):
                                     _w_v2 = await _v2_try_wrap(_ep, "sweep_done")
+                                if _w_v2 is None and _v2_on and await _v2_try_mid(_ep) == "close":
+                                    # (P16-2 판정) 모델이 더 물을 것이 없다고 냈다 — 마무리 단계로(물을 것이 없으면 넘김말로 바로 다음 주제)
+                                    _w_v2 = await _v2_try_wrap(_ep, "sweep_done")
+                                    if _w_v2 is None:
+                                        _ep["promote_end"] = "model"
+                                        _tm["sweep_promote"] = "promoted:model"
+                                        await _close_and_map(_ep, "sweep_done")
+                                        _next_after_close()
+                                        _w_v2 = "closed"
                                 if _w_v2 is None:
                                     _bei_ep = _ep; instruction_used = "EPISODE_PROBE"; _tm["bei"] = "sweep_promoted"
                         elif int(_ep.get("leader_turns") or 0) == 1 and _bei.sweep_followup_allowed(_store, chapter, _all_subs_b, _ep):
@@ -1619,6 +1652,14 @@ async def _submit_message_phase3a(
                         if _v2_on and _cv2.last_question_next(_ep, _store, chapter, _all_subs_b):
                             # (P16-1) 이번 질문이 이 사례의 마지막 질문이면 그 질문을 마무리 턴으로 쓴다(턴을 더 쓰지 않는다)
                             _w_v2 = await _v2_try_wrap(_ep, "turns")
+                        if _w_v2 is None and _v2_on and await _v2_try_mid(_ep) == "close":
+                            # (2026-11-25 P16-2 판정) 모델이 더 물을 것이 없다고 냈다 — 상태 기계가 받아들여 마무리 단계로 넘긴다.
+                            #   마무리 턴에서 물을 것이 남아 있으면 그 턴이 나가고, 없으면 사례를 닫고 넘김말로 바로 다음 주제로 간다.
+                            _w_v2 = await _v2_try_wrap(_ep, "done")
+                            if _w_v2 is None:
+                                await _close_and_map(_ep, "done")
+                                _next_after_close()
+                                _w_v2 = "closed"
                         if _w_v2 is None:
                             _bei_ep = _ep; instruction_used = "EPISODE_PROBE"; _tm["bei"] = "probe"
                             if _jd.get("switched_case"):
@@ -1992,23 +2033,17 @@ async def _submit_message_phase3a(
         _tp.set_stage(str(session.id), "thinking")
         if (_v2_on and _v2_text is None and not _tm.get("v2") and chapter and _bei_ep is not None and not _reask_kind
                 and instruction_used in ("EPISODE_PROBE", "SWEEP_FOLLOWUP")):
-            # (2026-11-23 P16-1) 사례 중간 턴 — 호출 하나로 (선택) 짧은 반응 + 열린 질문. 실패하면 아래 종전 경로(첫 꼬리 전용 호출·본 호출)가 쓴다.
+            # (2026-11-23 P16-1) 사례 중간 턴 — 호출 하나로 질문 한 문장. 실패하면 아래 종전 경로(첫 꼬리 전용 호출·본 호출)가 쓴다.
+            #   (P16-2 판정) 일반 사례·승격한 훑는 사례의 중간 턴은 상태 기계 안에서 먼저 만든다(_v2_try_mid — 모델의 닫기 제안을 받으려고).
+            #   여기는 그 밖의 자리(훑는 사례의 꼬리 질문 등) — 닫기 제안은 받지 않는다.
             _v2_text, _v2_how = await _v2_render("mid", _bei_ep)
             _tm["v2"] = "mid" if _v2_text else f"mid_fallback:{_v2_how}"
             if _v2_text:
-                # (P16-1b) 이 사례에서 나간 중간 턴 수 — 다음 중간 턴에 반응을 붙일지 정하는 순번(다시 묻기 턴·종전 경로로 나간 턴은 세지 않는다)
                 from sqlalchemy.orm.attributes import flag_modified as _fm_v2
                 _bei_ep["v2_mid_n"] = int(_bei_ep.get("v2_mid_n") or 0) + 1
                 # (P16-2) 이 턴이 팀의 방식이 됐는지·팀 밖으로 이어졌는지를 물었으면 사례에 적는다 — 사례당 한 번씩, 마무리 턴의 대상에서도 빠진다
                 _bei_ep["v2_asked"] = sorted(set(_bei_ep.get("v2_asked") or []) | _cv2.asked_kinds(_v2_text))
-                _sd_v2 = _bei.update_episode(dict(session.self_assessment_data or {}), chapter, _bei_ep)
-                _react_v2 = str((_tm.get("v2_meta") or {}).get("react_text") or "").strip()
-                if _react_v2:
-                    # (P16-1c) 이 영역에서 나간 반응 문장 — 다음 반응이 같은 말을 되풀이하면 지운다
-                    _rs_v2 = dict(_sd_v2.get("v2_reacts") or {})
-                    _rs_v2[chapter] = (list(_rs_v2.get(chapter) or []) + [_react_v2])[-12:]
-                    _sd_v2["v2_reacts"] = _rs_v2
-                session.self_assessment_data = _sd_v2
+                session.self_assessment_data = _bei.update_episode(dict(session.self_assessment_data or {}), chapter, _bei_ep)
                 _fm_v2(session, "self_assessment_data")
         if instruction_used == "CHAPTER_READY_TO_END":
             # (2026-11-11 호출 순서) 챕터 종료 턴은 코치 본 호출을 하지 않는다 — 본 호출 출력은 쓰이지 않았다(요약은 재료만 주는 집중 호출이 쓰고,
@@ -4344,6 +4379,8 @@ async def _submit_message_phase3a(
             # (P16-1) v2 새 방식이 쓴 턴: mid(사례 중간) | wrap(마무리 턴) | wrap_confirm(확인만 하고 닫음) | mid_fallback:·wrap_fallback:<사유>(종전 경로로 떨어짐)
             #   (P16-2) v2_skip 마무리 턴을 내지 않은 까닭: none_left(물을 것이 남지 않음) | again(이미 물은 것을 다시 물어 버림) | no_question(모델이 물을 것이 없다고 봄)
             "v2": _tm.get("v2"), "v2_wrap_s": _tm.get("v2_wrap_s"), "v2_meta": _tm.get("v2_meta"), "v2_skip": _tm.get("v2_skip"),
+            #   (P16-2 판정) v2_close 모델이 더 물을 것이 없다고 내 사례를 마무리 단계로 넘김('model') · v2_mid_s 상태 기계 안에서 만든 중간 턴 호출 시간
+            "v2_close": _tm.get("v2_close"), "v2_mid_s": _tm.get("v2_mid_s"),
             # (P14b → P15) recv_rule 전환 턴에 붙인 것: C·C+ 받는 말 | pass 넘김말 · main_stmt_cut 본 호출이 쓴 평서문을 지운 수 · specify_q 구체화 전용 호출 결과 · two_q_regen 두 물음 다시 쓰기
             "recv_rule": _tm.get("recv_rule"), "main_stmt_cut": _tm.get("main_stmt_cut"), "specify_q": _tm.get("specify_q"), "two_q_regen": _tm.get("two_q_regen"),
             "call_drops": (_call_drops or None),      # (P14d-4) 전용 호출에서 탈락한 문장 [[호출, 사유, 문장], …]

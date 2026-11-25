@@ -24,6 +24,12 @@
     .venv/bin/python tools/p16_compare.py --transcript ../sim/real_20261125_lucas_org.md --auto organization_management --no-sonnet --tag p16_2
   출력: <tag>_side_by_side.md(지점마다 리더 답 · 실제 코치 턴 · B) · <tag>_raw.json
 
+(2026-11-25 P16-2 판정) 확인 1 — 실세션의 같은 자리에서 '수정한 운영 경로'의 코치 턴 생성 부분(services/coach_v2.render)을 그대로 돌린다(--replay).
+  상태는 실세션 흐름을 따른다: 그 사례에서 이미 물은 것(팀의 방식·팀 밖)과 중간 턴 순번은 실세션의 실제 턴으로 세고, 마무리 턴 자리는 마무리 턴으로 부른다.
+  닫기 제안은 꼬리 답이 둘 이상인 자리에서만 길을 열어 준다(칸 상태는 전문에 없어 행동 칸은 찼다고 본다). 라포 3턴과 영역 정의 받는 말 1턴도 같은 함수로 만든다.
+    .venv/bin/python tools/p16_compare.py --transcript ../sim/real_20261125_lucas_org.md --auto organization_management --replay --tag p16_2b
+  출력: <tag>_replay.md(지점마다 리더 답 · 11/25 실제 턴 · 이번 턴) · <tag>_replay_raw.json
+
 출력(--out, 기본 전문과 같은 폴더):
     p16_compare_blind.md   지점마다 리더 답(앞 60자)과 후보 셋을 가/나/다로 — 지점마다 순서를 섞는다. 어느 것이 A/B/C 인지는 적지 않는다.
     p16_compare_key.md     정답표와 B·C 의 턴당 비용·지연.
@@ -270,6 +276,106 @@ def write_side_by_side(points: list[dict], raw: dict, out_dir: Path, tag: str, t
     return path
 
 
+def _meter_total() -> tuple[float, int]:
+    """지금까지의 호출 비용(USD)과 호출 수 — 호출 종류를 가리지 않고 합친다."""
+    from diag_project.llm_service import USAGE_METER, _PRICE
+    usd, n = 0.0, 0
+    for (_c, m), d in USAGE_METER.by_type.items():
+        pr = _PRICE.get(m, {"in": 0.0, "out": 0.0})
+        usd += (int(d["input"]) * pr["in"] + (int(d["output"]) + int(d["thoughts"])) * pr["out"]) / 1e6
+        n += int(d.get("calls") or 0)
+    return usd, n
+
+
+def replay_early(turns: list[tuple[str, str]], chapter: str) -> list[dict]:
+    """(P16-2 판정) 라포 3턴 — 새 방식이 켜진 턴 핸들러가 쓰는 함수 그대로(호출 없음). 되물음·다음 질문은 고정 문구라 실세션의 것을 그대로 둔다."""
+    from diag_project.services.input_anomaly import is_bare_noun_list, is_contentless_smalltalk
+    from diag_project.services.intro_messages import persona_line, rapport_counter_reply, rapport_fixed_receive, role_fixed_receive
+    from diag_project.services.output_guard import is_question, split_sentences
+    from diag_project.services.turn_checks import is_counter_question
+    ch0 = chapter_start(turns, chapter)
+    users = [i for i in range(ch0) if turns[i][0] == "user"]
+    out, prev_new = [], ""
+    for n, i in enumerate(users[1:4], 1):          # 이름 답 다음의 세 답 — 스몰톡 · 스몰톡 되물음의 답 · 맡은 일
+        ans, actual = turns[i][1], (turns[i + 1][1] if i + 1 < len(turns) else "")
+        fixed_q = next((x.strip() for x in reversed(split_sentences(actual)) if x.strip() and is_question(x)), "")
+        if n == 3:
+            new, how = (f"{role_fixed_receive(COACH)} {persona_line(COACH, 'expect_q')}", "맡은 일 답(낱말 나열) — 고정 받기") if is_bare_noun_list(ans) else ("", "LLM 받기(이 도구에서는 만들지 않음)")
+        elif is_counter_question(ans):
+            new, how = f"{rapport_counter_reply(COACH)} {fixed_q}", "되물음에 한 문장으로 답함"
+        elif is_contentless_smalltalk(ans):
+            new, how = f"{rapport_fixed_receive(COACH, prev_new or turns[i - 1][1], start=n - 1)} {fixed_q}", "짧은 답 — 고정 받기(리더 말을 옮기는 호출을 부르지 않음)"
+        else:
+            new, how = "", "LLM 받기(이 도구에서는 만들지 않음)"
+        prev_new = new
+        out.append({"label": f"라포 {n}", "leader": ans, "actual": actual, "new": new, "how": how})
+    return out
+
+
+async def replay(llm, turns: list[tuple[str, str]], chapter: str, points: list[dict]) -> tuple[list[dict], dict]:
+    """(P16-2 판정) 영역 정의 받는 말 1턴 + 사례 안 13곳 — services/coach_v2 의 호출을 그대로 부른다. (결과 목록, 영역 정의 턴)."""
+    from diag_project.data.competencies import COMPETENCY_FRAMEWORK
+    from diag_project.services import coach_v2 as V
+    from diag_project.services.intro_messages import align_fixed_receive
+    from diag_project.services.output_guard import split_sentences
+    ch0 = chapter_start(turns, chapter)
+    d_ans = next((turns[i][1] for i in range(ch0 + 1, len(turns)) if turns[i][0] == "user"), "")
+    d_actual = next((turns[i][1] for i in range(ch0 + 1, len(turns)) if turns[i][0] == "model"), "")
+    tr_a: list = []
+    g_txt, g_how = await V.render_align_gist(llm, leader_answer=d_ans, persona_name=COACH, trace=tr_a)
+    align = {"label": "영역 정의 받는 말", "leader": d_ans, "actual": next((x.strip() for x in split_sentences(d_actual) if x.strip()), ""),
+             "new": g_txt or align_fixed_receive(COACH, 0), "how": g_how + ("" if g_txt else " → 고정 받기"), "drops": tr_a}
+    inds = COMPETENCY_FRAMEWORK[chapter]["indicators"]
+    out: list[dict] = []
+    prev_open, asked, mid_n, beyond_n = None, set(), 0, 0
+    for p in points:
+        if p["case"][0][1] != prev_open:
+            prev_open, asked, mid_n = p["case"][0][1], set(), 0
+        tail = sum(1 for r, _t in p["case"] if r == "user") - 1
+        meta, tr = {}, []
+        kw = dict(chapter=chapter, sub_name=(inds[p["sub"]]["name"] if p["sub"] in inds else None), case=p["case"], coach_said=p["coach_said"],
+                  persona_name=COACH, trace=tr, meta=meta, mid_n=mid_n, asked=sorted(asked))
+        t0 = time.perf_counter()
+        if p["kind"] == "mid":
+            text, how = await V.render(llm, mode="mid", can_close=tail >= V.CLOSE_MIN_TAIL_ANSWERS, **kw)
+        else:
+            text, how = await V.render(llm, mode="wrap", missing=[], result_filled=True, beyond_n=beyond_n, **kw)
+        out.append({"n": p["n"], "kind": p["kind"], "leader": p["leader"], "actual": p["actual"], "new": text, "how": how, "meta": meta, "drops": tr,
+                    "sec": round(time.perf_counter() - t0, 2), "tail": tail, "asked_before": sorted(asked), "can_close": p["kind"] == "mid" and tail >= V.CLOSE_MIN_TAIL_ANSWERS})
+        # 상태는 실세션 흐름을 따른다 — 실제로 나간 턴이 물은 것과 순번으로 다음 자리의 상태를 정한다
+        kinds = V.asked_kinds(p["actual"])
+        asked |= kinds
+        if p["kind"] == "mid":
+            mid_n += 1
+        elif "beyond" in kinds:
+            beyond_n += 1
+    return out, align
+
+
+def write_replay(early: list[dict], align: dict, rows: list[dict], out_dir: Path, tag: str, usd: float, calls: int) -> Path:
+    how_ko = {"close": "닫음 — 모델이 더 물을 것이 없다고 냄(상태 기계가 받아 마무리 단계로 넘긴다)", "skip:none_left": "마무리 턴 없음 — 물을 것이 남지 않음(넘김말로 바로 다음 주제)",
+              "miss:again": "마무리 턴 없음 — 이미 물은 것을 다시 물어 버림(넘김말로 바로 다음 주제)", "miss:beyond": "마무리 턴 없음 — 영역당 횟수를 채운 팀 밖 물음이라 버림"}
+    L = ["# P16-2 판정 · 확인 1 — 실세션 답으로 다시 돌리기", "",
+         "지점마다 리더가 한 답, 11/25 에 실제로 나간 코치 턴, 수정한 운영 경로(coach_v2)가 같은 자리에서 쓴 턴입니다.",
+         "상태는 실세션 흐름을 따릅니다 — 그 사례에서 이미 물은 것과 중간 턴 순번은 11/25 의 실제 턴으로 셉니다. 닫기 제안은 꼬리 답이 둘 이상인 자리에서만 길을 열었습니다.", ""]
+    for e in early + [align]:
+        L += [f"## {e['label']}", "", f"- 리더: {e['leader']}", f"- **11/25 실제**: {e['actual']}", f"- **이번**: {e['new'] or '(없음)'}", f"- 만든 방식: {e['how']}", ""]
+    for r in rows:
+        note = how_ko.get(r["how"], "")
+        m = r["meta"]
+        tags = [x for x in (f"다시 씀({m['rewrite']})" if m.get("rewrite") else "", f"앞 절 뗌({m['front_cut']})" if m.get("front_cut") else "",
+                            f"평서문 {m['stmt_cut']}개 지움" if m.get("stmt_cut") else "", f"이해 확인 뺌({m['sum_drop']})" if m.get("sum_drop") else "",
+                            f"이해 확인 {m['sum_eojeol']}어절" if m.get("sum_eojeol") and not m.get("sum_drop") else "", f"남은 꼴({m['left']})" if m.get("left") else "",
+                            f"대상 {m['target']}" if m.get("target") else "", "닫기 길 열림" if r["can_close"] else "", f"{r['sec']}초") if x]
+        L += [f"## 지점 {r['n']} — {'사례 마무리 턴 자리' if r['kind'] == 'wrap' else '사례 중간 턴'} (이 사례의 꼬리 답 {r['tail']}개째 뒤"
+              + (f", 이미 물은 것: {'·'.join(r['asked_before'])}" if r["asked_before"] else "") + ")", "",
+              f"- 리더: {r['leader']}", f"- **11/25 실제**: {r['actual']}", f"- **이번**: {r['new'] or '[' + (note or r['how']) + ']'}", f"- 기록: {' · '.join(tags)}", ""]
+    L += [f"호출 {calls}회 · 비용 ${usd:.4f}"]
+    path = out_dir / f"{tag}_replay.md"
+    path.write_text("\n".join(L) + "\n", encoding="utf-8")
+    return path
+
+
 async def call(llm, *, system: str, user: str, sonnet: bool) -> dict:
     from diag_project.llm_service import ANALYSIS_MODEL, USAGE_METER, _PRICE
     ct = "p16_compare_sonnet" if sonnet else "p16_compare_haiku"
@@ -350,6 +456,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--auto", default=None, help="(P16-2) 영역 키 — 지점을 전문에서 찾는다(사례 안에서 리더가 답한 자리 전부)")
     ap.add_argument("--no-sonnet", action="store_true", help="(P16-2) Sonnet(C)은 부르지 않는다 — B(Haiku)만")
     ap.add_argument("--tag", default="p16_compare", help="(P16-2) --auto 출력 파일 이름의 머리")
+    ap.add_argument("--replay", action="store_true", help="(P16-2 판정) --auto 지점에서 수정한 운영 경로(coach_v2)의 코치 턴 생성을 그대로 돌린다")
     args = ap.parse_args(argv)
     path = Path(args.transcript)
     out_dir = Path(args.out) if args.out else path.parent
@@ -365,6 +472,23 @@ def main(argv: list[str] | None = None) -> int:
     if any(not p.get("found") for p in points):
         print("찾지 못한 지점이 있습니다 — 전문의 형식이나 끝부분 문구를 확인하세요.")
         return 2
+    if args.replay:
+        if not args.auto:
+            print("--replay 는 --auto <영역 키>와 함께 쓴다.")
+            return 2
+        early = replay_early(turns, args.auto)
+        if args.dry_run:
+            for e in early:
+                print(f"{e['label']}: {e['leader']} → {e['new']}  ({e['how']})")
+            return 0
+        from diag_project.llm_service import GeminiService
+        llm_r = GeminiService().bind_provider("claude")
+        usd0, n0 = _meter_total()
+        rows, align = asyncio.run(replay(llm_r, turns, args.auto, points))
+        usd1, n1 = _meter_total()
+        (out_dir / f"{args.tag}_replay_raw.json").write_text(json.dumps({"early": early, "align": align, "rows": rows}, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"저장: {write_replay(early, align, rows, out_dir, args.tag, usd1 - usd0, n1 - n0)} · 호출 {n1 - n0}회 · ${usd1 - usd0:.4f}")
+        return 0
     system = build_system()
     if args.dry_run:
         p = points[0]
